@@ -222,7 +222,7 @@ def admin_send():
 # ─── Health Check ───────────────────────────────────
 @app.route("/")
 def health():
-    return jsonify({"status": "ok", "app": "Baseline", "version": "0.1.0"})
+    return jsonify({"status": "ok", "app": "cued", "version": "0.1.0"})
 
 
 # ─── HTML Templates ─────────────────────────────────
