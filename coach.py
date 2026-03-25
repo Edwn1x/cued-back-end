@@ -107,17 +107,37 @@ Respond to the user's latest message, or generate the scheduled touchpoint messa
         session.close()
 
 
-def get_coach_response(user: User, user_message: str, message_type: str = "freeform") -> str:
-    """Get an AI coaching response for a user's message."""
+def get_coach_response(user: User, user_message: str, message_type: str = "freeform", image_url: str = None) -> str:
+    """Get an AI coaching response for a user's message. Supports image analysis."""
     system_prompt = build_context(user, message_type)
+
+    # Build the message content
+    if image_url:
+        # User sent an image (MMS) — use Claude's vision
+        content = []
+        content.append({
+            "type": "image",
+            "source": {"type": "url", "url": image_url}
+        })
+        if user_message:
+            content.append({"type": "text", "text": user_message})
+        else:
+            if message_type == "food_photo":
+                content.append({"type": "text", "text": "The user sent a photo of their food. Estimate the calories, protein, and macros. Be specific but brief. Add it to their daily running total."})
+            elif message_type == "progress_photo":
+                content.append({"type": "text", "text": "The user sent a progress photo. Comment on what you see — be honest, specific, and encouraging without being fake."})
+            else:
+                content.append({"type": "text", "text": "The user sent an image. If it's food, estimate macros. If it's a gym photo, comment on form or setup. If it's a supplement label, give your take."})
+
+        messages = [{"role": "user", "content": content}]
+    else:
+        messages = [{"role": "user", "content": user_message}]
 
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
         system=system_prompt,
-        messages=[
-            {"role": "user", "content": user_message}
-        ],
+        messages=messages,
     )
 
     return response.content[0].text

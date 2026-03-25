@@ -26,6 +26,13 @@ def webhook():
     """Handle incoming SMS from Twilio."""
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
+    
+    # Check for MMS image
+    num_media = int(request.form.get("NumMedia", 0))
+    image_url = None
+    if num_media > 0:
+        image_url = request.form.get("MediaUrl0")
+        logger.info(f"MMS image received from {from_number}: {image_url}")
 
     logger.info(f"Incoming SMS from {from_number}: {body}")
 
@@ -37,15 +44,15 @@ def webhook():
             # Unknown number — send a friendly redirect
             logger.warning(f"Unknown number: {from_number}")
             return get_twiml_response(
-                "Hey! You're not signed up for Baseline yet. "
-                "Visit [your signup link] to get started."
+                "Hey! You're not signed up for Cued yet. "
+                "Visit cued.fit/signup to get started."
             ), 200, {"Content-Type": "text/xml"}
 
         # Log the incoming message
         log_incoming(user.id, body)
 
         # Detect message type from context
-        message_type = classify_message(body)
+        message_type = classify_message(body, has_image=image_url is not None)
 
         # If it looks like a workout log, try to parse it
         if message_type == "workout_log":
@@ -61,8 +68,8 @@ def webhook():
                 session.add(workout)
                 session.commit()
 
-        # Get AI coaching response
-        response_text = get_coach_response(user, body, message_type)
+        # Get AI coaching response (with image if present)
+        response_text = get_coach_response(user, body, message_type, image_url=image_url) 
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
@@ -77,9 +84,19 @@ def webhook():
         session.close()
 
 
-def classify_message(body: str) -> str:
+def classify_message(body: str, has_image: bool = False) -> str:
     """Simple heuristic to classify incoming message type."""
     body_lower = body.lower().strip()
+
+    # Image-based classification
+    if has_image:
+        if any(kw in body_lower for kw in ["food", "ate", "eating", "lunch", "dinner", "breakfast", "meal", "snack"]):
+            return "food_photo"
+        if any(kw in body_lower for kw in ["progress", "physique", "body", "mirror", "before", "after"]):
+            return "progress_photo"
+        if any(kw in body_lower for kw in ["form", "check", "technique", "posture"]):
+            return "form_check"
+        return "food_photo"  # Default assumption for images — most common use case
 
     if body_lower in ("w", "workout", "send workout"):
         return "workout_request"
