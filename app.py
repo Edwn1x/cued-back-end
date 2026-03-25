@@ -7,6 +7,7 @@ from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
 import config
 from onboarding_agent import start_onboarding
+from admin_dashboard import ADMIN_HTML
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -175,24 +176,177 @@ def signup_submit():
 # ─── Admin Dashboard ────────────────────────────────
 @app.route("/admin")
 def admin():
-    """Simple admin view to see all users and recent messages."""
+    """Metrics dashboard for tracking beta performance."""
+    from datetime import datetime, timedelta, timezone
     session = get_session()
     try:
-        users = session.query(User).filter(User.active == True).all()
-        user_data = []
-        for u in users:
-            recent = (
-                session.query(Message)
-                .filter(Message.user_id == u.id)
-                .order_by(Message.created_at.desc())
-                .limit(10)
-                .all()
-            )
-            recent.reverse()
-            user_data.append({"user": u, "messages": recent})
-        return render_template_string(ADMIN_HTML, users=user_data)
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+ 
+        # ── USER STATS ──
+        all_users = session.query(User).all()
+        total_users = len(all_users)
+        active_users = sum(1 for u in all_users if u.is_active)
+ 
+        # ── MESSAGE STATS ──
+        all_messages = session.query(Message).all()
+        total_sent = sum(1 for m in all_messages if m.direction == "out")
+        total_received = sum(1 for m in all_messages if m.direction == "incoming")
+        response_rate = round((total_received / total_sent * 100) if total_sent > 0 else 0)
+ 
+        # ── TODAY'S ACTIVITY ──
+        today_active = 0
+        for u in all_users:
+            user_msgs_today = [m for m in all_messages
+                              if m.user_id == u.id
+                              and m.direction == "incoming"
+                              and m.created_at >= today_start]
+            if user_msgs_today:
+                today_active += 1
+ 
+        # ── RETENTION COHORTS ──
+        # Day 1: responded to at least one message
+        d1_responded = 0
+        for u in all_users:
+            user_incoming = [m for m in all_messages if m.user_id == u.id and m.direction == "incoming"]
+            if user_incoming:
+                d1_responded += 1
+        d1_rate = round((d1_responded / total_users * 100) if total_users > 0 else 0)
+ 
+        # Day 7, 14, 30: active within the window
+        def active_in_window(days):
+            cutoff = now - timedelta(days=days)
+            count = 0
+            eligible = 0
+            for u in all_users:
+                # Only count users who signed up at least N days ago
+                if hasattr(u, 'created_at') and u.created_at and u.created_at <= cutoff:
+                    eligible += 1
+                    user_msgs = [m for m in all_messages
+                                if m.user_id == u.id
+                                and m.direction == "incoming"
+                                and m.created_at >= cutoff]
+                    if user_msgs:
+                        count += 1
+                elif not hasattr(u, 'created_at') or not u.created_at:
+                    # If no created_at, count all users
+                    eligible += 1
+                    user_msgs = [m for m in all_messages
+                                if m.user_id == u.id
+                                and m.direction == "incoming"
+                                and m.created_at >= cutoff]
+                    if user_msgs:
+                        count += 1
+            return count, eligible
+ 
+        d7_active, d7_eligible = active_in_window(7)
+        d14_active, d14_eligible = active_in_window(14)
+        d30_active, d30_eligible = active_in_window(30)
+        d7_rate = round((d7_active / d7_eligible * 100) if d7_eligible > 0 else 0)
+        d14_rate = round((d14_active / d14_eligible * 100) if d14_eligible > 0 else 0)
+        d30_rate = round((d30_active / d30_eligible * 100) if d30_eligible > 0 else 0)
+ 
+        # ── RATINGS ──
+        # Look for messages that are just a number 1-5 (day ratings)
+        rating_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+        total_rating_sum = 0
+        total_ratings = 0
+        for m in all_messages:
+            if m.direction == "incoming" and m.body and m.body.strip() in ["1", "2", "3", "4", "5"]:
+                r = int(m.body.strip())
+                rating_counts[r] += 1
+                total_rating_sum += r
+                total_ratings += 1
+        avg_rating = round(total_rating_sum / total_ratings, 1) if total_ratings > 0 else 0
+        max_rating_count = max(rating_counts.values()) if rating_counts else 1
+ 
+        # ── USER TABLE DATA ──
+        users_data = []
+        for u in all_users:
+            user_msgs = [m for m in all_messages if m.user_id == u.id]
+            user_incoming = [m for m in user_msgs if m.direction == "incoming"]
+            msg_count = len(user_msgs)
+ 
+            # Last active
+            if user_incoming:
+                last_msg = max(user_incoming, key=lambda m: m.created_at)
+                last_active = last_msg.created_at.strftime("%b %d, %I:%M %p") if last_msg.created_at else "—"
+                days_inactive = (now - last_msg.created_at).days if last_msg.created_at else 99
+            else:
+                last_active = "Never"
+                days_inactive = 99
+ 
+            # Workout count
+            workout_count = session.query(Workout).filter(Workout.user_id == u.id).count()
+ 
+            # User avg rating
+            user_ratings = [int(m.body.strip()) for m in user_incoming
+                          if m.body and m.body.strip() in ["1", "2", "3", "4", "5"]]
+            user_avg = round(sum(user_ratings) / len(user_ratings), 1) if user_ratings else "—"
+ 
+            signed_up = u.created_at.strftime("%b %d") if hasattr(u, 'created_at') and u.created_at else "—"
+ 
+            users_data.append({
+                "id": u.id,
+                "name": u.name,
+                "phone": u.phone[-4:] if u.phone else "—",  # Show last 4 digits only
+                "signed_up": signed_up,
+                "last_active": last_active,
+                "msg_count": msg_count,
+                "workout_count": workout_count,
+                "avg_rating": user_avg,
+                "days_inactive": days_inactive,
+            })
+ 
+        # ── RECENT MESSAGES ──
+        recent = sorted(all_messages, key=lambda m: m.created_at if m.created_at else now, reverse=True)[:50]
+        recent_messages_data = []
+        user_map = {u.id: u.name for u in all_users}
+        for m in recent:
+            recent_messages_data.append({
+                "time": m.created_at.strftime("%I:%M %p") if m.created_at else "—",
+                "user_name": user_map.get(m.user_id, "Unknown"),
+                "direction": m.direction,
+                "body": m.body or "",
+                "message_type": m.message_type or "—",
+            })
+ 
+        # ── COST ESTIMATES ──
+        total_msg_count = total_sent + total_received
+        twilio_cost = round(total_msg_count * 0.015, 2)
+        api_cost = round(total_sent * 0.006, 2)
+        total_cost = round(twilio_cost + api_cost, 2)
+ 
+        from admin_dashboard import ADMIN_HTML
+        return render_template_string(ADMIN_HTML,
+            now=now.strftime("%b %d, %Y %I:%M %p UTC"),
+            total_users=total_users,
+            active_users=active_users,
+            total_sent=total_sent,
+            total_received=total_received,
+            response_rate=response_rate,
+            avg_rating=avg_rating,
+            total_ratings=total_ratings,
+            today_active=today_active,
+            d1_responded=d1_responded,
+            d1_rate=d1_rate,
+            d7_active=d7_active,
+            d7_rate=d7_rate,
+            d14_active=d14_active,
+            d14_rate=d14_rate,
+            d30_active=d30_active,
+            d30_rate=d30_rate,
+            users=users_data,
+            rating_counts=rating_counts,
+            max_rating_count=max_rating_count,
+            recent_messages=recent_messages_data,
+            twilio_cost=twilio_cost,
+            api_cost=api_cost,
+            total_cost=total_cost,
+        )
     finally:
         session.close()
+ 
 
 
 # ─── Manual Send (admin override) ───────────────────
