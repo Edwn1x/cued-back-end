@@ -6,6 +6,7 @@ from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
 import config
+from onboarding_agent import start_onboarding
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -158,16 +159,8 @@ def signup_submit():
         # Schedule their daily messages
         schedule_user(user)
 
-        # Send welcome message
-        send_sms(
-            user.phone,
-            f"Hey {user.name} — it's Baseline, your new AI coach. "
-            f"I'll be texting you daily with workouts, meal ideas, and check-ins. "
-            f"Your first morning briefing is coming tomorrow at {user.wake_time}. "
-            f"For now, just reply with anything to test the connection.",
-            user_id=user.id,
-            message_type="welcome",
-        )
+        # Start onboarding agent (sends personalized welcome sequence in background)
+        start_onboarding(user)
 
         logger.info(f"New user signed up: {user.name} ({user.phone})")
         return jsonify({"status": "ok", "message": f"Welcome {user.name}! Check your phone."})
