@@ -310,9 +310,11 @@ def admin():
             signed_up = u.created_at.strftime("%b %d") if hasattr(u, 'created_at') and u.created_at else "—"
  
             users_data.append({
+                "user": u,
+                "messages": user_msgs,
                 "id": u.id,
                 "name": u.name,
-                "phone": u.phone[-4:] if u.phone else "—",  # Show last 4 digits only
+                "phone": u.phone[-4:] if u.phone else "—",
                 "signed_up": signed_up,
                 "last_active": last_active,
                 "msg_count": msg_count,
