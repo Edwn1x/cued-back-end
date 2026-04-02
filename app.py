@@ -134,6 +134,11 @@ def signup_submit():
         if not phone.startswith("+"):
             phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
 
+        # Check SMS consent
+        sms_consent = request.form.get("sms_consent") == "on"
+        if not sms_consent:
+            return jsonify({"status": "error", "message": "You must agree to receive SMS messages to use Cued."})
+
         # Check if already exists
         existing = session.query(User).filter(User.phone == phone).first()
         if existing:
@@ -181,7 +186,7 @@ def signup_submit():
         start_onboarding(user)
 
         logger.info(f"New user signed up: {user.name} ({user.phone})")
-        return jsonify({"status": "ok", "message": f"Welcome {user.name}! Check your phone."})
+        return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name})
 
     except Exception as e:
         logger.error(f"Signup error: {e}", exc_info=True)
@@ -653,6 +658,16 @@ SIGNUP_HTML = """
                 <option value="other_wearable">Other</option>
             </select>
 
+            <div class="section-label">Consent</div>
+
+            <div style="background:#27272A;border:1px solid #3F3F46;border-radius:8px;padding:14px 16px;margin-top:6px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0;color:#FAFAFA;font-size:14px;">
+                    <input type="checkbox" name="sms_consent" id="sms_consent" style="width:auto;margin-top:2px;accent-color:#6D5CFF;flex-shrink:0;">
+                    <span>I agree to receive automated SMS coaching messages from Cued. Message &amp; data rates may apply. Reply STOP at any time to unsubscribe.</span>
+                </label>
+            </div>
+            <div id="consent-error" style="display:none;color:#EF4444;font-size:13px;margin-top:6px;">You must agree to receive SMS messages to use Cued.</div>
+
             <button type="submit">Start coaching me</button>
         </form>
         <div id="result"></div>
@@ -665,6 +680,16 @@ SIGNUP_HTML = """
     async function handleSubmit(e) {
         e.preventDefault();
         const form = e.target;
+
+        // Validate SMS consent
+        if (!document.getElementById('sms_consent').checked) {
+            document.getElementById('consent-error').style.display = 'block';
+            document.getElementById('sms_consent').closest('div').style.borderColor = '#EF4444';
+            document.getElementById('sms_consent').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return false;
+        }
+        document.getElementById('consent-error').style.display = 'none';
+
         const fd = new FormData(form);
         // Collect multi-select goals into comma-separated
         const goals = fd.getAll('goals').join(',');
@@ -676,12 +701,26 @@ SIGNUP_HTML = """
         fd.append('workout_days', days);
         const res = await fetch('/signup', { method: 'POST', body: fd });
         const data = await res.json();
-        const el = document.getElementById('result');
-        el.style.display = 'block';
-        el.style.background = data.status === 'ok' ? '#16A34A22' : '#DC262622';
-        el.style.color = data.status === 'ok' ? '#16A34A' : '#DC2626';
-        el.textContent = data.message;
-        if (data.status === 'ok') { form.reset(); window.scrollTo(0, 0); }
+        if (data.status === 'ok') {
+            document.querySelector('.container').innerHTML = `
+                <div style="text-align:center;padding:60px 0;">
+                    <div style="font-size:48px;margin-bottom:24px;">✓</div>
+                    <h1 style="font-size:28px;margin-bottom:12px;">You're in, ${data.name || 'friend'}.</h1>
+                    <p style="color:#A1A1AA;font-size:16px;line-height:1.6;max-width:380px;margin:0 auto 24px;">
+                        Your profile has been created. Your Cued coach will reach out shortly to finalize your plan and get things moving.
+                    </p>
+                    <p style="color:#6E6E73;font-size:13px;">Keep an eye on your phone — the first message is on its way.</p>
+                </div>`;
+            window.scrollTo(0, 0);
+        } else {
+            const el = document.getElementById('result');
+            el.style.display = 'block';
+            el.style.background = data.status === 'exists' ? '#6D5CFF22' : '#DC262622';
+            el.style.color = data.status === 'exists' ? '#A78BFA' : '#DC2626';
+            el.style.borderRadius = '8px';
+            el.style.padding = '12px';
+            el.textContent = data.message;
+        }
     }
     </script>
 </body>
