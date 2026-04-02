@@ -7,7 +7,6 @@ from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
 import config
 from onboarding_agent import start_onboarding
-from admin_dashboard import ADMIN_HTML
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -334,7 +333,6 @@ def admin():
         api_cost = round(total_sent * 0.006, 2)
         total_cost = round(twilio_cost + api_cost, 2)
  
-        from admin_dashboard import ADMIN_HTML
         return render_template_string(ADMIN_HTML,
             now=now.strftime("%b %d, %Y %I:%M %p UTC"),
             total_users=total_users,
