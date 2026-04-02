@@ -229,6 +229,8 @@ def activate_sms():
 def admin():
     """Metrics dashboard for tracking beta performance."""
     from datetime import datetime, timedelta, timezone
+    import pytz
+    pst = pytz.timezone("America/Los_Angeles")
     session = get_session()
     try:
         now = datetime.now(timezone.utc)
@@ -240,6 +242,12 @@ def admin():
             if dt.tzinfo is None:
                 return dt.replace(tzinfo=timezone.utc)
             return dt
+
+        def fmt_pst(dt):
+            if not dt:
+                return "—"
+            dt = as_utc(dt)
+            return dt.astimezone(pst).strftime("%b %d, %I:%M %p")
  
         # ── USER STATS ──
         all_users = session.query(User).all()
@@ -328,8 +336,8 @@ def admin():
             # Last active
             if user_incoming:
                 last_msg = max(user_incoming, key=lambda m: m.created_at)
-                last_active = last_msg.created_at.strftime("%b %d, %I:%M %p") if last_msg.created_at else "—"
-                days_inactive = (now - last_msg.created_at).days if last_msg.created_at else 99
+                last_active = fmt_pst(last_msg.created_at)
+                days_inactive = (now - as_utc(last_msg.created_at)).days if last_msg.created_at else 99
             else:
                 last_active = "Never"
                 days_inactive = 99
@@ -342,8 +350,8 @@ def admin():
                           if m.body and m.body.strip() in ["1", "2", "3", "4", "5"]]
             user_avg = round(sum(user_ratings) / len(user_ratings), 1) if user_ratings else "—"
  
-            signed_up = u.created_at.strftime("%b %d") if hasattr(u, 'created_at') and u.created_at else "—"
- 
+            signed_up = fmt_pst(u.created_at) if hasattr(u, 'created_at') and u.created_at else "—"
+
             users_data.append({
                 "id": u.id,
                 "name": u.name,
@@ -360,10 +368,12 @@ def admin():
         recent = sorted(all_messages, key=lambda m: m.created_at if m.created_at else now, reverse=True)[:50]
         recent_messages_data = []
         user_map = {u.id: u.name for u in all_users}
+        user_id_map = {u.id: u.id for u in all_users}
         for m in recent:
             recent_messages_data.append({
-                "time": m.created_at.strftime("%I:%M %p") if m.created_at else "—",
+                "time": fmt_pst(m.created_at),
                 "user_name": user_map.get(m.user_id, "Unknown"),
+                "user_id": user_id_map.get(m.user_id, 0),
                 "direction": m.direction,
                 "body": m.body or "",
                 "message_type": m.message_type or "—",
@@ -376,7 +386,7 @@ def admin():
         total_cost = round(twilio_cost + api_cost, 2)
  
         return render_template_string(ADMIN_HTML,
-            now=now.strftime("%b %d, %Y %I:%M %p UTC"),
+            now=now.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST"),
             total_users=total_users,
             active_users=active_users,
             total_sent=total_sent,
@@ -421,6 +431,138 @@ def admin_send():
         return jsonify({"status": "error"}), 400
     finally:
         session.close()
+
+
+# ─── Admin User Detail ──────────────────────────────
+@app.route("/admin/user/<int:user_id>")
+def admin_user(user_id):
+    """Per-user detail page with full conversation and profile."""
+    from datetime import timezone
+    import pytz
+    pst = pytz.timezone("America/Los_Angeles")
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return "User not found", 404
+        messages = session.query(Message).filter(Message.user_id == user_id).order_by(Message.created_at).all()
+
+        def fmt_pst(dt):
+            if not dt:
+                return "—"
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(pst).strftime("%b %d, %I:%M %p")
+
+        msgs_data = [{"direction": m.direction, "body": m.body, "message_type": m.message_type or "—", "time": fmt_pst(m.created_at)} for m in messages]
+        return render_template_string(USER_DETAIL_HTML, user=user, messages=msgs_data)
+    finally:
+        session.close()
+
+
+USER_DETAIL_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ user.name }} — Cued Admin</title>
+<style>
+:root{--bg:#050506;--surface:#111114;--card:#19191D;--border:#1F1F24;--text:#F5F5F7;--text2:#A1A1A6;--text3:#6E6E73;--accent:#7C6EFF;--green:#30D158}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:24px;max-width:900px;margin:0 auto}
+.back{color:var(--accent);text-decoration:none;font-size:13px;display:inline-block;margin-bottom:20px}
+.back:hover{opacity:.7}
+h1{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-bottom:4px}
+.sub{color:var(--text3);font-size:13px;margin-bottom:28px}
+.layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
+.profile-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
+.profile-card h2{font-size:13px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
+.profile-row{display:flex;flex-direction:column;gap:2px;padding:8px 0;border-bottom:1px solid var(--border)}
+.profile-row:last-child{border-bottom:none}
+.profile-label{font-size:11px;color:var(--text3)}
+.profile-val{font-size:13px;color:var(--text)}
+.convo{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.convo-header{padding:16px 20px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text2)}
+.messages{padding:16px;display:flex;flex-direction:column;gap:10px;max-height:600px;overflow-y:auto}
+.bubble{max-width:80%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.5}
+.bubble.out{background:var(--accent);color:#fff;align-self:flex-end;border-radius:14px 14px 4px 14px}
+.bubble.in{background:var(--surface);color:var(--text);align-self:flex-start;border-radius:14px 14px 14px 4px;border:1px solid var(--border)}
+.bubble-meta{font-size:10px;color:var(--text3);margin-top:4px}
+.bubble.out .bubble-meta{text-align:right}
+.send-wrap{padding:16px;border-top:1px solid var(--border);display:flex;gap:8px}
+.send-wrap textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px;font-size:13px;font-family:inherit;resize:none;min-height:40px}
+.send-wrap textarea:focus{outline:none;border-color:var(--accent)}
+.send-wrap button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer}
+.send-wrap button:hover{opacity:.9}
+@media(max-width:700px){.layout{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<a href="/admin" class="back">← Back to dashboard</a>
+<h1>{{ user.name }}</h1>
+<p class="sub">{{ user.phone }} · ID {{ user.id }}</p>
+
+<div class="layout">
+  <div class="profile-card">
+    <h2>Profile</h2>
+    {% set fields = [
+      ('Age', user.age),('Gender', user.gender),('Occupation', user.occupation),
+      ('Goal', user.goal),('Obstacle', user.biggest_obstacle),('Experience', user.experience),
+      ('Equipment', user.equipment),('Injuries', user.injuries),('Diet', user.diet),
+      ('Cooking', user.cooking_situation),('Restrictions', user.restrictions),
+      ('Workout days', user.workout_days),('Workout time', user.workout_time),
+      ('Wake', user.wake_time),('Bedtime', user.sleep_time),('Sleep', user.sleep_quality),
+      ('Stress', user.stress_level),('Activity', user.activity_level),
+      ('Height', (user.height_ft|string + "'" + (user.height_in|string) + '"') if user.height_ft else None),
+      ('Weight', (user.weight_lbs|string + ' lbs') if user.weight_lbs else None),
+      ('Body fat', (user.body_fat_pct|string + '%') if user.body_fat_pct else None),
+      ('Wearable', user.wearable),('Motivation', user.motivation)
+    ] %}
+    {% for label, val in fields %}
+    {% if val %}
+    <div class="profile-row">
+      <span class="profile-label">{{ label }}</span>
+      <span class="profile-val">{{ val }}</span>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="convo">
+    <div class="convo-header">Conversation ({{ messages|length }} messages)</div>
+    <div class="messages" id="msg-container">
+      {% for m in messages %}
+      <div>
+        <div class="bubble {{ m.direction }}">{{ m.body }}</div>
+        <div class="bubble-meta" style="text-align:{{ 'right' if m.direction == 'out' else 'left' }}">{{ m.time }} · {{ m.message_type }}</div>
+      </div>
+      {% endfor %}
+      {% if not messages %}<p style="color:var(--text3);font-size:13px;text-align:center;padding:24px">No messages yet.</p>{% endif %}
+    </div>
+    <div class="send-wrap">
+      <textarea id="msg-body" placeholder="Send a manual message as coach..." rows="2"></textarea>
+      <button onclick="sendMsg()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const userId = {{ user.id }};
+async function sendMsg(){
+  const body = document.getElementById('msg-body').value.trim();
+  if(!body) return;
+  await fetch('/admin/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'user_id='+userId+'&body='+encodeURIComponent(body)});
+  document.getElementById('msg-body').value='';
+  location.reload();
+}
+// Scroll to bottom of messages
+const c = document.getElementById('msg-container');
+if(c) c.scrollTop = c.scrollHeight;
+</script>
+</body>
+</html>
+"""
 
 
 # ─── Health Check ───────────────────────────────────
