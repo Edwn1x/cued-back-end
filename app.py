@@ -138,7 +138,8 @@ def signup_submit():
 
         # Check SMS consent
         sms_consent = request.form.get("sms_consent") == "on"
-        if not sms_consent:
+        sms_skipped = request.form.get("sms_consent") == "skip"
+        if not sms_consent and not sms_skipped:
             return jsonify({"status": "error", "message": "You must agree to receive SMS messages to use Cued."})
 
         # Check if already exists
@@ -181,13 +182,12 @@ def signup_submit():
         session.add(user)
         session.commit()
 
-        # Schedule their daily messages
-        schedule_user(user)
+        # Only schedule and onboard if user consented to SMS
+        if sms_consent:
+            schedule_user(user)
+            start_onboarding(user)
 
-        # Start onboarding agent (sends personalized welcome sequence in background)
-        start_onboarding(user)
-
-        logger.info(f"New user signed up: {user.name} ({user.phone})")
+        logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent}")
         return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name})
 
     except Exception as e:
