@@ -197,6 +197,33 @@ def signup_submit():
         session.close()
 
 
+# ─── Activate SMS (for users who skipped consent) ───
+@app.route("/activate-sms", methods=["POST"])
+def activate_sms():
+    """Activate SMS coaching for a user who signed up without consent."""
+    session = get_session()
+    try:
+        phone = request.form.get("phone", "").strip()
+        if not phone.startswith("+"):
+            phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
+
+        user = session.query(User).filter(User.phone == phone).first()
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."})
+
+        schedule_user(user)
+        start_onboarding(user)
+
+        logger.info(f"SMS activated for existing user: {user.name} ({user.phone})")
+        return jsonify({"status": "ok", "name": user.name})
+
+    except Exception as e:
+        logger.error(f"Activate SMS error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        session.close()
+
+
 # ─── Admin Dashboard ────────────────────────────────
 @app.route("/admin")
 def admin():
