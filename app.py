@@ -1,6 +1,7 @@
 import os
 import logging
 from flask import Flask, request, jsonify, render_template_string
+from flask_cors import CORS
 from models import init_db, get_session, User, Message, Workout
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
+CORS(app, origins=config.ALLOWED_ORIGINS)
 
 # Initialize DB on startup
 init_db()

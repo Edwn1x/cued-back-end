@@ -10,6 +10,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
 
+# CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
+
 # Coach settings
 COACH_MODEL = "claude-sonnet-4-20250514"  # fast + cheap for SMS-length responses
 MAX_RESPONSE_TOKENS = 400  # keep SMS responses concise
