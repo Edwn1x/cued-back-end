@@ -196,8 +196,15 @@ def admin():
     from datetime import datetime, timedelta, timezone
     session = get_session()
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        def as_utc(dt):
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
  
         # ── USER STATS ──
         all_users = session.query(User).all()
@@ -216,7 +223,7 @@ def admin():
             user_msgs_today = [m for m in all_messages
                               if m.user_id == u.id
                               and m.direction == "incoming"
-                              and m.created_at >= today_start]
+                              and as_utc(m.created_at) >= today_start]
             if user_msgs_today:
                 today_active += 1
  
@@ -236,12 +243,12 @@ def admin():
             eligible = 0
             for u in all_users:
                 # Only count users who signed up at least N days ago
-                if hasattr(u, 'created_at') and u.created_at and u.created_at <= cutoff:
+                if hasattr(u, 'created_at') and u.created_at and as_utc(u.created_at) <= cutoff:
                     eligible += 1
                     user_msgs = [m for m in all_messages
                                 if m.user_id == u.id
                                 and m.direction == "incoming"
-                                and m.created_at >= cutoff]
+                                and as_utc(m.created_at) >= cutoff]
                     if user_msgs:
                         count += 1
                 elif not hasattr(u, 'created_at') or not u.created_at:
