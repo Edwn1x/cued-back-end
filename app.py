@@ -203,7 +203,7 @@ def admin():
         # ── USER STATS ──
         all_users = session.query(User).all()
         total_users = len(all_users)
-        active_users = sum(1 for u in all_users if u.is_active)
+        active_users = sum(1 for u in all_users if u.active)
  
         # ── MESSAGE STATS ──
         all_messages = session.query(Message).all()
