@@ -196,7 +196,7 @@ def admin():
     from datetime import datetime, timedelta, timezone
     session = get_session()
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
  
         # ── USER STATS ──
