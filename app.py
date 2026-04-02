@@ -7,6 +7,7 @@ from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
 import config
 from onboarding_agent import start_onboarding
+from admin_dashboard import ADMIN_HTML
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -310,8 +311,6 @@ def admin():
             signed_up = u.created_at.strftime("%b %d") if hasattr(u, 'created_at') and u.created_at else "—"
  
             users_data.append({
-                "user": u,
-                "messages": user_msgs,
                 "id": u.id,
                 "name": u.name,
                 "phone": u.phone[-4:] if u.phone else "—",
@@ -689,7 +688,7 @@ SIGNUP_HTML = """
 </html>
 """
 
-ADMIN_HTML = """
+_UNUSED_OLD_ADMIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
