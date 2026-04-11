@@ -30,32 +30,21 @@ def _log_message(user_id: int, body: str, message_type: str):
 
 
 def split_message(body: str) -> list[str]:
-    """Split a coach message into natural SMS-sized parts.
+    """Split a coach message into SMS parts using --- as the delimiter.
 
-    Splits on blank lines first (paragraph breaks the coach writes).
-    If a single paragraph is still over 320 chars, splits on sentence boundaries.
-    Returns a list of non-empty strings, max 3 parts.
+    The AI is instructed to separate messages with ---. Each part maps to
+    one text: msg 1 = main content, msg 2 = context, msg 3 = CTA/question.
+    Falls back to the full body as a single message if no delimiter found.
+    Caps at 3 parts.
     """
-    # Split on double newlines (coach-written paragraph breaks)
-    parts = [p.strip() for p in body.split("\n\n") if p.strip()]
+    import re
+    parts = [p.strip() for p in re.split(r"\s*---\s*", body) if p.strip()]
 
-    # If no paragraph breaks, try single newlines
-    if len(parts) == 1:
-        parts = [p.strip() for p in body.split("\n") if p.strip()]
+    # Cap at 3
+    if len(parts) > 3:
+        parts = parts[:2] + [" --- ".join(parts[2:])]
 
-    # Merge any very short fragments back with the next part
-    merged = []
-    for part in parts:
-        if merged and len(merged[-1]) < 60:
-            merged[-1] = merged[-1] + " " + part
-        else:
-            merged.append(part)
-
-    # Cap at 3 parts — anything beyond that gets joined into the last one
-    if len(merged) > 3:
-        merged = merged[:2] + [" ".join(merged[2:])]
-
-    return merged if merged else [body]
+    return parts if parts else [body]
 
 
 def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform"):

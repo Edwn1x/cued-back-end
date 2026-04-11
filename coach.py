@@ -102,10 +102,12 @@ Days since last workout: {days_since}
 Respond to the user's latest message, or generate the scheduled touchpoint message. Be precise. Be useful. Be the coach that's impossible to ignore.
 
 FORMAT RULES:
-- Each message will be sent as a separate SMS. Separate distinct ideas with a blank line.
-- Max 3 paragraphs total. Each paragraph = one text message on the user's phone.
-- One idea per paragraph. Do not cram greeting + training + food into the same block.
+- Respond in 2-3 separate messages, each under 320 characters.
+- Separate each message with --- on its own line.
+- Structure: first message = main content (the meal, workout, or key info), second message = context (daily totals, timing, rationale), third message (optional) = CTA or question ("Reply W for your workout", "How'd that feel?").
+- One idea per message. Never cram greeting + training + food into one block.
 - No bullet points in scheduled messages — write like a person texting, not a newsletter.
+- Do not use --- for any other purpose (not for section breaks, not for emphasis).
 """
         return system_prompt
 
@@ -155,35 +157,43 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
 
     triggers = {
         "morning_briefing": (
-            f"Generate the morning briefing for {user.name}. "
-            f"Open with a short greeting (Gm or Morning). "
-            f"Preview today's training — what's the session and when. "
-            f"One line on what to focus on mentally today. No meal suggestions here."
+            f"Generate the morning briefing for {user.name}. Use --- to separate each message.\n"
+            f"Message 1: Short greeting (Gm or Morning) + what today's training session is and when.\n"
+            f"Message 2: One thing to focus on mentally today. No food — that's the breakfast message.\n"
+            f"Message 3 (optional): Brief CTA like 'Reply W when you're ready for your workout.'"
         ),
         "breakfast": (
-            f"Suggest a specific breakfast for {user.name} based on their diet and today's training load. "
-            f"Include rough calories and protein. End with: 'Reply B for a different option.'"
+            f"Suggest a specific breakfast for {user.name} based on their diet and today's training load. Use --- to separate each message.\n"
+            f"Message 1: The breakfast suggestion with specific foods.\n"
+            f"Message 2: Rough calories and protein count.\n"
+            f"Message 3: 'Reply B for a different option.'"
         ),
         "meal_suggestion": (
-            f"Suggest a meal for {user.name}. Include calories/protein and a running daily total. "
-            f"Offer a swap with 'Reply M for something else.'"
+            f"Suggest a meal for {user.name}. Use --- to separate each message.\n"
+            f"Message 1: The meal suggestion with specific foods.\n"
+            f"Message 2: Calories/protein + running daily total.\n"
+            f"Message 3: 'Reply M for something else.'"
         ),
         "pre_workout": (
-            f"Send a quick pre-workout message to {user.name}. Tell them their session is ready "
-            f"and to reply W when they want it."
+            f"Send a pre-workout message to {user.name}. Use --- to separate each message.\n"
+            f"Message 1: Their session is locked and ready — name the main lift or focus.\n"
+            f"Message 2: 'Reply W when you're ready and I'll send the full plan.'"
         ),
         "workout_request": (
-            f"Generate today's full workout for {user.name}. Include specific exercises, "
-            f"sets, reps, and target weights based on their training history. "
-            f"Format as a clean numbered list. Add a note about key lifts."
+            f"Generate today's full workout for {user.name}. Use --- to separate each message.\n"
+            f"Message 1: The workout — exercises, sets, reps, target weights based on their history. Numbered list is fine here.\n"
+            f"Message 2: Key coaching note on the main lift or what to watch for.\n"
+            f"Message 3: 'Log it when you're done — just text me what you hit.'"
         ),
         "post_workout": (
-            f"Check in with {user.name} about how their session went. "
-            f"Ask what they hit. Keep it casual -- one line."
+            f"Check in with {user.name} after their session. One message only, no ---. "
+            f"Ask what they hit. Casual, one line."
         ),
         "evening_wrap": (
-            f"Send the evening wrap to {user.name}. Ask them to rate the day 1-5. "
-            f"Preview tomorrow briefly. Close with goodnight. 2-3 sentences max."
+            f"Send the evening wrap to {user.name}. Use --- to separate each message.\n"
+            f"Message 1: Quick win or observation from today.\n"
+            f"Message 2: Rate the day 1-5 + brief preview of tomorrow.\n"
+            f"Message 3: Goodnight, one line."
         ),
     }
 
