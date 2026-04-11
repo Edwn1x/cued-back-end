@@ -129,8 +129,50 @@ class DailyLog(Base):
     weight = Column(Float)
     meals = Column(JSON)  # {breakfast: {planned, adherence}, lunch: {...}, dinner: {...}}
     notes = Column(Text)
+    workout_confirmed = Column(Boolean, default=False)  # True only when user explicitly confirmed training
 
     user = relationship("User", back_populates="daily_logs")
+
+
+def get_or_create_today_log(session, user_id: int) -> "DailyLog":
+    """Get today's DailyLog for a user, creating it if it doesn't exist."""
+    from sqlalchemy import func
+    today = datetime.now(timezone.utc).date()
+    log = (
+        session.query(DailyLog)
+        .filter(
+            DailyLog.user_id == user_id,
+            func.date(DailyLog.date) == today,
+        )
+        .first()
+    )
+    if not log:
+        log = DailyLog(user_id=user_id)
+        session.add(log)
+        session.commit()
+    return log
+
+
+def is_workout_confirmed_today(user_id: int) -> bool:
+    """Return True if the user confirmed their workout today."""
+    session = get_session()
+    try:
+        log = get_or_create_today_log(session, user_id)
+        return bool(log.workout_confirmed)
+    finally:
+        session.close()
+
+
+def confirm_workout_today(user_id: int):
+    """Mark today's workout as confirmed for this user."""
+    session = get_session()
+    try:
+        log = get_or_create_today_log(session, user_id)
+        if not log.workout_confirmed:
+            log.workout_confirmed = True
+            session.commit()
+    finally:
+        session.close()
 
 
 def init_db():

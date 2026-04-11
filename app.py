@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout
+from models import init_db, get_session, User, Message, Workout, confirm_workout_today, is_workout_confirmed_today
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -73,6 +73,11 @@ def webhook():
                 )
                 session.add(workout)
                 session.commit()
+            confirm_workout_today(user.id)
+
+        # Replying W to request a workout also counts as workout intent confirmation
+        if message_type == "workout_request":
+            confirm_workout_today(user.id)
 
         # Get AI coaching response (with image if present)
         response_text = get_coach_response(user, body, message_type, image_url=image_url) 

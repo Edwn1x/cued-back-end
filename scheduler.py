@@ -5,6 +5,7 @@ from models import get_session, User
 from coach import generate_scheduled_message
 from sms import send_sms
 from engagement_tracker import should_send, is_question_type, increment_unanswered, get_tier
+from models import is_workout_confirmed_today
 import logging
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,11 @@ def send_scheduled_message(user_id: int, message_type: str):
         if not should_send(user, message_type):
             tier = get_tier(user.unanswered_count or 0)
             logger.info(f"Skipping {message_type} for {user.name} (tier={tier}, unanswered={user.unanswered_count})")
+            return
+
+        # post_workout check-in only fires if user confirmed they trained today
+        if message_type == "post_workout" and not is_workout_confirmed_today(user.id):
+            logger.info(f"Skipping post_workout for {user.name} — no workout confirmed today")
             return
 
         # Before sending a question-type message, check if the previous one was answered

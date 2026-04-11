@@ -5,6 +5,7 @@ import config
 from models import get_session, User, Message, Workout, DailyLog
 from skill_loader import get_skills_for_message_type, get_all_skills
 from engagement_tracker import get_tier
+from models import is_workout_confirmed_today
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -99,7 +100,9 @@ Time: ~{now.strftime("%I:%M %p")}
 Message type: {message_type}
 Days since last workout: {days_since}
 Engagement tier: {get_tier(user.unanswered_count or 0)} (unanswered streak: {user.unanswered_count or 0})
+Workout confirmed today: {is_workout_confirmed_today(user.id)}
 {"DO NOT ask any questions in this message. Deliver value only — meal, workout, or brief encouragement." if (user.unanswered_count or 0) >= 2 else ""}
+{"IMPORTANT: The user has NOT confirmed they trained today. Do NOT reference a completed session, do NOT ask them to rate it, do NOT say things like 'first day in the books'. If this is an evening wrap, just preview tomorrow." if not is_workout_confirmed_today(user.id) else "The user confirmed they trained today — you can reference the session."}
 
 ## YOUR TASK
 Respond to the user's latest message, or generate the scheduled touchpoint message. Be precise. Be useful. Be the coach that's impossible to ignore.
@@ -191,12 +194,22 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
         "post_workout": (
             f"Check in with {user.name} after their session. One message only, no ---. "
             f"Ask what they hit. Casual, one line."
+            if is_workout_confirmed_today(user.id) else
+            f"Send a neutral check-in to {user.name}. One message only, no ---. "
+            f"Ask if they made it to the gym today. No assumptions — they haven't confirmed."
         ),
         "evening_wrap": (
-            f"Send the evening wrap to {user.name}. Use --- to separate each message.\n"
-            f"Message 1: Quick win or observation from today.\n"
-            f"Message 2: Rate the day 1-5 + brief preview of tomorrow.\n"
-            f"Message 3: Goodnight, one line."
+            (
+                f"Send the evening wrap to {user.name}. Use --- to separate each message.\n"
+                f"Message 1: Quick win or observation from today's training.\n"
+                f"Message 2: Rate the session 1-5 + brief preview of tomorrow.\n"
+                f"Message 3: Goodnight, one line."
+            ) if is_workout_confirmed_today(user.id) else (
+                f"Send the evening wrap to {user.name}. Use --- to separate each message.\n"
+                f"Message 1: A brief encouraging thought — no reference to training today.\n"
+                f"Message 2: Preview tomorrow briefly.\n"
+                f"Message 3: Goodnight, one line. Do NOT ask them to rate today's session."
+            )
         ),
         "nudge": (
             f"Send a single low-pressure re-engagement message to {user.name} who hasn't replied in a while. "
