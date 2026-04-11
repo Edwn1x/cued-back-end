@@ -10,6 +10,7 @@ import config
 from onboarding_agent import start_onboarding
 from admin_dashboard import ADMIN_HTML
 from engagement_tracker import reset_unanswered
+from tone_analyzer import maybe_update_style
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -56,6 +57,9 @@ def webhook():
 
         # Any reply resets the engagement decay counter
         reset_unanswered(user.id)
+
+        # Update mirroring style from accumulated message history
+        maybe_update_style(user.id)
 
         # Detect message type from context
         message_type = classify_message(body, has_image=image_url is not None)

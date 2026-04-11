@@ -6,6 +6,7 @@ from models import get_session, User, Message, Workout, DailyLog
 from skill_loader import get_skills_for_message_type, get_all_skills
 from engagement_tracker import get_tier
 from models import is_workout_confirmed_today
+from tone_analyzer import get_tone_instruction
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -80,8 +81,13 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         else:
             days_since = "N/A -- no workouts logged yet"
 
+        # Build adaptive tone instruction
+        tone_instruction = get_tone_instruction(user)
+
         # Assemble the full system prompt: skills + user context
         system_prompt = f"""{skills_content}
+
+{tone_instruction}
 
 ---
 
