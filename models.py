@@ -46,6 +46,7 @@ class User(Base):
     active = Column(Boolean, default=True)
     unanswered_count = Column(Integer, default=0)  # increments on outbound questions with no reply; resets on any reply
     communication_style = Column(Text, default=None)  # auto-derived tone descriptor, updated after enough exchanges
+    food_context = Column(Text, default=None)  # what they actually have/eat — fridge contents, nearby restaurants, go-to orders
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
@@ -86,6 +87,7 @@ class User(Base):
             f"Body fat: ~{self.body_fat_pct}%" if self.body_fat_pct else None,
             f"Wearable: {self.wearable}" if self.wearable else None,
             f"Motivation: {self.motivation}" if self.motivation else None,
+            f"Food context (actual foods/restaurants they use): {self.food_context}" if self.food_context else None,
         ]
         return "\n".join(p for p in parts if p)
 
@@ -171,6 +173,31 @@ def confirm_workout_today(user_id: int):
         log = get_or_create_today_log(session, user_id)
         if not log.workout_confirmed:
             log.workout_confirmed = True
+            session.commit()
+    finally:
+        session.close()
+
+
+def maybe_store_food_context(user_id: int, message_body: str):
+    """
+    If the user has no food_context yet and is early in their history (≤6 messages),
+    store their reply as food_context. This captures the response to the onboarding
+    food question without requiring explicit classification.
+    """
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user or user.food_context:
+            return  # already have context, don't overwrite
+
+        # Only capture during early onboarding window
+        message_count = session.query(Message).filter(
+            Message.user_id == user_id,
+            Message.direction == "in"
+        ).count()
+
+        if message_count <= 6 and len(message_body.strip()) > 5:
+            user.food_context = message_body.strip()
             session.commit()
     finally:
         session.close()

@@ -97,10 +97,36 @@ Late night (after 10pm): {'Yes — compress to welcome only, tell them you start
 Message number in sequence: {message_number} of 4
 """
 
+    cooking_situation = getattr(user, 'cooking_situation', 'mix') or 'mix'
+    if cooking_situation in ("cook_myself", "cook_family"):
+        food_question = (
+            "Generate Message 3 from the onboarding sequence: ask about what food they actually have. "
+            "Something like: 'What'd you grab from the store this week?' or 'Snap a pic of your fridge and I'll build meals from what you've got.' "
+            "Keep it casual — one sentence. Mention you can work with a fridge photo if they want."
+        )
+    elif cooking_situation == "mostly_eat_out":
+        food_question = (
+            "Generate Message 3 from the onboarding sequence: ask about where they actually eat. "
+            "Something like: 'What restaurants do you usually hit?' or 'What's near your work for lunch?' "
+            "One sentence, casual. You want to know their real options, not guess."
+        )
+    elif cooking_situation == "dining_hall":
+        food_question = (
+            "Generate Message 3 from the onboarding sequence: ask about their dining hall situation. "
+            "Something like: 'What does your dining hall usually have?' or 'Any options you actually like there?' "
+            "One sentence. You want to build meals from what's actually available, not generic options."
+        )
+    else:  # mix or anything else
+        food_question = (
+            "Generate Message 3 from the onboarding sequence: ask about their real food situation. "
+            "Something like: 'What's your go-to when you're cooking vs eating out?' or 'What restaurants are usually in the mix?' "
+            "One sentence, casual. This lets you suggest real meals instead of generic ones."
+        )
+
     message_instructions = {
         1: "Generate Message 1 from the onboarding sequence: the immediate welcome. Reference something specific from their profile. Make it feel personal, not automated. Keep the JARVIS tone but slightly warmer since this is first contact. 2-3 sentences max.",
         2: "Generate Message 2 from the onboarding sequence: set expectations for how the coaching works. Tell them what to expect tomorrow and how to interact (W for workout, M for meal swap, etc). Keep it brief and practical. 2-3 sentences.",
-        3: "Generate Message 3 from the onboarding sequence: ask ONE specific follow-up question based on their profile. Something the form didn't cover that would make coaching better. Make it feel like the coach is thinking, not scripting.",
+        3: food_question,
         4: "Generate Message 4 from the onboarding sequence: preview tomorrow. Build anticipation for their first coaching day. Mention their wake time if available. 1-2 sentences. End with a goodnight."
     }
     
