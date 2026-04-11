@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from models import get_session, User
 from coach import generate_scheduled_message
 from sms import send_sms
+from engagement_tracker import should_send, is_question_type, increment_unanswered, get_tier
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,26 @@ def send_scheduled_message(user_id: int, message_type: str):
         if not user or not user.active:
             return
 
-        logger.info(f"Sending {message_type} to {user.name} ({user.phone})")
+        # Check engagement tier — skip if this touchpoint isn't allowed
+        if not should_send(user, message_type):
+            tier = get_tier(user.unanswered_count or 0)
+            logger.info(f"Skipping {message_type} for {user.name} (tier={tier}, unanswered={user.unanswered_count})")
+            return
+
+        # Before sending a question-type message, check if the previous one was answered
+        if is_question_type(message_type):
+            increment_unanswered(user_id)
+            # Re-fetch user after potential increment
+            session.close()
+            session = get_session()
+            user = session.query(User).get(user_id)
+            # Re-check tier after increment
+            if not should_send(user, message_type):
+                tier = get_tier(user.unanswered_count or 0)
+                logger.info(f"Skipping {message_type} for {user.name} after increment (tier={tier})")
+                return
+
+        logger.info(f"Sending {message_type} to {user.name} (unanswered={user.unanswered_count})")
 
         body = generate_scheduled_message(user, message_type)
         send_sms(user.phone, body, user_id=user.id, message_type=message_type)
@@ -69,7 +89,9 @@ def schedule_user(user: User):
         ("evening",      21,           0),
     ]
 
-    for msg_type, hour, minute in touchpoints:
+    all_jobs = touchpoints + [("nudge", wake_h, wake_m + 5)]
+
+    for msg_type, hour, minute in all_jobs:
         job_id = f"user_{user.id}_{msg_type}"
 
         # Remove existing job if rescheduling

@@ -44,6 +44,7 @@ class User(Base):
     wearable = Column(String(50))  # apple_watch, oura, garmin, none
     motivation = Column(Text)  # why they want coaching — personal touch
     active = Column(Boolean, default=True)
+    unanswered_count = Column(Integer, default=0)  # increments on outbound questions with no reply; resets on any reply
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")

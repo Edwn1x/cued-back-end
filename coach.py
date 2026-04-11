@@ -4,6 +4,7 @@ from pathlib import Path
 import config
 from models import get_session, User, Message, Workout, DailyLog
 from skill_loader import get_skills_for_message_type, get_all_skills
+from engagement_tracker import get_tier
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -97,6 +98,8 @@ Today: {now.strftime("%A, %B %d, %Y")}
 Time: ~{now.strftime("%I:%M %p")}
 Message type: {message_type}
 Days since last workout: {days_since}
+Engagement tier: {get_tier(user.unanswered_count or 0)} (unanswered streak: {user.unanswered_count or 0})
+{"DO NOT ask any questions in this message. Deliver value only — meal, workout, or brief encouragement." if (user.unanswered_count or 0) >= 2 else ""}
 
 ## YOUR TASK
 Respond to the user's latest message, or generate the scheduled touchpoint message. Be precise. Be useful. Be the coach that's impossible to ignore.
@@ -194,6 +197,11 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
             f"Message 1: Quick win or observation from today.\n"
             f"Message 2: Rate the day 1-5 + brief preview of tomorrow.\n"
             f"Message 3: Goodnight, one line."
+        ),
+        "nudge": (
+            f"Send a single low-pressure re-engagement message to {user.name} who hasn't replied in a while. "
+            f"One sentence. No questions. No guilt. Something like 'still here when you're ready' or a brief relevant tip. "
+            f"Do not use ---. Do not mention how long they've been silent."
         ),
     }
 

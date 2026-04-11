@@ -9,6 +9,7 @@ from scheduler import start_scheduler, schedule_user
 import config
 from onboarding_agent import start_onboarding
 from admin_dashboard import ADMIN_HTML
+from engagement_tracker import reset_unanswered
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -52,6 +53,9 @@ def webhook():
 
         # Log the incoming message
         log_incoming(user.id, body)
+
+        # Any reply resets the engagement decay counter
+        reset_unanswered(user.id)
 
         # Detect message type from context
         message_type = classify_message(body, has_image=image_url is not None)
