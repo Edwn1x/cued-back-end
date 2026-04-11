@@ -71,6 +71,77 @@ def build_user_summary(user):
     return "\n".join([p for p in parts if p])
 
 
+def _pick_clarification_question(user) -> tuple[str, str]:
+    """
+    Pick the single most important clarifying question to ask during onboarding,
+    based on what would most materially change the coaching plan.
+    Returns (prompt_for_claude, topic_tag).
+    Priority order: goal ambiguity > injury specifics > sleep issues > food situation.
+    """
+    goals = [g.strip() for g in (user.goal or "").split(",") if g.strip()]
+    wants_fat_loss = "fat_loss" in goals
+    wants_muscle = "muscle_building" in goals or "strength" in goals
+
+    # 1. Ambiguous goal (recomp vs cut) — affects every calorie and macro number
+    if wants_fat_loss and wants_muscle:
+        return (
+            "Generate Message 3 from the onboarding sequence: ask whether the user wants to prioritize "
+            "cutting fat or building muscle, since they selected both. Frame it practically — "
+            "explain that this changes their calorie target and that you need to know which direction "
+            "to set up. One question only, casual, one sentence.",
+            "recomp_vs_cut"
+        )
+
+    # 2. Injury specifics — affects every workout
+    if user.injuries and len(user.injuries) > 5:
+        return (
+            f"Generate Message 3 from the onboarding sequence: the user listed an injury ({user.injuries}). "
+            "Ask one specific follow-up — which movements it affects, whether it's currently active or old, "
+            "and whether they've seen anyone for it. One question only, casual.",
+            "injury_specifics"
+        )
+
+    # 3. Poor sleep — affects readiness and recovery
+    if user.sleep_quality in ("poor", "terrible"):
+        return (
+            "Generate Message 3 from the onboarding sequence: the user reported poor sleep quality. "
+            "Ask one specific follow-up — is it falling asleep, staying asleep, or waking too early? "
+            "This affects recovery and morning energy planning. One question only, casual.",
+            "sleep_issue"
+        )
+
+    # 4. Food situation — affects every meal suggestion
+    cooking_situation = getattr(user, 'cooking_situation', 'mix') or 'mix'
+    if cooking_situation in ("cook_myself", "cook_family"):
+        return (
+            "Generate Message 3 from the onboarding sequence: ask about what food they actually have. "
+            "Something like: 'What'd you grab from the store this week?' or 'Snap a pic of your fridge and I'll build meals from what you've got.' "
+            "Keep it casual — one sentence. Mention you can work with a fridge photo if they want.",
+            "food_situation"
+        )
+    elif cooking_situation == "mostly_eat_out":
+        return (
+            "Generate Message 3 from the onboarding sequence: ask about where they actually eat. "
+            "Something like: 'What restaurants do you usually hit?' or 'What's near your work for lunch?' "
+            "One sentence, casual.",
+            "food_situation"
+        )
+    elif cooking_situation == "dining_hall":
+        return (
+            "Generate Message 3 from the onboarding sequence: ask about their dining hall situation. "
+            "Something like: 'What does your dining hall usually have?' or 'Any options you actually like there?' "
+            "One sentence.",
+            "food_situation"
+        )
+    else:
+        return (
+            "Generate Message 3 from the onboarding sequence: ask about their real food situation. "
+            "Something like: 'What's your go-to when you're cooking vs eating out?' or 'What restaurants are usually in the mix?' "
+            "One sentence, casual.",
+            "food_situation"
+        )
+
+
 def generate_onboarding_message(user, message_number, user_summary):
     """Generate a specific onboarding message using Claude with skills."""
     
@@ -98,36 +169,12 @@ Late night (after 10pm): {'Yes — compress to welcome only, tell them you start
 Message number in sequence: {message_number} of 4
 """
 
-    cooking_situation = getattr(user, 'cooking_situation', 'mix') or 'mix'
-    if cooking_situation in ("cook_myself", "cook_family"):
-        food_question = (
-            "Generate Message 3 from the onboarding sequence: ask about what food they actually have. "
-            "Something like: 'What'd you grab from the store this week?' or 'Snap a pic of your fridge and I'll build meals from what you've got.' "
-            "Keep it casual — one sentence. Mention you can work with a fridge photo if they want."
-        )
-    elif cooking_situation == "mostly_eat_out":
-        food_question = (
-            "Generate Message 3 from the onboarding sequence: ask about where they actually eat. "
-            "Something like: 'What restaurants do you usually hit?' or 'What's near your work for lunch?' "
-            "One sentence, casual. You want to know their real options, not guess."
-        )
-    elif cooking_situation == "dining_hall":
-        food_question = (
-            "Generate Message 3 from the onboarding sequence: ask about their dining hall situation. "
-            "Something like: 'What does your dining hall usually have?' or 'Any options you actually like there?' "
-            "One sentence. You want to build meals from what's actually available, not generic options."
-        )
-    else:  # mix or anything else
-        food_question = (
-            "Generate Message 3 from the onboarding sequence: ask about their real food situation. "
-            "Something like: 'What's your go-to when you're cooking vs eating out?' or 'What restaurants are usually in the mix?' "
-            "One sentence, casual. This lets you suggest real meals instead of generic ones."
-        )
+    clarification_prompt, clarification_topic = _pick_clarification_question(user)
 
     message_instructions = {
         1: "Generate Message 1 from the onboarding sequence: the immediate welcome. Reference something specific from their profile. Make it feel personal, not automated. Keep the JARVIS tone but slightly warmer since this is first contact. 2-3 sentences max.",
         2: "Generate Message 2 from the onboarding sequence: set expectations for how the coaching works. Tell them what to expect tomorrow and how to interact (W for workout, M for meal swap, etc). Keep it brief and practical. 2-3 sentences.",
-        3: food_question,
+        3: clarification_prompt,
         4: "Generate Message 4 from the onboarding sequence: preview tomorrow. Build anticipation for their first coaching day. Mention their wake time if available. 1-2 sentences. End with a goodnight."
     }
     
@@ -140,8 +187,11 @@ Message number in sequence: {message_number} of 4
             "content": message_instructions.get(message_number, message_instructions[1])
         }]
     )
-    
-    return response.content[0].text
+
+    text = response.content[0].text
+    if message_number == 3:
+        return text, clarification_topic
+    return text, None
 
 
 def check_user_replied(user_id):
@@ -174,7 +224,7 @@ def run_onboarding_sequence(user):
     
     # Message 1 — immediate welcome
     try:
-        msg1 = generate_onboarding_message(user, 1, user_summary)
+        msg1, _ = generate_onboarding_message(user, 1, user_summary)
         send_sms(user.phone, msg1, user_id=user.id, message_type="onboarding")
         logger.info(f"Onboarding msg 1 sent to {user.name}")
     except Exception as e:
@@ -193,7 +243,7 @@ def run_onboarding_sequence(user):
         return
 
     try:
-        msg2 = generate_onboarding_message(user, 2, user_summary)
+        msg2, _ = generate_onboarding_message(user, 2, user_summary)
         send_sms(user.phone, msg2, user_id=user.id, message_type="onboarding")
         logger.info(f"Onboarding msg 2 sent to {user.name}")
     except Exception as e:
@@ -237,21 +287,33 @@ def run_onboarding_sequence(user):
         return
     
     try:
-        msg3 = generate_onboarding_message(user, 3, user_summary)
+        msg3, clarification_topic = generate_onboarding_message(user, 3, user_summary)
         send_sms(user.phone, msg3, user_id=user.id, message_type="onboarding")
-        logger.info(f"Onboarding msg 3 sent to {user.name}")
+        logger.info(f"Onboarding msg 3 sent to {user.name} (topic: {clarification_topic})")
+
+        # Tag the pending clarification so the system knows what to listen for
+        if clarification_topic:
+            from models import get_session, User as UserModel
+            session = get_session()
+            try:
+                user_row = session.query(UserModel).get(user.id)
+                if user_row:
+                    user_row.pending_clarification_topic = clarification_topic
+                    session.commit()
+            finally:
+                session.close()
     except Exception as e:
         logger.error(f"Onboarding msg 3 failed for {user.name}: {e}")
         return
-    
-    # Message 4 — 20 minutes after signup (10 min after msg 3)
-    time.sleep(600)  # 10 more minutes
+
+    # Message 4 — 10 more minutes
+    time.sleep(600)
     if check_user_replied(user.id):
         logger.info(f"User {user.name} replied — stopping onboarding sequence")
         return
-    
+
     try:
-        msg4 = generate_onboarding_message(user, 4, user_summary)
+        msg4, _ = generate_onboarding_message(user, 4, user_summary)
         send_sms(user.phone, msg4, user_id=user.id, message_type="onboarding")
         logger.info(f"Onboarding msg 4 sent to {user.name}")
     except Exception as e:

@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context
+from models import init_db, get_session, User, Message, Workout, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context, resolve_pending_clarification
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -63,6 +63,9 @@ def webhook():
 
         # Capture food context from early onboarding replies if not yet stored
         maybe_store_food_context(user.id, body)
+
+        # Resolve pending clarification question if one is outstanding
+        resolve_pending_clarification(user.id, body)
 
         # Detect message type from context
         message_type = classify_message(body, has_image=image_url is not None)

@@ -50,6 +50,8 @@ class User(Base):
     calorie_target = Column(Integer, default=None)  # computed daily calorie target
     protein_target = Column(Integer, default=None)  # computed daily protein target (grams)
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
+    pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
+    pending_clarification_answer = Column(Text, default=None)  # user's answer once received
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
@@ -91,6 +93,8 @@ class User(Base):
             f"Wearable: {self.wearable}" if self.wearable else None,
             f"Motivation: {self.motivation}" if self.motivation else None,
             f"Food context (actual foods/restaurants they use): {self.food_context}" if self.food_context else None,
+            f"Pending clarification — coach asked about '{self.pending_clarification_topic}' and is waiting for answer" if self.pending_clarification_topic and not self.pending_clarification_answer else None,
+            f"Clarification received — coach asked about '{self.pending_clarification_topic}', user answered: {self.pending_clarification_answer}" if self.pending_clarification_topic and self.pending_clarification_answer else None,
         ]
         return "\n".join(p for p in parts if p)
 
@@ -176,6 +180,23 @@ def confirm_workout_today(user_id: int):
         log = get_or_create_today_log(session, user_id)
         if not log.workout_confirmed:
             log.workout_confirmed = True
+            session.commit()
+    finally:
+        session.close()
+
+
+def resolve_pending_clarification(user_id: int, answer: str):
+    """
+    If a clarification question is pending and unanswered, store the user's reply as the answer.
+    Called on any incoming message — first reply after the question is asked gets captured.
+    """
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return
+        if user.pending_clarification_topic and not user.pending_clarification_answer:
+            user.pending_clarification_answer = answer.strip()
             session.commit()
     finally:
         session.close()
