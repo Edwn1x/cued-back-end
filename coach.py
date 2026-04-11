@@ -99,7 +99,13 @@ Message type: {message_type}
 Days since last workout: {days_since}
 
 ## YOUR TASK
-Respond to the user's latest message, or generate the scheduled touchpoint message. Be precise. Be useful. Be the coach that's impossible to ignore. This is a text message -- if it wouldn't fit on a phone screen, it's too long.
+Respond to the user's latest message, or generate the scheduled touchpoint message. Be precise. Be useful. Be the coach that's impossible to ignore.
+
+FORMAT RULES:
+- Each message will be sent as a separate SMS. Separate distinct ideas with a blank line.
+- Max 3 paragraphs total. Each paragraph = one text message on the user's phone.
+- One idea per paragraph. Do not cram greeting + training + food into the same block.
+- No bullet points in scheduled messages — write like a person texting, not a newsletter.
 """
         return system_prompt
 
@@ -150,12 +156,13 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
     triggers = {
         "morning_briefing": (
             f"Generate the morning briefing for {user.name}. "
-            f"Open with a greeting (Gm or Morning). Reference sleep data if available. "
-            f"Preview today's training. Suggest breakfast. Keep it to 2-3 texts max."
+            f"Open with a short greeting (Gm or Morning). "
+            f"Preview today's training — what's the session and when. "
+            f"One line on what to focus on mentally today. No meal suggestions here."
         ),
         "breakfast": (
-            f"Suggest a breakfast for {user.name} based on their diet preferences "
-            f"and today's training. Include rough calories and protein. Offer a swap option."
+            f"Suggest a specific breakfast for {user.name} based on their diet and today's training load. "
+            f"Include rough calories and protein. End with: 'Reply B for a different option.'"
         ),
         "meal_suggestion": (
             f"Suggest a meal for {user.name}. Include calories/protein and a running daily total. "
