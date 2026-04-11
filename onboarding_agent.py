@@ -18,6 +18,7 @@ from datetime import datetime
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS
 from sms import send_sms
+from macro_calculator import get_or_compute_targets
 
 logger = logging.getLogger("cued.onboarding")
 
@@ -190,7 +191,7 @@ def run_onboarding_sequence(user):
     if check_user_replied(user.id):
         logger.info(f"User {user.name} replied — stopping onboarding sequence")
         return
-    
+
     try:
         msg2 = generate_onboarding_message(user, 2, user_summary)
         send_sms(user.phone, msg2, user_id=user.id, message_type="onboarding")
@@ -198,9 +199,39 @@ def run_onboarding_sequence(user):
     except Exception as e:
         logger.error(f"Onboarding msg 2 failed for {user.name}: {e}")
         return
-    
-    # Message 3 — 10 minutes after signup (5 min after msg 2)
-    time.sleep(300)  # 5 more minutes
+
+    # Targets explanation — sent ~1 minute after msg 2, before the food question
+    time.sleep(60)
+    if check_user_replied(user.id):
+        logger.info(f"User {user.name} replied — stopping onboarding sequence")
+        return
+
+    try:
+        from models import get_session
+        session = get_session()
+        try:
+            macro_result = get_or_compute_targets(user, session)
+            # Mark targets as explained
+            user_row = session.query(__import__('models').User).get(user.id)
+            if user_row:
+                user_row.targets_explained = True
+                session.commit()
+        finally:
+            session.close()
+
+        # Build the targets message
+        targets_msg = macro_result.explanation
+        if macro_result.is_ambiguous:
+            targets_msg += f" — {macro_result.ambiguity_note}"
+
+        send_sms(user.phone, targets_msg, user_id=user.id, message_type="targets_explanation")
+        logger.info(f"Targets explanation sent to {user.name}: {macro_result.calorie_target} cal, {macro_result.protein_target}g protein")
+    except Exception as e:
+        logger.error(f"Targets explanation failed for {user.name}: {e}")
+        # Non-fatal — continue sequence
+
+    # Message 3 — food question (1 min after targets explanation)
+    time.sleep(60)
     if check_user_replied(user.id):
         logger.info(f"User {user.name} replied — stopping onboarding sequence")
         return

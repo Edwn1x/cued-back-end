@@ -47,6 +47,9 @@ class User(Base):
     unanswered_count = Column(Integer, default=0)  # increments on outbound questions with no reply; resets on any reply
     communication_style = Column(Text, default=None)  # auto-derived tone descriptor, updated after enough exchanges
     food_context = Column(Text, default=None)  # what they actually have/eat — fridge contents, nearby restaurants, go-to orders
+    calorie_target = Column(Integer, default=None)  # computed daily calorie target
+    protein_target = Column(Integer, default=None)  # computed daily protein target (grams)
+    targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")

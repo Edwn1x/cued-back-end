@@ -107,6 +107,9 @@ Message type: {message_type}
 Days since last workout: {days_since}
 Engagement tier: {get_tier(user.unanswered_count or 0)} (unanswered streak: {user.unanswered_count or 0})
 Food context (what they actually have/eat): {user.food_context if user.food_context else "Not collected yet — ask during onboarding or suggest generic options until known."}
+Daily calorie target: {user.calorie_target if user.calorie_target else "Not set — compute from profile if needed."}
+Daily protein target: {f"{user.protein_target}g" if user.protein_target else "Not set."}
+Targets explained to user already: {bool(user.targets_explained)}
 Workout confirmed today: {is_workout_confirmed_today(user.id)}
 {"DO NOT ask any questions in this message. Deliver value only — meal, workout, or brief encouragement." if (user.unanswered_count or 0) >= 2 else ""}
 {"IMPORTANT: The user has NOT confirmed they trained today. Do NOT reference a completed session, do NOT ask them to rate it, do NOT say things like 'first day in the books'. If this is an evening wrap, just preview tomorrow." if not is_workout_confirmed_today(user.id) else "The user confirmed they trained today — you can reference the session."}
