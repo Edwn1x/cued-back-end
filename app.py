@@ -148,65 +148,94 @@ def safe_float(val, default=None):
 
 @app.route("/signup", methods=["POST"])
 def signup_submit():
-    """Handle new user signup."""
+    """Handle new user signup. Accepts form-encoded data (old form) or JSON (chat overlay)."""
     session = get_session()
     try:
-        phone = request.form.get("phone", "").strip()
+        # Support both form submissions and JSON from the chat overlay
+        if request.is_json:
+            d = request.get_json(silent=True) or {}
+            def get(key, default=""):
+                return d.get(key, default)
+        else:
+            def get(key, default=""):
+                return request.form.get(key, default)
+
+        # Normalize phone
+        phone = (get("phone") or "").strip()
         if not phone.startswith("+"):
             phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
 
-        # Check SMS consent
-        sms_consent = request.form.get("sms_consent") == "on"
-        sms_skipped = request.form.get("sms_consent") == "skip"
+        # Check SMS consent — JSON sends boolean true, form sends "on"/"skip"
+        raw_consent = get("sms_consent")
+        if request.is_json:
+            sms_consent = raw_consent is True or raw_consent == "on"
+            sms_skipped = raw_consent is False or raw_consent == "skip"
+        else:
+            sms_consent = raw_consent == "on"
+            sms_skipped = raw_consent == "skip"
+
         if not sms_consent and not sms_skipped:
             return jsonify({"status": "error", "message": "You must agree to receive SMS messages to use Cued."})
 
-        # Check if already exists
+        # Duplicate check
         existing = session.query(User).filter(User.phone == phone).first()
         if existing:
             return jsonify({"status": "exists", "message": f"{existing.name} is already signed up!"})
 
+        # Goals: chat sends array, form sends comma-joined string
+        goal_raw = get("goal", "general_fitness")
+        if isinstance(goal_raw, list):
+            goal_str = ",".join(goal_raw)
+        else:
+            goal_str = goal_raw or "general_fitness"
+
+        # Training days: chat sends array or comma string
+        days_raw = get("workout_days", "")
+        if isinstance(days_raw, list):
+            days_str = ",".join(days_raw)
+        else:
+            days_str = days_raw
+
         user = User(
             phone=phone,
-            name=request.form.get("name", "").strip(),
-            age=safe_int(request.form.get("age")),
-            gender=request.form.get("gender", "prefer_not_to_say"),
-            occupation=request.form.get("occupation", "").strip() or None,
-            goal=request.form.get("goal", "general_fitness"),
-            goal_other=request.form.get("goal_other", "").strip() or None,
-            biggest_obstacle=request.form.get("biggest_obstacle", "") or None,
-            experience=request.form.get("experience", "beginner"),
-            prior_coaching=request.form.get("prior_coaching", "no"),
-            equipment=request.form.get("equipment", "full_gym"),
-            injuries=request.form.get("injuries", "").strip() or None,
-            activity_level=request.form.get("activity_level", "lightly_active"),
-            diet=request.form.get("diet", "omnivore"),
-            restrictions=request.form.get("restrictions", "").strip() or None,
-            cooking_situation=request.form.get("cooking_situation", "mix"),
-            meals_per_day=request.form.get("meals_per_day", "3"),
-            wake_time=request.form.get("wake_time", "07:00"),
-            sleep_time=request.form.get("sleep_time", "23:00"),
-            sleep_quality=request.form.get("sleep_quality", "okay"),
-            stress_level=request.form.get("stress_level", "moderate"),
-            workout_time=request.form.get("workout_time", "16:00"),
-            workout_days=request.form.get("workout_days", ""),
-            height_ft=safe_int(request.form.get("height_ft")),
-            height_in=safe_int(request.form.get("height_in")),
-            weight_lbs=safe_float(request.form.get("weight_lbs")),
-            body_fat_pct=safe_float(request.form.get("body_fat_pct")),
-            wearable=request.form.get("wearable", "none"),
-            motivation=request.form.get("motivation", "").strip() or None,
-            schedule_details=request.form.get("schedule_details", "").strip() or None,
+            name=(get("name") or "").strip(),
+            age=safe_int(get("age")),
+            gender=get("gender") or "prefer_not_to_say",
+            occupation=(get("occupation") or "").strip() or None,
+            goal=goal_str,
+            goal_other=(get("goal_other") or "").strip() or None,
+            biggest_obstacle=get("biggest_obstacle") or None,
+            experience=get("experience") or "beginner",
+            prior_coaching=get("prior_coaching") or "no",
+            equipment=get("equipment") or "full_gym",
+            injuries=(get("injuries") or "").strip() or None,
+            activity_level=get("activity_level") or "lightly_active",
+            diet=get("diet") or "omnivore",
+            restrictions=(get("restrictions") or "").strip() or None,
+            cooking_situation=get("cooking_situation") or "mix",
+            meals_per_day=get("meals_per_day") or "3",
+            wake_time=get("wake_time") or "07:00",
+            sleep_time=get("sleep_time") or "23:00",
+            sleep_quality=get("sleep_quality") or "okay",
+            stress_level=get("stress_level") or "moderate",
+            workout_time=get("workout_time") or "16:00",
+            workout_days=days_str,
+            height_ft=safe_int(get("height_ft")),
+            height_in=safe_int(get("height_in")),
+            weight_lbs=safe_float(get("weight_lbs")),
+            body_fat_pct=safe_float(get("body_fat_pct")),
+            wearable=get("wearable") or "none",
+            motivation=(get("motivation") or "").strip() or None,
+            schedule_details=(get("schedule_details") or "").strip() or None,
         )
         session.add(user)
         session.commit()
 
-        # Only schedule and onboard if user consented to SMS
         if sms_consent:
             schedule_user(user)
             start_onboarding(user)
 
-        logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent}")
+        logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent} | source: {'json' if request.is_json else 'form'}")
         return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name})
 
     except Exception as e:
