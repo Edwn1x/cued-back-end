@@ -7,7 +7,7 @@ from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
 import config
-from onboarding_agent import start_onboarding
+from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
 from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
@@ -89,8 +89,13 @@ def webhook():
         if message_type == "workout_request":
             confirm_workout_today(user.id)
 
+        # If user is still in onboarding, route to onboarding handler instead of normal coaching
+        if (user.onboarding_step or 0) < 3:
+            handle_onboarding_reply(user, body)
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
         # Get AI coaching response (with image if present)
-        response_text = get_coach_response(user, body, message_type, image_url=image_url) 
+        response_text = get_coach_response(user, body, message_type, image_url=image_url)
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)

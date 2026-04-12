@@ -52,6 +52,7 @@ class User(Base):
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
+    onboarding_step = Column(Integer, default=0)  # 0=not started, 1=welcome sent, 2=clarification sent, 3=complete
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")

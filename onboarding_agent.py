@@ -2,333 +2,259 @@
 Onboarding Agent — Cued
 ========================
 Triggered immediately after a new user signs up.
-Sends a 3-4 message welcome sequence that proves the coach read their profile,
-sets expectations, asks a follow-up question, and previews tomorrow.
 
-Messages are spaced out to feel like a real conversation, not a dump.
-If the user replies at any point, the sequence stops and normal coaching takes over.
+Architecture: Send ONE welcome message immediately, then stop.
+Everything after that is driven by the user replying — handled via the normal
+webhook flow, with the onboarding skill loaded for early exchanges.
+
+We track onboarding state on the user record:
+  onboarding_step = 0: not started
+  onboarding_step = 1: welcome sent, waiting for first reply
+  onboarding_step = 2: clarification question sent, waiting for answer
+  onboarding_step = 3: complete — hand off to normal coaching
+
+The webhook calls handle_onboarding_reply() on every incoming message
+while onboarding_step < 3. Once complete, normal coaching takes over.
 """
 
 import os
-import time
 import logging
 import threading
-from datetime import datetime
 
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS
 from sms import send_sms
-from macro_calculator import get_or_compute_targets
 
 logger = logging.getLogger("cued.onboarding")
-
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# Load the onboarding and personality skills
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
-def load_skill(skill_name):
-    """Load a skill's SKILL.md content."""
+
+def load_skill(skill_name: str) -> str:
     path = os.path.join(SKILLS_DIR, skill_name, "SKILL.md")
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             return f.read()
     except FileNotFoundError:
         logger.warning(f"Skill not found: {skill_name}")
         return ""
 
 
-def build_user_summary(user):
-    """Build a concise user summary from their profile for the onboarding prompt."""
+def _build_system_prompt(user, user_summary: str) -> str:
+    return f"""{load_skill("personality")}
+
+---
+
+{load_skill("onboarding")}
+
+---
+
+## USER PROFILE
+{user_summary}
+"""
+
+
+def _build_user_summary(user) -> str:
     parts = [
         f"Name: {user.name}",
         f"Age: {user.age}" if user.age else None,
-        f"Gender: {user.gender}" if user.gender else None,
+        f"Gender: {user.gender}" if user.gender and user.gender != "prefer_not_to_say" else None,
         f"Occupation: {user.occupation}" if user.occupation else None,
         f"Height: {user.height_ft}'{user.height_in}\"" if user.height_ft else None,
         f"Weight: {user.weight_lbs} lbs" if user.weight_lbs else None,
-        f"Body fat: {user.body_fat_pct}%" if user.body_fat_pct else None,
         f"Goals: {user.goal}" if user.goal else None,
         f"Biggest obstacle: {user.biggest_obstacle}" if user.biggest_obstacle else None,
         f"Experience: {user.experience}" if user.experience else None,
         f"Equipment: {user.equipment}" if user.equipment else None,
         f"Injuries: {user.injuries}" if user.injuries else None,
         f"Diet: {user.diet}" if user.diet else None,
-        f"Food restrictions: {user.restrictions}" if user.restrictions else None,
         f"Cooking situation: {user.cooking_situation}" if user.cooking_situation else None,
-        f"Meals per day: {user.meals_per_day}" if user.meals_per_day else None,
         f"Workout days: {user.workout_days}" if user.workout_days else None,
         f"Workout time: {user.workout_time}" if user.workout_time else None,
         f"Wake time: {user.wake_time}" if user.wake_time else None,
-        f"Bedtime: {user.sleep_time}" if user.sleep_time else None,
         f"Sleep quality: {user.sleep_quality}" if user.sleep_quality else None,
-        f"Stress level: {user.stress_level}" if user.stress_level else None,
-        f"Activity level: {user.activity_level}" if user.activity_level else None,
-        f"Wearable: {user.wearable}" if user.wearable and user.wearable != "none" else None,
-        f"Prior coaching: {user.prior_coaching}" if user.prior_coaching else None,
         f"Motivation: {user.motivation}" if user.motivation else None,
     ]
-    return "\n".join([p for p in parts if p])
+    return "\n".join(p for p in parts if p)
 
 
 def _pick_clarification_question(user) -> tuple[str, str]:
     """
-    Pick the single most important clarifying question to ask during onboarding,
-    based on what would most materially change the coaching plan.
-    Returns (prompt_for_claude, topic_tag).
-    Priority order: goal ambiguity > injury specifics > sleep issues > food situation.
+    Return (instruction_for_claude, topic_tag) for the single most important
+    clarifying question. Priority: goal ambiguity > injury > sleep > food.
     """
     goals = [g.strip() for g in (user.goal or "").split(",") if g.strip()]
     wants_fat_loss = "fat_loss" in goals
     wants_muscle = "muscle_building" in goals or "strength" in goals
 
-    # 1. Ambiguous goal (recomp vs cut) — affects every calorie and macro number
     if wants_fat_loss and wants_muscle:
         return (
-            "Generate Message 3 from the onboarding sequence: ask whether the user wants to prioritize "
-            "cutting fat or building muscle, since they selected both. Frame it practically — "
-            "explain that this changes their calorie target and that you need to know which direction "
-            "to set up. One question only, casual, one sentence.",
+            "The user selected both fat loss and muscle building. Ask them ONE question: "
+            "do they want to prioritize cutting fat or building muscle right now? "
+            "Explain briefly that this changes their calorie setup. "
+            "One sentence only. Casual. Do not ask anything else.",
             "recomp_vs_cut"
         )
 
-    # 2. Injury specifics — affects every workout
     if user.injuries and len(user.injuries) > 5:
         return (
-            f"Generate Message 3 from the onboarding sequence: the user listed an injury ({user.injuries}). "
-            "Ask one specific follow-up — which movements it affects, whether it's currently active or old, "
-            "and whether they've seen anyone for it. One question only, casual.",
+            f"The user listed an injury: {user.injuries}. "
+            "Ask ONE follow-up: is it currently active or old? Which movements bother it? "
+            "One question only. Casual, one sentence.",
             "injury_specifics"
         )
 
-    # 3. Poor sleep — affects readiness and recovery
     if user.sleep_quality in ("poor", "terrible"):
         return (
-            "Generate Message 3 from the onboarding sequence: the user reported poor sleep quality. "
-            "Ask one specific follow-up — is it falling asleep, staying asleep, or waking too early? "
-            "This affects recovery and morning energy planning. One question only, casual.",
+            "The user reported poor sleep. Ask ONE follow-up: "
+            "is it falling asleep, staying asleep, or waking too early? "
+            "One question only. One sentence. Casual.",
             "sleep_issue"
         )
 
-    # 4. Food situation — affects every meal suggestion
-    cooking_situation = getattr(user, 'cooking_situation', 'mix') or 'mix'
-    if cooking_situation in ("cook_myself", "cook_family"):
+    cooking = (user.cooking_situation or "mix")
+    if cooking in ("cook_myself", "cook_family"):
         return (
-            "Generate Message 3 from the onboarding sequence: ask about what food they actually have. "
-            "Something like: 'What'd you grab from the store this week?' or 'Snap a pic of your fridge and I'll build meals from what you've got.' "
-            "Keep it casual — one sentence. Mention you can work with a fridge photo if they want.",
+            "Ask what food they actually have at home right now — "
+            "grocery haul this week, or offer to work from a fridge photo. "
+            "One sentence. Casual.",
             "food_situation"
         )
-    elif cooking_situation == "mostly_eat_out":
+    elif cooking == "mostly_eat_out":
         return (
-            "Generate Message 3 from the onboarding sequence: ask about where they actually eat. "
-            "Something like: 'What restaurants do you usually hit?' or 'What's near your work for lunch?' "
-            "One sentence, casual.",
+            "Ask what restaurants they usually go to, or what's near where they work or live. "
+            "One sentence. Casual.",
             "food_situation"
         )
-    elif cooking_situation == "dining_hall":
+    elif cooking == "dining_hall":
         return (
-            "Generate Message 3 from the onboarding sequence: ask about their dining hall situation. "
-            "Something like: 'What does your dining hall usually have?' or 'Any options you actually like there?' "
+            "Ask what their dining hall usually has — what options they actually like there. "
             "One sentence.",
             "food_situation"
         )
     else:
         return (
-            "Generate Message 3 from the onboarding sequence: ask about their real food situation. "
-            "Something like: 'What's your go-to when you're cooking vs eating out?' or 'What restaurants are usually in the mix?' "
-            "One sentence, casual.",
+            "Ask what their go-to meals look like — whether they're cooking or eating out most days. "
+            "One sentence. Casual.",
             "food_situation"
         )
 
 
-def generate_onboarding_message(user, message_number, user_summary):
-    """Generate a specific onboarding message using Claude with skills."""
-    
-    personality_skill = load_skill("personality")
-    onboarding_skill = load_skill("onboarding")
-    
-    current_hour = datetime.now().hour
-    is_late = current_hour >= 22 or current_hour < 6
-    
-    system_prompt = f"""
-{personality_skill}
-
----
-
-{onboarding_skill}
-
----
-
-## USER PROFILE
-{user_summary}
-
-## CURRENT CONTEXT
-Current time: {datetime.now().strftime('%I:%M %p')}
-Late night (after 10pm): {'Yes — compress to welcome only, tell them you start tomorrow, say goodnight.' if is_late else 'No'}
-Message number in sequence: {message_number} of 4
-"""
-
-    clarification_prompt, clarification_topic = _pick_clarification_question(user)
-
-    message_instructions = {
-        1: "Generate Message 1 from the onboarding sequence: the immediate welcome. Reference something specific from their profile. Make it feel personal, not automated. Keep the JARVIS tone but slightly warmer since this is first contact. 2-3 sentences max.",
-        2: "Generate Message 2 from the onboarding sequence: set expectations for how the coaching works. Tell them what to expect tomorrow and how to interact (W for workout, M for meal swap, etc). Keep it brief and practical. 2-3 sentences.",
-        3: clarification_prompt,
-        4: "Generate Message 4 from the onboarding sequence: preview tomorrow. Build anticipation for their first coaching day. Mention their wake time if available. 1-2 sentences. End with a goodnight."
-    }
-    
+def _generate(system_prompt: str, instruction: str) -> str:
     response = client.messages.create(
         model=COACH_MODEL,
         max_tokens=MAX_RESPONSE_TOKENS,
         system=system_prompt,
-        messages=[{
-            "role": "user",
-            "content": message_instructions.get(message_number, message_instructions[1])
-        }]
+        messages=[{"role": "user", "content": instruction}],
     )
-
-    text = response.content[0].text
-    if message_number == 3:
-        return text, clarification_topic
-    return text, None
+    return response.content[0].text
 
 
-def check_user_replied(user_id):
-    """Check if the user has sent any messages since signup. If so, stop the sequence."""
-    from models import get_session, Message
+def _send_welcome(user, user_summary: str):
+    """Send the single welcome message. Called once at signup."""
+    system_prompt = _build_system_prompt(user, user_summary)
+    instruction = (
+        "Send the first message to this new user. "
+        "Reference ONE specific detail from their profile that shows you actually read it — "
+        "their goal, their injury, their obstacle, whatever is most striking. "
+        "Be warm but don't explain how the service works. "
+        "Don't ask any questions. Don't tell them what's coming next. "
+        "Just make them feel like they already have a coach who knows them. "
+        "One message only. 1-2 sentences max."
+    )
+    text = _generate(system_prompt, instruction)
+    send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
+    logger.info(f"Onboarding welcome sent to {user.name}")
+
+
+def handle_onboarding_reply(user, incoming_message: str) -> bool:
+    """
+    Called from the webhook when a message arrives and onboarding_step < 3.
+    Generates and sends the next onboarding message.
+    Returns True if onboarding is now complete (hand off to normal coaching).
+    """
+    from models import get_session, User as UserModel
+
     session = get_session()
     try:
-        incoming = session.query(Message).filter_by(
-            user_id=user_id,
-            direction="incoming"
-        ).count()
-        return incoming > 0
+        user_row = session.query(UserModel).get(user.id)
+        step = user_row.onboarding_step or 1
     finally:
         session.close()
 
+    user_summary = _build_user_summary(user)
+    system_prompt = _build_system_prompt(user, user_summary)
 
-def run_onboarding_sequence(user):
-    """
-    Run the full onboarding sequence for a new user.
-    Sends 3-4 messages spaced out over ~20 minutes.
-    Stops if the user replies at any point.
-    
-    This runs in a background thread so it doesn't block the signup response.
-    """
-    user_summary = build_user_summary(user)
-    current_hour = datetime.now().hour
-    is_late = current_hour >= 22 or current_hour < 6
-    
-    logger.info(f"Starting onboarding for {user.name} (ID: {user.id})")
-    
-    # Message 1 — immediate welcome
-    try:
-        msg1, _ = generate_onboarding_message(user, 1, user_summary)
-        send_sms(user.phone, msg1, user_id=user.id, message_type="onboarding")
-        logger.info(f"Onboarding msg 1 sent to {user.name}")
-    except Exception as e:
-        logger.error(f"Onboarding msg 1 failed for {user.name}: {e}")
-        return
-    
-    # If it's late night, stop after message 1
-    if is_late:
-        logger.info(f"Late night signup for {user.name} — onboarding compressed to msg 1 only")
-        return
-    
-    # Message 2 — 5 minutes later
-    time.sleep(300)  # 5 minutes
-    if check_user_replied(user.id):
-        logger.info(f"User {user.name} replied — stopping onboarding sequence")
-        return
+    if step == 1:
+        # First reply — ask the single clarification question
+        clarification_instruction, topic = _pick_clarification_question(user)
+        text = _generate(system_prompt, clarification_instruction)
+        send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
+        logger.info(f"Onboarding clarification sent to {user.name} (topic: {topic})")
 
-    try:
-        msg2, _ = generate_onboarding_message(user, 2, user_summary)
-        send_sms(user.phone, msg2, user_id=user.id, message_type="onboarding")
-        logger.info(f"Onboarding msg 2 sent to {user.name}")
-    except Exception as e:
-        logger.error(f"Onboarding msg 2 failed for {user.name}: {e}")
-        return
-
-    # Targets explanation — sent ~1 minute after msg 2, before the food question
-    time.sleep(60)
-    if check_user_replied(user.id):
-        logger.info(f"User {user.name} replied — stopping onboarding sequence")
-        return
-
-    try:
-        from models import get_session
         session = get_session()
         try:
-            macro_result = get_or_compute_targets(user, session)
-            # Mark targets as explained
-            user_row = session.query(__import__('models').User).get(user.id)
-            if user_row:
-                user_row.targets_explained = True
-                session.commit()
+            user_row = session.query(UserModel).get(user.id)
+            user_row.onboarding_step = 2
+            user_row.pending_clarification_topic = topic
+            session.commit()
+        finally:
+            session.close()
+        return False
+
+    elif step == 2:
+        # Second reply — store their answer, send a brief acknowledgment, mark complete
+        session = get_session()
+        try:
+            user_row = session.query(UserModel).get(user.id)
+            if not user_row.pending_clarification_answer:
+                user_row.pending_clarification_answer = incoming_message.strip()
+            user_row.onboarding_step = 3
+            session.commit()
+            topic = user_row.pending_clarification_topic
+            answer = user_row.pending_clarification_answer
         finally:
             session.close()
 
-        # Build the targets message
-        targets_msg = macro_result.explanation
-        if macro_result.is_ambiguous:
-            targets_msg += f" — {macro_result.ambiguity_note}"
+        instruction = (
+            f"The user just answered your question about '{topic}'. Their answer: '{answer}'. "
+            "Send a brief acknowledgment that shows you heard them and will use this. "
+            "One sentence. No follow-up questions. Don't explain what's coming next."
+        )
+        text = _generate(system_prompt, instruction)
+        send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
+        logger.info(f"Onboarding complete for {user.name}")
+        return True
 
-        send_sms(user.phone, targets_msg, user_id=user.id, message_type="targets_explanation")
-        logger.info(f"Targets explanation sent to {user.name}: {macro_result.calorie_target} cal, {macro_result.protein_target}g protein")
-    except Exception as e:
-        logger.error(f"Targets explanation failed for {user.name}: {e}")
-        # Non-fatal — continue sequence
-
-    # Message 3 — food question (1 min after targets explanation)
-    time.sleep(60)
-    if check_user_replied(user.id):
-        logger.info(f"User {user.name} replied — stopping onboarding sequence")
-        return
-    
-    try:
-        msg3, clarification_topic = generate_onboarding_message(user, 3, user_summary)
-        send_sms(user.phone, msg3, user_id=user.id, message_type="onboarding")
-        logger.info(f"Onboarding msg 3 sent to {user.name} (topic: {clarification_topic})")
-
-        # Tag the pending clarification so the system knows what to listen for
-        if clarification_topic:
-            from models import get_session, User as UserModel
-            session = get_session()
-            try:
-                user_row = session.query(UserModel).get(user.id)
-                if user_row:
-                    user_row.pending_clarification_topic = clarification_topic
-                    session.commit()
-            finally:
-                session.close()
-    except Exception as e:
-        logger.error(f"Onboarding msg 3 failed for {user.name}: {e}")
-        return
-
-    # Message 4 — 10 more minutes
-    time.sleep(600)
-    if check_user_replied(user.id):
-        logger.info(f"User {user.name} replied — stopping onboarding sequence")
-        return
-
-    try:
-        msg4, _ = generate_onboarding_message(user, 4, user_summary)
-        send_sms(user.phone, msg4, user_id=user.id, message_type="onboarding")
-        logger.info(f"Onboarding msg 4 sent to {user.name}")
-    except Exception as e:
-        logger.error(f"Onboarding msg 4 failed for {user.name}: {e}")
+    # step >= 3: already complete
+    return True
 
 
 def start_onboarding(user):
     """
     Entry point — called from app.py after successful signup.
-    Runs the onboarding sequence in a background thread.
+    Sends the welcome message in a background thread, then stops.
+    All subsequent onboarding is driven by the user replying.
     """
-    thread = threading.Thread(
-        target=run_onboarding_sequence,
-        args=(user,),
-        daemon=True
-    )
+    user_summary = _build_user_summary(user)
+
+    def _run():
+        try:
+            _send_welcome(user, user_summary)
+            # Set onboarding_step to 1 after welcome is sent
+            from models import get_session, User as UserModel
+            session = get_session()
+            try:
+                user_row = session.query(UserModel).get(user.id)
+                if user_row and not user_row.onboarding_step:
+                    user_row.onboarding_step = 1
+                    session.commit()
+            finally:
+                session.close()
+        except Exception as e:
+            logger.error(f"Onboarding welcome failed for {user.name}: {e}")
+
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     logger.info(f"Onboarding thread started for {user.name}")
