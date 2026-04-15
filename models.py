@@ -54,6 +54,8 @@ class User(Base):
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
     onboarding_step = Column(Integer, default=0)  # 0=not started, 1=welcome sent, 2=clarification sent, 3=complete
     user_timezone = Column(String(50), default="America/Los_Angeles")  # IANA timezone string
+    memory = Column(Text, default=None)  # permanent extracted facts about the user — preferences, life events, PRs, etc.
+    coaching_summary = Column(Text, default=None)  # rolling summary of coaching decisions and progress
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
