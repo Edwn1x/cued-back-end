@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context, resolve_pending_clarification
@@ -25,6 +26,68 @@ CORS(app, origins=config.ALLOWED_ORIGINS)
 init_db()
 
 
+# ─── Decision Extractor ──────────────────────────────
+def extract_and_store_decisions(user_id: int, user_message: str, coach_response: str):
+    """After each exchange, check if any decisions were confirmed and store them."""
+    import anthropic
+    import json
+
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    prompt = f"""Analyze this exchange and extract any CONFIRMED decisions. Only extract if the user clearly agreed or stated something definitively. Do not extract tentative or uncertain statements.
+
+User said: "{user_message}"
+Coach said: "{coach_response}"
+
+Return ONLY valid JSON with these fields (use null for anything not confirmed in this exchange):
+{{"goal_priority": "cutting" or "building" or null, "calorie_target": number or null, "protein_target": number or null, "training_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or null, "workout_time": "HH:MM" or null, "training_days": "mon,tue,wed..." or null}}
+
+If nothing was confirmed, return: {{"goal_priority": null, "calorie_target": null, "protein_target": null, "training_split": null, "workout_time": null, "training_days": null}}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+
+        session = get_session()
+        try:
+            user = session.query(User).get(user_id)
+            if not user:
+                return
+
+            changed = False
+            if data.get("goal_priority") and not user.confirmed_goal_priority:
+                user.confirmed_goal_priority = data["goal_priority"]
+                changed = True
+            if data.get("calorie_target") and not user.calorie_target:
+                user.calorie_target = data["calorie_target"]
+                changed = True
+            if data.get("protein_target") and not user.protein_target:
+                user.protein_target = data["protein_target"]
+                changed = True
+            if data.get("training_split") and not user.confirmed_training_split:
+                user.confirmed_training_split = data["training_split"]
+                changed = True
+            if data.get("workout_time") and not user.confirmed_workout_time:
+                user.confirmed_workout_time = data["workout_time"]
+                changed = True
+            if data.get("training_days") and not user.confirmed_training_days:
+                user.confirmed_training_days = data["training_days"]
+                changed = True
+
+            if changed:
+                session.commit()
+                logger.info(f"Stored decisions for user {user_id}: {data}")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Decision extraction failed for user {user_id}: {e}")
+
+
 # ─── Buffered Message Processor ─────────────────────
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: str = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
@@ -44,6 +107,13 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
+
+        # Extract and store any confirmed decisions (runs in background, doesn't block)
+        threading.Thread(
+            target=extract_and_store_decisions,
+            args=(user.id, combined_body, response_text),
+            daemon=True,
+        ).start()
 
     except Exception as e:
         logger.error(f"Error processing buffered message for user {user_id}: {e}", exc_info=True)

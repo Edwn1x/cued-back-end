@@ -89,6 +89,23 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         # Build adaptive tone instruction
         tone_instruction = get_tone_instruction(user)
 
+        # Build confirmed decisions block
+        decisions = []
+        if user.confirmed_goal_priority:
+            decisions.append(f"Goal priority: {user.confirmed_goal_priority} (CONFIRMED — do not re-ask)")
+        if user.calorie_target:
+            decisions.append(f"Daily calories: {user.calorie_target} cal (CONFIRMED — do not re-explain unless user asks)")
+        if user.protein_target:
+            decisions.append(f"Daily protein: {user.protein_target}g (CONFIRMED — do not re-explain unless user asks)")
+        if user.confirmed_training_split:
+            decisions.append(f"Training split: {user.confirmed_training_split} (CONFIRMED — do not suggest a different split)")
+        if user.confirmed_workout_time:
+            decisions.append(f"Workout time: {user.confirmed_workout_time} (CONFIRMED — do not assume a different time)")
+        if user.confirmed_training_days:
+            decisions.append(f"Training days: {user.confirmed_training_days} (CONFIRMED — do not re-ask)")
+
+        confirmed_decisions = "\n".join(decisions) if decisions else "No decisions confirmed yet — collect information before making recommendations."
+
         # Assemble the full system prompt: skills + user context
         system_prompt = f"""{skills_content}
 
@@ -98,6 +115,9 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 
 ## USER PROFILE
 {user.profile_summary}
+
+## CONFIRMED DECISIONS (treat these as settled facts — never re-ask or re-explain)
+{confirmed_decisions}
 
 ## RECENT CONVERSATION HISTORY
 {conversation_history}

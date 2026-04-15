@@ -50,6 +50,10 @@ class User(Base):
     calorie_target = Column(Integer, default=None)  # computed daily calorie target
     protein_target = Column(Integer, default=None)  # computed daily protein target (grams)
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
+    confirmed_goal_priority = Column(String(50), default=None)  # "cutting" or "building" — set once user confirms
+    confirmed_training_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", etc.
+    confirmed_workout_time = Column(String(10), default=None)  # user-confirmed workout time, separate from default
+    confirmed_training_days = Column(String(100), default=None)  # user-confirmed days, e.g. "mon,tue,thu,fri,sat"
     pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
     onboarding_step = Column(Integer, default=0)  # 0=not started, 1=welcome sent, 2=clarification sent, 3=complete

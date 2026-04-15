@@ -211,6 +211,15 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             if not user_row.pending_clarification_answer:
                 user_row.pending_clarification_answer = incoming_message.strip()
             user_row.onboarding_step = 3
+
+            # Store confirmed decision based on clarification topic
+            if user_row.pending_clarification_topic == "recomp_vs_cut":
+                answer_lower = incoming_message.strip().lower()
+                if any(w in answer_lower for w in ["cut", "fat", "lean", "lose", "shred"]):
+                    user_row.confirmed_goal_priority = "cutting"
+                elif any(w in answer_lower for w in ["build", "muscle", "bulk", "size", "gain", "strength", "strong"]):
+                    user_row.confirmed_goal_priority = "building"
+
             session.commit()
             topic = user_row.pending_clarification_topic
             answer = user_row.pending_clarification_answer

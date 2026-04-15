@@ -36,6 +36,11 @@ MIGRATIONS = [
     # Added: memory fields
     "ALTER TABLE users ADD COLUMN memory TEXT",
     "ALTER TABLE users ADD COLUMN coaching_summary TEXT",
+    # Added: confirmed decisions
+    "ALTER TABLE users ADD COLUMN confirmed_goal_priority VARCHAR(50)",
+    "ALTER TABLE users ADD COLUMN confirmed_training_split VARCHAR(50)",
+    "ALTER TABLE users ADD COLUMN confirmed_workout_time VARCHAR(10)",
+    "ALTER TABLE users ADD COLUMN confirmed_training_days VARCHAR(100)",
     # Added: workout_confirmed on daily_logs
     "ALTER TABLE daily_logs ADD COLUMN workout_confirmed BOOLEAN DEFAULT FALSE",
 ]
