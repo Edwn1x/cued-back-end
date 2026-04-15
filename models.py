@@ -53,6 +53,7 @@ class User(Base):
     pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
     onboarding_step = Column(Integer, default=0)  # 0=not started, 1=welcome sent, 2=clarification sent, 3=complete
+    user_timezone = Column(String(50), default="America/Los_Angeles")  # IANA timezone string
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")

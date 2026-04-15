@@ -232,6 +232,7 @@ def signup_submit():
             wearable=get("wearable") or "none",
             motivation=(get("motivation") or "").strip() or None,
             schedule_details=(get("schedule_details") or "").strip() or None,
+            user_timezone=get("timezone") or "America/Los_Angeles",
         )
         session.add(user)
         session.commit()

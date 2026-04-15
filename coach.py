@@ -1,5 +1,5 @@
 import anthropic
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import config
 from models import get_session, User, Message, Workout, DailyLog
@@ -66,7 +66,12 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         else:
             training_history = "No training history yet -- this user is just getting started."
 
-        now = datetime.now(timezone.utc)
+        from zoneinfo import ZoneInfo
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+        now = datetime.now(user_tz)
 
         # Load the right skills for this message type
         if message_type in ("freeform", "rating", "evening_wrap"):
