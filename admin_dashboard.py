@@ -82,7 +82,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 <div class="section">
   <div class="section-title">Users <span style="color:var(--text3);font-size:11px;font-weight:400;margin-left:4px">&mdash; click a row to view full profile &amp; conversation</span></div>
   <table>
-    <tr><th>Name</th><th>Phone</th><th>Signed Up</th><th>Last Active</th><th>Messages</th><th>Workouts</th><th>Avg Rating</th><th>Status</th></tr>
+    <tr><th>Name</th><th>Phone</th><th>Signed Up</th><th>Last Active</th><th>Messages</th><th>Workouts</th><th>Avg Rating</th><th>Status</th><th></th></tr>
     {% for u in users %}
     <tr class="clickable" onclick="window.location.href='/admin/user/{{ u.id }}'">
       <td style="color:var(--text);font-weight:500">{{ u.name }}</td>
@@ -98,9 +98,12 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
         {% elif u.days_inactive <= 7 %}<span class="badge badge-yellow">QUIET</span>
         {% else %}<span class="badge badge-red">INACTIVE {{ u.days_inactive }}d</span>{% endif %}
       </td>
+      <td onclick="event.stopPropagation()">
+        <button onclick="deleteUser({{ u.id }}, '{{ u.name }}')" style="background:rgba(255,69,58,.12);color:var(--red);border:none;border-radius:4px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer">Delete</button>
+      </td>
     </tr>
     {% endfor %}
-    {% if not users %}<tr><td colspan="8" class="empty">No users yet.</td></tr>{% endif %}
+    {% if not users %}<tr><td colspan="9" class="empty">No users yet.</td></tr>{% endif %}
   </table>
 </div>
 
@@ -156,6 +159,13 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 <button class="refresh-btn" onclick="location.reload()">&#x21BB; Refresh</button>
 
 <script>
+async function deleteUser(userId, name){
+  if(!confirm('Delete ' + name + '? This removes all their messages, workouts, and data. Cannot be undone.'))return;
+  const res = await fetch('/admin/user/'+userId+'/delete',{method:'POST'});
+  const data = await res.json();
+  if(data.status==='ok'){location.reload();}
+  else{alert('Error: '+data.message);}
+}
 async function sendManual(e){
   e.preventDefault();
   const userId=document.getElementById('send-user').value;

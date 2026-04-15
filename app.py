@@ -2,7 +2,7 @@ import os
 import logging
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context, resolve_pending_clarification
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context, resolve_pending_clarification
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -482,6 +482,27 @@ def admin_send():
             send_sms(user.phone, body, user_id=user.id, message_type="admin")
             return jsonify({"status": "ok"})
         return jsonify({"status": "error"}), 400
+    finally:
+        session.close()
+
+
+# ─── Delete User (admin) ────────────────────────────
+@app.route("/admin/user/<int:user_id>/delete", methods=["POST"])
+def admin_delete_user(user_id):
+    """Permanently delete a user and all their data."""
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "User not found"}), 404
+        name = user.name
+        session.query(Message).filter(Message.user_id == user_id).delete()
+        session.query(Workout).filter(Workout.user_id == user_id).delete()
+        session.query(DailyLog).filter(DailyLog.user_id == user_id).delete()
+        session.delete(user)
+        session.commit()
+        logger.info(f"Admin deleted user: {name} (id={user_id})")
+        return jsonify({"status": "ok", "message": f"{name} deleted."})
     finally:
         session.close()
 
