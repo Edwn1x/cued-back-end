@@ -36,7 +36,7 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         recent_messages.reverse()
 
         conversation_history = "\n".join(
-            f"{'Coach' if m.direction == 'out' else user.name}: {m.body}"
+            f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
             for m in recent_messages
         ) or "No previous messages yet -- this is the first interaction."
 
