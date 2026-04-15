@@ -9,7 +9,9 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
-    _raw_db_url = _raw_db_url.replace("postgres://", "postgresql://", 1)
+    _raw_db_url = _raw_db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif _raw_db_url.startswith("postgresql://"):
+    _raw_db_url = _raw_db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 DATABASE_URL = _raw_db_url
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
 
