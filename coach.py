@@ -204,31 +204,27 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
         "morning_briefing": (
             f"Generate the morning briefing for {user.name}. Use --- to separate each message.\n"
             f"Message 1: Short greeting (Gm or Morning) + what today's training session is and when.\n"
-            f"Message 2: One thing to focus on mentally today. No food — that's the breakfast message.\n"
-            f"Message 3 (optional): Brief CTA like 'Reply W when you're ready for your workout.'"
+            f"Message 2 (optional): One thing to focus on mentally today. No food — that's the breakfast message."
         ),
         "breakfast": (
             f"Suggest a specific breakfast for {user.name} based on their diet and today's training load. Use --- to separate each message.\n"
             f"Message 1: The breakfast suggestion with specific foods.\n"
-            f"Message 2: Rough calories and protein count.\n"
-            f"Message 3: 'Reply B for a different option.'"
+            f"Message 2: Rough calories and protein count. Mention they can text you if they want a different option."
         ),
         "meal_suggestion": (
             f"Suggest a meal for {user.name}. Use --- to separate each message.\n"
             f"Message 1: The meal suggestion with specific foods.\n"
-            f"Message 2: Calories/protein + running daily total.\n"
-            f"Message 3: 'Reply M for something else.'"
+            f"Message 2: Calories/protein + running daily total. Mention they can text if they want something different."
         ),
         "pre_workout": (
             f"Send a pre-workout message to {user.name}. Use --- to separate each message.\n"
             f"Message 1: Their session is locked and ready — name the main lift or focus.\n"
-            f"Message 2: 'Reply W when you're ready and I'll send the full plan.'"
+            f"Message 2 (optional): One coaching note about today's focus. Let them know they can text when they're ready."
         ),
         "workout_request": (
             f"Generate today's full workout for {user.name}. Use --- to separate each message.\n"
             f"Message 1: The workout — exercises, sets, reps, target weights based on their history. Numbered list is fine here.\n"
-            f"Message 2: Key coaching note on the main lift or what to watch for.\n"
-            f"Message 3: 'Log it when you're done — just text me what you hit.'"
+            f"Message 2: Key coaching note on the main lift or what to watch for. Let them know to text you what they hit when they're done."
         ),
         "post_workout": (
             f"Check in with {user.name} after their session. One message only, no ---. "
