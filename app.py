@@ -11,6 +11,7 @@ from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
 from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
+from message_buffer import buffer_message
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -24,13 +25,45 @@ CORS(app, origins=config.ALLOWED_ORIGINS)
 init_db()
 
 
+# ─── Buffered Message Processor ─────────────────────
+def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: str = None):
+    """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            return
+
+        # If user is still in onboarding, route to onboarding handler
+        if (user.onboarding_step or 0) < 3:
+            handle_onboarding_reply(user, combined_body)
+            return
+
+        # Get AI coaching response
+        response_text = get_coach_response(user, combined_body, message_type, image_url=image_url)
+
+        # Send the response
+        send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
+
+    except Exception as e:
+        logger.error(f"Error processing buffered message for user {user_id}: {e}", exc_info=True)
+        try:
+            user = session.query(User).filter(User.id == user_id).first()
+            if user:
+                send_sms(user.phone, "Something went wrong on my end — I'll be back shortly.", user_id=user.id)
+        except Exception:
+            pass
+    finally:
+        session.close()
+
+
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Handle incoming SMS from Twilio."""
+    """Handle incoming SMS from Twilio. Buffers messages before processing."""
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
-    
+
     # Check for MMS image
     num_media = int(request.form.get("NumMedia", 0))
     image_url = None
@@ -45,32 +78,31 @@ def webhook():
         user = session.query(User).filter(User.phone == from_number).first()
 
         if not user:
-            # Unknown number — send a friendly redirect
             logger.warning(f"Unknown number: {from_number}")
             return get_twiml_response(
                 "Hey! You're not signed up for Cued yet. "
-                "Visit cued.fit/signup to get started."
+                "Visit cued.fit to get started."
             ), 200, {"Content-Type": "text/xml"}
 
-        # Log the incoming message
+        # Log the incoming message immediately
         log_incoming(user.id, body)
 
-        # Any reply resets the engagement decay counter
+        # Reset engagement decay counter on any reply
         reset_unanswered(user.id)
 
-        # Update mirroring style from accumulated message history
+        # Update mirroring style
         maybe_update_style(user.id)
 
-        # Capture food context from early onboarding replies if not yet stored
+        # Capture food context if applicable
         maybe_store_food_context(user.id, body)
 
-        # Resolve pending clarification question if one is outstanding
+        # Resolve pending clarification
         resolve_pending_clarification(user.id, body)
 
-        # Detect message type from context
+        # Classify the message
         message_type = classify_message(body, has_image=image_url is not None)
 
-        # If it looks like a workout log, try to parse it
+        # Track workout intent
         if message_type == "workout_log":
             parsed = parse_workout_log(user, body)
             if parsed:
@@ -85,22 +117,20 @@ def webhook():
                 session.commit()
             confirm_workout_today(user.id)
 
-        # Replying W to request a workout also counts as workout intent confirmation
         if message_type == "workout_request":
             confirm_workout_today(user.id)
 
-        # If user is still in onboarding, route to onboarding handler instead of normal coaching
-        if (user.onboarding_step or 0) < 3:
-            handle_onboarding_reply(user, body)
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+        # Buffer the message — AI call and SMS response happen after the delay
+        buffer_message(
+            phone=from_number,
+            body=body,
+            user_id=user.id,
+            message_type=message_type,
+            image_url=image_url,
+            process_callback=process_buffered_message,
+        )
 
-        # Get AI coaching response (with image if present)
-        response_text = get_coach_response(user, body, message_type, image_url=image_url)
-
-        # Send the response
-        send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
-
-        # Return empty TwiML (we already sent the response via API)
+        # Return empty TwiML immediately — response comes later via the buffer
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     except Exception as e:
