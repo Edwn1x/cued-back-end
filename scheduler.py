@@ -72,6 +72,25 @@ def send_scheduled_message(user_id: int, message_type: str):
 
 def schedule_user(user: User):
     """Set up all daily scheduled messages for a user."""
+    if not user.wake_time or not user.workout_time:
+        logger.warning(f"Skipping schedule for {user.name} — missing wake_time or workout_time")
+        # Still schedule morning briefing if we have wake time
+        if user.wake_time:
+            wake_h, wake_m = parse_time(user.wake_time)
+            job_id = f"user_{user.id}_morning"
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
+            scheduler.add_job(
+                send_scheduled_message,
+                trigger=CronTrigger(hour=wake_h, minute=wake_m),
+                args=[user.id, "morning"],
+                id=job_id,
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info(f"Scheduled morning-only for {user.name} (no workout_time yet)")
+        return
+
     wake_h, wake_m = parse_time(user.wake_time)
     workout_h, workout_m = parse_time(user.workout_time)
 

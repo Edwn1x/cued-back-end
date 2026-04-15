@@ -35,7 +35,7 @@ class User(Base):
     sleep_time = Column(String(10), default="23:00")  # target bedtime
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
-    workout_time = Column(String(10), default="16:00")
+    workout_time = Column(String(10), default=None)
     workout_days = Column(String(100))  # comma-separated: mon,tue,wed,etc.
     height_ft = Column(Integer)
     height_in = Column(Integer)
