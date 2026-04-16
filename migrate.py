@@ -38,6 +38,12 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN coaching_summary TEXT",
     # Added: goodnight quiet mode
     "ALTER TABLE users ADD COLUMN quiet_until TIMESTAMP",
+    # Added: daily totals cache on users
+    "ALTER TABLE users ADD COLUMN calories_today INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN protein_today INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN carbs_today INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN fat_today INTEGER DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN totals_date VARCHAR(10)",
     # Added: confirmed decisions
     "ALTER TABLE users ADD COLUMN confirmed_goal_priority VARCHAR(50)",
     "ALTER TABLE users ADD COLUMN confirmed_training_split VARCHAR(50)",

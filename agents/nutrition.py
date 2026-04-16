@@ -20,9 +20,26 @@ client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 
 def _build_nutrition_context(user: User) -> str:
-    """Build nutrition-specific context — only what the nutrition agent needs."""
+    """Build nutrition-specific context — profile, today's totals, recent meals, and conversation."""
+    from models import Meal, ensure_todays_totals
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    ensure_todays_totals(user.id)
+
     session = get_session()
     try:
+        # Re-fetch user so we have fresh totals after ensure_todays_totals
+        user = session.query(User).get(user.id)
+
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+
+        now_local = datetime.now(user_tz)
+
+        # Recent conversation (last 6 messages)
         recent = (
             session.query(Message)
             .filter(Message.user_id == user.id)
@@ -35,8 +52,60 @@ def _build_nutrition_context(user: User) -> str:
             f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
             for m in recent
         ) or "(no recent messages)"
+
+        # Today's logged meals
+        today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_meals = (
+            session.query(Meal)
+            .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start)
+            .order_by(Meal.eaten_at.asc())
+            .all()
+        )
+
+        # Last 3 days meals (excluding today)
+        three_days_ago = today_start - timedelta(days=3)
+        recent_meals = (
+            session.query(Meal)
+            .filter(
+                Meal.user_id == user.id,
+                Meal.eaten_at >= three_days_ago,
+                Meal.eaten_at < today_start,
+            )
+            .order_by(Meal.eaten_at.desc())
+            .limit(10)
+            .all()
+        )
     finally:
         session.close()
+
+    # Build totals block
+    cal_target = user.calorie_target
+    pro_target = user.protein_target
+    if cal_target:
+        cal_remaining = cal_target - (user.calories_today or 0)
+        totals_block = (
+            f"Calories: {user.calories_today or 0} / {cal_target} ({cal_remaining} remaining)\n"
+            f"Protein: {user.protein_today or 0}g / {f'{pro_target}g' if pro_target else '?'}\n"
+            f"Carbs: {user.carbs_today or 0}g | Fat: {user.fat_today or 0}g"
+        )
+    else:
+        totals_block = "Targets not set — calculate before giving specific macro guidance."
+
+    if today_meals:
+        meals_lines = "\n".join(
+            f"  - {m.eaten_at.strftime('%I:%M %p')}: {m.description} ({m.calories} cal, {m.protein_g}g protein)"
+            for m in today_meals
+        )
+        totals_block += f"\n\nToday's logged meals:\n{meals_lines}"
+    else:
+        totals_block += "\n\nNo meals logged yet today."
+
+    if recent_meals:
+        recent_lines = "\n".join(
+            f"  - {m.eaten_at.strftime('%a %b %d')}: {m.description} ({m.calories} cal)"
+            for m in recent_meals
+        )
+        totals_block += f"\n\nRecent meals (last 3 days):\n{recent_lines}"
 
     profile = f"""Name: {user.name}
 Goal: {user.goal}
@@ -51,7 +120,7 @@ Cooking situation: {user.cooking_situation or "unknown"}
 Food context: {user.food_context or "not collected yet"}
 Activity level: {user.activity_level or "not set"}"""
 
-    return f"## USER PROFILE\n{profile}\n\n## RECENT CONVERSATION\n{conversation}"
+    return f"## USER PROFILE\n{profile}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
 
 
 def handle(user: User, user_message: str, image_url: str = None) -> dict:

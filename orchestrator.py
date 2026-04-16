@@ -11,6 +11,7 @@ to the legacy monolith. Lets us validate the classifier without changing behavio
 
 import json
 import logging
+import threading
 import anthropic
 import config
 
@@ -126,6 +127,13 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
         try:
             structured = nutrition_handle(user, combined_body, image_url=image_url)
             response = write_response(user, structured, user_message=combined_body)
+            # Fire meal extraction in background
+            from agents.meal_extractor import extract_and_log_meal
+            threading.Thread(
+                target=extract_and_log_meal,
+                args=(user.id, combined_body, response, recent_context),
+                daemon=True,
+            ).start()
             return response
         except Exception as e:
             logger.error(f"Nutrition pipeline failed, falling back to legacy: {e}")

@@ -63,8 +63,15 @@ class User(Base):
     coaching_summary = Column(Text, default=None)  # rolling summary of coaching decisions and progress
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    calories_today = Column(Integer, default=0)  # running total for today
+    protein_today = Column(Integer, default=0)
+    carbs_today = Column(Integer, default=0)
+    fat_today = Column(Integer, default=0)
+    totals_date = Column(String(10), default=None)  # YYYY-MM-DD — the date these totals are for
+
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
+    meals = relationship("Meal", back_populates="user", order_by="Meal.eaten_at.desc()")
     daily_logs = relationship("DailyLog", back_populates="user", order_by="DailyLog.date.desc()")
 
     @property
@@ -134,6 +141,26 @@ class Workout(Base):
     completed = Column(Boolean, default=False)
 
     user = relationship("User", back_populates="workouts")
+
+
+class Meal(Base):
+    __tablename__ = "meals"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    eaten_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # when the user actually ate it
+    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # when the system logged it
+    description = Column(Text, nullable=False)  # "chicken burrito bowl from chipotle"
+    calories = Column(Integer)
+    protein_g = Column(Integer)
+    carbs_g = Column(Integer)
+    fat_g = Column(Integer)
+    source = Column(String(20))  # "text", "photo"
+    log_type = Column(String(30))  # "user_reported", "confirmed_suggestion"
+    confidence = Column(String(10))  # "high", "medium", "low"
+    notes = Column(Text)  # any clarifying details
+
+    user = relationship("User", back_populates="meals")
 
 
 class DailyLog(Base):
@@ -245,6 +272,37 @@ def maybe_store_food_context(user_id: int, message_body: str):
 
         if len(message_body.strip()) > 5:
             user.food_context = message_body.strip()
+            session.commit()
+    finally:
+        session.close()
+
+
+def ensure_todays_totals(user_id: int):
+    """
+    Reset today's running totals if they're from a previous day.
+    Should be called before reading or updating daily totals.
+    Uses the user's timezone to determine 'today'.
+    """
+    from zoneinfo import ZoneInfo
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return
+
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+
+        today_str = datetime.now(user_tz).strftime("%Y-%m-%d")
+
+        if user.totals_date != today_str:
+            user.calories_today = 0
+            user.protein_today = 0
+            user.carbs_today = 0
+            user.fat_today = 0
+            user.totals_date = today_str
             session.commit()
     finally:
         session.close()
