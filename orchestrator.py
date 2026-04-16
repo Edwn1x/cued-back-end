@@ -85,11 +85,14 @@ Examples:
 
 def route_message(user, combined_body: str, message_type: str, image_url: str = None) -> str:
     """
-    Phase 1: Classify and log, but route everything to the legacy coach.
+    Classifies the message and routes to the appropriate agent path.
 
-    Phase 2+ will replace the legacy call with specialist agent dispatch.
+    Phase 2a: Nutrition messages go through the new pipeline.
+    Everything else still goes to the legacy monolith.
     """
     from coach import get_coach_response
+    from agents.nutrition import handle as nutrition_handle
+    from agents.personality import write_response
     from models import get_session, Message
 
     # Get recent context for classification
@@ -110,11 +113,24 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     finally:
         session.close()
 
-    # Classify (for observability in Phase 1)
+    # Classify
     classification = classify_message(combined_body, recent_context)
     logger.info(f"Classified message from {user.name}: {classification}")
 
-    # Phase 1: Always route to legacy monolith regardless of classification
-    response = get_coach_response(user, combined_body, message_type, image_url=image_url)
+    primary = classification.get("primary_agent", "personality")
+    confidence = classification.get("confidence", "low")
 
+    # Route nutrition messages through the new pipeline
+    if primary == "nutrition" and confidence in ("high", "medium"):
+        logger.info(f"Routing to nutrition agent for {user.name}")
+        try:
+            structured = nutrition_handle(user, combined_body, image_url=image_url)
+            response = write_response(user, structured, user_message=combined_body)
+            return response
+        except Exception as e:
+            logger.error(f"Nutrition pipeline failed, falling back to legacy: {e}")
+            # Fall through to legacy on any error
+
+    # Everything else: legacy monolith
+    response = get_coach_response(user, combined_body, message_type, image_url=image_url)
     return response
