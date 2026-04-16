@@ -3,7 +3,7 @@ import logging
 import threading
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, maybe_store_food_context, resolve_pending_clarification
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -34,14 +34,32 @@ def extract_and_store_decisions(user_id: int, user_message: str, coach_response:
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""Analyze this exchange and extract any CONFIRMED data the user shared. Only extract if the user clearly stated it — do not extract tentative or uncertain statements.
+    prompt = f"""Analyze this SMS coaching exchange and extract any CONFIRMED settings, decisions, or profile data that should be stored permanently.
+
+Extract a value if EITHER:
+1. The user explicitly stated it in this exchange, OR
+2. The coach is treating it as a settled fact (referencing it confidently without asking the user to confirm)
+
+For example:
+- Coach says "you're at 1050/2200 cal" → calorie_target is 2200
+- Coach says "we're targeting 145g protein" → protein_target is 145
+- Coach mentions "at 146lbs" → weight_lbs is 146
+- User says "I'm 5'6"" → height_ft is 5, height_in is 6
+- User says "I'm 20" → age is 20
+- User says "lets do cutting" → goal_priority is "cutting"
+- Coach says "since you're cutting" → goal_priority is "cutting"
+- User says "I walk around campus" → activity_level is "lightly_active"
+- User describes their meals/eating habits → food_context captures the summary
+- User says "I usually wake up at 7" → wake_time is "07:00"
+- User says "I try to sleep by 11" → sleep_time is "23:00"
 
 User said: "{user_message}"
 Coach said: "{coach_response}"
 
-Return ONLY valid JSON with these fields (use null for anything not confirmed in this exchange):
+Return ONLY valid JSON with these fields (use null for anything not mentioned or confirmed):
 {{
-  "goal_priority": "cutting" or "building" or null,
+  "age": number or null,
+  "goal_priority": "cutting" or "building" or "recomp" or null,
   "calorie_target": number or null,
   "protein_target": number or null,
   "training_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or null,
@@ -50,16 +68,13 @@ Return ONLY valid JSON with these fields (use null for anything not confirmed in
   "height_ft": number or null,
   "height_in": number or null,
   "weight_lbs": number or null,
-  "activity_level": "sedentary" or "lightly_active" or "active" or "very_active" or null
+  "activity_level": "sedentary" or "lightly_active" or "active" or "very_active" or null,
+  "wake_time": "HH:MM" or null,
+  "sleep_time": "HH:MM" or null,
+  "food_context": "brief description of what they eat/cook/order, or null"
 }}
 
-If nothing was confirmed, return all null. Only extract what the USER actually said, not what the coach mentioned.
-
-Examples:
-- User says "I'm 5'7 and 146 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 146, ...}}
-- User says "I walk around campus a lot" → {{"activity_level": "lightly_active", ...}}
-- User says "lets do cutting" → {{"goal_priority": "cutting", ...}}
-- User says "how tall should I be?" → all null (they didn't state their height)"""
+If nothing can be extracted, return all null."""
 
     try:
         response = client.messages.create(
@@ -79,6 +94,9 @@ Examples:
                 return
 
             changed = False
+            if data.get("age") and not user.age:
+                user.age = data["age"]
+                changed = True
             if data.get("goal_priority") and not user.confirmed_goal_priority:
                 user.confirmed_goal_priority = data["goal_priority"]
                 changed = True
@@ -106,8 +124,17 @@ Examples:
             if data.get("weight_lbs") and not user.weight_lbs:
                 user.weight_lbs = data["weight_lbs"]
                 changed = True
-            if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
+            if data.get("activity_level") and not user.activity_level:
                 user.activity_level = data["activity_level"]
+                changed = True
+            if data.get("wake_time") and not user.wake_time:
+                user.wake_time = data["wake_time"]
+                changed = True
+            if data.get("sleep_time") and not user.sleep_time:
+                user.sleep_time = data["sleep_time"]
+                changed = True
+            if data.get("food_context") and not user.food_context:
+                user.food_context = data["food_context"]
                 changed = True
 
             if changed:
@@ -431,9 +458,6 @@ def webhook():
 
         # Update mirroring style
         maybe_update_style(user.id)
-
-        # Capture food context if applicable
-        maybe_store_food_context(user.id, body)
 
         # Resolve pending clarification
         resolve_pending_clarification(user.id, body)

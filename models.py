@@ -238,44 +238,6 @@ def resolve_pending_clarification(user_id: int, answer: str):
         session.close()
 
 
-def maybe_store_food_context(user_id: int, message_body: str):
-    """
-    Store the user's reply as food_context ONLY if the last outbound coach message
-    asked about food. This prevents random early messages (like greetings) from
-    getting captured as food context.
-    """
-    session = get_session()
-    try:
-        user = session.query(User).get(user_id)
-        if not user or user.food_context:
-            return  # already have context, don't overwrite
-
-        # Check if the last outbound message was asking about food
-        last_out = (
-            session.query(Message)
-            .filter(Message.user_id == user_id, Message.direction == "out")
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-
-        if not last_out:
-            return
-
-        last_out_lower = last_out.body.lower()
-        food_keywords = ["food", "eat", "meal", "cook", "dining", "restaurant", "groceries",
-                         "fridge", "chipotle", "panda", "macros", "nutrition", "breakfast",
-                         "lunch", "dinner", "snack", "diet"]
-
-        # Only capture if the coach's last message was food-related
-        if not any(kw in last_out_lower for kw in food_keywords):
-            return
-
-        if len(message_body.strip()) > 5:
-            user.food_context = message_body.strip()
-            session.commit()
-    finally:
-        session.close()
-
 
 def ensure_todays_totals(user_id: int):
     """

@@ -198,6 +198,8 @@ Rules:
     )
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    if "}" in text:
+        text = text[:text.rindex("}") + 1]
 
     try:
         parsed = json.loads(text)

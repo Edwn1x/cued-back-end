@@ -72,6 +72,8 @@ Examples:
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        if "}" in text:
+            text = text[:text.rindex("}") + 1]
         classification = json.loads(text)
         return classification
     except Exception as e:
