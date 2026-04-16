@@ -117,6 +117,104 @@ Examples:
         logger.error(f"Decision extraction failed for user {user_id}: {e}")
 
 
+# ─── Memory Extractor ────────────────────────────────
+def extract_and_store_memory(user_id: int, user_message: str, coach_response: str):
+    """
+    After each exchange, extract any meaningful personal details the user revealed
+    and append them to the user's memory field. This creates a permanent record
+    of everything the coach should remember about this person.
+    """
+    import anthropic
+    import json
+
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return
+        existing_memory = user.memory or ""
+        user_name = user.name
+    finally:
+        session.close()
+
+    prompt = f"""You are extracting memorable facts about a fitness coaching client from a text message exchange. Your job is to identify any NEW personal details the user revealed that the coach should remember permanently.
+
+Extract things like:
+- Preferences (loves deadlifts, hates running, prefers morning workouts)
+- Life events (sister's wedding June 15, starting new job, midterms next week)
+- Injuries or physical notes (left shoulder tweaked, bad knees, tight hips)
+- PRs or progress milestones (bench went from 135 to 185, squatted 225 for first time)
+- Relationships (training partner named Alex, girlfriend is vegan)
+- Emotional states worth remembering (stressed about finals, motivated after seeing progress)
+- Food preferences and habits (eats at Crossroads dining hall, hates cilantro, lactose intolerant)
+- Schedule details (Tuesdays are busy, gym closes at 10pm, travels for work monthly)
+- Goals and motivations (wants to look good for wedding, training for hiking trip)
+- Anything else that makes the user specific and real
+
+Existing memory (DO NOT repeat facts already in here):
+{existing_memory if existing_memory else "(no existing memory)"}
+
+User said: "{user_message}"
+Coach said: "{coach_response}"
+
+Return ONLY valid JSON:
+{{"new_facts": ["fact 1", "fact 2", ...]}}
+
+Rules:
+- Each fact should be ONE concise bullet, written as a statement about the user
+- Do NOT extract temporary states ("is tired today" — only extract if it's a recurring pattern)
+- Do NOT extract information the coach said unless the user confirmed it
+- Do NOT repeat anything in existing memory, even if reworded
+- If nothing new and meaningful was revealed, return: {{"new_facts": []}}
+
+Examples:
+User: "I'm 5'7 146, mostly cook at home, sometimes Chipotle"
+→ {{"new_facts": ["5'7 and 146lbs", "Cooks at home most of the time, occasionally Chipotle"]}}
+
+User: "My shoulder has been bugging me since that bench PR"
+→ {{"new_facts": ["Shoulder started bothering them after recent bench PR"]}}
+
+User: "yeah sounds good"
+→ {{"new_facts": []}}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        new_facts = data.get("new_facts", [])
+
+        if not new_facts:
+            return
+
+        session = get_session()
+        try:
+            user = session.query(User).get(user_id)
+            if not user:
+                return
+
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%b %d")
+            new_entries = "\n".join(f"- [{timestamp}] {fact}" for fact in new_facts)
+
+            if user.memory:
+                user.memory = f"{user.memory}\n{new_entries}"
+            else:
+                user.memory = new_entries
+
+            session.commit()
+            logger.info(f"Added {len(new_facts)} memory entries for {user_name}")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Memory extraction failed for user {user_id}: {e}")
+
+
 # ─── Buffered Message Processor ─────────────────────
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: str = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
@@ -140,6 +238,13 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # Extract and store any confirmed decisions (runs in background, doesn't block)
         threading.Thread(
             target=extract_and_store_decisions,
+            args=(user.id, combined_body, response_text),
+            daemon=True,
+        ).start()
+
+        # Extract and store user memory (runs in background, doesn't block)
+        threading.Thread(
+            target=extract_and_store_memory,
             args=(user.id, combined_body, response_text),
             daemon=True,
         ).start()

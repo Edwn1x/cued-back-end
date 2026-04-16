@@ -89,6 +89,12 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         # Build adaptive tone instruction
         tone_instruction = get_tone_instruction(user)
 
+        # Build memory block
+        if user.memory:
+            memory_block = f"## WHAT YOU REMEMBER ABOUT {user.name.upper()}\nThese are permanent facts you've learned about this user over time. Reference them naturally when relevant — but never list them out or make the user feel surveilled.\n{user.memory}"
+        else:
+            memory_block = "## WHAT YOU REMEMBER ABOUT THIS USER\nNothing accumulated yet — you're just getting to know them."
+
         # Build confirmed decisions block
         decisions = []
         if user.confirmed_goal_priority:
@@ -115,6 +121,8 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 
 ## USER PROFILE
 {user.profile_summary}
+
+{memory_block}
 
 ## CONFIRMED DECISIONS (treat these as settled facts — never re-ask or re-explain)
 {confirmed_decisions}
