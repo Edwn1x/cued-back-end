@@ -68,6 +68,8 @@ Examples:
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        if "}" in text:
+            text = text[:text.rindex("}") + 1]
         data = json.loads(text)
 
         session = get_session()
@@ -186,6 +188,8 @@ User: "yeah sounds good"
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        if "}" in text:
+            text = text[:text.rindex("}") + 1]
         data = json.loads(text)
         new_facts = data.get("new_facts", [])
 
