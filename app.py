@@ -324,8 +324,9 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             handle_onboarding_reply(user, combined_body)
             return
 
-        # Get AI coaching response
-        response_text = get_coach_response(user, combined_body, message_type, image_url=image_url)
+        # Get AI coaching response (routed through orchestrator)
+        from orchestrator import route_message
+        response_text = route_message(user, combined_body, message_type, image_url=image_url)
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
