@@ -95,6 +95,12 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         else:
             memory_block = "## WHAT YOU REMEMBER ABOUT THIS USER\nNothing accumulated yet — you're just getting to know them."
 
+        # Build coaching summary block
+        if user.coaching_summary:
+            summary_block = f"## COACHING RELATIONSHIP SUMMARY\nWhat's happened so far in this coaching relationship:\n{user.coaching_summary}"
+        else:
+            summary_block = ""
+
         # Build confirmed decisions block
         decisions = []
         if user.confirmed_goal_priority:
@@ -123,6 +129,8 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 {user.profile_summary}
 
 {memory_block}
+
+{summary_block}
 
 ## CONFIRMED DECISIONS (treat these as settled facts — never re-ask or re-explain)
 {confirmed_decisions}

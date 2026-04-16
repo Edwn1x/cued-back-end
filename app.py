@@ -215,6 +215,101 @@ User: "yeah sounds good"
         logger.error(f"Memory extraction failed for user {user_id}: {e}")
 
 
+# ─── Coaching Summarizer ─────────────────────────────
+def maybe_update_coaching_summary(user_id: int):
+    """
+    If the user has enough messages, generate a rolling summary of older
+    conversations and store it. Runs periodically — every 10 new messages.
+    """
+    import anthropic
+
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return
+
+        total_msgs = session.query(Message).filter(Message.user_id == user_id).count()
+
+        if total_msgs < 20:
+            return
+
+        if total_msgs % 10 != 0:
+            return
+
+        older_messages = (
+            session.query(Message)
+            .filter(Message.user_id == user_id)
+            .order_by(Message.created_at.asc())
+            .limit(total_msgs - 10)
+            .all()
+        )
+
+        if not older_messages:
+            return
+
+        conversation_text = "\n".join(
+            f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
+            for m in older_messages
+        )
+
+        existing_summary = user.coaching_summary or "(no prior summary)"
+        user_name = user.name
+    finally:
+        session.close()
+
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    prompt = f"""You are maintaining a rolling summary of an SMS coaching relationship. Your job is to compress old conversation history into a structured summary of what's been discussed, decided, and tried.
+
+The user's permanent personal details (preferences, stats, life events) are stored separately in a memory system — do NOT duplicate those here. Focus only on the COACHING ARC: what topics were discussed, what decisions were made, what workouts happened, what adjustments were tried, what the user struggled with or succeeded at.
+
+Prior summary:
+{existing_summary}
+
+Older conversation to summarize:
+{conversation_text}
+
+Return a structured summary under these headers. Keep it tight — each section 1-4 bullets max. Only include sections that have content.
+
+## Coaching Decisions
+(e.g., "Set calories at 2200 for cut", "Decided full body 2x/week over PPL")
+
+## Workouts Completed
+(e.g., "Apr 15: First full body session — squat, bench, row", "Apr 17: Upper body — bench hit 155x8")
+
+## Adjustments Made
+(e.g., "Dropped lateral raises after shoulder discomfort", "Added 15-min walk to rest days")
+
+## Recent Themes
+(e.g., "User has been asking about macros breakdown", "Focus recently on form over weight")
+
+## Open Items
+(e.g., "User hasn't confirmed training time yet", "Considering whether to add cardio")
+
+Keep under 400 words total. This replaces the prior summary — include important past context from it if still relevant."""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = response.content[0].text.strip()
+
+        session = get_session()
+        try:
+            user = session.query(User).get(user_id)
+            if user:
+                user.coaching_summary = summary
+                session.commit()
+                logger.info(f"Updated coaching summary for {user_name} ({total_msgs} messages)")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Summary generation failed for user {user_id}: {e}")
+
+
 # ─── Buffered Message Processor ─────────────────────
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: str = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
@@ -246,6 +341,13 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         threading.Thread(
             target=extract_and_store_memory,
             args=(user.id, combined_body, response_text),
+            daemon=True,
+        ).start()
+
+        # Update coaching summary periodically (runs in background, doesn't block)
+        threading.Thread(
+            target=maybe_update_coaching_summary,
+            args=(user.id,),
             daemon=True,
         ).start()
 
