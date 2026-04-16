@@ -107,20 +107,34 @@ def _build_nutrition_context(user: User) -> str:
         )
         totals_block += f"\n\nRecent meals (last 3 days):\n{recent_lines}"
 
+    # Confirmed decisions — shared state across all agents
+    decisions = []
+    if user.confirmed_goal_priority:
+        decisions.append(f"Goal priority: {user.confirmed_goal_priority} (CONFIRMED)")
+    if user.calorie_target:
+        decisions.append(f"Daily calories: {user.calorie_target} cal (CONFIRMED)")
+    if user.protein_target:
+        decisions.append(f"Daily protein: {user.protein_target}g (CONFIRMED)")
+    if user.confirmed_training_split:
+        decisions.append(f"Training split: {user.confirmed_training_split} (CONFIRMED)")
+    if user.confirmed_workout_time:
+        decisions.append(f"Workout time: {user.confirmed_workout_time} (CONFIRMED)")
+    if user.confirmed_training_days:
+        decisions.append(f"Training days: {user.confirmed_training_days} (CONFIRMED)")
+    if user.activity_level:
+        decisions.append(f"Activity level: {user.activity_level} (CONFIRMED)")
+    confirmed_block = "\n".join(decisions) if decisions else "No decisions confirmed yet."
+
     profile = f"""Name: {user.name}
 Goal: {user.goal}
-Confirmed goal priority: {user.confirmed_goal_priority or "not set"}
-Calorie target: {user.calorie_target or "not set — collect info and calculate before recommending"}
-Protein target: {f"{user.protein_target}g" if user.protein_target else "not set"}
 Height: {f"{user.height_ft}'{user.height_in or 0}" if user.height_ft else "not known"}
 Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "not known"}
 Diet: {user.diet or "omnivore"}
 Restrictions: {user.restrictions or "none reported"}
 Cooking situation: {user.cooking_situation or "unknown"}
-Food context: {user.food_context or "not collected yet"}
-Activity level: {user.activity_level or "not set"}"""
+Food context: {user.food_context or "not collected yet"}"""
 
-    return f"## USER PROFILE\n{profile}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
+    return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask)\n{confirmed_block}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
 
 
 def handle(user: User, user_message: str, image_url: str = None) -> dict:
