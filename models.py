@@ -31,8 +31,8 @@ class User(Base):
     meals_per_day = Column(String(5))  # 1-2, 3, 4+
     schedule = Column(Text)  # workout days/times, class schedule
     schedule_details = Column(Text)  # freeform: classes, work, commitments
-    wake_time = Column(String(10), default="07:00")  # HH:MM format
-    sleep_time = Column(String(10), default="23:00")  # target bedtime
+    wake_time = Column(String(10), default=None)  # HH:MM format
+    sleep_time = Column(String(10), default=None)  # target bedtime
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
     workout_time = Column(String(10), default=None)
@@ -91,7 +91,7 @@ class User(Base):
             f"Meals per day: {self.meals_per_day}" if self.meals_per_day else None,
             f"Workout days: {self.workout_days}" if self.workout_days else None,
             f"Schedule/commitments: {self.schedule_details}" if self.schedule_details else None,
-            f"Wake time: {self.wake_time}, Bedtime: {self.sleep_time}",
+            f"Wake time: {self.wake_time}, Bedtime: {self.sleep_time}" if self.wake_time or self.sleep_time else None,
             f"Sleep quality: {self.sleep_quality}" if self.sleep_quality else None,
             f"Stress level: {self.stress_level}" if self.stress_level else None,
             f"Workout time: {self.workout_time}",
