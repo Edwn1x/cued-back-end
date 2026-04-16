@@ -28,26 +28,43 @@ init_db()
 
 # ─── Decision Extractor ──────────────────────────────
 def extract_and_store_decisions(user_id: int, user_message: str, coach_response: str):
-    """After each exchange, check if any decisions were confirmed and store them."""
+    """After each exchange, check if any decisions or profile data were confirmed and store them."""
     import anthropic
     import json
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""Analyze this exchange and extract any CONFIRMED decisions. Only extract if the user clearly agreed or stated something definitively. Do not extract tentative or uncertain statements.
+    prompt = f"""Analyze this exchange and extract any CONFIRMED data the user shared. Only extract if the user clearly stated it — do not extract tentative or uncertain statements.
 
 User said: "{user_message}"
 Coach said: "{coach_response}"
 
 Return ONLY valid JSON with these fields (use null for anything not confirmed in this exchange):
-{{"goal_priority": "cutting" or "building" or null, "calorie_target": number or null, "protein_target": number or null, "training_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or null, "workout_time": "HH:MM" or null, "training_days": "mon,tue,wed..." or null}}
+{{
+  "goal_priority": "cutting" or "building" or null,
+  "calorie_target": number or null,
+  "protein_target": number or null,
+  "training_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or null,
+  "workout_time": "HH:MM" or null,
+  "training_days": "mon,tue,wed..." or null,
+  "height_ft": number or null,
+  "height_in": number or null,
+  "weight_lbs": number or null,
+  "activity_level": "sedentary" or "lightly_active" or "active" or "very_active" or null
+}}
 
-If nothing was confirmed, return: {{"goal_priority": null, "calorie_target": null, "protein_target": null, "training_split": null, "workout_time": null, "training_days": null}}"""
+If nothing was confirmed, return all null. Only extract what the USER actually said, not what the coach mentioned.
+
+Examples:
+- User says "I'm 5'7 and 146 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 146, ...}}
+- User says "I walk around campus a lot" → {{"activity_level": "lightly_active", ...}}
+- User says "lets do cutting" → {{"goal_priority": "cutting", ...}}
+- User says "how tall should I be?" → all null (they didn't state their height)"""
 
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=200,
+            max_tokens=250,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
@@ -78,10 +95,22 @@ If nothing was confirmed, return: {{"goal_priority": null, "calorie_target": nul
             if data.get("training_days") and not user.confirmed_training_days:
                 user.confirmed_training_days = data["training_days"]
                 changed = True
+            if data.get("height_ft") and not user.height_ft:
+                user.height_ft = data["height_ft"]
+                changed = True
+            if data.get("height_in") is not None and user.height_in is None:
+                user.height_in = data["height_in"]
+                changed = True
+            if data.get("weight_lbs") and not user.weight_lbs:
+                user.weight_lbs = data["weight_lbs"]
+                changed = True
+            if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
+                user.activity_level = data["activity_level"]
+                changed = True
 
             if changed:
                 session.commit()
-                logger.info(f"Stored decisions for user {user_id}: {data}")
+                logger.info(f"Stored profile data for {user.name}: {data}")
         finally:
             session.close()
     except Exception as e:
