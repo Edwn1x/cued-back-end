@@ -33,6 +33,11 @@ def send_scheduled_message(user_id: int, message_type: str):
         if not user or not user.active:
             return
 
+        # Respect quiet_until — don't send scheduled messages if user said goodnight
+        if user.quiet_until and datetime.now() < user.quiet_until:
+            logger.info(f"Skipping {message_type} for {user.name} — quiet until {user.quiet_until}")
+            return
+
         # Check engagement tier — skip if this touchpoint isn't allowed
         if not should_send(user, message_type):
             tier = get_tier(user.unanswered_count or 0)

@@ -363,6 +363,27 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         session.close()
 
 
+# ─── Goodnight Detection ─────────────────────────────
+def is_goodnight_signal(body: str) -> bool:
+    """Detect if the user is signaling end-of-conversation."""
+    body_lower = body.lower().strip()
+    goodnight_phrases = [
+        "goodnight", "good night", "gn", "night",
+        "going to sleep", "going to bed", "gonna sleep", "gonna go to bed",
+        "gts", "ttyt", "talk tomorrow", "ttyl",
+        "bye", "byw", "peace out",
+        "ima sleep", "ima gts", "ima go to bed",
+        "heading to bed", "off to bed", "crashing now",
+    ]
+    if body_lower in goodnight_phrases:
+        return True
+    if len(body_lower) < 40:
+        for phrase in goodnight_phrases:
+            if phrase in body_lower:
+                return True
+    return False
+
+
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -389,6 +410,13 @@ def webhook():
                 "Hey! You're not signed up for Cued yet. "
                 "Visit cued.fit to get started."
             ), 200, {"Content-Type": "text/xml"}
+
+        # Clear quiet_until if it's passed or if user is texting us
+        if user.quiet_until:
+            from datetime import datetime
+            if datetime.now() >= user.quiet_until or body.strip():
+                user.quiet_until = None
+                session.commit()
 
         # Log the incoming message immediately
         log_incoming(user.id, body)
@@ -425,6 +453,27 @@ def webhook():
 
         if message_type == "workout_request":
             confirm_workout_today(user.id)
+
+        # Check for goodnight signal — handle immediately, skip buffer
+        if is_goodnight_signal(body):
+            from datetime import datetime, timedelta
+            wake_time = user.wake_time or "07:00"
+            wake_h, wake_m = map(int, wake_time.split(":"))
+            next_wake = (datetime.now() + timedelta(days=1)).replace(
+                hour=wake_h, minute=wake_m, second=0, microsecond=0
+            )
+            user.quiet_until = next_wake
+            session.commit()
+
+            import random
+            response = random.choice([
+                "Night. Get some real sleep.",
+                "Sleep well. Talk tomorrow.",
+                "Night, rest up.",
+                "Get some rest. Hit me up in the morning.",
+            ])
+            send_sms(user.phone, response, user_id=user.id, message_type="goodnight")
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Buffer the message — AI call and SMS response happen after the delay
         buffer_message(

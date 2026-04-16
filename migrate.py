@@ -36,6 +36,8 @@ MIGRATIONS = [
     # Added: memory fields
     "ALTER TABLE users ADD COLUMN memory TEXT",
     "ALTER TABLE users ADD COLUMN coaching_summary TEXT",
+    # Added: goodnight quiet mode
+    "ALTER TABLE users ADD COLUMN quiet_until TIMESTAMP",
     # Added: confirmed decisions
     "ALTER TABLE users ADD COLUMN confirmed_goal_priority VARCHAR(50)",
     "ALTER TABLE users ADD COLUMN confirmed_training_split VARCHAR(50)",
