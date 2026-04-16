@@ -212,9 +212,9 @@ def resolve_pending_clarification(user_id: int, answer: str):
 
 def maybe_store_food_context(user_id: int, message_body: str):
     """
-    If the user has no food_context yet and is early in their history (≤6 messages),
-    store their reply as food_context. This captures the response to the onboarding
-    food question without requiring explicit classification.
+    Store the user's reply as food_context ONLY if the last outbound coach message
+    asked about food. This prevents random early messages (like greetings) from
+    getting captured as food context.
     """
     session = get_session()
     try:
@@ -222,13 +222,27 @@ def maybe_store_food_context(user_id: int, message_body: str):
         if not user or user.food_context:
             return  # already have context, don't overwrite
 
-        # Only capture during early onboarding window
-        message_count = session.query(Message).filter(
-            Message.user_id == user_id,
-            Message.direction == "in"
-        ).count()
+        # Check if the last outbound message was asking about food
+        last_out = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
 
-        if message_count <= 6 and len(message_body.strip()) > 5:
+        if not last_out:
+            return
+
+        last_out_lower = last_out.body.lower()
+        food_keywords = ["food", "eat", "meal", "cook", "dining", "restaurant", "groceries",
+                         "fridge", "chipotle", "panda", "macros", "nutrition", "breakfast",
+                         "lunch", "dinner", "snack", "diet"]
+
+        # Only capture if the coach's last message was food-related
+        if not any(kw in last_out_lower for kw in food_keywords):
+            return
+
+        if len(message_body.strip()) > 5:
             user.food_context = message_body.strip()
             session.commit()
     finally:
