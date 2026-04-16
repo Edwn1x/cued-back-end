@@ -351,7 +351,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             return
 
         # If user is still in onboarding, route to onboarding handler
-        if (user.onboarding_step or 0) < 3:
+        if (user.onboarding_step or 0) < 4:
             handle_onboarding_reply(user, combined_body)
             return
 

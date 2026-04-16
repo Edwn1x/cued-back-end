@@ -11,10 +11,11 @@ We track onboarding state on the user record:
   onboarding_step = 0: not started
   onboarding_step = 1: welcome sent, waiting for first reply
   onboarding_step = 2: clarification question sent, waiting for answer
-  onboarding_step = 3: complete — hand off to normal coaching
+  onboarding_step = 3: tools question sent, waiting for answer
+  onboarding_step = 4: complete — hand off to normal coaching
 
 The webhook calls handle_onboarding_reply() on every incoming message
-while onboarding_step < 3. Once complete, normal coaching takes over.
+while onboarding_step < 4. Once complete, normal coaching takes over.
 """
 
 import os
@@ -204,13 +205,12 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         return False
 
     elif step == 2:
-        # Second reply — store their answer, send a brief acknowledgment, mark complete
+        # Second reply — store their answer, advance to tools question
         session = get_session()
         try:
             user_row = session.query(UserModel).get(user.id)
             if not user_row.pending_clarification_answer:
                 user_row.pending_clarification_answer = incoming_message.strip()
-            user_row.onboarding_step = 3
 
             # Store confirmed decision based on clarification topic
             if user_row.pending_clarification_topic == "recomp_vs_cut":
@@ -220,23 +220,58 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                 elif any(w in answer_lower for w in ["build", "muscle", "bulk", "size", "gain", "strength", "strong"]):
                     user_row.confirmed_goal_priority = "building"
 
+            user_row.onboarding_step = 3
             session.commit()
-            topic = user_row.pending_clarification_topic
-            answer = user_row.pending_clarification_answer
         finally:
             session.close()
 
         instruction = (
-            f"The user just answered your question about '{topic}'. Their answer: '{answer}'. "
-            "Send a brief acknowledgment that shows you heard them and will use this. "
-            "One sentence. No follow-up questions. Don't explain what's coming next."
+            "Ask the user ONE question: what fitness apps or wearables do they currently use? "
+            "Examples: Strava, MyFitnessPal, Apple Watch, Whoop, Oura, Fitbit, Garmin. "
+            "Explain briefly that Cued replaces tracking apps but works alongside devices that capture data like runs or HRV. "
+            "One message, casual, 1-2 sentences max."
+        )
+        text = _generate(system_prompt, instruction)
+        send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
+        logger.info(f"Onboarding tools question sent to {user.name}")
+        return False
+
+    elif step == 3:
+        # Third reply — store tools answer, acknowledge, mark complete
+        session = get_session()
+        try:
+            user_row = session.query(UserModel).get(user.id)
+            user_row.existing_tools = incoming_message.strip()
+
+            answer_lower = incoming_message.strip().lower()
+            if any(w in answer_lower for w in ["none", "nothing", "no apps", "don't use", "nope", "no"]):
+                user_row.tools_decision = "none"
+            elif any(w in answer_lower for w in ["myfitnesspal", "mfp", "cronometer", "loseit", "lose it"]):
+                user_row.tools_decision = None  # coach will clarify migrate vs coexist in conversation
+            else:
+                user_row.tools_decision = "coexist"  # devices like Whoop/Apple Watch default to coexist
+
+            user_row.onboarding_step = 4
+            session.commit()
+        finally:
+            session.close()
+
+        instruction = (
+            f"The user just told you their current apps/tools: '{incoming_message.strip()}'. "
+            "Acknowledge in ONE sentence. If they mentioned a tracking app like MyFitnessPal, "
+            "say something like 'You can keep using MFP and send me your daily totals, or we can migrate "
+            "and I'll track directly — your call, we can sort that out as we go.' "
+            "If they mentioned devices like Whoop or Apple Watch, say something like 'Keep using those "
+            "for the data — I'll process it when you share it with me.' "
+            "If they said none, acknowledge casually. "
+            "ONE message. No follow-up questions."
         )
         text = _generate(system_prompt, instruction)
         send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
         logger.info(f"Onboarding complete for {user.name}")
         return True
 
-    # step >= 3: already complete
+    # step >= 4: already complete
     return True
 
 

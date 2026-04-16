@@ -269,6 +269,21 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
             f"One sentence. No questions. No guilt. Something like 'still here when you're ready' or a brief relevant tip. "
             f"Do not use ---. Do not mention how long they've been silent."
         ),
+        "weigh_in": (
+            f"Send a warm, brief weigh-in check-in to {user.name}. One message, no ---. "
+            f"Ask for today's weight. Keep it casual. "
+            f"Something like 'Morning check-in — what's the scale say today?' or 'It's weigh-in day. How's the scale looking?'"
+        ),
+        "adherence_gentle": (
+            f"Send a gentle check-in to {user.name}. One message, no ---. "
+            f"Ask how their eating has been — noticed they haven't logged meals today. "
+            f"No guilt, no pressure. Example: 'Haven't heard about meals today — everything good?'"
+        ),
+        "adherence_firm": (
+            f"Send a slightly firmer nudge to {user.name}. One message, no ---. "
+            f"The tracking is the point. Be honest without shaming. "
+            f"Example: 'Not tracking means I\\'m flying blind. Even a rough rundown of today helps — what\\'d you eat?'"
+        ),
     }
 
     # Map old trigger names for backward compatibility

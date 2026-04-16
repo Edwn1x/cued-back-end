@@ -51,6 +51,19 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN confirmed_training_days VARCHAR(100)",
     # Added: workout_confirmed on daily_logs
     "ALTER TABLE daily_logs ADD COLUMN workout_confirmed BOOLEAN DEFAULT FALSE",
+    # Added: weigh-in scheduling + tools tracking + photo meal pending state
+    "ALTER TABLE users ADD COLUMN weigh_in_day VARCHAR(10)",
+    "ALTER TABLE users ADD COLUMN existing_tools TEXT",
+    "ALTER TABLE users ADD COLUMN tools_decision VARCHAR(20)",
+    "ALTER TABLE users ADD COLUMN pending_photo_meal TEXT",
+    # Added: weight_logs table (CREATE TABLE IF NOT EXISTS)
+    """CREATE TABLE IF NOT EXISTS weight_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        weighed_at TIMESTAMP DEFAULT NOW(),
+        weight_lbs FLOAT NOT NULL,
+        notes TEXT
+    )""",
 ]
 
 with engine.connect() as conn:

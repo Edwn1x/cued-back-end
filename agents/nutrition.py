@@ -217,5 +217,301 @@ Rules:
         "intent": parsed.get("intent", "nutrition_general"),
         "content": parsed.get("content", {}),
         "clarifying_question": parsed.get("clarifying_question"),
-        "log_action": None,  # Phase 2b will populate
+        "log_action": None,
+    }
+
+
+def is_daily_log_query(message: str) -> bool:
+    """Detect if the user is asking for their daily log."""
+    msg = message.lower().strip()
+    if msg in ("log", "daily log", "my log", "food log", "food log today"):
+        return True
+    trigger_phrases = [
+        "what have i eaten", "what did i eat today", "what have i ate today",
+        "my meals today", "todays meals", "today's meals",
+        "where am i at", "how am i doing today", "show log", "show my log",
+    ]
+    for phrase in trigger_phrases:
+        if phrase in msg and len(msg) < 60:
+            return True
+    return False
+
+
+def handle_daily_log_query(user) -> str:
+    """Return a formatted summary of today's meals and totals."""
+    from models import Meal, ensure_todays_totals, get_session, User
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ensure_todays_totals(user.id)
+
+    session = get_session()
+    try:
+        user = session.query(User).get(user.id)
+
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+
+        today_start = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        todays_meals = (
+            session.query(Meal)
+            .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start)
+            .order_by(Meal.eaten_at.asc())
+            .all()
+        )
+
+        if not todays_meals:
+            return "Nothing logged yet today. Tell me what you've eaten and I'll start tracking."
+
+        lines = ["Today so far:"]
+        for m in todays_meals:
+            time_str = m.eaten_at.astimezone(user_tz).strftime("%I:%M %p").lstrip("0")
+            lines.append(f"— {time_str}: {m.description} (~{m.calories} cal, {m.protein_g}g protein)")
+
+        cal_total = user.calories_today or 0
+        protein_total = user.protein_today or 0
+        cal_target = user.calorie_target or "?"
+        protein_target = user.protein_target or "?"
+
+        lines.append("")
+        lines.append(f"Total: {cal_total}/{cal_target} cal, {protein_total}g/{protein_target}g protein")
+
+        if isinstance(cal_target, int):
+            remaining = cal_target - cal_total
+            if remaining > 0:
+                lines.append(f"Room for {remaining} cal today.")
+
+        return "\n".join(lines)
+    finally:
+        session.close()
+
+
+def handle_food_photo(user, user_message: str, image_url: str) -> dict:
+    """First pass on a food photo. Estimates a range and asks clarifying questions."""
+    import json as json_lib
+    from models import get_session, User
+
+    personality = load_skill("personality")
+    safety = load_skill("safety")
+    nutrition_skill = load_skill("nutrition")
+    context = _build_nutrition_context(user)
+
+    system_prompt = f"""{personality}
+
+---
+
+{safety}
+
+---
+
+{nutrition_skill}
+
+---
+
+{context}
+
+## YOUR TASK — FOOD PHOTO FIRST PASS
+
+The user sent a food photo. Your job is to:
+1. Identify what's in the photo
+2. Give an initial calorie + protein estimate as a RANGE (not a single number)
+3. Ask 1-2 specific clarifying questions to narrow the estimate
+
+DO NOT log the meal yet. The user will answer your questions and then you'll refine.
+
+Common things to clarify: portion size, cooking method (grilled vs fried, oil used),
+added sauces/dressings, whether it's a branded item, whether they ate all of it.
+
+Return ONLY valid JSON:
+{{
+  "intent": "food_photo_first_pass",
+  "content": {{
+    "identified_items": "what you see in the photo",
+    "initial_range": {{
+      "calories_low": number,
+      "calories_high": number,
+      "protein_low": number,
+      "protein_high": number
+    }},
+    "initial_description": "brief description for later logging"
+  }},
+  "clarifying_question": "1-2 specific questions as ONE sentence",
+  "coaching_note": null
+}}"""
+
+    user_content = [
+        {"type": "image", "source": {"type": "url", "url": image_url}},
+        {"type": "text", "text": user_message or "Here's my meal."},
+    ]
+
+    response = client.messages.create(
+        model=config.COACH_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+    text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    if "}" in text:
+        text = text[:text.rindex("}") + 1]
+
+    try:
+        parsed = json_lib.loads(text)
+    except Exception as e:
+        logger.error(f"Photo first pass JSON parse failed: {e}")
+        parsed = {
+            "intent": "food_photo_first_pass",
+            "content": {"note": "couldn't analyze photo cleanly"},
+            "clarifying_question": "Mind describing what's in the meal?",
+        }
+
+    # Save pending estimate for refinement after user answers
+    session = get_session()
+    try:
+        user_row = session.query(User).get(user.id)
+        user_row.pending_photo_meal = json_lib.dumps({
+            "image_url": image_url,
+            "initial_estimate": parsed.get("content", {}),
+            "clarifying_question": parsed.get("clarifying_question", ""),
+        })
+        session.commit()
+    finally:
+        session.close()
+
+    return {
+        "agent": "nutrition",
+        "intent": parsed.get("intent", "food_photo_first_pass"),
+        "content": parsed.get("content", {}),
+        "clarifying_question": parsed.get("clarifying_question"),
+        "log_action": None,
+    }
+
+
+def handle_photo_refinement(user, user_message: str) -> dict:
+    """User answered clarifying questions about a food photo. Refine and log."""
+    import json as json_lib
+    from models import get_session, User, Meal, ensure_todays_totals
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    session = get_session()
+    try:
+        user_row = session.query(User).get(user.id)
+        if not user_row or not user_row.pending_photo_meal:
+            return None
+        pending = json_lib.loads(user_row.pending_photo_meal)
+    finally:
+        session.close()
+
+    personality = load_skill("personality")
+    safety = load_skill("safety")
+    nutrition_skill = load_skill("nutrition")
+    context = _build_nutrition_context(user)
+
+    initial_estimate = pending.get("initial_estimate", {})
+    initial_question = pending.get("clarifying_question", "")
+
+    system_prompt = f"""{personality}
+
+---
+
+{safety}
+
+---
+
+{nutrition_skill}
+
+---
+
+{context}
+
+## YOUR TASK — FOOD PHOTO REFINEMENT
+
+Earlier you analyzed a photo and estimated:
+{json_lib.dumps(initial_estimate, indent=2)}
+
+You asked the user: "{initial_question}"
+They just answered: "{user_message}"
+
+Now refine your estimate into a single number (not a range) and prepare to log.
+
+Return ONLY valid JSON:
+{{
+  "intent": "food_photo_refined",
+  "content": {{
+    "description": "final meal description for logging",
+    "calories": number,
+    "protein_g": number,
+    "carbs_g": number,
+    "fat_g": number,
+    "running_total_note": "running total context after this meal"
+  }},
+  "log_this_meal": true,
+  "clarifying_question": null
+}}"""
+
+    response = client.messages.create(
+        model=config.COACH_MODEL,
+        max_tokens=config.MAX_RESPONSE_TOKENS,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+
+    text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    if "}" in text:
+        text = text[:text.rindex("}") + 1]
+
+    try:
+        parsed = json_lib.loads(text)
+    except Exception as e:
+        logger.error(f"Photo refinement JSON parse failed: {e}")
+        return None
+
+    meal_content = parsed.get("content", {})
+
+    if parsed.get("log_this_meal") and meal_content.get("description"):
+        ensure_todays_totals(user.id)
+
+        session = get_session()
+        try:
+            user_row = session.query(User).get(user.id)
+            try:
+                user_tz = ZoneInfo(user_row.user_timezone or "America/Los_Angeles")
+            except Exception:
+                user_tz = ZoneInfo("America/Los_Angeles")
+
+            meal = Meal(
+                user_id=user.id,
+                eaten_at=datetime.now(user_tz),
+                description=meal_content.get("description", ""),
+                calories=meal_content.get("calories", 0),
+                protein_g=meal_content.get("protein_g", 0),
+                carbs_g=meal_content.get("carbs_g", 0),
+                fat_g=meal_content.get("fat_g", 0),
+                source="photo",
+                log_type="user_reported",
+                confidence="medium",
+                notes="logged from photo with clarifying questions",
+            )
+            session.add(meal)
+
+            user_row.calories_today = (user_row.calories_today or 0) + meal_content.get("calories", 0)
+            user_row.protein_today = (user_row.protein_today or 0) + meal_content.get("protein_g", 0)
+            user_row.carbs_today = (user_row.carbs_today or 0) + meal_content.get("carbs_g", 0)
+            user_row.fat_today = (user_row.fat_today or 0) + meal_content.get("fat_g", 0)
+            user_row.pending_photo_meal = None
+
+            session.commit()
+            logger.info(f"Logged photo meal for {user_row.name}: {meal_content.get('description')} ({meal_content.get('calories')} cal)")
+        finally:
+            session.close()
+
+    return {
+        "agent": "nutrition",
+        "intent": "food_photo_refined",
+        "content": meal_content,
+        "clarifying_question": None,
+        "log_action": f"Logged meal: {meal_content.get('description')} ({meal_content.get('calories')} cal)",
     }

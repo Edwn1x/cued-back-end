@@ -94,9 +94,14 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     Everything else still goes to the legacy monolith.
     """
     from coach import get_coach_response
-    from agents.nutrition import handle as nutrition_handle
+    from agents.nutrition import handle as nutrition_handle, handle_food_photo, handle_photo_refinement, is_daily_log_query, handle_daily_log_query
     from agents.personality import write_response
     from models import get_session, Message
+
+    # Fast-path: daily log query
+    if is_daily_log_query(combined_body) and not image_url:
+        logger.info(f"Daily log query from {user.name}")
+        return handle_daily_log_query(user)
 
     # Get recent context for classification
     session = get_session()
@@ -127,13 +132,29 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     if primary == "nutrition" and confidence in ("high", "medium"):
         logger.info(f"Routing to nutrition agent for {user.name}")
         try:
-            structured = nutrition_handle(user, combined_body, image_url=image_url)
+            if image_url:
+                # Food photo — first pass, ask clarifying questions
+                structured = handle_food_photo(user, combined_body, image_url)
+            elif user.pending_photo_meal:
+                # User answering clarifying questions about a previous photo
+                refined = handle_photo_refinement(user, combined_body)
+                structured = refined if refined else nutrition_handle(user, combined_body)
+            else:
+                structured = nutrition_handle(user, combined_body)
+
             response = write_response(user, structured, user_message=combined_body)
-            # Fire meal extraction in background
+
+            # Fire background extractors
             from agents.meal_extractor import extract_and_log_meal
+            from agents.weight_extractor import extract_and_log_weight
             threading.Thread(
                 target=extract_and_log_meal,
                 args=(user.id, combined_body, response, recent_context),
+                daemon=True,
+            ).start()
+            threading.Thread(
+                target=extract_and_log_weight,
+                args=(user.id, combined_body, response),
                 daemon=True,
             ).start()
             return response
@@ -143,4 +164,13 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
 
     # Everything else: legacy monolith
     response = get_coach_response(user, combined_body, message_type, image_url=image_url)
+
+    # Weight extraction runs on every message path
+    from agents.weight_extractor import extract_and_log_weight
+    threading.Thread(
+        target=extract_and_log_weight,
+        args=(user.id, combined_body, response),
+        daemon=True,
+    ).start()
+
     return response

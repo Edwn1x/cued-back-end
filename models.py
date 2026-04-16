@@ -69,9 +69,15 @@ class User(Base):
     fat_today = Column(Integer, default=0)
     totals_date = Column(String(10), default=None)  # YYYY-MM-DD — the date these totals are for
 
+    weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
+    existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
+    tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
+    pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
+
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
     meals = relationship("Meal", back_populates="user", order_by="Meal.eaten_at.desc()")
+    weight_logs = relationship("WeightLog", back_populates="user", order_by="WeightLog.weighed_at.desc()")
     daily_logs = relationship("DailyLog", back_populates="user", order_by="DailyLog.date.desc()")
 
     @property
@@ -161,6 +167,18 @@ class Meal(Base):
     notes = Column(Text)  # any clarifying details
 
     user = relationship("User", back_populates="meals")
+
+
+class WeightLog(Base):
+    __tablename__ = "weight_logs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    weighed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    weight_lbs = Column(Float, nullable=False)
+    notes = Column(Text)  # optional context from user
+
+    user = relationship("User", back_populates="weight_logs")
 
 
 class DailyLog(Base):

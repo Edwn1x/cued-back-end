@@ -142,6 +142,29 @@ def schedule_user(user: User):
         f"wake={user.wake_time}, workout={user.workout_time}"
     )
 
+    # Schedule weekly weigh-in if user has a weigh-in day set
+    if user.weigh_in_day and user.wake_time:
+        day_map = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6,
+        }
+        day_num = day_map.get(user.weigh_in_day.lower())
+        if day_num is not None:
+            wake_h, wake_m = parse_time(user.wake_time)
+            weighin_minute = wake_m + 10 if wake_m < 50 else wake_m - 10
+            job_id = f"user_{user.id}_weigh_in"
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
+            scheduler.add_job(
+                send_scheduled_message,
+                trigger=CronTrigger(day_of_week=day_num, hour=wake_h, minute=weighin_minute),
+                args=[user.id, "weigh_in"],
+                id=job_id,
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info(f"Scheduled weekly weigh-in for {user.name} on {user.weigh_in_day}")
+
 
 def schedule_all_users():
     """Load all active users and schedule their messages."""
@@ -155,9 +178,69 @@ def schedule_all_users():
         session.close()
 
 
+def check_meal_adherence():
+    """
+    Daily check: if a user has been active but hasn't logged a meal in 24+ hours, nudge them.
+    After 48+ hours, slightly firmer tone.
+    """
+    from datetime import timezone
+    from models import Meal, Message
+
+    session = get_session()
+    try:
+        users = session.query(User).filter(User.active == True).all()
+        for user in users:
+            # Skip if user said goodnight recently
+            if user.quiet_until and datetime.now() < user.quiet_until:
+                continue
+
+            # Skip if user is still in onboarding
+            if (user.onboarding_step or 0) < 4:
+                continue
+
+            last_meal = (
+                session.query(Meal)
+                .filter(Meal.user_id == user.id)
+                .order_by(Meal.eaten_at.desc())
+                .first()
+            )
+
+            last_inbound = (
+                session.query(Message)
+                .filter(Message.user_id == user.id, Message.direction == "in")
+                .order_by(Message.created_at.desc())
+                .first()
+            )
+
+            if not last_inbound:
+                continue
+
+            now = datetime.now(timezone.utc)
+            hours_since_meal = None
+            if last_meal:
+                hours_since_meal = (now - last_meal.eaten_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+
+            hours_since_activity = (now - last_inbound.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+
+            # Only nudge if active in last 24h but no meal logged
+            if hours_since_activity < 24 and (hours_since_meal is None or hours_since_meal > 24):
+                if hours_since_meal is not None and hours_since_meal >= 48:
+                    send_scheduled_message(user.id, "adherence_firm")
+                else:
+                    send_scheduled_message(user.id, "adherence_gentle")
+    finally:
+        session.close()
+
+
 def start_scheduler():
     """Initialize and start the scheduler."""
     schedule_all_users()
+    scheduler.add_job(
+        check_meal_adherence,
+        trigger=CronTrigger(hour=20, minute=0),
+        id="global_adherence_check",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info("Scheduler started.")
 
