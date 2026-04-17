@@ -95,6 +95,7 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     """
     from coach import get_coach_response
     from agents.nutrition import handle as nutrition_handle, handle_food_photo, handle_photo_refinement, is_daily_log_query, handle_daily_log_query
+    from agents.training import handle as training_handle
     from agents.personality import write_response
     from models import get_session, Message
 
@@ -160,6 +161,24 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
             return response
         except Exception as e:
             logger.error(f"Nutrition pipeline failed, falling back to legacy: {e}")
+            # Fall through to legacy on any error
+
+    # Route training messages through the new pipeline
+    if primary == "training" and confidence in ("high", "medium"):
+        logger.info(f"Routing to training agent for {user.name}")
+        try:
+            structured = training_handle(user, combined_body)
+            response = write_response(user, structured, user_message=combined_body)
+            # Weight extraction in background (weight can come up in training context)
+            from agents.weight_extractor import extract_and_log_weight
+            threading.Thread(
+                target=extract_and_log_weight,
+                args=(user.id, combined_body, response),
+                daemon=True,
+            ).start()
+            return response
+        except Exception as e:
+            logger.error(f"Training pipeline failed, falling back to legacy: {e}")
             # Fall through to legacy on any error
 
     # Everything else: legacy monolith
