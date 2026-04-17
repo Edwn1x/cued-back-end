@@ -149,6 +149,83 @@ def compute_targets(user) -> MacroResult:
     )
 
 
+def calculate_targets(user) -> dict:
+    """
+    Calculate calorie and protein targets based on user profile.
+    Uses Mifflin-St Jeor for BMR, activity multiplier for TDEE,
+    then adjusts based on goal.
+    """
+    # Defaults if data is somehow missing
+    weight_kg = (user.weight_lbs or 150) * 0.453592
+    height_cm = ((user.height_ft or 5) * 12 + (user.height_in or 7)) * 2.54
+    age = user.age or 25
+    gender = user.gender or "male"
+
+    # Mifflin-St Jeor BMR
+    if gender in ("male", "prefer_not_to_say"):
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+    else:
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+
+    # Activity multiplier based on training days
+    workout_days = user.workout_days or "3"
+
+    try:
+        if "," in str(workout_days):
+            days_count = len(workout_days.split(","))
+        else:
+            days_count = int(workout_days)
+    except (ValueError, TypeError):
+        days_count = 3
+
+    if days_count <= 2:
+        multiplier = 1.375
+    elif days_count <= 4:
+        multiplier = 1.55
+    elif days_count <= 5:
+        multiplier = 1.65
+    else:
+        multiplier = 1.75
+
+    tdee = round(bmr * multiplier)
+
+    # Adjust for goal
+    goal = user.goal or "general_fitness"
+    goal_label = "maintenance"
+
+    if "fat_loss" in goal and "muscle" in goal:
+        calories = round(tdee * 0.9 / 50) * 50
+        goal_label = "recomp"
+    elif "fat_loss" in goal:
+        calories = round((tdee - 500) / 50) * 50
+        goal_label = "cutting"
+    elif "muscle" in goal or "strength" in goal:
+        calories = round((tdee + 250) / 50) * 50
+        goal_label = "building"
+    else:
+        calories = round(tdee / 50) * 50
+        goal_label = "maintenance"
+
+    # Protein: 1g/lb for muscle/fat-loss goals, 0.8g otherwise
+    weight_lbs = user.weight_lbs or 150
+    if "muscle" in goal or "strength" in goal or "fat_loss" in goal:
+        protein = round(weight_lbs * 1.0)
+    else:
+        protein = round(weight_lbs * 0.8)
+
+    # Floor values
+    calories = max(calories, 1400)
+    protein = max(protein, 80)
+
+    return {
+        "calories": calories,
+        "protein": protein,
+        "tdee": tdee,
+        "bmr": round(bmr),
+        "goal_label": goal_label,
+    }
+
+
 def get_or_compute_targets(user, session) -> MacroResult:
     """
     Return stored targets if they exist, otherwise compute and store them.
