@@ -130,6 +130,7 @@ def _build_nutrition_context(user: User) -> str:
 
     profile = f"""Name: {user.name}
 Goal: {user.goal}
+Experience: {user.experience or "unknown"}
 Height: {f"{user.height_ft}'{user.height_in or 0}" if user.height_ft else "not known"}
 Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "not known"}
 Diet: {user.diet or "omnivore"}

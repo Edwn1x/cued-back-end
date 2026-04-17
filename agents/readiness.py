@@ -88,6 +88,7 @@ def _build_readiness_context(user: User) -> str:
 
     profile = f"""Name: {user.name}
 Age: {user.age or "unknown"}
+Experience: {user.experience or "unknown"}
 Sleep quality (self-reported at signup): {user.sleep_quality or "unknown"}
 Stress level (self-reported at signup): {user.stress_level or "unknown"}
 Wearable: {user.wearable or "none"}
