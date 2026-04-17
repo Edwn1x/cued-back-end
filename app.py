@@ -728,83 +728,81 @@ def admin():
         # ── MESSAGE STATS ──
         all_messages = session.query(Message).all()
         total_sent = sum(1 for m in all_messages if m.direction == "out")
-        total_received = sum(1 for m in all_messages if m.direction == "incoming")
+        total_received = sum(1 for m in all_messages if m.direction == "in")
         response_rate = round((total_received / total_sent * 100) if total_sent > 0 else 0)
- 
+
         # ── TODAY'S ACTIVITY ──
         today_active = 0
         for u in all_users:
             user_msgs_today = [m for m in all_messages
-                              if m.user_id == u.id
-                              and m.direction == "incoming"
-                              and as_utc(m.created_at) >= today_start]
+                               if m.user_id == u.id
+                               and m.direction == "in"
+                               and as_utc(m.created_at) >= today_start]
             if user_msgs_today:
                 today_active += 1
- 
+
         # ── RETENTION COHORTS ──
-        # Day 1: responded to at least one message
         d1_responded = 0
         for u in all_users:
-            user_incoming = [m for m in all_messages if m.user_id == u.id and m.direction == "incoming"]
+            user_incoming = [m for m in all_messages if m.user_id == u.id and m.direction == "in"]
             if user_incoming:
                 d1_responded += 1
         d1_rate = round((d1_responded / total_users * 100) if total_users > 0 else 0)
- 
-        # Day 7, 14, 30: active within the window
+
         def active_in_window(days):
             cutoff = now - timedelta(days=days)
             count = 0
             eligible = 0
             for u in all_users:
-                # Only count users who signed up at least N days ago
-                if hasattr(u, 'created_at') and u.created_at and as_utc(u.created_at) <= cutoff:
+                if u.created_at and as_utc(u.created_at) <= cutoff:
                     eligible += 1
                     user_msgs = [m for m in all_messages
-                                if m.user_id == u.id
-                                and m.direction == "incoming"
-                                and as_utc(m.created_at) >= cutoff]
+                                 if m.user_id == u.id
+                                 and m.direction == "in"
+                                 and as_utc(m.created_at) >= cutoff]
                     if user_msgs:
                         count += 1
-                elif not hasattr(u, 'created_at') or not u.created_at:
-                    # If no created_at, count all users
+                elif not u.created_at:
                     eligible += 1
-                    user_msgs = [m for m in all_messages
-                                if m.user_id == u.id
-                                and m.direction == "incoming"
-                                and m.created_at >= cutoff]
-                    if user_msgs:
-                        count += 1
             return count, eligible
- 
+
         d7_active, d7_eligible = active_in_window(7)
         d14_active, d14_eligible = active_in_window(14)
         d30_active, d30_eligible = active_in_window(30)
         d7_rate = round((d7_active / d7_eligible * 100) if d7_eligible > 0 else 0)
         d14_rate = round((d14_active / d14_eligible * 100) if d14_eligible > 0 else 0)
         d30_rate = round((d30_active / d30_eligible * 100) if d30_eligible > 0 else 0)
- 
+
         # ── RATINGS ──
-        # Look for messages that are just a number 1-5 (day ratings)
         rating_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
         total_rating_sum = 0
         total_ratings = 0
         for m in all_messages:
-            if m.direction == "incoming" and m.body and m.body.strip() in ["1", "2", "3", "4", "5"]:
+            if m.direction == "in" and m.body and m.body.strip() in ["1", "2", "3", "4", "5"]:
                 r = int(m.body.strip())
                 rating_counts[r] += 1
                 total_rating_sum += r
                 total_ratings += 1
         avg_rating = round(total_rating_sum / total_ratings, 1) if total_ratings > 0 else 0
-        max_rating_count = max(rating_counts.values()) if rating_counts else 1
- 
+        max_rating_count = max(rating_counts.values()) if any(rating_counts.values()) else 1
+
+        # ── MEAL STATS ──
+        from models import Meal, WeightLog
+        all_meals = session.query(Meal).all()
+        total_meals = len(all_meals)
+        meals_today = sum(1 for m in all_meals if as_utc(m.eaten_at) >= today_start)
+        avg_meal_calories = round(
+            sum(m.calories or 0 for m in all_meals) / total_meals
+        ) if total_meals > 0 else 0
+        total_weight_logs = session.query(WeightLog).count()
+
         # ── USER TABLE DATA ──
         users_data = []
         for u in all_users:
             user_msgs = [m for m in all_messages if m.user_id == u.id]
-            user_incoming = [m for m in user_msgs if m.direction == "incoming"]
+            user_incoming = [m for m in user_msgs if m.direction == "in"]
             msg_count = len(user_msgs)
- 
-            # Last active
+
             if user_incoming:
                 last_msg = max(user_incoming, key=lambda m: m.created_at)
                 last_active = fmt_pst(last_msg.created_at)
@@ -812,16 +810,15 @@ def admin():
             else:
                 last_active = "Never"
                 days_inactive = 99
- 
-            # Workout count
+
             workout_count = session.query(Workout).filter(Workout.user_id == u.id).count()
- 
-            # User avg rating
+            meal_count = sum(1 for m in all_meals if m.user_id == u.id)
+
             user_ratings = [int(m.body.strip()) for m in user_incoming
-                          if m.body and m.body.strip() in ["1", "2", "3", "4", "5"]]
+                            if m.body and m.body.strip() in ["1", "2", "3", "4", "5"]]
             user_avg = round(sum(user_ratings) / len(user_ratings), 1) if user_ratings else "—"
- 
-            signed_up = fmt_pst(u.created_at) if hasattr(u, 'created_at') and u.created_at else "—"
+
+            signed_up = fmt_pst(u.created_at) if u.created_at else "—"
 
             users_data.append({
                 "id": u.id,
@@ -830,32 +827,61 @@ def admin():
                 "signed_up": signed_up,
                 "last_active": last_active,
                 "msg_count": msg_count,
+                "meal_count": meal_count,
                 "workout_count": workout_count,
                 "avg_rating": user_avg,
                 "days_inactive": days_inactive,
+                "onboarding_step": u.onboarding_step or 0,
             })
- 
+
         # ── RECENT MESSAGES ──
         recent = sorted(all_messages, key=lambda m: m.created_at if m.created_at else now, reverse=True)[:50]
-        recent_messages_data = []
         user_map = {u.id: u.name for u in all_users}
-        user_id_map = {u.id: u.id for u in all_users}
-        for m in recent:
-            recent_messages_data.append({
-                "time": fmt_pst(m.created_at),
-                "user_name": user_map.get(m.user_id, "Unknown"),
-                "user_id": user_id_map.get(m.user_id, 0),
-                "direction": m.direction,
-                "body": m.body or "",
-                "message_type": m.message_type or "—",
-            })
- 
+        recent_messages_data = [{
+            "time": fmt_pst(m.created_at),
+            "user_name": user_map.get(m.user_id, "Unknown"),
+            "user_id": m.user_id,
+            "direction": m.direction,
+            "body": m.body or "",
+            "message_type": m.message_type or "—",
+        } for m in recent]
+
+        # ── RECENT MEALS ──
+        recent_meal_rows = sorted(all_meals, key=lambda m: m.eaten_at if m.eaten_at else now, reverse=True)[:40]
+        recent_meals_data = [{
+            "user_id": m.user_id,
+            "user_name": user_map.get(m.user_id, "Unknown"),
+            "eaten_at": fmt_pst(m.eaten_at),
+            "description": m.description or "",
+            "calories": m.calories or 0,
+            "protein_g": m.protein_g or 0,
+            "source": m.source or "text",
+            "confidence": m.confidence or "medium",
+        } for m in recent_meal_rows]
+
+        # ── AGENT PIPELINE STATS ──
+        route_nutrition = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "nutrition" in m.message_type)
+        route_training = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "training" in m.message_type)
+        route_readiness = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "readiness" in m.message_type)
+        route_legacy = total_sent - route_nutrition - route_training - route_readiness
+
+        # Message type breakdown
+        from collections import Counter
+        type_counts = Counter(m.message_type or "unknown" for m in all_messages if m.direction == "out")
+        total_typed = sum(type_counts.values()) or 1
+        message_types_data = sorted([
+            {"type": t, "count": c, "pct": round(c / total_typed * 100)}
+            for t, c in type_counts.most_common(12)
+        ], key=lambda x: -x["count"])
+
         # ── COST ESTIMATES ──
         total_msg_count = total_sent + total_received
         twilio_cost = round(total_msg_count * 0.015, 2)
         api_cost = round(total_sent * 0.006, 2)
         total_cost = round(twilio_cost + api_cost, 2)
- 
+        cost_per_user = round(total_cost / active_users, 2) if active_users > 0 else 0
+        cost_per_msg = round(total_cost / total_msg_count, 4) if total_msg_count > 0 else 0
+
         return render_template_string(ADMIN_HTML,
             now=now.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST"),
             total_users=total_users,
@@ -866,21 +892,33 @@ def admin():
             avg_rating=avg_rating,
             total_ratings=total_ratings,
             today_active=today_active,
+            total_meals=total_meals,
+            meals_today=meals_today,
+            avg_meal_calories=avg_meal_calories,
+            total_weight_logs=total_weight_logs,
             d1_responded=d1_responded,
             d1_rate=d1_rate,
-            d7_active=d7_active,
+            d7_active=d7_active, d7_eligible=d7_eligible,
             d7_rate=d7_rate,
-            d14_active=d14_active,
+            d14_active=d14_active, d14_eligible=d14_eligible,
             d14_rate=d14_rate,
-            d30_active=d30_active,
+            d30_active=d30_active, d30_eligible=d30_eligible,
             d30_rate=d30_rate,
             users=users_data,
             rating_counts=rating_counts,
             max_rating_count=max_rating_count,
             recent_messages=recent_messages_data,
+            recent_meals=recent_meals_data,
+            route_nutrition=route_nutrition,
+            route_training=route_training,
+            route_readiness=route_readiness,
+            route_legacy=route_legacy,
+            message_types=message_types_data,
             twilio_cost=twilio_cost,
             api_cost=api_cost,
             total_cost=total_cost,
+            cost_per_user=cost_per_user,
+            cost_per_msg=cost_per_msg,
         )
     finally:
         session.close()
