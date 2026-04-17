@@ -928,7 +928,10 @@ def admin_delete_user(user_id):
         if not user:
             return jsonify({"status": "error", "message": "User not found"}), 404
         name = user.name
+        from models import Meal, WeightLog
         session.query(Message).filter(Message.user_id == user_id).delete()
+        session.query(Meal).filter(Meal.user_id == user_id).delete()
+        session.query(WeightLog).filter(WeightLog.user_id == user_id).delete()
         session.query(Workout).filter(Workout.user_id == user_id).delete()
         session.query(DailyLog).filter(DailyLog.user_id == user_id).delete()
         session.delete(user)
