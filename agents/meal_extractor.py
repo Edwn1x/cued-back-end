@@ -107,7 +107,7 @@ Coach: "You're at 85g out of 145g."
 
         session = get_session()
         try:
-            user = session.query(User).get(user_id)
+            user = session.get(User, user_id)
             if not user:
                 return
 

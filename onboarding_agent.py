@@ -179,7 +179,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
 
     session = get_session()
     try:
-        user_row = session.query(UserModel).get(user.id)
+        user_row = session.get(UserModel, user.id)
         step = user_row.onboarding_step or 1
     finally:
         session.close()
@@ -188,15 +188,20 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     system_prompt = _build_system_prompt(user, user_summary)
 
     if step == 1:
-        # First reply — ask the single clarification question
+        # First reply — acknowledge user's message then ask the clarification question
         clarification_instruction, topic = _pick_clarification_question(user)
-        text = _generate(system_prompt, clarification_instruction)
+        full_instruction = (
+            f"The user just replied to your welcome message with: \"{incoming_message}\"\n\n"
+            f"First, briefly acknowledge what they said (one sentence). "
+            f"Then ask this clarification question:\n{clarification_instruction}"
+        )
+        text = _generate(system_prompt, full_instruction)
         send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
         logger.info(f"Onboarding clarification sent to {user.name} (topic: {topic})")
 
         session = get_session()
         try:
-            user_row = session.query(UserModel).get(user.id)
+            user_row = session.get(UserModel, user.id)
             user_row.onboarding_step = 2
             user_row.pending_clarification_topic = topic
             session.commit()
@@ -208,7 +213,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         # Second reply — store their answer, advance to tools question
         session = get_session()
         try:
-            user_row = session.query(UserModel).get(user.id)
+            user_row = session.get(UserModel, user.id)
             if not user_row.pending_clarification_answer:
                 user_row.pending_clarification_answer = incoming_message.strip()
 
@@ -240,7 +245,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         # Third reply — store tools answer, acknowledge, mark complete
         session = get_session()
         try:
-            user_row = session.query(UserModel).get(user.id)
+            user_row = session.get(UserModel, user.id)
             user_row.existing_tools = incoming_message.strip()
 
             answer_lower = incoming_message.strip().lower()
@@ -290,7 +295,7 @@ def start_onboarding(user):
             from models import get_session, User as UserModel
             session = get_session()
             try:
-                user_row = session.query(UserModel).get(user.id)
+                user_row = session.get(UserModel, user.id)
                 if user_row and not user_row.onboarding_step:
                     user_row.onboarding_step = 1
                     session.commit()

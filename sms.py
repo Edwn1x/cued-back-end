@@ -40,9 +40,9 @@ def split_message(body: str) -> list[str]:
     import re
     parts = [p.strip() for p in re.split(r"\s*---\s*", body) if p.strip()]
 
-    # Cap at 3
-    if len(parts) > 3:
-        parts = parts[:2] + [" --- ".join(parts[2:])]
+    # Cap at 2
+    if len(parts) > 2:
+        parts = parts[:1] + [" --- ".join(parts[1:])]
 
     return parts if parts else [body]
 

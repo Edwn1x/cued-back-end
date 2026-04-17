@@ -25,12 +25,15 @@ def _build_nutrition_context(user: User) -> str:
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
+    from models import is_workout_confirmed_today
+    workout_confirmed = is_workout_confirmed_today(user.id)
+
     ensure_todays_totals(user.id)
 
     session = get_session()
     try:
         # Re-fetch user so we have fresh totals after ensure_todays_totals
-        user = session.query(User).get(user.id)
+        user = session.get(User, user.id)
 
         try:
             user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
@@ -134,7 +137,13 @@ Restrictions: {user.restrictions or "none reported"}
 Cooking situation: {user.cooking_situation or "unknown"}
 Food context: {user.food_context or "not collected yet"}"""
 
-    return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask)\n{confirmed_block}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
+    workout_status = (
+        "User has CONFIRMED training today — you can reference the session."
+        if workout_confirmed else
+        "User has NOT confirmed training today. Do NOT assume they trained, do NOT ask how the workout went, do NOT reference a completed session unless the user mentions it first."
+    )
+
+    return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n## TODAY'S TRAINING STATUS\n{workout_status}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
 
 
 def handle(user: User, user_message: str, image_url: str = None) -> dict:
@@ -261,7 +270,7 @@ def handle_daily_log_query(user) -> str:
 
     session = get_session()
     try:
-        user = session.query(User).get(user.id)
+        user = session.get(User, user.id)
 
         try:
             user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
@@ -384,7 +393,7 @@ Return ONLY valid JSON:
     # Save pending estimate for refinement after user answers
     session = get_session()
     try:
-        user_row = session.query(User).get(user.id)
+        user_row = session.get(User, user.id)
         user_row.pending_photo_meal = json_lib.dumps({
             "image_url": image_url,
             "initial_estimate": parsed.get("content", {}),
@@ -412,7 +421,7 @@ def handle_photo_refinement(user, user_message: str) -> dict:
 
     session = get_session()
     try:
-        user_row = session.query(User).get(user.id)
+        user_row = session.get(User, user.id)
         if not user_row or not user_row.pending_photo_meal:
             return None
         pending = json_lib.loads(user_row.pending_photo_meal)
@@ -490,7 +499,7 @@ Return ONLY valid JSON:
 
         session = get_session()
         try:
-            user_row = session.query(User).get(user.id)
+            user_row = session.get(User, user.id)
             try:
                 user_tz = ZoneInfo(user_row.user_timezone or "America/Los_Angeles")
             except Exception:

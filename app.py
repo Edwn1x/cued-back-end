@@ -89,7 +89,7 @@ If nothing can be extracted, return all null."""
 
         session = get_session()
         try:
-            user = session.query(User).get(user_id)
+            user = session.get(User, user_id)
             if not user:
                 return
 
@@ -160,7 +160,7 @@ def extract_and_store_memory(user_id: int, user_message: str, coach_response: st
 
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return
         existing_memory = user.memory or ""
@@ -225,7 +225,7 @@ User: "yeah sounds good"
 
         session = get_session()
         try:
-            user = session.query(User).get(user_id)
+            user = session.get(User, user_id)
             if not user:
                 return
 
@@ -256,7 +256,7 @@ def maybe_update_coaching_summary(user_id: int):
 
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return
 
@@ -330,7 +330,7 @@ Keep under 400 words total. This replaces the prior summary — include importan
 
         session = get_session()
         try:
-            user = session.query(User).get(user_id)
+            user = session.get(User, user_id)
             if user:
                 user.coaching_summary = summary
                 session.commit()
@@ -502,6 +502,9 @@ def webhook():
                 "Get some rest. Hit me up in the morning.",
             ])
             send_sms(user.phone, response, user_id=user.id, message_type="goodnight")
+            # Cancel any pending buffer so it doesn't flush after goodnight
+            from message_buffer import cancel_buffer
+            cancel_buffer(from_number)
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Buffer the message — AI call and SMS response happen after the delay
@@ -892,7 +895,7 @@ def admin_send():
     try:
         user_id = int(request.form.get("user_id"))
         body = request.form.get("body", "").strip()
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if user and body:
             send_sms(user.phone, body, user_id=user.id, message_type="admin")
             return jsonify({"status": "ok"})
@@ -907,7 +910,7 @@ def admin_delete_user(user_id):
     """Permanently delete a user and all their data."""
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return jsonify({"status": "error", "message": "User not found"}), 404
         name = user.name
@@ -931,7 +934,7 @@ def admin_user(user_id):
     pst = pytz.timezone("America/Los_Angeles")
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return "User not found", 404
         messages = session.query(Message).filter(Message.user_id == user_id).order_by(Message.created_at).all()

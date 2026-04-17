@@ -165,12 +165,12 @@ Respond to the user's latest message, or generate the scheduled touchpoint messa
 FORMAT RULES:
 - Respond in 1-2 separate messages, each under 320 characters.
 - If you need two messages, separate them with --- on its own line.
-- First message = your main content or answer. Second message (optional) = supporting context, one follow-up question, or a brief next step.
-- Do NOT end every message with "Reply W" or "Reply M" — those shortcuts should only appear when you're actually offering a workout or meal right now, not as a generic close.
-- If the user is in conversation (asking questions, pushing back, exploring ideas), just converse. Don't force a CTA.
-- One idea per message. Never cram greeting + training + food into one block.
-- No bullet points in scheduled messages — write like a person texting, not a newsletter.
-- Do not use --- for any other purpose (not for section breaks, not for emphasis).
+- First message = your main content or answer. Second message (optional) = supporting context or one follow-up question.
+- If you can say it in one message, say it in one message. Two is the max. Never three.
+- Do NOT end every message with "Reply W" or "Reply M" — only when actually offering a workout or meal right now.
+- If the user is in conversation, just converse. Don't force a CTA.
+- One idea per message. No bullet points — write like a person texting.
+- Do not use --- for any other purpose.
 """
         return system_prompt
 

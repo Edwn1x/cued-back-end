@@ -246,7 +246,7 @@ def resolve_pending_clarification(user_id: int, answer: str):
     """
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return
         if user.pending_clarification_topic and not user.pending_clarification_answer:
@@ -266,7 +266,7 @@ def ensure_todays_totals(user_id: int):
     from zoneinfo import ZoneInfo
     session = get_session()
     try:
-        user = session.query(User).get(user_id)
+        user = session.get(User, user_id)
         if not user:
             return
 
