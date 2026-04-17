@@ -820,6 +820,11 @@ def admin():
 
             signed_up = fmt_pst(u.created_at) if u.created_at else "—"
 
+            user_sent = sum(1 for m in user_msgs if m.direction == "out")
+            user_received = len(user_incoming)
+            cost_usd = round((user_sent + user_received) * 0.015 + user_sent * 0.006, 2)
+            created_ts = int(u.created_at.timestamp()) if u.created_at else 0
+
             users_data.append({
                 "id": u.id,
                 "name": u.name,
@@ -832,6 +837,8 @@ def admin():
                 "avg_rating": user_avg,
                 "days_inactive": days_inactive,
                 "onboarding_step": u.onboarding_step or 0,
+                "cost_usd": cost_usd,
+                "created_ts": created_ts,
             })
 
         # ── RECENT MESSAGES ──
@@ -966,26 +973,136 @@ def admin_delete_user(user_id):
 # ─── Admin User Detail ──────────────────────────────
 @app.route("/admin/user/<int:user_id>")
 def admin_user(user_id):
-    """Per-user detail page with full conversation and profile."""
-    from datetime import timezone
+    """Per-user detail page — profile, metrics, meals, weight, conversation."""
+    from datetime import datetime, timezone, timedelta
     import pytz
+    from models import Meal, WeightLog
     pst = pytz.timezone("America/Los_Angeles")
     session = get_session()
     try:
         user = session.get(User, user_id)
         if not user:
             return "User not found", 404
-        messages = session.query(Message).filter(Message.user_id == user_id).order_by(Message.created_at).all()
+
+        now = datetime.now(timezone.utc)
+
+        def as_utc(dt):
+            if dt is None: return None
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
         def fmt_pst(dt):
-            if not dt:
-                return "—"
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(pst).strftime("%b %d, %I:%M %p")
+            if not dt: return "—"
+            return as_utc(dt).astimezone(pst).strftime("%b %d, %I:%M %p")
 
-        msgs_data = [{"direction": m.direction, "body": m.body, "message_type": m.message_type or "—", "time": fmt_pst(m.created_at)} for m in messages]
-        return render_template_string(USER_DETAIL_HTML, user=user, messages=msgs_data)
+        def fmt_date(dt):
+            if not dt: return "—"
+            return as_utc(dt).astimezone(pst).strftime("%b %d, %Y")
+
+        # Messages
+        messages = session.query(Message).filter(Message.user_id == user_id).order_by(Message.created_at).all()
+        total_sent = sum(1 for m in messages if m.direction == "out")
+        total_received = sum(1 for m in messages if m.direction == "in")
+        response_rate = round((total_received / total_sent * 100) if total_sent > 0 else 0)
+
+        msgs_data = [{
+            "direction": m.direction,
+            "body": m.body or "",
+            "message_type": m.message_type or "—",
+            "time": fmt_pst(m.created_at),
+        } for m in messages]
+
+        # Last active
+        inbound = [m for m in messages if m.direction == "in"]
+        if inbound:
+            last_msg = max(inbound, key=lambda m: m.created_at)
+            days_inactive = (now - as_utc(last_msg.created_at)).days
+            last_active = fmt_pst(last_msg.created_at)
+        else:
+            days_inactive = 99
+            last_active = "Never"
+
+        # Activity over time — messages per day for last 30 days
+        activity = {}
+        for m in messages:
+            if m.created_at:
+                d = as_utc(m.created_at).astimezone(pst).strftime("%Y-%m-%d")
+                activity[d] = activity.get(d, 0) + 1
+        activity_days = []
+        for i in range(29, -1, -1):
+            d = (now - timedelta(days=i)).astimezone(pst).strftime("%Y-%m-%d")
+            activity_days.append({"date": d, "count": activity.get(d, 0)})
+
+        # Meals
+        meals = session.query(Meal).filter(Meal.user_id == user_id).order_by(Meal.eaten_at.desc()).all()
+        total_meals = len(meals)
+        total_calories_logged = sum(m.calories or 0 for m in meals)
+        total_protein_logged = sum(m.protein_g or 0 for m in meals)
+        meals_data = [{
+            "eaten_at": fmt_pst(m.eaten_at),
+            "description": m.description or "",
+            "calories": m.calories or 0,
+            "protein_g": m.protein_g or 0,
+            "carbs_g": m.carbs_g or 0,
+            "fat_g": m.fat_g or 0,
+            "source": m.source or "text",
+            "log_type": m.log_type or "—",
+            "confidence": m.confidence or "medium",
+            "notes": m.notes or "",
+        } for m in meals]
+
+        # Weight logs
+        weight_logs = session.query(WeightLog).filter(WeightLog.user_id == user_id).order_by(WeightLog.weighed_at.desc()).all()
+        weight_data = [{
+            "weighed_at": fmt_pst(w.weighed_at),
+            "weight_lbs": w.weight_lbs,
+            "notes": w.notes or "",
+        } for w in weight_logs]
+        weight_change = None
+        if len(weight_logs) >= 2:
+            weight_change = round(weight_logs[0].weight_lbs - weight_logs[-1].weight_lbs, 1)
+
+        # Daily logs
+        daily_logs = session.query(DailyLog).filter(DailyLog.user_id == user_id).order_by(DailyLog.date.desc()).limit(30).all()
+        daily_logs_data = [{
+            "date": fmt_date(dl.date),
+            "sleep_hours": dl.sleep_hours or "—",
+            "energy_level": dl.energy_level or "—",
+            "daily_rating": dl.daily_rating or "—",
+            "workout_confirmed": dl.workout_confirmed,
+        } for dl in daily_logs]
+
+        # Ratings
+        ratings = [int(m.body.strip()) for m in inbound if m.body and m.body.strip() in ["1","2","3","4","5"]]
+        avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else None
+
+        # Cost estimate
+        user_cost = round((total_sent + total_received) * 0.015 + total_sent * 0.006, 2)
+
+        # Onboarding label
+        step_labels = {0: "Not started", 1: "Welcome sent", 2: "Clarification sent", 3: "Tools question sent", 4: "Complete"}
+        onboarding_label = step_labels.get(user.onboarding_step or 0, f"Step {user.onboarding_step}")
+
+        return render_template_string(USER_DETAIL_HTML,
+            user=user,
+            messages=msgs_data,
+            total_sent=total_sent,
+            total_received=total_received,
+            response_rate=response_rate,
+            last_active=last_active,
+            days_inactive=days_inactive,
+            activity_days=activity_days,
+            meals=meals_data,
+            total_meals=total_meals,
+            total_calories_logged=total_calories_logged,
+            total_protein_logged=total_protein_logged,
+            weight_logs=weight_data,
+            weight_change=weight_change,
+            daily_logs=daily_logs_data,
+            avg_rating=avg_rating,
+            user_cost=user_cost,
+            onboarding_label=onboarding_label,
+            signed_up=fmt_date(user.created_at),
+        )
     finally:
         session.close()
 
@@ -998,97 +1115,415 @@ USER_DETAIL_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ user.name }} — Cued Admin</title>
 <style>
-:root{--bg:#050506;--surface:#111114;--card:#19191D;--border:#1F1F24;--text:#F5F5F7;--text2:#A1A1A6;--text3:#6E6E73;--accent:#7C6EFF;--green:#30D158}
+:root{--bg:#050506;--surface:#111114;--card:#19191D;--border:#1F1F24;--text:#F5F5F7;--text2:#A1A1A6;--text3:#6E6E73;--accent:#7C6EFF;--green:#30D158;--yellow:#FFD60A;--red:#FF453A}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:24px;max-width:900px;margin:0 auto}
-.back{color:var(--accent);text-decoration:none;font-size:13px;display:inline-block;margin-bottom:20px}
-.back:hover{opacity:.7}
-h1{font-size:22px;font-weight:700;letter-spacing:-.5px;margin-bottom:4px}
-.sub{color:var(--text3);font-size:13px;margin-bottom:28px}
-.layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
-.profile-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
-.profile-card h2{font-size:13px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px}
-.profile-row{display:flex;flex-direction:column;gap:2px;padding:8px 0;border-bottom:1px solid var(--border)}
-.profile-row:last-child{border-bottom:none}
-.profile-label{font-size:11px;color:var(--text3)}
-.profile-val{font-size:13px;color:var(--text)}
-.convo{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.convo-header{padding:16px 20px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text2)}
-.messages{padding:16px;display:flex;flex-direction:column;gap:10px;max-height:600px;overflow-y:auto}
-.bubble{max-width:80%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.5}
-.bubble.out{background:var(--accent);color:#fff;align-self:flex-end;border-radius:14px 14px 4px 14px}
-.bubble.in{background:var(--surface);color:var(--text);align-self:flex-start;border-radius:14px 14px 14px 4px;border:1px solid var(--border)}
-.bubble-meta{font-size:10px;color:var(--text3);margin-top:4px}
-.bubble.out .bubble-meta{text-align:right}
-.send-wrap{padding:16px;border-top:1px solid var(--border);display:flex;gap:8px}
-.send-wrap textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px;font-size:13px;font-family:inherit;resize:none;min-height:40px}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+a:hover{opacity:.75}
+
+/* Header */
+.header{padding:20px 28px 0;border-bottom:1px solid var(--border);background:var(--surface)}
+.back{font-size:12px;color:var(--text3);display:inline-flex;align-items:center;gap:5px;margin-bottom:14px}
+.header-top{display:flex;align-items:flex-end;justify-content:space-between;padding-bottom:0}
+.user-title h1{font-size:20px;font-weight:700;letter-spacing:-.4px}
+.user-title .meta{font-size:12px;color:var(--text3);margin-top:3px}
+.status-badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;background:rgba(124,110,255,.15);color:var(--accent)}
+
+/* Tabs */
+.tabs{display:flex;gap:0;margin-top:16px}
+.tab{padding:10px 18px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--text);border-bottom-color:var(--accent)}
+
+/* Content */
+.content{padding:24px 28px;max-width:1100px}
+.tab-pane{display:none}
+.tab-pane.active{display:block}
+
+/* Stat cards */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.stat-value{font-size:22px;font-weight:700;letter-spacing:-.5px}
+.stat-sub{font-size:11px;color:var(--text3);margin-top:3px}
+
+/* Activity heatmap */
+.heatmap-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:24px}
+.heatmap-title{font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.heatmap{display:flex;gap:4px;align-items:flex-end;height:48px}
+.heatmap-bar{flex:1;border-radius:3px 3px 0 0;min-height:4px;transition:opacity .15s;cursor:default}
+.heatmap-bar:hover{opacity:.7}
+
+/* Tables */
+.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px}
+.table-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.table-header span{font-size:13px;font-weight:600;color:var(--text2)}
+.table-header .count{font-size:12px;color:var(--text3)}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;padding:10px 16px;text-align:left;border-bottom:1px solid var(--border)}
+td{font-size:13px;color:var(--text);padding:10px 16px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.02)}
+
+/* Profile grid */
+.profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+.profile-section{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px}
+.profile-section h3{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px}
+.prow{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.prow:last-child{border-bottom:none}
+.prow .pl{font-size:12px;color:var(--text3)}
+.prow .pv{font-size:13px;color:var(--text);text-align:right;max-width:60%}
+.confirmed-tag{font-size:10px;color:var(--green);margin-left:6px;font-weight:600}
+.memory-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:20px}
+.memory-box h3{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px}
+.memory-box p{font-size:13px;color:var(--text2);line-height:1.6;white-space:pre-wrap}
+
+/* Conversation */
+.convo-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.messages{padding:16px;display:flex;flex-direction:column;gap:10px;max-height:560px;overflow-y:auto}
+.msg-row{display:flex;flex-direction:column}
+.msg-row.out{align-items:flex-end}
+.msg-row.in{align-items:flex-start}
+.bubble{max-width:78%;padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.55;word-break:break-word}
+.bubble.out{background:var(--accent);color:#fff;border-radius:14px 14px 4px 14px}
+.bubble.in{background:var(--surface);color:var(--text);border-radius:14px 14px 14px 4px;border:1px solid var(--border)}
+.bubble-meta{font-size:10px;color:var(--text3);margin-top:3px}
+.send-wrap{padding:14px 16px;border-top:1px solid var(--border);display:flex;gap:8px}
+.send-wrap textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 12px;font-size:13px;font-family:inherit;resize:none}
 .send-wrap textarea:focus{outline:none;border-color:var(--accent)}
-.send-wrap button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer}
-.send-wrap button:hover{opacity:.9}
-@media(max-width:700px){.layout{grid-template-columns:1fr}}
+.send-wrap button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.send-wrap button:hover{opacity:.88}
+
+/* Badges */
+.badge{display:inline-block;font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px}
+.badge.photo{background:rgba(124,110,255,.2);color:var(--accent)}
+.badge.text{background:rgba(48,209,88,.15);color:var(--green)}
+.badge.high{background:rgba(48,209,88,.15);color:var(--green)}
+.badge.medium{background:rgba(255,214,10,.15);color:var(--yellow)}
+.badge.low{background:rgba(255,69,58,.15);color:var(--red)}
+
+/* Weight chart */
+.weight-list{display:flex;flex-direction:column;gap:0}
+
+@media(max-width:700px){
+  .profile-grid{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .content{padding:16px}
+}
 </style>
 </head>
 <body>
-<a href="/admin" class="back">← Back to dashboard</a>
-<h1>{{ user.name }}</h1>
-<p class="sub">{{ user.phone }} · ID {{ user.id }}</p>
 
-<div class="layout">
-  <div class="profile-card">
-    <h2>Profile</h2>
-    {% set fields = [
-      ('Age', user.age),('Gender', user.gender),('Occupation', user.occupation),
-      ('Goal', user.goal),('Obstacle', user.biggest_obstacle),('Experience', user.experience),
-      ('Equipment', user.equipment),('Injuries', user.injuries),('Diet', user.diet),
-      ('Cooking', user.cooking_situation),('Restrictions', user.restrictions),
-      ('Workout days', user.workout_days),('Workout time', user.workout_time),
-      ('Wake', user.wake_time),('Bedtime', user.sleep_time),('Sleep', user.sleep_quality),
-      ('Stress', user.stress_level),('Activity', user.activity_level),
-      ('Height', (user.height_ft|string + "'" + (user.height_in|string) + '"') if user.height_ft else None),
-      ('Weight', (user.weight_lbs|string + ' lbs') if user.weight_lbs else None),
-      ('Body fat', (user.body_fat_pct|string + '%') if user.body_fat_pct else None),
-      ('Wearable', user.wearable),('Motivation', user.motivation)
-    ] %}
-    {% for label, val in fields %}
-    {% if val %}
-    <div class="profile-row">
-      <span class="profile-label">{{ label }}</span>
-      <span class="profile-val">{{ val }}</span>
+<div class="header">
+  <a href="/admin" class="back">← Dashboard</a>
+  <div class="header-top">
+    <div class="user-title">
+      <h1>{{ user.name }}</h1>
+      <div class="meta">{{ user.phone }} &nbsp;·&nbsp; ID {{ user.id }} &nbsp;·&nbsp; Signed up {{ signed_up }}</div>
     </div>
-    {% endif %}
-    {% endfor %}
+    <span class="status-badge">{{ onboarding_label }}</span>
   </div>
-
-  <div class="convo">
-    <div class="convo-header">Conversation ({{ messages|length }} messages)</div>
-    <div class="messages" id="msg-container">
-      {% for m in messages %}
-      <div>
-        <div class="bubble {{ m.direction }}">{{ m.body }}</div>
-        <div class="bubble-meta" style="text-align:{{ 'right' if m.direction == 'out' else 'left' }}">{{ m.time }} · {{ m.message_type }}</div>
-      </div>
-      {% endfor %}
-      {% if not messages %}<p style="color:var(--text3);font-size:13px;text-align:center;padding:24px">No messages yet.</p>{% endif %}
-    </div>
-    <div class="send-wrap">
-      <textarea id="msg-body" placeholder="Send a manual message as coach..." rows="2"></textarea>
-      <button onclick="sendMsg()">Send</button>
-    </div>
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('overview')">Overview</div>
+    <div class="tab" onclick="showTab('profile')">Profile</div>
+    <div class="tab" onclick="showTab('conversation')">Conversation</div>
+    <div class="tab" onclick="showTab('meals')">Meals</div>
+    <div class="tab" onclick="showTab('logs')">Weight & Logs</div>
   </div>
 </div>
 
+<div class="content">
+
+  <!-- OVERVIEW TAB -->
+  <div id="tab-overview" class="tab-pane active">
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Messages Sent</div>
+        <div class="stat-value">{{ total_sent }}</div>
+        <div class="stat-sub">coach → user</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Messages Received</div>
+        <div class="stat-value">{{ total_received }}</div>
+        <div class="stat-sub">user → coach</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Response Rate</div>
+        <div class="stat-value">{{ response_rate }}%</div>
+        <div class="stat-sub">replies / coach msgs</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Meals Logged</div>
+        <div class="stat-value">{{ total_meals }}</div>
+        <div class="stat-sub">{{ total_calories_logged }} cal · {{ total_protein_logged }}g protein</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Rating</div>
+        <div class="stat-value">{% if avg_rating %}{{ avg_rating }}/5{% else %}—{% endif %}</div>
+        <div class="stat-sub">daily check-ins</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Est. Spend</div>
+        <div class="stat-value">${{ user_cost }}</div>
+        <div class="stat-sub">API + SMS cost</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Active</div>
+        <div class="stat-value" style="font-size:14px">{{ last_active }}</div>
+        <div class="stat-sub">{{ days_inactive }}d ago</div>
+      </div>
+      {% if weight_change is not none %}
+      <div class="stat-card">
+        <div class="stat-label">Weight Change</div>
+        <div class="stat-value" style="color:{% if weight_change < 0 %}var(--green){% elif weight_change > 0 %}var(--yellow){% else %}var(--text){% endif %}">
+          {% if weight_change > 0 %}+{% endif %}{{ weight_change }} lbs
+        </div>
+        <div class="stat-sub">first → latest log</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="heatmap-wrap">
+      <div class="heatmap-title">30-Day Activity</div>
+      <div class="heatmap" id="heatmap"></div>
+    </div>
+  </div>
+
+  <!-- PROFILE TAB -->
+  <div id="tab-profile" class="tab-pane">
+    <div class="profile-grid">
+      <div class="profile-section">
+        <h3>Basic Info</h3>
+        {% for label, val in [
+          ('Age', user.age), ('Gender', user.gender), ('Occupation', user.occupation),
+          ('Height', (user.height_ft|string + "'" + (user.height_in|string or '0') + '"') if user.height_ft else None),
+          ('Weight', (user.weight_lbs|string + ' lbs') if user.weight_lbs else None),
+          ('Body Fat', (user.body_fat_pct|string + '%') if user.body_fat_pct else None),
+          ('Wearable', user.wearable)
+        ] %}{% if val %}
+        <div class="prow"><span class="pl">{{ label }}</span><span class="pv">{{ val }}</span></div>
+        {% endif %}{% endfor %}
+      </div>
+      <div class="profile-section">
+        <h3>Goals & Training</h3>
+        {% for label, val, confirmed in [
+          ('Goal', user.goal, user.confirmed_goal_priority),
+          ('Experience', user.experience, None),
+          ('Equipment', user.equipment, None),
+          ('Training Split', user.confirmed_training_split, user.confirmed_training_split),
+          ('Training Days', user.confirmed_training_days, user.confirmed_training_days),
+          ('Workout Time', user.confirmed_workout_time, user.confirmed_workout_time),
+          ('Workout Days', user.workout_days, None),
+          ('Injuries', user.injuries, None),
+          ('Activity Level', user.activity_level, None),
+        ] %}{% if val %}
+        <div class="prow">
+          <span class="pl">{{ label }}</span>
+          <span class="pv">{{ val }}{% if confirmed %}<span class="confirmed-tag">✓</span>{% endif %}</span>
+        </div>
+        {% endif %}{% endfor %}
+      </div>
+      <div class="profile-section">
+        <h3>Nutrition Targets</h3>
+        {% for label, val, confirmed in [
+          ('Calorie Target', (user.calorie_target|string + ' cal') if user.calorie_target else None, user.calorie_target),
+          ('Protein Target', (user.protein_target|string + 'g') if user.protein_target else None, user.protein_target),
+          ('Diet', user.diet, None),
+          ('Restrictions', user.restrictions, None),
+          ('Cooking', user.cooking_situation, None),
+          ('Food Context', user.food_context, None),
+        ] %}{% if val %}
+        <div class="prow">
+          <span class="pl">{{ label }}</span>
+          <span class="pv">{{ val }}{% if confirmed %}<span class="confirmed-tag">✓</span>{% endif %}</span>
+        </div>
+        {% endif %}{% endfor %}
+      </div>
+      <div class="profile-section">
+        <h3>Lifestyle & Sleep</h3>
+        {% for label, val in [
+          ('Wake Time', user.wake_time), ('Bedtime', user.sleep_time),
+          ('Sleep Quality', user.sleep_quality), ('Stress Level', user.stress_level),
+          ('Motivation', user.motivation), ('Obstacle', user.biggest_obstacle),
+          ('Existing Tools', user.existing_tools), ('Tools Decision', user.tools_decision),
+          ('Weigh-in Day', user.weigh_in_day),
+        ] %}{% if val %}
+        <div class="prow"><span class="pl">{{ label }}</span><span class="pv">{{ val }}</span></div>
+        {% endif %}{% endfor %}
+      </div>
+    </div>
+    {% if user.memory %}
+    <div class="memory-box">
+      <h3>Coach Memory</h3>
+      <p>{{ user.memory }}</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- CONVERSATION TAB -->
+  <div id="tab-conversation" class="tab-pane">
+    <div class="convo-wrap">
+      <div class="messages" id="msg-container">
+        {% for m in messages %}
+        <div class="msg-row {{ m.direction }}">
+          <div class="bubble {{ m.direction }}">{{ m.body }}</div>
+          <div class="bubble-meta">{{ m.time }}{% if m.message_type and m.message_type != '—' %} · {{ m.message_type }}{% endif %}</div>
+        </div>
+        {% endfor %}
+        {% if not messages %}<p style="color:var(--text3);font-size:13px;text-align:center;padding:24px">No messages yet.</p>{% endif %}
+      </div>
+      <div class="send-wrap">
+        <textarea id="msg-body" placeholder="Send a manual message as coach..." rows="2"></textarea>
+        <button onclick="sendMsg()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MEALS TAB -->
+  <div id="tab-meals" class="tab-pane">
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
+      <div class="stat-card">
+        <div class="stat-label">Total Meals</div>
+        <div class="stat-value">{{ total_meals }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Calories</div>
+        <div class="stat-value">{{ total_calories_logged }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Protein</div>
+        <div class="stat-value">{{ total_protein_logged }}g</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <span>Logged Meals</span>
+        <span class="count">{{ total_meals }} entries</span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Description</th><th>Cal</th><th>Protein</th><th>Carbs</th><th>Fat</th><th>Source</th><th>Confidence</th>
+        </tr></thead>
+        <tbody>
+        {% for m in meals %}
+        <tr>
+          <td style="white-space:nowrap;color:var(--text3)">{{ m.eaten_at }}</td>
+          <td>{{ m.description }}</td>
+          <td>{{ m.calories }}</td>
+          <td>{{ m.protein_g }}g</td>
+          <td>{{ m.carbs_g }}g</td>
+          <td>{{ m.fat_g }}g</td>
+          <td><span class="badge {{ m.source }}">{{ m.source }}</span></td>
+          <td><span class="badge {{ m.confidence }}">{{ m.confidence }}</span></td>
+        </tr>
+        {% endfor %}
+        {% if not meals %}<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">No meals logged yet.</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- WEIGHT & LOGS TAB -->
+  <div id="tab-logs" class="tab-pane">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="table-wrap">
+          <div class="table-header">
+            <span>Weight Log</span>
+            <span class="count">{{ weight_logs|length }} entries</span>
+          </div>
+          <table>
+            <thead><tr><th>Date</th><th>Weight</th><th>Notes</th></tr></thead>
+            <tbody>
+            {% for w in weight_logs %}
+            <tr>
+              <td style="color:var(--text3);white-space:nowrap">{{ w.weighed_at }}</td>
+              <td style="font-weight:600">{{ w.weight_lbs }} lbs</td>
+              <td style="color:var(--text3)">{{ w.notes }}</td>
+            </tr>
+            {% endfor %}
+            {% if not weight_logs %}<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:20px">No weight logs yet.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="table-wrap">
+          <div class="table-header">
+            <span>Daily Logs</span>
+            <span class="count">Last 30 days</span>
+          </div>
+          <table>
+            <thead><tr><th>Date</th><th>Sleep</th><th>Energy</th><th>Rating</th><th>Trained</th></tr></thead>
+            <tbody>
+            {% for dl in daily_logs %}
+            <tr>
+              <td style="color:var(--text3);white-space:nowrap">{{ dl.date }}</td>
+              <td>{% if dl.sleep_hours != '—' %}{{ dl.sleep_hours }}h{% else %}—{% endif %}</td>
+              <td>{% if dl.energy_level != '—' %}{{ dl.energy_level }}/5{% else %}—{% endif %}</td>
+              <td>{% if dl.daily_rating != '—' %}{{ dl.daily_rating }}/5{% else %}—{% endif %}</td>
+              <td>{% if dl.workout_confirmed %}<span style="color:var(--green)">✓</span>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+            {% if not daily_logs %}<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px">No daily logs yet.</td></tr>{% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
 <script>
 const userId = {{ user.id }};
-async function sendMsg(){
+const activityDays = {{ activity_days | tojson }};
+
+function showTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'conversation') {
+    setTimeout(() => {
+      const c = document.getElementById('msg-container');
+      if (c) c.scrollTop = c.scrollHeight;
+    }, 50);
+  }
+}
+
+async function sendMsg() {
   const body = document.getElementById('msg-body').value.trim();
-  if(!body) return;
-  await fetch('/admin/send',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'user_id='+userId+'&body='+encodeURIComponent(body)});
-  document.getElementById('msg-body').value='';
+  if (!body) return;
+  await fetch('/admin/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
+  });
+  document.getElementById('msg-body').value = '';
   location.reload();
 }
-// Scroll to bottom of messages
-const c = document.getElementById('msg-container');
-if(c) c.scrollTop = c.scrollHeight;
+
+// Build heatmap
+(function() {
+  const hm = document.getElementById('heatmap');
+  if (!hm) return;
+  const max = Math.max(...activityDays.map(d => d.count), 1);
+  activityDays.forEach(d => {
+    const bar = document.createElement('div');
+    bar.className = 'heatmap-bar';
+    const pct = d.count / max;
+    const h = Math.max(4, Math.round(pct * 48));
+    bar.style.height = h + 'px';
+    bar.style.background = d.count === 0 ? 'var(--border)' : `rgba(124,110,255,${0.2 + pct * 0.8})`;
+    bar.title = d.date + ': ' + d.count + ' msg' + (d.count !== 1 ? 's' : '');
+    hm.appendChild(bar);
+  });
+})();
+
+// Scroll conversation to bottom on load if that tab is active
+const msgC = document.getElementById('msg-container');
+if (msgC) msgC.scrollTop = msgC.scrollHeight;
 </script>
 </body>
 </html>

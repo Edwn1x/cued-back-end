@@ -265,15 +265,55 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <h1>Users</h1>
     <p>Click a row to view full profile and conversation</p>
   </div>
+
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <input id="user-search" type="text" placeholder="Search by name or phone..."
+      oninput="filterUsers()"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit;width:220px">
+    <select id="user-sort" onchange="filterUsers()"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit">
+      <option value="newest">Sort: Newest</option>
+      <option value="oldest">Sort: Oldest</option>
+      <option value="alpha">Sort: A → Z</option>
+      <option value="spend_desc">Sort: Most Spend</option>
+      <option value="spend_asc">Sort: Least Spend</option>
+      <option value="active">Sort: Most Active</option>
+      <option value="msgs_desc">Sort: Most Messages</option>
+    </select>
+    <select id="user-filter-status" onchange="filterUsers()"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit">
+      <option value="all">All Statuses</option>
+      <option value="active">Active (≤2 days)</option>
+      <option value="quiet">Quiet (3–7 days)</option>
+      <option value="silent">Silent (7+ days)</option>
+    </select>
+    <select id="user-filter-onboarding" onchange="filterUsers()"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit">
+      <option value="all">All Onboarding</option>
+      <option value="complete">Complete</option>
+      <option value="in_progress">In Progress</option>
+      <option value="not_started">Not Started</option>
+    </select>
+    <span id="user-count-label" style="font-size:12px;color:var(--text3);margin-left:4px"></span>
+  </div>
+
   <div class="table-wrap">
-    <table>
+    <table id="users-table">
       <tr>
         <th>Name</th><th>Phone</th><th>Signed Up</th><th>Last Active</th>
         <th>Messages</th><th>Meals</th><th>Workouts</th><th>Avg Rating</th>
-        <th>Onboarding</th><th>Status</th><th></th>
+        <th>Spend</th><th>Onboarding</th><th>Status</th><th></th>
       </tr>
       {% for u in users %}
-      <tr class="clickable" onclick="window.location.href='/admin/user/{{ u.id }}'">
+      <tr class="clickable user-row"
+        onclick="window.location.href='/admin/user/{{ u.id }}'"
+        data-name="{{ u.name | lower }}"
+        data-phone="{{ u.phone }}"
+        data-days-inactive="{{ u.days_inactive }}"
+        data-onboarding="{{ u.onboarding_step }}"
+        data-spend="{{ u.cost_usd }}"
+        data-msgs="{{ u.msg_count }}"
+        data-created="{{ u.created_ts }}">
         <td style="color:var(--text);font-weight:500">{{ u.name }}</td>
         <td>···{{ u.phone }}</td>
         <td>{{ u.signed_up }}</td>
@@ -282,6 +322,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
         <td>{{ u.meal_count }}</td>
         <td>{{ u.workout_count }}</td>
         <td>{{ u.avg_rating }}</td>
+        <td>${{ u.cost_usd }}</td>
         <td>
           {% if u.onboarding_step >= 4 %}<span class="badge badge-green">DONE</span>
           {% elif u.onboarding_step > 0 %}<span class="badge badge-yellow">STEP {{ u.onboarding_step }}</span>
@@ -298,7 +339,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
         </td>
       </tr>
       {% endfor %}
-      {% if not users %}<tr><td colspan="11" class="empty">No users yet.</td></tr>{% endif %}
+      {% if not users %}<tr><td colspan="12" class="empty">No users yet.</td></tr>{% endif %}
     </table>
   </div>
 </div>
@@ -566,6 +607,63 @@ function showPage(id, btn) {
   document.getElementById('page-' + id).classList.add('active');
   btn.classList.add('active');
 }
+
+function filterUsers() {
+  const search = (document.getElementById('user-search').value || '').toLowerCase();
+  const sort = document.getElementById('user-sort').value;
+  const statusFilter = document.getElementById('user-filter-status').value;
+  const onboardingFilter = document.getElementById('user-filter-onboarding').value;
+
+  const table = document.getElementById('users-table');
+  const rows = Array.from(table.querySelectorAll('tr.user-row'));
+
+  // Filter
+  const visible = rows.filter(r => {
+    const name = r.dataset.name || '';
+    const phone = r.dataset.phone || '';
+    if (search && !name.includes(search) && !phone.includes(search)) return false;
+
+    const days = parseInt(r.dataset.daysInactive || 99);
+    if (statusFilter === 'active' && days > 2) return false;
+    if (statusFilter === 'quiet' && (days <= 2 || days > 7)) return false;
+    if (statusFilter === 'silent' && days <= 7) return false;
+
+    const step = parseInt(r.dataset.onboarding || 0);
+    if (onboardingFilter === 'complete' && step < 4) return false;
+    if (onboardingFilter === 'in_progress' && (step === 0 || step >= 4)) return false;
+    if (onboardingFilter === 'not_started' && step !== 0) return false;
+
+    return true;
+  });
+
+  // Hide all, show visible
+  rows.forEach(r => r.style.display = 'none');
+
+  // Sort visible
+  visible.sort((a, b) => {
+    if (sort === 'newest') return parseInt(b.dataset.created) - parseInt(a.dataset.created);
+    if (sort === 'oldest') return parseInt(a.dataset.created) - parseInt(b.dataset.created);
+    if (sort === 'alpha') return (a.dataset.name || '').localeCompare(b.dataset.name || '');
+    if (sort === 'spend_desc') return parseFloat(b.dataset.spend) - parseFloat(a.dataset.spend);
+    if (sort === 'spend_asc') return parseFloat(a.dataset.spend) - parseFloat(b.dataset.spend);
+    if (sort === 'active') return parseInt(a.dataset.daysInactive || 99) - parseInt(b.dataset.daysInactive || 99);
+    if (sort === 'msgs_desc') return parseInt(b.dataset.msgs) - parseInt(a.dataset.msgs);
+    return 0;
+  });
+
+  // Re-append in sorted order and show
+  const tbody = table.querySelector('tbody') || table;
+  visible.forEach(r => {
+    tbody.appendChild(r);
+    r.style.display = '';
+  });
+
+  const label = document.getElementById('user-count-label');
+  if (label) label.textContent = visible.length + ' of ' + rows.length + ' users';
+}
+
+// Init on page load
+document.addEventListener('DOMContentLoaded', () => filterUsers());
 
 async function deleteUser(userId, name) {
   if (!confirm('Delete ' + name + '? This removes all their data. Cannot be undone.')) return;
