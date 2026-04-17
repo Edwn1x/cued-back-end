@@ -324,8 +324,8 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
         <td>{{ u.avg_rating }}</td>
         <td>${{ u.cost_usd }}</td>
         <td>
-          {% if u.onboarding_step >= 4 %}<span class="badge badge-green">DONE</span>
-          {% elif u.onboarding_step > 0 %}<span class="badge badge-yellow">STEP {{ u.onboarding_step }}</span>
+          {% if u.onboarding_step >= 2 %}<span class="badge badge-green">DONE</span>
+          {% elif u.onboarding_step > 0 %}<span class="badge badge-yellow">IN PROGRESS</span>
           {% else %}<span class="badge badge-gray">NOT STARTED</span>{% endif %}
         </td>
         <td>
@@ -629,8 +629,8 @@ function filterUsers() {
     if (statusFilter === 'silent' && days <= 7) return false;
 
     const step = parseInt(r.dataset.onboarding || 0);
-    if (onboardingFilter === 'complete' && step < 4) return false;
-    if (onboardingFilter === 'in_progress' && (step === 0 || step >= 4)) return false;
+    if (onboardingFilter === 'complete' && step < 2) return false;
+    if (onboardingFilter === 'in_progress' && (step === 0 || step >= 2)) return false;
     if (onboardingFilter === 'not_started' && step !== 0) return false;
 
     return true;

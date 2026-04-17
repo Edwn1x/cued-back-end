@@ -351,7 +351,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             return
 
         # If user is still in onboarding, route to onboarding handler
-        if (user.onboarding_step or 0) < 4:
+        if (user.onboarding_step or 0) < 2:
             handle_onboarding_reply(user, combined_body)
             return
 
@@ -611,51 +611,20 @@ def signup_submit():
         else:
             goal_str = goal_raw or "general_fitness"
 
-        # Training days: chat sends array or comma string
-        days_raw = get("workout_days", "")
-        if isinstance(days_raw, list):
-            days_str = ",".join(days_raw)
-        else:
-            days_str = days_raw
-
         user = User(
             phone=phone,
             name=(get("name") or "").strip(),
             age=safe_int(get("age")),
             gender=get("gender") or "prefer_not_to_say",
-            occupation=(get("occupation") or "").strip() or None,
+            experience=get("experience") or "none",
             goal=goal_str,
-            goal_other=(get("goal_other") or "").strip() or None,
             biggest_obstacle=get("biggest_obstacle") or None,
-            experience=get("experience") or "beginner",
-            prior_coaching=get("prior_coaching") or None,
             equipment=get("equipment") or "full_gym",
-            injuries=(get("injuries") or "").strip() or None,
-            activity_level=get("activity_level") or None,
-            diet=get("diet") or None,
-            restrictions=(get("restrictions") or "").strip() or None,
-            cooking_situation=get("cooking_situation") or None,
-            meals_per_day=get("meals_per_day") or None,
-            wake_time=get("wake_time") or None,
-            sleep_time=get("sleep_time") or None,
-            sleep_quality=get("sleep_quality") or None,
-            stress_level=get("stress_level") or None,
-            workout_time=get("workout_time") or None,
-            workout_days=days_str or None,
-            height_ft=safe_int(get("height_ft")),
-            height_in=safe_int(get("height_in")),
-            weight_lbs=safe_float(get("weight_lbs")),
-            body_fat_pct=safe_float(get("body_fat_pct")),
-            wearable=get("wearable") or None,
-            motivation=(get("motivation") or "").strip() or None,
-            schedule_details=(get("schedule_details") or "").strip() or None,
-            user_timezone=get("timezone") or "America/Los_Angeles",
         )
         session.add(user)
         session.commit()
 
         if sms_consent:
-            schedule_user(user)
             start_onboarding(user)
 
         logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent} | source: {'json' if request.is_json else 'form'}")
@@ -1079,7 +1048,7 @@ def admin_user(user_id):
         user_cost = round((total_sent + total_received) * 0.015 + total_sent * 0.006, 2)
 
         # Onboarding label
-        step_labels = {0: "Not started", 1: "Welcome sent", 2: "Clarification sent", 3: "Tools question sent", 4: "Complete"}
+        step_labels = {0: "Not started", 1: "In progress", 2: "Complete"}
         onboarding_label = step_labels.get(user.onboarding_step or 0, f"Step {user.onboarding_step}")
 
         return render_template_string(USER_DETAIL_HTML,
