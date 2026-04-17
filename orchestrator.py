@@ -90,11 +90,13 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     """
     Classifies the message and routes to the appropriate agent path.
 
-    Phase 2a: Nutrition messages go through the new pipeline.
-    Everything else still goes to the legacy monolith.
+    - Nutrition: agents/nutrition.py → agents/personality.py
+    - Training: agents/training.py → agents/personality.py
+    - Readiness: agents/readiness.py → agents/personality.py
+    - Personality/other: legacy monolith (coach.py)
     """
     from coach import get_coach_response
-    from agents.nutrition import handle as nutrition_handle, handle_food_photo, handle_photo_refinement, is_daily_log_query, handle_daily_log_query
+    from agents.nutrition import handle as nutrition_handle, is_daily_log_query, handle_daily_log_query, handle_food_photo, handle_photo_refinement
     from agents.training import handle as training_handle
     from agents.readiness import handle as readiness_handle
     from agents.personality import write_response
@@ -130,15 +132,13 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     primary = classification.get("primary_agent", "personality")
     confidence = classification.get("confidence", "low")
 
-    # Route nutrition messages through the new pipeline
+    # === NUTRITION PIPELINE ===
     if primary == "nutrition" and confidence in ("high", "medium"):
         logger.info(f"Routing to nutrition agent for {user.name}")
         try:
             if image_url:
-                # Food photo — first pass, ask clarifying questions
                 structured = handle_food_photo(user, combined_body, image_url)
             elif user.pending_photo_meal:
-                # User answering clarifying questions about a previous photo
                 refined = handle_photo_refinement(user, combined_body)
                 structured = refined if refined else nutrition_handle(user, combined_body)
             else:
@@ -146,7 +146,6 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
 
             response = write_response(user, structured, user_message=combined_body)
 
-            # Fire background extractors
             from agents.meal_extractor import extract_and_log_meal
             from agents.weight_extractor import extract_and_log_weight
             threading.Thread(
@@ -162,15 +161,13 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
             return response
         except Exception as e:
             logger.error(f"Nutrition pipeline failed, falling back to legacy: {e}")
-            # Fall through to legacy on any error
 
-    # Route training messages through the new pipeline
+    # === TRAINING PIPELINE ===
     if primary == "training" and confidence in ("high", "medium"):
         logger.info(f"Routing to training agent for {user.name}")
         try:
             structured = training_handle(user, combined_body)
             response = write_response(user, structured, user_message=combined_body)
-            # Weight extraction in background (weight can come up in training context)
             from agents.weight_extractor import extract_and_log_weight
             threading.Thread(
                 target=extract_and_log_weight,
@@ -180,9 +177,8 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
             return response
         except Exception as e:
             logger.error(f"Training pipeline failed, falling back to legacy: {e}")
-            # Fall through to legacy on any error
 
-    # Route readiness messages through the new pipeline
+    # === READINESS PIPELINE ===
     if primary == "readiness" and confidence in ("high", "medium"):
         logger.info(f"Routing to readiness agent for {user.name}")
         try:
@@ -191,12 +187,12 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
             return response
         except Exception as e:
             logger.error(f"Readiness pipeline failed, falling back to legacy: {e}")
-            # Fall through to legacy on any error
 
-    # Everything else: legacy monolith
+    # === PERSONALITY / FALLBACK ===
+    # Everything else goes to legacy monolith
     response = get_coach_response(user, combined_body, message_type, image_url=image_url)
 
-    # Weight extraction runs on every message path
+    # Weight extraction runs on every path
     from agents.weight_extractor import extract_and_log_weight
     threading.Thread(
         target=extract_and_log_weight,
