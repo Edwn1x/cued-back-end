@@ -96,6 +96,7 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     from coach import get_coach_response
     from agents.nutrition import handle as nutrition_handle, handle_food_photo, handle_photo_refinement, is_daily_log_query, handle_daily_log_query
     from agents.training import handle as training_handle
+    from agents.readiness import handle as readiness_handle
     from agents.personality import write_response
     from models import get_session, Message
 
@@ -179,6 +180,17 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
             return response
         except Exception as e:
             logger.error(f"Training pipeline failed, falling back to legacy: {e}")
+            # Fall through to legacy on any error
+
+    # Route readiness messages through the new pipeline
+    if primary == "readiness" and confidence in ("high", "medium"):
+        logger.info(f"Routing to readiness agent for {user.name}")
+        try:
+            structured = readiness_handle(user, combined_body)
+            response = write_response(user, structured, user_message=combined_body)
+            return response
+        except Exception as e:
+            logger.error(f"Readiness pipeline failed, falling back to legacy: {e}")
             # Fall through to legacy on any error
 
     # Everything else: legacy monolith
