@@ -45,10 +45,12 @@ def load_skill(skill_name: str) -> str:
 # Each entry: (field_name, question_context, priority)
 REQUIRED_FIELDS = [
     ("height_weight", "height and weight"),
+    ("occupation", "what they do — student, desk job, physical work, etc."),
+    ("activity_level", "how active they are outside the gym — sedentary desk life, walking campus, on their feet all day"),
     ("workout_days", "how many days per week they can train"),
     ("workout_time", "what time they prefer to work out"),
-    ("diet", "dietary preferences or restrictions"),
-    ("cooking_situation", "food situation — cook, eat out, dining hall"),
+    ("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"),
+    ("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"),
     ("injuries", "any injuries or physical limitations"),
     ("wake_sleep", "when they typically wake up and go to bed"),
     ("existing_tools", "fitness apps or wearables they currently use"),
@@ -61,14 +63,18 @@ def _get_missing_fields(user) -> list:
 
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
+    if not user.occupation:
+        missing.append(("occupation", "what they do — student, desk job, physical work, etc."))
+    if not user.activity_level or user.activity_level == "lightly_active":
+        missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
     if not user.workout_days:
         missing.append(("workout_days", "how many days per week they can train"))
     if not user.workout_time:
         missing.append(("workout_time", "what time they prefer to work out"))
-    if not user.diet:
-        missing.append(("diet", "dietary preferences or restrictions"))
     if not user.cooking_situation:
-        missing.append(("cooking_situation", "food situation — cook, eat out, dining hall"))
+        missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
+    if not user.diet:
+        missing.append(("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"))
     # Injuries can be "none" which is a valid answer, so check differently
     if user.injuries is None:
         missing.append(("injuries", "any injuries or physical limitations"))
@@ -167,7 +173,7 @@ def _build_system_prompt(user) -> str:
 """
 
 
-def _extract_data_from_message(user_message: str, user) -> dict:
+def _extract_data_from_message(user_message: str, user, last_asked_field: str = None) -> dict:
     """
     Use a lightweight AI call to extract any data points from the user's message.
     Returns a dict of field names to values.
@@ -178,7 +184,21 @@ def _extract_data_from_message(user_message: str, user) -> dict:
 
     missing_list = ", ".join(f[0] for f in missing)
 
-    prompt = f"""Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated.
+    context_hint = ""
+    if last_asked_field:
+        context_hint = f"""IMPORTANT CONTEXT: The coach just asked the user about: {last_asked_field}
+The user's response is MOST LIKELY answering that question. Prioritize mapping their answer to that field unless the message clearly refers to something else.
+
+For example:
+- If the coach asked about workout_days and user says "5" → workout_days="5", NOT height_ft=5
+- If the coach asked about workout_time and user says "5 or 6" → workout_time="17:00", NOT height or workout_days
+- If the coach asked about diet and user says "no" → diet="omnivore" (no restrictions)
+- If the coach asked about injuries and user says "no" → injuries="none"
+- If the coach asked about existing_tools and user says "nah" → existing_tools="none"
+
+"""
+
+    prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated.
 
 User said: "{user_message}"
 
@@ -189,6 +209,8 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "height_ft": number or null (e.g. 5 from "5'7"),
   "height_in": number or null (e.g. 7 from "5'7"),
   "weight_lbs": number or null,
+  "occupation": "student, desk job, retail, construction, etc." or null,
+  "activity_level": "sedentary, lightly_active, active, very_active" or null,
   "workout_days": "comma separated days like mon,tue,wed,thu,fri" or number like "4" or null,
   "workout_time": "HH:MM in 24h format" or "description like afternoon, morning" or null,
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
@@ -196,8 +218,7 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "injuries": "description of injuries" or "none" or null,
   "wake_time": "HH:MM in 24h format" or null,
   "sleep_time": "HH:MM in 24h format" or null,
-  "existing_tools": "comma separated app/device names" or "none" or null,
-  "activity_level": "sedentary, lightly_active, active, very_active" or null
+  "existing_tools": "comma separated app/device names" or "none" or null
 }}
 
 Examples:
@@ -206,7 +227,14 @@ Examples:
 "I cook most of the time but eat out on weekends" → {{"cooking_situation": "mix", ...rest null}}
 "no injuries" → {{"injuries": "none", ...rest null}}
 "I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", ...rest null}}
-"idk" → {{all null}}"""
+"idk" → {{all null}}
+
+Short answer rules:
+- "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
+- "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
+- "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none"
+- "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
+- Single number like "5" → map to whatever field was just asked about, not height"""
 
     try:
         response = client.messages.create(
@@ -243,6 +271,9 @@ def _store_extracted_data(user_id: int, data: dict):
             changed = True
         if data.get("weight_lbs") and not user.weight_lbs:
             user.weight_lbs = data["weight_lbs"]
+            changed = True
+        if data.get("occupation") and not user.occupation:
+            user.occupation = data["occupation"]
             changed = True
         if data.get("workout_days") and not user.workout_days:
             user.workout_days = str(data["workout_days"])
@@ -396,7 +427,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             return _complete_onboarding(user_row, incoming_message)
         else:
             # User wants to adjust something
-            extracted = _extract_data_from_message(incoming_message, user_row)
+            extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=None)
             if any(v is not None for v in extracted.values()):
                 _store_extracted_data(user_row.id, extracted)
                 session = get_session()
@@ -417,8 +448,9 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
             return False
 
-    # Extract data points from this message
-    extracted = _extract_data_from_message(incoming_message, user_row)
+    # Determine what was just asked so extraction knows the context
+    last_asked = missing_before[0][0] if missing_before else None
+    extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=last_asked)
 
     non_null = {k: v for k, v in extracted.items() if v is not None}
     if non_null:
