@@ -28,12 +28,14 @@ def _get_delay():
 
 
 def buffer_message(phone: str, body: str, user_id: int, message_type: str,
-                   image_url: str = None, process_callback=None):
+                   image_url: str = None, process_callback=None, delay_override: tuple = None):
     """
     Add a message to the buffer for this phone number.
     If a timer is already running, cancel it and restart.
     When the timer expires, all buffered messages are combined
     and sent to process_callback.
+
+    delay_override: optional (min, max) tuple in seconds to override the default 90-150s delay.
     """
     with _lock:
         if phone in _buffers:
@@ -61,7 +63,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
             logger.info(f"New buffer created for {phone}")
 
         # Start a new timer
-        delay = _get_delay()
+        delay = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
         timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback])
         timer.daemon = True
         _buffers[phone]["timer"] = timer

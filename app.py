@@ -507,6 +507,12 @@ def webhook():
             cancel_buffer(from_number)
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
+        # Shorter buffer during onboarding — user is actively engaged
+        if (user.onboarding_step or 0) < 2:
+            buffer_delay = (8, 18)
+        else:
+            buffer_delay = None  # use default 90-150s
+
         # Buffer the message — AI call and SMS response happen after the delay
         buffer_message(
             phone=from_number,
@@ -515,6 +521,7 @@ def webhook():
             message_type=message_type,
             image_url=image_url,
             process_callback=process_buffered_message,
+            delay_override=buffer_delay,
         )
 
         # Return empty TwiML immediately — response comes later via the buffer
