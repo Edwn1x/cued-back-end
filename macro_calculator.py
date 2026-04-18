@@ -202,14 +202,19 @@ def calculate_targets(user) -> dict:
     elif "muscle" in goal or "strength" in goal:
         calories = round((tdee + 250) / 50) * 50
         goal_label = "building"
+    elif "endurance" in goal:
+        calories = round((tdee + 150) / 50) * 50  # slight surplus to fuel training volume
+        goal_label = "endurance"
     else:
         calories = round(tdee / 50) * 50
         goal_label = "maintenance"
 
-    # Protein: 1g/lb for muscle/fat-loss goals, 0.8g otherwise
+    # Protein: 1g/lb for muscle/fat-loss/strength, 0.7g for endurance, 0.8g otherwise
     weight_lbs = user.weight_lbs or 150
     if "muscle" in goal or "strength" in goal or "fat_loss" in goal:
         protein = round(weight_lbs * 1.0)
+    elif "endurance" in goal:
+        protein = round(weight_lbs * 0.7)
     else:
         protein = round(weight_lbs * 0.8)
 

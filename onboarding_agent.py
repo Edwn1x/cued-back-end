@@ -343,8 +343,10 @@ def _build_confirmation_summary(user) -> str:
         "fat_loss,muscle_building": "recomp",
         "muscle_building,fat_loss": "recomp",
         "general_fitness": "general fitness",
+        "endurance": "running / endurance",
+        "strength": "getting stronger",
     }
-    goal_label = goal_map.get(user.goal, user.goal)
+    goal_label = goal_map.get(user.goal, user.goal.replace("_", " "))
 
     return (
         f"Here's what I'm working with: {height_str}, {user.weight_lbs} lbs, {user.age} years old. "
