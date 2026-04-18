@@ -210,7 +210,7 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "height_in": number or null (e.g. 7 from "5'7"),
   "weight_lbs": number or null,
   "occupation": "student, desk job, retail, construction, etc." or null,
-  "activity_level": "sedentary, lightly_active, active, very_active" or null,
+  "activity_level": "sedentary" or "lightly_active" or "active" or "very_active" or null,
   "workout_days": "comma separated days like mon,tue,wed,thu,fri" or number like "4" or null,
   "workout_time": "HH:MM in 24h format" or "description like afternoon, morning" or null,
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
@@ -234,7 +234,15 @@ Short answer rules:
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
 - "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none"
 - "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
-- Single number like "5" → map to whatever field was just asked about, not height"""
+- Single number like "5" → map to whatever field was just asked about, not height
+
+Activity level mapping (use your judgment):
+- Desk job, mostly sitting, drives everywhere → "sedentary"
+- Student who walks to class, some daily movement but mostly sitting → "lightly_active"
+- 8k+ steps daily, walks a lot, plays recreational sports, runs occasionally → "active"
+- Physical job, athlete, trains twice a day, very high daily movement → "very_active"
+- If the user describes ANY regular physical activity beyond walking to class (basketball, running, sports), they are at least "active"
+- When in doubt between two levels, pick the higher one"""
 
     try:
         response = client.messages.create(
