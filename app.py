@@ -1520,324 +1520,208 @@ SIGNUP_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Baseline — Sign Up</title>
+    <title>Cued — Sign Up</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, system-ui, sans-serif; background: #18181B; color: #FAFAFA; padding: 20px; }
-        .container { max-width: 520px; margin: 40px auto; padding-bottom: 60px; }
-        h1 { font-size: 28px; margin-bottom: 4px; }
-        .sub { color: #A1A1AA; margin-bottom: 12px; font-size: 15px; }
-        .intro { color: #71717A; font-size: 13px; margin-bottom: 32px; line-height: 1.5; }
-        .section-label { font-size: 11px; font-weight: 600; color: #6D5CFF; text-transform: uppercase; letter-spacing: 2px; margin-top: 28px; margin-bottom: 12px; padding-top: 16px; border-top: 1px solid #27272A; }
+        .container { max-width: 480px; margin: 48px auto; padding-bottom: 60px; }
+        h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; letter-spacing: -.5px; }
+        .sub { color: #A1A1AA; margin-bottom: 10px; font-size: 15px; }
+        .intro { color: #71717A; font-size: 13px; margin-bottom: 36px; line-height: 1.6; }
+        .section-label { font-size: 10px; font-weight: 700; color: #6D5CFF; text-transform: uppercase; letter-spacing: 2px; margin-top: 32px; margin-bottom: 14px; padding-top: 18px; border-top: 1px solid #27272A; }
         .section-label:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
-        label { display: block; font-size: 13px; color: #A1A1AA; margin-bottom: 4px; margin-top: 14px; }
-        .label-hint { font-size: 11px; color: #52525B; margin-bottom: 4px; }
-        input, select, textarea { width: 100%; padding: 12px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; color: #FAFAFA; font-size: 15px; font-family: inherit; }
-        input:focus, select:focus, textarea:focus { outline: none; border-color: #6D5CFF; }
-        textarea { resize: vertical; min-height: 70px; }
-        button { width: 100%; padding: 14px; background: #6D5CFF; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 28px; }
-        button:hover { background: #5B4DE6; }
+        label { display: block; font-size: 13px; color: #A1A1AA; margin-bottom: 5px; margin-top: 16px; }
+        input, select { width: 100%; padding: 12px 14px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; color: #FAFAFA; font-size: 15px; font-family: inherit; }
+        input:focus, select:focus { outline: none; border-color: #6D5CFF; }
+        select option { background: #27272A; }
         .row { display: flex; gap: 12px; }
         .row > div { flex: 1; }
-        .row3 > div { flex: 1; }
-        .checkbox-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-        .checkbox-group label { display: flex; align-items: center; gap: 6px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 14px; color: #FAFAFA; margin: 0; flex: 1; min-width: 140px; transition: border-color 0.15s; }
-        .checkbox-group label:has(input:checked) { border-color: #6D5CFF; background: #6D5CFF15; }
-        .checkbox-group input[type="checkbox"] { width: auto; accent-color: #6D5CFF; }
-        .day-group { display: flex; gap: 6px; margin-top: 6px; }
-        .day-group label { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; cursor: pointer; font-size: 13px; color: #A1A1AA; margin: 0; transition: all 0.15s; }
-        .day-group label:has(input:checked) { border-color: #6D5CFF; background: #6D5CFF22; color: #FAFAFA; }
-        .day-group input { display: none; }
-        #other-goal-wrap { display: none; margin-top: 8px; }
-        #result { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; }
+        /* Pill toggle groups */
+        .pill-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+        .pill-group label { display: flex; align-items: center; justify-content: center; gap: 6px; background: #27272A; border: 1px solid #3F3F46; border-radius: 20px; padding: 9px 16px; cursor: pointer; font-size: 13px; color: #A1A1AA; margin: 0; transition: all .15s; white-space: nowrap; }
+        .pill-group label:has(input:checked) { border-color: #6D5CFF; background: rgba(109,92,255,.15); color: #FAFAFA; }
+        .pill-group input { display: none; }
+        /* Consent block */
+        .consent-box { background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; padding: 14px 16px; margin-top: 8px; }
+        .consent-box label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin: 0; color: #FAFAFA; font-size: 13px; line-height: 1.55; }
+        .consent-box input[type="checkbox"] { width: 16px; height: 16px; margin-top: 1px; flex-shrink: 0; accent-color: #6D5CFF; cursor: pointer; }
+        #consent-error { display: none; color: #EF4444; font-size: 12px; margin-top: 6px; }
+        button[type="submit"] { width: 100%; padding: 14px; background: #6D5CFF; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 32px; transition: background .15s; }
+        button[type="submit"]:hover { background: #5B4DE6; }
+        button[type="submit"]:disabled { opacity: .6; cursor: not-allowed; }
+        #result { margin-top: 16px; padding: 12px 14px; border-radius: 8px; display: none; font-size: 13px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>baseline</h1>
-        <p class="sub">Your AI coach, right in your messages.</p>
-        <p class="intro">Fill this out once and your coach takes it from there. The more you share, the better we can tailor your workouts, meals, and daily plan. Takes about 3 minutes.</p>
+<div class="container">
+    <h1>cued</h1>
+    <p class="sub">Your AI coach, right in your messages.</p>
+    <p class="intro">Takes 60 seconds. Your coach will handle the rest over text.</p>
 
-        <form id="signup" onsubmit="return handleSubmit(event)">
+    <form id="signup" onsubmit="return handleSubmit(event)">
 
-            <div class="section-label">About You</div>
+        <div class="section-label">You</div>
 
-            <div class="row">
-                <div><label>First name</label><input name="name" required placeholder="Edwin"></div>
-                <div><label>Age</label><input name="age" type="number" placeholder="20"></div>
+        <div class="row">
+            <div>
+                <label>First name</label>
+                <input name="name" required placeholder="Alex">
             </div>
-
-            <label>Phone number</label>
-            <input name="phone" required placeholder="(209) 555-1234">
-
-            <label>Gender</label>
-            <select name="gender">
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-                <option value="non_binary">Non-binary</option>
-                <option value="prefer_not_to_say" selected>Prefer not to say</option>
-            </select>
-
-            <label>What do you do?</label>
-            <div class="label-hint">Job, school, etc. — helps us understand your daily energy and stress</div>
-            <input name="occupation" placeholder="e.g. CS student at UC Berkeley, part-time barista">
-
-            <div class="section-label">Body Stats</div>
-
-            <label>Height</label>
-            <div class="row">
-                <div><input name="height_ft" type="number" min="3" max="8" placeholder="5" style="text-align:center;"> <p style="font-size:11px;color:#71717A;text-align:center;margin-top:2px;">feet</p></div>
-                <div><input name="height_in" type="number" min="0" max="11" placeholder="10" style="text-align:center;"> <p style="font-size:11px;color:#71717A;text-align:center;margin-top:2px;">inches</p></div>
+            <div>
+                <label>Age</label>
+                <input name="age" type="number" min="13" max="99" placeholder="21">
             </div>
+        </div>
 
-            <div class="row">
-                <div>
-                    <label>Weight (lbs)</label>
-                    <input name="weight_lbs" type="number" placeholder="170">
-                </div>
-                <div>
-                    <label>Body fat %</label>
-                    <div class="label-hint">Optional — skip if unsure</div>
-                    <input name="body_fat_pct" type="number" step="0.1" placeholder="e.g. 18">
-                </div>
-            </div>
+        <label>Phone number</label>
+        <input name="phone" required placeholder="(555) 867-5309" inputmode="tel">
 
-            <div class="section-label">Your Goals</div>
+        <label>Gender</label>
+        <select name="gender">
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="non_binary">Non-binary</option>
+            <option value="prefer_not_to_say" selected>Prefer not to say</option>
+        </select>
 
-            <label>What are you working toward? (select all that apply)</label>
-            <div class="checkbox-group">
-                <label><input type="checkbox" name="goals" value="fat_loss"> Lose fat</label>
-                <label><input type="checkbox" name="goals" value="muscle_building"> Build muscle</label>
-                <label><input type="checkbox" name="goals" value="general_fitness"> General fitness</label>
-                <label><input type="checkbox" name="goals" value="endurance"> Endurance / cardio</label>
-                <label><input type="checkbox" name="goals" value="strength"> Get stronger</label>
-                <label><input type="checkbox" name="goals" value="flexibility"> Flexibility / mobility</label>
-                <label><input type="checkbox" name="goals" value="other" id="other-check" onchange="toggleOther()"> Other</label>
-            </div>
-            <div id="other-goal-wrap">
-                <input name="goal_other" placeholder="Describe your goal...">
-            </div>
+        <div class="section-label">Your Goal</div>
 
-            <label>Why do you want coaching?</label>
-            <div class="label-hint">This helps your coach understand what motivates you</div>
-            <textarea name="motivation" placeholder="e.g. I've been working out on and off for a year but can't stay consistent. I want someone to keep me accountable and tell me exactly what to do." rows="3"></textarea>
+        <label>What are you working toward?</label>
+        <div class="pill-group" id="goal-group">
+            <label><input type="checkbox" name="goals" value="fat_loss"> Lose fat</label>
+            <label><input type="checkbox" name="goals" value="muscle_building"> Build muscle</label>
+            <label><input type="checkbox" name="goals" value="strength"> Get stronger</label>
+            <label><input type="checkbox" name="goals" value="general_fitness"> General fitness</label>
+        </div>
 
-            <label>What's been your biggest obstacle?</label>
-            <select name="biggest_obstacle">
-                <option value="" selected>Select one</option>
-                <option value="consistency">Staying consistent</option>
-                <option value="nutrition">Nutrition / diet</option>
-                <option value="knowledge">Not knowing what to do</option>
-                <option value="time">Not enough time</option>
-                <option value="motivation">Motivation / accountability</option>
-                <option value="injuries">Injuries holding me back</option>
-                <option value="plateaus">Hit a plateau</option>
-            </select>
+        <label style="margin-top:20px;">Biggest obstacle</label>
+        <select name="biggest_obstacle">
+            <option value="" selected disabled>Pick one</option>
+            <option value="consistency">Staying consistent</option>
+            <option value="nutrition">Nutrition / what to eat</option>
+            <option value="knowledge">Not knowing what to do</option>
+            <option value="time">Not enough time</option>
+            <option value="motivation">Motivation / accountability</option>
+            <option value="injuries">Injuries holding me back</option>
+        </select>
 
-            <div class="section-label">Training</div>
+        <div class="section-label">Training</div>
 
-            <label>Experience level</label>
-            <select name="experience">
-                <option value="none">Complete beginner — never worked out</option>
-                <option value="beginner">Beginner — less than 6 months</option>
-                <option value="intermediate" selected>Intermediate — 6 months to 2 years</option>
-                <option value="advanced">Advanced — 2+ years consistent</option>
-            </select>
+        <label>Experience level</label>
+        <div class="pill-group" id="exp-group">
+            <label><input type="radio" name="experience" value="none"> Just starting out</label>
+            <label><input type="radio" name="experience" value="beginner"> Under 6 months</label>
+            <label><input type="radio" name="experience" value="intermediate" checked> 6 months – 2 years</label>
+            <label><input type="radio" name="experience" value="advanced"> 2+ years</label>
+        </div>
 
-            <label>Equipment access</label>
-            <select name="equipment">
-                <option value="full_gym" selected>Full gym (barbells, machines, dumbbells)</option>
-                <option value="limited_gym">Limited gym (dumbbells + some machines)</option>
-                <option value="home_gym">Home gym (dumbbells + bench)</option>
-                <option value="minimal">Minimal (resistance bands, pull-up bar)</option>
-                <option value="bodyweight">Bodyweight only</option>
-            </select>
+        <label style="margin-top:20px;">Equipment access</label>
+        <div class="pill-group" id="equip-group">
+            <label><input type="radio" name="equipment" value="full_gym" checked> Full gym</label>
+            <label><input type="radio" name="equipment" value="limited_gym"> Limited gym</label>
+            <label><input type="radio" name="equipment" value="home_gym"> Home gym</label>
+            <label><input type="radio" name="equipment" value="bodyweight"> Bodyweight only</label>
+        </div>
 
-            <label>Any injuries or physical limitations?</label>
-            <input name="injuries" placeholder="e.g. bad left knee, lower back issues, shoulder impingement">
+        <div class="section-label">Consent</div>
 
-            <div class="row">
-                <div>
-                    <label>Worked with a coach before?</label>
-                    <select name="prior_coaching">
-                        <option value="no" selected>No</option>
-                        <option value="yes">Yes</option>
-                    </select>
-                </div>
-                <div>
-                    <label>Activity outside the gym?</label>
-                    <select name="activity_level">
-                        <option value="sedentary">Sedentary (desk all day)</option>
-                        <option value="lightly_active" selected>Light (some walking)</option>
-                        <option value="active">Active (on my feet a lot)</option>
-                        <option value="very_active">Very active (physical job)</option>
-                    </select>
-                </div>
-            </div>
+        <div class="consent-box">
+            <label>
+                <input type="checkbox" name="sms_consent" id="sms_consent">
+                <span>I agree to receive automated SMS coaching messages from Cued. Message &amp; data rates may apply. Reply STOP at any time to unsubscribe.</span>
+            </label>
+        </div>
+        <div id="consent-error">You must agree to receive SMS messages to use Cued.</div>
 
-            <label>Which days can you work out?</label>
-            <div class="day-group">
-                <label><input type="checkbox" name="workout_days" value="mon">Mon</label>
-                <label><input type="checkbox" name="workout_days" value="tue">Tue</label>
-                <label><input type="checkbox" name="workout_days" value="wed">Wed</label>
-                <label><input type="checkbox" name="workout_days" value="thu">Thu</label>
-                <label><input type="checkbox" name="workout_days" value="fri">Fri</label>
-                <label><input type="checkbox" name="workout_days" value="sat">Sat</label>
-                <label><input type="checkbox" name="workout_days" value="sun">Sun</label>
-            </div>
+        <button type="submit" id="submit-btn">Start coaching →</button>
+    </form>
+    <div id="result"></div>
+</div>
 
-            <label>Usual workout time</label>
-            <input name="workout_time" type="time" value="16:00">
+<script>
+async function handleSubmit(e) {
+    e.preventDefault();
 
-            <div class="section-label">Nutrition</div>
-
-            <label>Diet</label>
-            <select name="diet">
-                <option value="omnivore" selected>Omnivore — I eat everything</option>
-                <option value="vegetarian">Vegetarian</option>
-                <option value="vegan">Vegan</option>
-                <option value="pescatarian">Pescatarian</option>
-                <option value="keto">Keto / low-carb</option>
-                <option value="halal">Halal</option>
-                <option value="kosher">Kosher</option>
-            </select>
-
-            <label>Food allergies or restrictions</label>
-            <input name="restrictions" placeholder="e.g., lactose intolerant, no shellfish, gluten-free">
-
-            <div class="row">
-                <div>
-                    <label>How do you eat most days?</label>
-                    <select name="cooking_situation">
-                        <option value="cook_myself">I cook for myself</option>
-                        <option value="dining_hall" selected>Dining hall / meal plan</option>
-                        <option value="mostly_eat_out">Mostly eat out / takeout</option>
-                        <option value="mix">Mix of everything</option>
-                        <option value="cook_family">I cook for family</option>
-                    </select>
-                </div>
-                <div>
-                    <label>Meals per day?</label>
-                    <select name="meals_per_day">
-                        <option value="1-2">1-2 meals</option>
-                        <option value="3" selected>3 meals</option>
-                        <option value="4+">4+ meals / snacks</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="section-label">Your Schedule</div>
-
-            <div class="row">
-                <div><label>Wake time</label><input name="wake_time" type="time" value="07:00"></div>
-                <div><label>Bedtime</label><input name="sleep_time" type="time" value="23:00"></div>
-            </div>
-
-            <div class="row">
-                <div>
-                    <label>Sleep quality?</label>
-                    <select name="sleep_quality">
-                        <option value="great">Great</option>
-                        <option value="okay" selected>Okay</option>
-                        <option value="poor">Poor</option>
-                        <option value="terrible">Terrible</option>
-                    </select>
-                </div>
-                <div>
-                    <label>Current stress level?</label>
-                    <select name="stress_level">
-                        <option value="low">Low</option>
-                        <option value="moderate" selected>Moderate</option>
-                        <option value="high">High</option>
-                        <option value="very_high">Very high</option>
-                    </select>
-                </div>
-            </div>
-
-            <label>Tell us about your weekly schedule</label>
-            <div class="label-hint">Classes, work, commitments — so your coach can plan around them</div>
-            <textarea name="schedule_details" placeholder="e.g. MWF classes 9am-2pm, T/Th work 10am-4pm, weekends are usually free. I prefer working out in the afternoon." rows="3"></textarea>
-
-            <div class="section-label">Device</div>
-
-            <label>Wearable</label>
-            <select name="wearable">
-                <option value="none" selected>None</option>
-                <option value="apple_watch">Apple Watch</option>
-                <option value="oura">Oura Ring</option>
-                <option value="garmin">Garmin</option>
-                <option value="whoop">Whoop</option>
-                <option value="fitbit">Fitbit</option>
-                <option value="samsung">Samsung Galaxy Watch</option>
-                <option value="other_wearable">Other</option>
-            </select>
-
-            <div class="section-label">Consent</div>
-
-            <div style="background:#27272A;border:1px solid #3F3F46;border-radius:8px;padding:14px 16px;margin-top:6px;">
-                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0;color:#FAFAFA;font-size:14px;">
-                    <input type="checkbox" name="sms_consent" id="sms_consent" style="width:auto;margin-top:2px;accent-color:#6D5CFF;flex-shrink:0;">
-                    <span>I agree to receive automated SMS coaching messages from Cued. Message &amp; data rates may apply. Reply STOP at any time to unsubscribe.</span>
-                </label>
-            </div>
-            <div id="consent-error" style="display:none;color:#EF4444;font-size:13px;margin-top:6px;">You must agree to receive SMS messages to use Cued.</div>
-
-            <button type="submit">Start coaching me</button>
-        </form>
-        <div id="result"></div>
-    </div>
-    <script>
-    function toggleOther() {
-        document.getElementById('other-goal-wrap').style.display =
-            document.getElementById('other-check').checked ? 'block' : 'none';
+    // Validate SMS consent
+    if (!document.getElementById('sms_consent').checked) {
+        const err = document.getElementById('consent-error');
+        const box = document.querySelector('.consent-box');
+        err.style.display = 'block';
+        box.style.borderColor = '#EF4444';
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return false;
     }
-    async function handleSubmit(e) {
-        e.preventDefault();
-        const form = e.target;
+    document.getElementById('consent-error').style.display = 'none';
+    document.querySelector('.consent-box').style.borderColor = '#3F3F46';
 
-        // Validate SMS consent
-        if (!document.getElementById('sms_consent').checked) {
-            document.getElementById('consent-error').style.display = 'block';
-            document.getElementById('sms_consent').closest('div').style.borderColor = '#EF4444';
-            document.getElementById('sms_consent').scrollIntoView({ behavior: 'smooth', block: 'center' });
-            return false;
-        }
-        document.getElementById('consent-error').style.display = 'none';
+    // Validate at least one goal selected
+    const goals = Array.from(document.querySelectorAll('input[name="goals"]:checked')).map(i => i.value);
+    if (!goals.length) {
+        document.getElementById('goal-group').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        alert('Please select at least one goal.');
+        return false;
+    }
 
-        const fd = new FormData(form);
-        // Collect multi-select goals into comma-separated
-        const goals = fd.getAll('goals').join(',');
-        fd.delete('goals');
-        fd.append('goal', goals);
-        // Collect workout days
-        const days = fd.getAll('workout_days').join(',');
-        fd.delete('workout_days');
-        fd.append('workout_days', days);
-        const res = await fetch('/signup', { method: 'POST', body: fd });
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+
+    const form = e.target;
+    const fd = new FormData(form);
+
+    // Build the payload with exactly the 8 fields the backend expects
+    const payload = {
+        name: (fd.get('name') || '').trim(),
+        phone: (fd.get('phone') || '').trim(),
+        age: fd.get('age') || '',
+        gender: fd.get('gender') || 'prefer_not_to_say',
+        experience: fd.get('experience') || 'none',
+        goal: goals.join(','),
+        biggest_obstacle: fd.get('biggest_obstacle') || '',
+        equipment: fd.get('equipment') || 'full_gym',
+        sms_consent: true,
+    };
+
+    try {
+        const res = await fetch('/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
         const data = await res.json();
+
         if (data.status === 'ok') {
             document.querySelector('.container').innerHTML = `
-                <div style="text-align:center;padding:60px 0;">
-                    <div style="font-size:48px;margin-bottom:24px;">✓</div>
-                    <h1 style="font-size:28px;margin-bottom:12px;">You're in, ${data.name || 'friend'}.</h1>
-                    <p style="color:#A1A1AA;font-size:16px;line-height:1.6;max-width:380px;margin:0 auto 24px;">
-                        Your profile has been created. Your Cued coach will reach out shortly to finalize your plan and get things moving.
+                <div style="text-align:center;padding:80px 0 60px;">
+                    <div style="font-size:52px;margin-bottom:24px;">✓</div>
+                    <h1 style="font-size:26px;margin-bottom:12px;letter-spacing:-.4px;">You're in, ${data.name || 'friend'}.</h1>
+                    <p style="color:#A1A1AA;font-size:15px;line-height:1.7;max-width:340px;margin:0 auto 20px;">
+                        Your coach is putting together your plan. You'll get a text shortly with a few quick questions to get things dialed in.
                     </p>
-                    <p style="color:#6E6E73;font-size:13px;">Keep an eye on your phone — the first message is on its way.</p>
+                    <p style="color:#6E6E73;font-size:13px;">Keep your phone nearby.</p>
                 </div>`;
             window.scrollTo(0, 0);
         } else {
             const el = document.getElementById('result');
             el.style.display = 'block';
-            el.style.background = data.status === 'exists' ? '#6D5CFF22' : '#DC262622';
-            el.style.color = data.status === 'exists' ? '#A78BFA' : '#DC2626';
-            el.style.borderRadius = '8px';
-            el.style.padding = '12px';
+            el.style.background = data.status === 'exists' ? 'rgba(109,92,255,.15)' : 'rgba(220,38,38,.15)';
+            el.style.color = data.status === 'exists' ? '#A78BFA' : '#FCA5A5';
             el.textContent = data.message;
+            btn.disabled = false;
+            btn.textContent = 'Start coaching →';
         }
+    } catch (err) {
+        const el = document.getElementById('result');
+        el.style.display = 'block';
+        el.style.background = 'rgba(220,38,38,.15)';
+        el.style.color = '#FCA5A5';
+        el.textContent = 'Something went wrong. Please try again.';
+        btn.disabled = false;
+        btn.textContent = 'Start coaching →';
     }
-    </script>
+}
+</script>
 </body>
 </html>
 """
