@@ -13,9 +13,19 @@ scheduler = BackgroundScheduler()
 
 
 def parse_time(time_str: str) -> tuple[int, int]:
-    """Parse 'HH:MM' into (hour, minute)."""
-    parts = time_str.split(":")
-    return int(parts[0]), int(parts[1])
+    """Extract hour and minute from a time string, even if freeform."""
+    import re
+    if not time_str:
+        return 18, 0
+    # First try HH:MM pattern
+    match = re.search(r'\b(\d{1,2}):(\d{2})\b', time_str)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    # Fall back to bare hour
+    match = re.search(r'\b(\d{1,2})\b', time_str)
+    if match:
+        return int(match.group(1)), 0
+    return 18, 0
 
 
 def add_minutes(time_str: str, minutes: int) -> str:
