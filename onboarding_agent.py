@@ -210,7 +210,7 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "height_in": number or null (e.g. 7 from "5'7"),
   "weight_lbs": number or null,
   "occupation": "student, desk job, retail, construction, etc." or null,
-  "activity_level": "sedentary" or "lightly_active" or "active" or "very_active" or null,
+  "activity_level": "short phrase describing their activity, e.g. 'sedentary', 'lightly active', 'active — walks 8-10k steps, mix of sitting and moving', 'very active — physical job'" or null,
   "workout_days": "comma separated days like mon,tue,wed,thu,fri" or number like "4" or null,
   "workout_time": "HH:MM in 24h format" or "description like afternoon, morning" or null,
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
@@ -236,13 +236,13 @@ Short answer rules:
 - "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
 - Single number like "5" → map to whatever field was just asked about, not height
 
-Activity level mapping (use your judgment):
-- Desk job, mostly sitting, drives everywhere → "sedentary"
-- Student who walks to class, some daily movement but mostly sitting → "lightly_active"
-- 8k+ steps daily, walks a lot, plays recreational sports, runs occasionally → "active"
-- Physical job, athlete, trains twice a day, very high daily movement → "very_active"
-- If the user describes ANY regular physical activity beyond walking to class (basketball, running, sports), they are at least "active"
-- When in doubt between two levels, pick the higher one"""
+Activity level — always extract something if the user described their daily movement. Use a short, plain-English phrase. Examples:
+- "desk job, mostly sitting" → "sedentary — desk job, mostly sitting"
+- "walk to class, mostly sitting" → "lightly active — walks to class, mostly sedentary"
+- "mix of walking and sitting, some movement" → "lightly active — mix of walking and sitting"
+- "8k+ steps, plays basketball, walks a lot" → "active — 8-10k steps, basketball"
+- "physical job, on feet all day" → "very active — on feet all day"
+- Never return null if the user described their activity, even vaguely"""
 
     try:
         response = client.messages.create(
@@ -311,7 +311,7 @@ def _store_extracted_data(user_id: int, data: dict):
         if data.get("existing_tools") is not None and user.existing_tools is None:
             user.existing_tools = data["existing_tools"]
             changed = True
-        if data.get("activity_level") and not user.activity_level:
+        if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
             user.activity_level = data["activity_level"]
             changed = True
 
