@@ -504,7 +504,23 @@ def webhook():
             confirm_workout_today(user.id)
 
         # Check for goodnight signal — handle immediately, skip buffer
-        if is_goodnight_signal(body):
+        # Never trigger during onboarding — user is answering questions, not signing off
+        # Also skip if the last outbound message was asking about sleep/wake schedule
+        last_outbound_was_sleep_question = False
+        if (user.onboarding_step or 0) >= 2 and is_goodnight_signal(body):
+            from models import Message as Msg
+            last_out = (
+                session.query(Msg)
+                .filter(Msg.user_id == user.id, Msg.direction == "out")
+                .order_by(Msg.created_at.desc())
+                .first()
+            )
+            if last_out:
+                sleep_keywords = ["go to bed", "bedtime", "sleep", "wake up", "wake time", "when do you"]
+                last_out_lower = (last_out.body or "").lower()
+                last_outbound_was_sleep_question = any(kw in last_out_lower for kw in sleep_keywords)
+
+        if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 2 and not last_outbound_was_sleep_question:
             from datetime import datetime, timedelta
             wake_time = user.wake_time or "07:00"
             wake_h, wake_m = map(int, wake_time.split(":"))
