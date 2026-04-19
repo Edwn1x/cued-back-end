@@ -86,7 +86,7 @@ Examples:
         }
 
 
-def route_message(user, combined_body: str, message_type: str, image_url: str = None) -> str:
+def route_message(user, combined_body: str, message_type: str, image_data: dict = None) -> str:
     """
     Classifies the message and routes to the appropriate agent path.
 
@@ -103,7 +103,7 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     from models import get_session, Message
 
     # Fast-path: daily log query
-    if is_daily_log_query(combined_body) and not image_url:
+    if is_daily_log_query(combined_body) and not image_data:
         logger.info(f"Daily log query from {user.name}")
         return handle_daily_log_query(user)
 
@@ -136,8 +136,8 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
     if primary == "nutrition" and confidence in ("high", "medium"):
         logger.info(f"Routing to nutrition agent for {user.name}")
         try:
-            if image_url:
-                structured = handle_food_photo(user, combined_body, image_url)
+            if image_data:
+                structured = handle_food_photo(user, combined_body, image_data)
             elif user.pending_photo_meal:
                 refined = handle_photo_refinement(user, combined_body)
                 structured = refined if refined else nutrition_handle(user, combined_body)
@@ -190,7 +190,7 @@ def route_message(user, combined_body: str, message_type: str, image_url: str = 
 
     # === PERSONALITY / FALLBACK ===
     # Everything else goes to legacy monolith
-    response = get_coach_response(user, combined_body, message_type, image_url=image_url)
+    response = get_coach_response(user, combined_body, message_type, image_data=image_data)
 
     # Weight extraction runs on every path
     from agents.weight_extractor import extract_and_log_weight

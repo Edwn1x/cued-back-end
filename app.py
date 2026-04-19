@@ -342,7 +342,7 @@ Keep under 400 words total. This replaces the prior summary — include importan
 
 
 # ─── Buffered Message Processor ─────────────────────
-def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: str = None):
+def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
     session = get_session()
     try:
@@ -357,7 +357,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
         # Get AI coaching response (routed through orchestrator)
         from orchestrator import route_message
-        response_text = route_message(user, combined_body, message_type, image_url=image_url)
+        response_text = route_message(user, combined_body, message_type, image_data=image_url)
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
@@ -426,9 +426,29 @@ def webhook():
     # Check for MMS image
     num_media = int(request.form.get("NumMedia", 0))
     image_url = None
+    image_data = None
     if num_media > 0:
         image_url = request.form.get("MediaUrl0")
         logger.info(f"MMS image received from {from_number}: {image_url}")
+        if image_url:
+            import requests as http_requests
+            import base64
+            img_response = http_requests.get(
+                image_url,
+                auth=(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
+            )
+            if img_response.status_code == 200:
+                content_type = img_response.headers.get("Content-Type", "image/jpeg")
+                image_data = {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": content_type,
+                        "data": base64.b64encode(img_response.content).decode("utf-8")
+                    }
+                }
+            else:
+                logger.error(f"Failed to download Twilio image: {img_response.status_code}")
 
     logger.info(f"Incoming SMS from {from_number}: {body}")
 
@@ -519,7 +539,7 @@ def webhook():
             body=body,
             user_id=user.id,
             message_type=message_type,
-            image_url=image_url,
+            image_url=image_data,
             process_callback=process_buffered_message,
             delay_override=buffer_delay,
         )

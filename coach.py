@@ -178,18 +178,15 @@ FORMAT RULES:
         session.close()
 
 
-def get_coach_response(user: User, user_message: str, message_type: str = "freeform", image_url: str = None) -> str:
+def get_coach_response(user: User, user_message: str, message_type: str = "freeform", image_data: dict = None) -> str:
     """Get an AI coaching response for a user's message. Supports image analysis."""
     system_prompt = build_context(user, message_type)
 
     # Build the message content
-    if image_url:
-        # User sent an image (MMS) — use Claude's vision
+    if image_data:
+        # User sent an image (MMS) — use Claude's vision with pre-downloaded base64 data
         content = []
-        content.append({
-            "type": "image",
-            "source": {"type": "url", "url": image_url}
-        })
+        content.append(image_data)
         if user_message:
             content.append({"type": "text", "text": user_message})
         else:

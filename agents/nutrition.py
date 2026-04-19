@@ -147,7 +147,7 @@ Food context: {user.food_context or "not collected yet"}"""
     return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n## TODAY'S TRAINING STATUS\n{workout_status}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
 
 
-def handle(user: User, user_message: str, image_url: str = None) -> dict:
+def handle(user: User, user_message: str, image_url: dict = None) -> dict:
     """
     Process a nutrition-related message and return structured coaching content.
 
@@ -209,10 +209,7 @@ Rules:
 
     user_content = [{"type": "text", "text": user_message}]
     if image_url:
-        user_content.insert(0, {
-            "type": "image",
-            "source": {"type": "url", "url": image_url},
-        })
+        user_content.insert(0, image_url)
 
     response = client.messages.create(
         model=config.COACH_MODEL,
@@ -312,7 +309,7 @@ def handle_daily_log_query(user) -> str:
         session.close()
 
 
-def handle_food_photo(user, user_message: str, image_url: str) -> dict:
+def handle_food_photo(user, user_message: str, image_url: dict) -> dict:
     """First pass on a food photo. Estimates a range and asks clarifying questions."""
     import json as json_lib
     from models import get_session, User
@@ -366,7 +363,7 @@ Return ONLY valid JSON:
 }}"""
 
     user_content = [
-        {"type": "image", "source": {"type": "url", "url": image_url}},
+        image_url,
         {"type": "text", "text": user_message or "Here's my meal."},
     ]
 
