@@ -595,7 +595,7 @@ def webhook():
             buffer_delay = (25, 35)
         else:
             # Check time since last inbound message to detect active conversation
-            from datetime import timedelta, timezone as _tz
+            from datetime import datetime, timedelta, timezone as _tz
             last_inbound = (
                 session.query(Message)
                 .filter(Message.user_id == user.id, Message.direction == "in")
