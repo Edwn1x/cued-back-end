@@ -589,11 +589,29 @@ def webhook():
             cancel_buffer(from_number)
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
-        # Shorter buffer during onboarding — user is actively engaged
+        # Adaptive buffer based on conversation momentum
         if (user.onboarding_step or 0) < 2:
+            # Onboarding — tight buffer, user is actively engaged
             buffer_delay = (25, 35)
         else:
-            buffer_delay = None  # use default 90-150s
+            # Check time since last inbound message to detect active conversation
+            from datetime import timedelta, timezone as _tz
+            last_inbound = (
+                session.query(Message)
+                .filter(Message.user_id == user.id, Message.direction == "in")
+                .order_by(Message.created_at.desc())
+                .first()
+            )
+            if last_inbound and last_inbound.created_at:
+                last_msg_age = datetime.now(_tz.utc) - last_inbound.created_at.replace(tzinfo=_tz.utc)
+                if last_msg_age < timedelta(minutes=5):
+                    # Active back-and-forth — respond faster
+                    buffer_delay = (20, 30)
+                else:
+                    # New conversation thread — full buffer to catch double-texts
+                    buffer_delay = (90, 150)
+            else:
+                buffer_delay = (90, 150)
 
         # Buffer the message — AI call and SMS response happen after the delay
         buffer_message(
