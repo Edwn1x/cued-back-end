@@ -167,25 +167,35 @@ def calculate_targets(user) -> dict:
     else:
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
 
-    # Activity multiplier based on training days
-    workout_days = user.workout_days or "3"
-
-    try:
-        if "," in str(workout_days):
-            days_count = len(workout_days.split(","))
+    # Activity multiplier — use avg_steps if available (objective), else fall back to workout_days
+    avg_steps = getattr(user, "avg_steps", None)
+    if avg_steps:
+        if avg_steps < 5000:
+            multiplier = 1.2    # sedentary
+        elif avg_steps < 7500:
+            multiplier = 1.375  # lightly active
+        elif avg_steps < 10000:
+            multiplier = 1.55   # active
         else:
-            days_count = int(workout_days)
-    except (ValueError, TypeError):
-        days_count = 3
-
-    if days_count <= 2:
-        multiplier = 1.375
-    elif days_count <= 4:
-        multiplier = 1.55
-    elif days_count <= 5:
-        multiplier = 1.65
+            multiplier = 1.725  # very active
     else:
-        multiplier = 1.75
+        workout_days = user.workout_days or "3"
+        try:
+            if "," in str(workout_days):
+                days_count = len(workout_days.split(","))
+            else:
+                days_count = int(workout_days)
+        except (ValueError, TypeError):
+            days_count = 3
+
+        if days_count <= 2:
+            multiplier = 1.375
+        elif days_count <= 4:
+            multiplier = 1.55
+        elif days_count <= 5:
+            multiplier = 1.65
+        else:
+            multiplier = 1.75
 
     tdee = round(bmr * multiplier)
 

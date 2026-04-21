@@ -157,6 +157,8 @@ Clarification answer received: {user.pending_clarification_answer or "not yet an
 {"NOTE: You asked the user about '" + user.pending_clarification_topic + "' and have not received an answer yet. If this topic materially affects your current recommendation, acknowledge the gap: say you're using a safe default until they answer. Do not silently proceed as if you have the information." if user.pending_clarification_topic and not user.pending_clarification_answer else ""}
 Workout confirmed today: {is_workout_confirmed_today(user.id)}
 Planned workout time: {user.workout_time or "not set"}
+Average daily steps: {f"{user.avg_steps:,}" if getattr(user, "avg_steps", None) else "not recorded"}
+Current training split: {getattr(user, "current_split", None) or "not set — build from scratch if programming"}
 {"DO NOT ask any questions in this message. Deliver value only — meal, workout, or brief encouragement." if (user.unanswered_count or 0) >= 2 else ""}
 {"IMPORTANT: The user has NOT confirmed they trained today. Do NOT reference a completed session, do NOT ask them to rate it, do NOT say things like 'first day in the books'. If this is an evening wrap, just preview tomorrow." if not is_workout_confirmed_today(user.id) else "The user confirmed they trained today — you can reference the session."}
 

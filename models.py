@@ -72,6 +72,8 @@ class User(Base):
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
     tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
+    avg_steps = Column(Integer, default=None)  # average daily step count from onboarding
+    current_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", "bro_split", "custom", "none"
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context

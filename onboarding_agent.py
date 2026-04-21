@@ -47,8 +47,10 @@ REQUIRED_FIELDS = [
     ("height_weight", "height and weight"),
     ("occupation", "what they do — student, desk job, physical work, etc."),
     ("activity_level", "how active they are outside the gym — sedentary desk life, walking campus, on their feet all day"),
+    ("avg_steps", "average daily step count — if they don't know, tell them where to check: iPhone Health app under Browse > Activity > Steps, or Google Fit / Samsung Health on Android"),
     ("workout_days", "how many days per week they can train"),
     ("workout_time", "what time they prefer to work out"),
+    ("current_split", "whether they already have a workout routine — PPL, upper/lower, full body, bro split, or if they need one built"),
     ("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"),
     ("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"),
     ("injuries", "any injuries or physical limitations"),
@@ -67,10 +69,14 @@ def _get_missing_fields(user) -> list:
         missing.append(("occupation", "what they do — student, desk job, physical work, etc."))
     if not user.activity_level or user.activity_level == "lightly_active":
         missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
+    if user.avg_steps is None:
+        missing.append(("avg_steps", "average daily step count — if they don't know, tell them: iPhone Health app (Browse > Activity > Steps), or Google Fit / Samsung Health on Android. Most phones track this automatically."))
     if not user.workout_days:
         missing.append(("workout_days", "how many days per week they can train"))
     if not user.workout_time:
         missing.append(("workout_time", "what time they prefer to work out"))
+    if user.current_split is None:
+        missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     if not user.diet:
@@ -220,7 +226,9 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "wake_time": "HH:MM in 24h format" or null,
   "sleep_time": "HH:MM in 24h format" or null,
   "existing_tools": "comma separated app/device names" or "none" or null,
-  "tools_decision": "integrate" or "acknowledged" or "none" or null
+  "tools_decision": "integrate" or "acknowledged" or "none" or null,
+  "avg_steps": integer (daily step count) or null,
+  "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null
 }}
 
 tools_decision rules:
@@ -228,6 +236,22 @@ tools_decision rules:
 - "integrate" → tool has data Cued can directly reference (e.g. Apple Health, Garmin, Oura)
 - "acknowledged" → tool exists but Cued can't pull data from it (e.g. Nike Run Club, MyFitnessPal, Strava)
 - null → user didn't mention tools in this message
+
+avg_steps rules:
+- "around 8k" or "like 8000" → 8000
+- "8000-10000" or "8-10k" → 9000 (midpoint)
+- "I don't track that" or "no idea" → null (do not block onboarding — move on)
+- "not many" → null
+- Only extract a number if clearly stated; otherwise null
+
+current_split rules:
+- "PPL" / "push pull legs" → "ppl"
+- "upper lower" / "upper/lower" → "upper_lower"
+- "full body" / "full body 3x" → "full_body"
+- "bro split" / "chest day, arm day" → "bro_split"
+- "yeah I have a routine" / "I follow [specific program name]" → "custom"
+- "no" / "nah" / "I need one" / "build me one" → "none"
+- null → user didn't answer this question in this message
 
 Examples:
 "I'm 5'7 and 145 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 145, ...rest null}}
@@ -329,6 +353,12 @@ def _store_extracted_data(user_id: int, data: dict):
             changed = True
         if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
             user.activity_level = data["activity_level"]
+            changed = True
+        if data.get("avg_steps") is not None and user.avg_steps is None:
+            user.avg_steps = int(data["avg_steps"])
+            changed = True
+        if data.get("current_split") is not None and user.current_split is None:
+            user.current_split = data["current_split"]
             changed = True
 
         if changed:
@@ -464,6 +494,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
 
             system_prompt = _build_system_prompt(user_row)
             instruction = (
+                f"Do NOT greet the user — you already said hello earlier.\n\n"
                 f"The user was shown their plan summary and targets but didn't confirm. "
                 f"They said: \"{incoming_message}\"\n\n"
                 f"Address their concern or make the adjustment they're asking for. "
@@ -520,6 +551,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         if non_null:
             acknowledged_fields = ", ".join(non_null.keys())
             instruction = (
+                f"Do NOT greet the user — you already said hello in your first message.\n\n"
                 f"The user just said: \"{incoming_message}\"\n"
                 f"You extracted and stored: {acknowledged_fields}.\n\n"
                 f"STEP 1: Read what they said carefully. Did they ask a question? Make a comment? "
@@ -530,6 +562,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             )
         else:
             instruction = (
+                f"Do NOT greet the user — you already said hello in your first message.\n\n"
                 f"The user said: \"{incoming_message}\"\n"
                 f"This didn't contain the data you needed — but before moving on, read it carefully.\n\n"
                 f"STEP 1: Respond fully to what they said. If they asked a question, answer it completely. "
@@ -563,23 +596,27 @@ def _finalize_onboarding_profile(user_row):
         if re.search(r'[a-z]', user_row.workout_days.lower()):
             user_row.confirmed_training_days = user_row.workout_days
 
-    # confirmed_training_split: derive from workout_days count if not already set
-    if user_row.workout_days and not user_row.confirmed_training_split:
-        try:
-            import re
-            nums = re.findall(r'\d+', user_row.workout_days)
-            if nums:
-                count = int(nums[0])
-                if count <= 3:
-                    user_row.confirmed_training_split = f"{count}x/week"
-                elif count <= 4:
-                    user_row.confirmed_training_split = "upper/lower or PPL 4x"
-                elif count <= 5:
-                    user_row.confirmed_training_split = "PPL or 5x/week"
-                else:
-                    user_row.confirmed_training_split = f"{count}x/week"
-        except Exception:
-            pass
+    # confirmed_training_split: prefer explicit current_split from onboarding conversation,
+    # fall back to deriving from workout_days count
+    if not user_row.confirmed_training_split:
+        if user_row.current_split and user_row.current_split != "none":
+            user_row.confirmed_training_split = user_row.current_split
+        elif user_row.workout_days:
+            try:
+                import re
+                nums = re.findall(r'\d+', user_row.workout_days)
+                if nums:
+                    count = int(nums[0])
+                    if count <= 3:
+                        user_row.confirmed_training_split = f"{count}x/week"
+                    elif count <= 4:
+                        user_row.confirmed_training_split = "upper/lower or PPL 4x"
+                    elif count <= 5:
+                        user_row.confirmed_training_split = "PPL or 5x/week"
+                    else:
+                        user_row.confirmed_training_split = f"{count}x/week"
+            except Exception:
+                pass
 
 
 def _complete_onboarding(user, incoming_message: str) -> bool:
