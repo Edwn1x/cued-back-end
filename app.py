@@ -530,7 +530,7 @@ def webhook():
 
         # Shorter buffer during onboarding — user is actively engaged
         if (user.onboarding_step or 0) < 2:
-            buffer_delay = (8, 18)
+            buffer_delay = (25, 35)
         else:
             buffer_delay = None  # use default 90-150s
 
