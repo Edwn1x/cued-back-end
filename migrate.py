@@ -56,6 +56,8 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN existing_tools TEXT",
     "ALTER TABLE users ADD COLUMN tools_decision VARCHAR(20)",
     "ALTER TABLE users ADD COLUMN pending_photo_meal TEXT",
+    "ALTER TABLE users ADD COLUMN active_meal_id INTEGER",
+    "ALTER TABLE users ADD COLUMN active_meal_updated_at TIMESTAMP",
     # Added: weight_logs table (CREATE TABLE IF NOT EXISTS)
     """CREATE TABLE IF NOT EXISTS weight_logs (
         id SERIAL PRIMARY KEY,

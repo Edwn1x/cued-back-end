@@ -73,6 +73,8 @@ class User(Base):
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
     tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
+    active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
+    active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
@@ -312,6 +314,59 @@ def maybe_infer_training_days(user_id: int) -> str | None:
         session.commit()
         return day_str
 
+    finally:
+        session.close()
+
+
+ACTIVE_MEAL_WINDOW_SECONDS = 600  # 10 minutes
+
+
+def set_active_meal(user_id: int, meal_id: int):
+    """Mark a meal as the active meal being discussed."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if user:
+            user.active_meal_id = meal_id
+            user.active_meal_updated_at = datetime.now(timezone.utc)
+            session.commit()
+    finally:
+        session.close()
+
+
+def get_active_meal(user_id: int):
+    """
+    Return the active Meal row if the context window is still open, else None.
+    Also clears the context if the window has expired.
+    """
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user or not user.active_meal_id or not user.active_meal_updated_at:
+            return None
+
+        elapsed = (datetime.now(timezone.utc) - user.active_meal_updated_at.replace(tzinfo=timezone.utc)).total_seconds()
+        if elapsed > ACTIVE_MEAL_WINDOW_SECONDS:
+            user.active_meal_id = None
+            user.active_meal_updated_at = None
+            session.commit()
+            return None
+
+        meal = session.get(Meal, user.active_meal_id)
+        return meal
+    finally:
+        session.close()
+
+
+def clear_active_meal(user_id: int):
+    """Explicitly close the active meal context (topic change, etc.)."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if user:
+            user.active_meal_id = None
+            user.active_meal_updated_at = None
+            session.commit()
     finally:
         session.close()
 

@@ -413,7 +413,7 @@ Return ONLY valid JSON:
 def handle_photo_refinement(user, user_message: str) -> dict:
     """User answered clarifying questions about a food photo. Refine and log."""
     import json as json_lib
-    from models import get_session, User, Meal, ensure_todays_totals
+    from models import get_session, User, Meal, ensure_todays_totals, set_active_meal
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -523,6 +523,14 @@ Return ONLY valid JSON:
             user_row.carbs_today = (user_row.carbs_today or 0) + meal_content.get("carbs_g", 0)
             user_row.fat_today = (user_row.fat_today or 0) + meal_content.get("fat_g", 0)
             user_row.pending_photo_meal = None
+
+            session.flush()  # get meal.id before commit
+
+            # Open active meal context so follow-ups (e.g. "I also used avocado oil")
+            # update this row instead of creating a duplicate
+            user_row.active_meal_id = meal.id
+            from datetime import timezone as _tz
+            user_row.active_meal_updated_at = datetime.now(_tz.utc)
 
             session.commit()
             logger.info(f"Logged photo meal for {user_row.name}: {meal_content.get('description')} ({meal_content.get('calories')} cal)")
