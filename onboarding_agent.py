@@ -218,21 +218,33 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "injuries": "description of injuries" or "none" or null,
   "wake_time": "HH:MM in 24h format" or null,
   "sleep_time": "HH:MM in 24h format" or null,
-  "existing_tools": "comma separated app/device names" or "none" or null
+  "existing_tools": "comma separated app/device names" or "none" or null,
+  "tools_decision": "integrate" or "acknowledged" or "none" or null
 }}
+
+tools_decision rules:
+- "none" → user has no tools (existing_tools="none")
+- "integrate" → tool has data Cued can directly reference (e.g. Apple Health, Garmin, Oura)
+- "acknowledged" → tool exists but Cued can't pull data from it (e.g. Nike Run Club, MyFitnessPal, Strava)
+- null → user didn't mention tools in this message
 
 Examples:
 "I'm 5'7 and 145 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 145, ...rest null}}
 "I can do 4 days a week, usually around 5pm" → {{"workout_days": "4", "workout_time": "17:00", ...rest null}}
 "I cook most of the time but eat out on weekends" → {{"cooking_situation": "mix", ...rest null}}
+"I mostly buy my own groceries and cook but sometimes grab something on the way" → {{"cooking_situation": "mix", ...rest null}}
+"I cook for myself" → {{"cooking_situation": "cook_myself", ...rest null}}
+"I eat at the dining hall" → {{"cooking_situation": "dining_hall", ...rest null}}
 "no injuries" → {{"injuries": "none", ...rest null}}
-"I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", ...rest null}}
+"I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", "tools_decision": "acknowledged", ...rest null}}
+"Does Nike Run Club count?" → {{"existing_tools": "nike_run_club", "tools_decision": "acknowledged", ...rest null}}
+"nah I don't use anything" → {{"existing_tools": "none", "tools_decision": "none", ...rest null}}
 "idk" → {{all null}}
 
 Short answer rules:
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
-- "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none"
+- "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none", tools_decision="none"
 - "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
 - Single number like "5" → map to whatever field was just asked about, not height
 
@@ -247,7 +259,7 @@ Activity level — always extract something if the user described their daily mo
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+            max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
@@ -310,6 +322,9 @@ def _store_extracted_data(user_id: int, data: dict):
             changed = True
         if data.get("existing_tools") is not None and user.existing_tools is None:
             user.existing_tools = data["existing_tools"]
+            changed = True
+        if data.get("tools_decision") is not None and not user.tools_decision:
+            user.tools_decision = data["tools_decision"]
             changed = True
         if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
             user.activity_level = data["activity_level"]
@@ -520,6 +535,44 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         return False
 
 
+def _finalize_onboarding_profile(user_row):
+    """
+    Copy profile fields to their confirmed counterparts at onboarding completion.
+    Runs once inside _complete_onboarding before commit. No DB session needed —
+    caller passes the already-open user_row object.
+    """
+    # confirmed_workout_time: copy directly from workout_time (never re-extract
+    # from conversation — risk of grabbing coach's own message times)
+    if user_row.workout_time and not user_row.confirmed_workout_time:
+        user_row.confirmed_workout_time = user_row.workout_time
+
+    # confirmed_training_days: only copy if workout_days contains specific days
+    # (letters). If it's a count like "4" or range "3-5", leave NULL and let
+    # the inference system fill it in over time.
+    if user_row.workout_days and not user_row.confirmed_training_days:
+        import re
+        if re.search(r'[a-z]', user_row.workout_days.lower()):
+            user_row.confirmed_training_days = user_row.workout_days
+
+    # confirmed_training_split: derive from workout_days count if not already set
+    if user_row.workout_days and not user_row.confirmed_training_split:
+        try:
+            import re
+            nums = re.findall(r'\d+', user_row.workout_days)
+            if nums:
+                count = int(nums[0])
+                if count <= 3:
+                    user_row.confirmed_training_split = f"{count}x/week"
+                elif count <= 4:
+                    user_row.confirmed_training_split = "upper/lower or PPL 4x"
+                elif count <= 5:
+                    user_row.confirmed_training_split = "PPL or 5x/week"
+                else:
+                    user_row.confirmed_training_split = f"{count}x/week"
+        except Exception:
+            pass
+
+
 def _complete_onboarding(user, incoming_message: str) -> bool:
     """Finalize onboarding — calculate targets, store confirmed decisions, schedule, send kickoff message."""
     from models import get_session, User as UserModel
@@ -535,6 +588,9 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         user_row.protein_target = targets["protein"]
         user_row.confirmed_goal_priority = targets.get("goal_label", user_row.goal)
         user_row.onboarding_step = 2  # complete
+
+        # Copy profile fields to confirmed counterparts
+        _finalize_onboarding_profile(user_row)
 
         session.commit()
         logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein")
