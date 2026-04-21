@@ -3,7 +3,7 @@ import logging
 import threading
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -396,6 +396,24 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
 
 # ─── Goodnight Detection ─────────────────────────────
+def _is_training_day_confirmation(body: str) -> bool:
+    """
+    Detect when a user is confirming they're training today, even without
+    logging a workout. Catches replies like "yeah hitting legs" or "going to gym".
+    Intentionally narrow — false positives would wrongly flag rest days.
+    """
+    body_lower = body.lower().strip()
+    training_signals = [
+        "hitting", "going to gym", "going to the gym", "heading to gym",
+        "heading to the gym", "training today", "working out today",
+        "gym today", "yeah gym", "yep gym", "lifting today",
+        "legs today", "chest today", "back today", "arms today", "shoulders today",
+        "push today", "pull today", "upper today", "lower today",
+        "got a workout", "doing a workout", "getting a workout",
+    ]
+    return any(signal in body_lower for signal in training_signals)
+
+
 def is_goodnight_signal(body: str) -> bool:
     """Detect if the user is signaling end-of-conversation."""
     body_lower = body.lower().strip()
@@ -499,9 +517,24 @@ def webhook():
                 session.add(workout)
                 session.commit()
             confirm_workout_today(user.id)
+            threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
         if message_type == "workout_request":
             confirm_workout_today(user.id)
+            threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
+
+        # Catch training-day confirmations that don't look like workout logs —
+        # e.g. "yeah hitting legs today" in reply to the morning briefing.
+        # Only fires if today's workout hasn't been confirmed yet.
+        if message_type == "freeform" and not is_workout_confirmed_today(user.id):
+            if _is_training_day_confirmation(body):
+                confirm_workout_today(user.id)
+                logger.info(f"Training day confirmed via freeform reply for {user.name}")
+                threading.Thread(
+                    target=maybe_infer_training_days,
+                    args=(user.id,),
+                    daemon=True,
+                ).start()
 
         # Check for goodnight signal — handle immediately, skip buffer
         # Never trigger during onboarding — user is answering questions, not signing off

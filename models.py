@@ -239,6 +239,72 @@ def confirm_workout_today(user_id: int):
         session.close()
 
 
+def maybe_infer_training_days(user_id: int) -> str | None:
+    """
+    Look at the last 3 weeks of DailyLog.workout_confirmed to infer
+    which days of the week the user consistently trains. If the same
+    days appear in all 3 weeks, write them to confirmed_training_days
+    and return a comma-separated string (e.g. "mon,wed,fri").
+    Returns None if no consistent pattern found yet.
+
+    Called in a background thread after each workout confirmation.
+    """
+    from datetime import timedelta
+    from collections import defaultdict
+
+    DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    WEEKS_REQUIRED = 3
+
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user or user.confirmed_training_days:
+            return None  # already locked in, nothing to do
+
+        today = datetime.now(timezone.utc).date()
+        cutoff = today - timedelta(weeks=WEEKS_REQUIRED)
+
+        logs = (
+            session.query(DailyLog)
+            .filter(
+                DailyLog.user_id == user_id,
+                DailyLog.workout_confirmed == True,
+                DailyLog.date >= cutoff,
+            )
+            .all()
+        )
+
+        if not logs:
+            return None
+
+        # Group confirmed days by ISO week number
+        weeks: dict[int, set[int]] = defaultdict(set)
+        for log in logs:
+            log_date = log.date.date() if hasattr(log.date, "date") else log.date
+            week_num = log_date.isocalendar()[1]
+            weeks[week_num].add(log_date.weekday())  # 0=Mon … 6=Sun
+
+        if len(weeks) < WEEKS_REQUIRED:
+            return None
+
+        # Find days that appear in every recorded week
+        week_sets = list(weeks.values())
+        consistent_days = week_sets[0].copy()
+        for week_set in week_sets[1:]:
+            consistent_days &= week_set
+
+        if not consistent_days:
+            return None
+
+        day_str = ",".join(DAY_NAMES[d] for d in sorted(consistent_days))
+        user.confirmed_training_days = day_str
+        session.commit()
+        return day_str
+
+    finally:
+        session.close()
+
+
 def resolve_pending_clarification(user_id: int, answer: str):
     """
     If a clarification question is pending and unanswered, store the user's reply as the answer.
