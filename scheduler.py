@@ -1,6 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from models import get_session, User
 from coach import generate_scheduled_message
 from sms import send_sms
@@ -35,6 +36,52 @@ def add_minutes(time_str: str, minutes: int) -> str:
     return dt.strftime("%H:%M")
 
 
+def user_local_to_utc(hour: int, minute: int, tz_str: str) -> tuple[int, int]:
+    """
+    Convert a local time (hour, minute) in the user's timezone to UTC hour and minute.
+    Used so CronTrigger (which runs in UTC) fires at the right local time.
+    """
+    try:
+        user_tz = ZoneInfo(tz_str or "America/Los_Angeles")
+    except Exception:
+        user_tz = ZoneInfo("America/Los_Angeles")
+
+    # Use today's date for DST accuracy
+    today = datetime.now(user_tz).date()
+    local_dt = datetime(today.year, today.month, today.day, hour, minute, tzinfo=user_tz)
+    utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
+    return utc_dt.hour, utc_dt.minute
+
+
+def has_unanswered_outbound(user_id: int) -> bool:
+    """
+    Return True if the last outbound message has not received a reply yet.
+    Prevents back-to-back unsolicited messages when the user hasn't responded.
+    """
+    from models import Message
+    session = get_session()
+    try:
+        last_out = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_out:
+            return False
+        last_in = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "in")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_in:
+            return True  # we've sent something but never got a reply
+        return last_out.created_at > last_in.created_at
+    finally:
+        session.close()
+
+
 def send_scheduled_message(user_id: int, message_type: str):
     """Generate and send a scheduled coaching message to a user."""
     session = get_session()
@@ -57,6 +104,11 @@ def send_scheduled_message(user_id: int, message_type: str):
         # post_workout check-in only fires if user confirmed they trained today
         if message_type == "post_workout" and not is_workout_confirmed_today(user.id):
             logger.info(f"Skipping post_workout for {user.name} — no workout confirmed today")
+            return
+
+        # No back-to-back outbound without a reply (except morning briefing which always fires)
+        if message_type not in ("morning_briefing", "morning") and has_unanswered_outbound(user_id):
+            logger.info(f"Skipping {message_type} for {user.name} — last outbound still unanswered")
             return
 
         # Before sending a question-type message, check if the previous one was answered
@@ -86,73 +138,70 @@ def send_scheduled_message(user_id: int, message_type: str):
 
 
 def schedule_user(user: User):
-    """Set up all daily scheduled messages for a user."""
-    if not user.wake_time or not user.workout_time:
-        logger.warning(f"Skipping schedule for {user.name} — missing wake_time or workout_time")
-        # Still schedule morning briefing if we have wake time
-        if user.wake_time:
-            wake_h, wake_m = parse_time(user.wake_time)
-            job_id = f"user_{user.id}_morning"
-            if scheduler.get_job(job_id):
-                scheduler.remove_job(job_id)
-            scheduler.add_job(
-                send_scheduled_message,
-                trigger=CronTrigger(hour=wake_h, minute=wake_m),
-                args=[user.id, "morning"],
-                id=job_id,
-                replace_existing=True,
-                misfire_grace_time=300,
-            )
-            logger.info(f"Scheduled morning-only for {user.name} (no workout_time yet)")
+    """
+    Set up daily scheduled messages for a user based on their wake_time,
+    workout_time, and sleep_time. All times are converted from the user's
+    local timezone to UTC for the cron triggers.
+
+    Daily rhythm:
+    - Morning briefing: at wake_time
+    - Pre-workout nudge: 15 min before workout_time
+    - Evening accountability: 90 min before sleep_time
+    - Weekly weigh-in: at wake_time + 10 min on weigh_in_day
+    """
+    tz_str = user.user_timezone or "America/Los_Angeles"
+
+    if not user.wake_time:
+        logger.warning(f"Skipping schedule for {user.name} — no wake_time set")
         return
 
     wake_h, wake_m = parse_time(user.wake_time)
-    workout_h, workout_m = parse_time(user.workout_time)
+    wake_utc_h, wake_utc_m = user_local_to_utc(wake_h, wake_m, tz_str)
 
-    # Calculate message times relative to wake and workout
-    breakfast_time = add_minutes(user.wake_time, 30)
-    pre_workout_time = add_minutes(user.workout_time, -15)
-    post_workout_time = add_minutes(user.workout_time, 75)
+    touchpoints = []
 
-    breakfast_h, breakfast_m = parse_time(breakfast_time)
-    pre_h, pre_m = parse_time(pre_workout_time)
-    post_h, post_m = parse_time(post_workout_time)
+    # Morning briefing — always schedule if we have wake_time
+    touchpoints.append(("morning_briefing", wake_utc_h, wake_utc_m))
 
-    # Define the daily schedule
-    touchpoints = [
-        ("morning",      wake_h,      wake_m),
-        ("breakfast",    breakfast_h,  breakfast_m),
-        ("lunch",        12,           30),
-        ("pre_workout",  pre_h,        pre_m),
-        ("post_workout", post_h,       post_m),
-        ("dinner",       18,           0),
-        ("evening",      21,           0),
-    ]
+    # Pre-workout nudge — 15 min before workout_time
+    if user.workout_time:
+        pre_workout_str = add_minutes(user.workout_time, -15)
+        pre_h, pre_m = parse_time(pre_workout_str)
+        pre_utc_h, pre_utc_m = user_local_to_utc(pre_h, pre_m, tz_str)
+        touchpoints.append(("pre_workout", pre_utc_h, pre_utc_m))
 
-    all_jobs = touchpoints + [("nudge", wake_h, wake_m + 5)]
+        # Post-workout check-in — 75 min after workout_time
+        post_workout_str = add_minutes(user.workout_time, 75)
+        post_h, post_m = parse_time(post_workout_str)
+        post_utc_h, post_utc_m = user_local_to_utc(post_h, post_m, tz_str)
+        touchpoints.append(("post_workout", post_utc_h, post_utc_m))
 
-    for msg_type, hour, minute in all_jobs:
+    # Evening accountability — 90 min before sleep_time
+    if user.sleep_time:
+        evening_str = add_minutes(user.sleep_time, -90)
+        eve_h, eve_m = parse_time(evening_str)
+        eve_utc_h, eve_utc_m = user_local_to_utc(eve_h, eve_m, tz_str)
+        touchpoints.append(("evening_wrap", eve_utc_h, eve_utc_m))
+
+    for msg_type, hour, minute in touchpoints:
         job_id = f"user_{user.id}_{msg_type}"
-
-        # Remove existing job if rescheduling
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
-
         scheduler.add_job(
             send_scheduled_message,
             trigger=CronTrigger(hour=hour, minute=minute),
             args=[user.id, msg_type],
             id=job_id,
             replace_existing=True,
-            misfire_grace_time=300,  # 5 min grace period
+            misfire_grace_time=300,
         )
 
     logger.info(
-        f"Scheduled {len(touchpoints)} daily touchpoints for {user.name}: "
-        f"wake={user.wake_time}, workout={user.workout_time}"
+        f"Scheduled {len(touchpoints)} touchpoints for {user.name} "
+        f"(tz={tz_str}, wake={user.wake_time}, workout={user.workout_time}, sleep={user.sleep_time})"
     )
 
-    # Schedule weekly weigh-in if user has a weigh-in day set
+    # Weekly weigh-in
     if user.weigh_in_day and user.wake_time:
         day_map = {
             "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -160,14 +209,14 @@ def schedule_user(user: User):
         }
         day_num = day_map.get(user.weigh_in_day.lower())
         if day_num is not None:
-            wake_h, wake_m = parse_time(user.wake_time)
-            weighin_minute = wake_m + 10 if wake_m < 50 else wake_m - 10
+            weighin_m = wake_m + 10 if wake_m < 50 else wake_m - 10
+            wi_utc_h, wi_utc_m = user_local_to_utc(wake_h, weighin_m, tz_str)
             job_id = f"user_{user.id}_weigh_in"
             if scheduler.get_job(job_id):
                 scheduler.remove_job(job_id)
             scheduler.add_job(
                 send_scheduled_message,
-                trigger=CronTrigger(day_of_week=day_num, hour=wake_h, minute=weighin_minute),
+                trigger=CronTrigger(day_of_week=day_num, hour=wi_utc_h, minute=wi_utc_m),
                 args=[user.id, "weigh_in"],
                 id=job_id,
                 replace_existing=True,
@@ -182,7 +231,10 @@ def schedule_all_users():
     try:
         users = session.query(User).filter(User.active == True).all()
         for user in users:
-            schedule_user(user)
+            try:
+                schedule_user(user)
+            except Exception as e:
+                logger.error(f"Failed to schedule {user.name}: {e}")
         logger.info(f"Scheduled messages for {len(users)} active users.")
     finally:
         session.close()
@@ -205,7 +257,7 @@ def check_meal_adherence():
                 continue
 
             # Skip if user is still in onboarding
-            if (user.onboarding_step or 0) < 4:
+            if (user.onboarding_step or 0) < 2:
                 continue
 
             last_meal = (
