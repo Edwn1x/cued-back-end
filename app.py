@@ -557,12 +557,23 @@ def webhook():
         # Never trigger during onboarding — user is answering questions, not signing off
         if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 2:
             from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
             wake_time = user.wake_time or "07:00"
             wake_h, wake_m = map(int, wake_time.split(":"))
-            next_wake = (datetime.now() + timedelta(days=1)).replace(
-                hour=wake_h, minute=wake_m, second=0, microsecond=0
-            )
-            user.quiet_until = next_wake
+            try:
+                user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+            except Exception:
+                user_tz = ZoneInfo("America/Los_Angeles")
+            now_local = datetime.now(user_tz)
+            wake_today = now_local.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0)
+            if now_local < wake_today:
+                # After midnight but before wake time — user is ending their night,
+                # will wake up later today (same calendar day)
+                quiet_until = wake_today
+            else:
+                # After wake time (e.g. 11 PM) — next wake is tomorrow
+                quiet_until = wake_today + timedelta(days=1)
+            user.quiet_until = quiet_until
             session.commit()
 
             import random
