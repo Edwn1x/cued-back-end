@@ -163,7 +163,8 @@ def _build_system_prompt(user) -> str:
 ## ONBOARDING RULES
 - You are collecting information to build this user's coaching plan.
 - Ask ONE question at a time. Never ask two questions in one message.
-- If the user asks a question instead of answering yours, answer their question first, then circle back to your question.
+- CRITICAL: Never advance to the next onboarding step until you have fully responded to the user's most recent message. If the user asked a question, answer it completely. If the user made a comment or observation, acknowledge it. The user should never feel ignored or skipped over.
+- If the user asks a question instead of answering yours, answer their question FIRST — fully and directly — then circle back to your question.
 - If the user provides multiple data points in one message, acknowledge all of them.
 - Keep messages short — 1-2 sentences per message, max 2 messages.
 - Never mention database fields, system internals, or "your profile."
@@ -496,10 +497,16 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         summary = _build_confirmation_summary(user_row)
 
         instruction = (
-            f"You've collected all the data you need. Present this summary to the user "
-            f"and ask if it sounds right:\n\n{summary}\n\n"
-            f"If the user also said something in their last message that needs acknowledging, "
-            f"acknowledge it first. Then present the summary. One message."
+            f"You've collected all the data you need. The user just said: \"{incoming_message}\"\n\n"
+            f"STEP 1: If the user's last message asked a question or said something that deserves a response, "
+            f"address it first — fully. Don't skip it.\n"
+            f"STEP 2: Present this summary and ask if it sounds right:\n\n{summary}\n\n"
+            f"STEP 3: After presenting the summary, briefly surface 2-3 capabilities they might not know about. "
+            f"Match your tone to their age tier (check the personality skill). Examples:\n"
+            f"- They can text a photo of their food and you'll break down the macros\n"
+            f"- If they want a meal idea, just ask\n"
+            f"- If they need a workout swap or modification, you've got them\n"
+            f"Keep the whole message tight. Ask 'sound right?' or 'does that look good?' at the end."
         )
         text = _generate(system_prompt, instruction)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
@@ -513,20 +520,22 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         if non_null:
             acknowledged_fields = ", ".join(non_null.keys())
             instruction = (
-                f"The user just provided: {incoming_message}\n"
+                f"The user just said: \"{incoming_message}\"\n"
                 f"You extracted and stored: {acknowledged_fields}.\n\n"
-                f"Briefly acknowledge what they shared (one sentence). "
-                f"Then ask about: {next_field[1]}.\n"
-                f"One question only. Keep it casual and natural."
+                f"STEP 1: Read what they said carefully. Did they ask a question? Make a comment? "
+                f"Say something that deserves a response beyond just acknowledgment? If yes, answer it fully first.\n"
+                f"STEP 2: Briefly acknowledge the data they shared (one sentence).\n"
+                f"STEP 3: Ask about the next thing you need: {next_field[1]}.\n"
+                f"One message. Keep it natural. Never skip what they said to rush to the next question."
             )
         else:
             instruction = (
                 f"The user said: \"{incoming_message}\"\n"
-                f"This didn't contain data you needed. They might be asking a question "
-                f"or making a comment.\n\n"
-                f"First, respond to what they said (answer their question, acknowledge their comment). "
-                f"Then naturally ask about: {next_field[1]}.\n"
-                f"One message, brief."
+                f"This didn't contain the data you needed — but before moving on, read it carefully.\n\n"
+                f"STEP 1: Respond fully to what they said. If they asked a question, answer it completely. "
+                f"If they made a comment, address it. Never ignore what they wrote.\n"
+                f"STEP 2: Then naturally transition to asking about: {next_field[1]}.\n"
+                f"One message, brief. The user should feel heard before you ask the next question."
             )
 
         text = _generate(system_prompt, instruction)
