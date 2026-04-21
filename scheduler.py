@@ -55,31 +55,83 @@ def user_local_to_utc(hour: int, minute: int, tz_str: str) -> tuple[int, int]:
 
 def has_unanswered_outbound(user_id: int) -> bool:
     """
-    Return True if the last outbound message has not received a reply yet.
+    Return True if the last outbound message sent TODAY has not received a reply.
     Prevents back-to-back unsolicited messages when the user hasn't responded.
+    Only looks at today's window — a stale unanswered message from yesterday
+    shouldn't block today's scheduled touchpoints.
     """
     from models import Message
+    from datetime import timezone
     session = get_session()
     try:
-        last_out = (
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        last_out_today = (
             session.query(Message)
-            .filter(Message.user_id == user_id, Message.direction == "out")
+            .filter(
+                Message.user_id == user_id,
+                Message.direction == "out",
+                Message.created_at >= today_start,
+            )
             .order_by(Message.created_at.desc())
             .first()
         )
-        if not last_out:
-            return False
-        last_in = (
+        if not last_out_today:
+            return False  # nothing sent today, no block
+
+        last_in_today = (
             session.query(Message)
-            .filter(Message.user_id == user_id, Message.direction == "in")
+            .filter(
+                Message.user_id == user_id,
+                Message.direction == "in",
+                Message.created_at >= today_start,
+            )
             .order_by(Message.created_at.desc())
             .first()
         )
-        if not last_in:
-            return True  # we've sent something but never got a reply
-        return last_out.created_at > last_in.created_at
+        if not last_in_today:
+            return True  # sent today, no reply today
+        return last_out_today.created_at > last_in_today.created_at
     finally:
         session.close()
+
+
+def _is_training_day(user) -> bool:
+    """
+    Return True if today is a known training day for this user.
+
+    Uses confirmed_training_days (e.g. "mon,wed,fri") when available.
+    Falls back to True when only a count is stored ("4", "3-5") — in that
+    case the morning briefing asks "training day or rest day?" and the
+    pre/post nudges rely on is_workout_confirmed_today() as the gate.
+    """
+    days_str = user.confirmed_training_days or user.workout_days or ""
+    days_str = days_str.strip().lower()
+    if not days_str:
+        return True  # no info — don't suppress, let morning briefing handle it
+
+    # If it looks like specific days (contains letters), parse them
+    import re
+    if re.search(r'[a-z]', days_str):
+        day_map = {
+            "mon": 0, "monday": 0,
+            "tue": 1, "tuesday": 1,
+            "wed": 2, "wednesday": 2,
+            "thu": 3, "thursday": 3,
+            "fri": 4, "friday": 4,
+            "sat": 5, "saturday": 5,
+            "sun": 6, "sunday": 6,
+        }
+        today_num = datetime.now().weekday()
+        tokens = re.split(r'[\s,/]+', days_str)
+        for token in tokens:
+            if day_map.get(token) == today_num:
+                return True
+        return False
+
+    # Only a number or range — can't determine specific days, allow through
+    return True
 
 
 def send_scheduled_message(user_id: int, message_type: str):
@@ -100,6 +152,12 @@ def send_scheduled_message(user_id: int, message_type: str):
             tier = get_tier(user.unanswered_count or 0)
             logger.info(f"Skipping {message_type} for {user.name} (tier={tier}, unanswered={user.unanswered_count})")
             return
+
+        # pre/post_workout nudges only fire on known training days
+        if message_type in ("pre_workout", "post_workout"):
+            if not _is_training_day(user):
+                logger.info(f"Skipping {message_type} for {user.name} — not a training day")
+                return
 
         # post_workout check-in only fires if user confirmed they trained today
         if message_type == "post_workout" and not is_workout_confirmed_today(user.id):
