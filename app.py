@@ -398,18 +398,35 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 # ─── Goodnight Detection ─────────────────────────────
 def _is_training_day_confirmation(body: str) -> bool:
     """
-    Detect when a user is confirming they're training today, even without
-    logging a workout. Catches replies like "yeah hitting legs" or "going to gym".
-    Intentionally narrow — false positives would wrongly flag rest days.
+    Detect when a user is confirming they're training today.
+    Intentionally tight — false negatives (missing a confirmation and
+    skipping the pre-workout nudge) are much better than false positives
+    (flagging a rest day and nagging someone who's not training).
+
+    Rules:
+    - Explicit negation anywhere → always False
+    - Must match a specific multi-word phrase or clear gym/lift keyword
+    - Ambiguous replies ("maybe", "depends", "probably") → False
     """
     body_lower = body.lower().strip()
+
+    # Negation check — bail immediately if any negative marker present
+    negations = ["nah", "nope", "no ", "not ", "rest day", "rest today",
+                 "skipping", "skip", "off day", "taking the day", "taking a day",
+                 "maybe", "depends", "probably not", "might not", "idk", "not sure"]
+    if any(neg in body_lower for neg in negations):
+        return False
+
+    # Positive signals — must be specific enough to rule out casual use
     training_signals = [
-        "hitting", "going to gym", "going to the gym", "heading to gym",
-        "heading to the gym", "training today", "working out today",
-        "gym today", "yeah gym", "yep gym", "lifting today",
+        "going to gym", "going to the gym", "heading to gym", "heading to the gym",
+        "training today", "working out today", "gym today", "yeah gym", "yep gym",
+        "lifting today", "hitting the gym", "hitting legs", "hitting chest",
+        "hitting back", "hitting arms", "hitting shoulders",
         "legs today", "chest today", "back today", "arms today", "shoulders today",
         "push today", "pull today", "upper today", "lower today",
-        "got a workout", "doing a workout", "getting a workout",
+        "got a workout", "doing a workout", "getting a workout in",
+        "yeah training", "yep training", "yeah working out", "yep working out",
     ]
     return any(signal in body_lower for signal in training_signals)
 

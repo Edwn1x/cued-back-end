@@ -242,11 +242,16 @@ def confirm_workout_today(user_id: int):
 def maybe_infer_training_days(user_id: int) -> str | None:
     """
     Look at the last 3 weeks of DailyLog.workout_confirmed to infer
-    which days of the week the user consistently trains. If the same
-    days appear in all 3 weeks, write them to confirmed_training_days
-    and return a comma-separated string (e.g. "mon,wed,fri").
-    Returns None if no consistent pattern found yet.
+    which days of the week the user consistently trains.
 
+    Consistency rules:
+    - A day is included if it appears in at least 2 of the 3 weeks
+      (allows one missed week without breaking the pattern)
+    - At least 3 consistent days must qualify before writing anything
+      (avoids locking in a half-formed schedule in the first two weeks)
+    - Only runs when confirmed_training_days is not yet set
+
+    Returns the locked-in day string (e.g. "mon,wed,fri") or None.
     Called in a background thread after each workout confirmation.
     """
     from datetime import timedelta
@@ -254,6 +259,8 @@ def maybe_infer_training_days(user_id: int) -> str | None:
 
     DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
     WEEKS_REQUIRED = 3
+    WEEKS_MATCH_THRESHOLD = 2   # day must appear in at least this many weeks
+    MIN_DAYS_TO_LOCK = 3        # need at least this many consistent days total
 
     session = get_session()
     try:
@@ -287,13 +294,17 @@ def maybe_infer_training_days(user_id: int) -> str | None:
         if len(weeks) < WEEKS_REQUIRED:
             return None
 
-        # Find days that appear in every recorded week
+        # Count how many weeks each weekday appears in
         week_sets = list(weeks.values())
-        consistent_days = week_sets[0].copy()
-        for week_set in week_sets[1:]:
-            consistent_days &= week_set
+        day_counts: dict[int, int] = defaultdict(int)
+        for week_set in week_sets:
+            for day in week_set:
+                day_counts[day] += 1
 
-        if not consistent_days:
+        # Keep days that appear in at least WEEKS_MATCH_THRESHOLD weeks
+        consistent_days = {day for day, count in day_counts.items() if count >= WEEKS_MATCH_THRESHOLD}
+
+        if len(consistent_days) < MIN_DAYS_TO_LOCK:
             return None
 
         day_str = ",".join(DAY_NAMES[d] for d in sorted(consistent_days))
