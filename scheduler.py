@@ -195,6 +195,29 @@ def send_scheduled_message(user_id: int, message_type: str):
         session.close()
 
 
+def _get_wake_time_for_day(user, day_of_week: int) -> str:
+    """
+    Return the appropriate wake time string for a given weekday (0=Mon, 6=Sun).
+    Uses wake_time_alt if today is in wake_days_alt, otherwise wake_time.
+    """
+    if user.wake_time_alt and user.wake_days_alt:
+        import re
+        day_map = {
+            "mon": 0, "monday": 0,
+            "tue": 1, "tuesday": 1,
+            "wed": 2, "wednesday": 2,
+            "thu": 3, "thursday": 3,
+            "fri": 4, "friday": 4,
+            "sat": 5, "saturday": 5,
+            "sun": 6, "sunday": 6,
+        }
+        tokens = re.split(r'[\s,/]+', user.wake_days_alt.strip().lower())
+        alt_days = {day_map[t] for t in tokens if t in day_map}
+        if day_of_week in alt_days:
+            return user.wake_time_alt
+    return user.wake_time
+
+
 def schedule_user(user: User):
     """
     Set up daily scheduled messages for a user based on their wake_time,
@@ -202,10 +225,14 @@ def schedule_user(user: User):
     local timezone to UTC for the cron triggers.
 
     Daily rhythm:
-    - Morning briefing: at wake_time
+    - Morning briefing: at wake_time (or wake_time_alt on alt days)
     - Pre-workout nudge: 15 min before workout_time
     - Evening accountability: 90 min before sleep_time
     - Weekly weigh-in: at wake_time + 10 min on weigh_in_day
+
+    Variable wake time: if wake_time_alt and wake_days_alt are set, the morning
+    briefing fires at different times on different days. We schedule one job per
+    unique (time, day) combination using day_of_week in the CronTrigger.
     """
     tz_str = user.user_timezone or "America/Los_Angeles"
 
@@ -213,42 +240,80 @@ def schedule_user(user: User):
         logger.warning(f"Skipping schedule for {user.name} — no wake_time set")
         return
 
-    wake_h, wake_m = parse_time(user.wake_time)
-    wake_utc_h, wake_utc_m = user_local_to_utc(wake_h, wake_m, tz_str)
-
     touchpoints = []
 
-    # Morning briefing — always schedule if we have wake_time
-    touchpoints.append(("morning_briefing", wake_utc_h, wake_utc_m))
+    # Morning briefing — handle variable wake time
+    if user.wake_time_alt and user.wake_days_alt:
+        import re
+        day_map = {
+            "mon": 0, "monday": 0,
+            "tue": 1, "tuesday": 1,
+            "wed": 2, "wednesday": 2,
+            "thu": 3, "thursday": 3,
+            "fri": 4, "friday": 4,
+            "sat": 5, "saturday": 5,
+            "sun": 6, "sunday": 6,
+        }
+        tokens = re.split(r'[\s,/]+', user.wake_days_alt.strip().lower())
+        alt_day_nums = sorted({day_map[t] for t in tokens if t in day_map})
+        all_days = set(range(7))
+        primary_day_nums = sorted(all_days - set(alt_day_nums))
+
+        # Primary wake time days
+        if primary_day_nums:
+            wake_h, wake_m = parse_time(user.wake_time)
+            wake_utc_h, wake_utc_m = user_local_to_utc(wake_h, wake_m, tz_str)
+            day_of_week_str = ",".join(str(d) for d in primary_day_nums)
+            touchpoints.append(("morning_briefing", wake_utc_h, wake_utc_m, day_of_week_str))
+
+        # Alt wake time days
+        if alt_day_nums:
+            alt_h, alt_m = parse_time(user.wake_time_alt)
+            alt_utc_h, alt_utc_m = user_local_to_utc(alt_h, alt_m, tz_str)
+            day_of_week_str = ",".join(str(d) for d in alt_day_nums)
+            touchpoints.append(("morning_briefing_alt", alt_utc_h, alt_utc_m, day_of_week_str))
+
+        # Use primary wake time for weigh-in reference
+        wake_h, wake_m = parse_time(user.wake_time)
+        wake_utc_h, wake_utc_m = user_local_to_utc(wake_h, wake_m, tz_str)
+    else:
+        wake_h, wake_m = parse_time(user.wake_time)
+        wake_utc_h, wake_utc_m = user_local_to_utc(wake_h, wake_m, tz_str)
+        touchpoints.append(("morning_briefing", wake_utc_h, wake_utc_m, "*"))
 
     # Pre-workout nudge — 15 min before workout_time
     if user.workout_time:
         pre_workout_str = add_minutes(user.workout_time, -15)
         pre_h, pre_m = parse_time(pre_workout_str)
         pre_utc_h, pre_utc_m = user_local_to_utc(pre_h, pre_m, tz_str)
-        touchpoints.append(("pre_workout", pre_utc_h, pre_utc_m))
+        touchpoints.append(("pre_workout", pre_utc_h, pre_utc_m, "*"))
 
         # Post-workout check-in — 75 min after workout_time
         post_workout_str = add_minutes(user.workout_time, 75)
         post_h, post_m = parse_time(post_workout_str)
         post_utc_h, post_utc_m = user_local_to_utc(post_h, post_m, tz_str)
-        touchpoints.append(("post_workout", post_utc_h, post_utc_m))
+        touchpoints.append(("post_workout", post_utc_h, post_utc_m, "*"))
 
     # Evening accountability — 90 min before sleep_time
     if user.sleep_time:
         evening_str = add_minutes(user.sleep_time, -90)
         eve_h, eve_m = parse_time(evening_str)
         eve_utc_h, eve_utc_m = user_local_to_utc(eve_h, eve_m, tz_str)
-        touchpoints.append(("evening_wrap", eve_utc_h, eve_utc_m))
+        touchpoints.append(("evening_wrap", eve_utc_h, eve_utc_m, "*"))
 
-    for msg_type, hour, minute in touchpoints:
+    for msg_type, hour, minute, day_of_week in touchpoints:
+        # morning_briefing_alt fires the same send_scheduled_message as morning_briefing
+        actual_type = "morning_briefing" if msg_type == "morning_briefing_alt" else msg_type
         job_id = f"user_{user.id}_{msg_type}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
+        cron_kwargs = dict(hour=hour, minute=minute)
+        if day_of_week != "*":
+            cron_kwargs["day_of_week"] = day_of_week
         scheduler.add_job(
             send_scheduled_message,
-            trigger=CronTrigger(hour=hour, minute=minute),
-            args=[user.id, msg_type],
+            trigger=CronTrigger(**cron_kwargs),
+            args=[user.id, actual_type],
             id=job_id,
             replace_existing=True,
             misfire_grace_time=300,

@@ -60,6 +60,9 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN active_meal_updated_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN avg_steps INTEGER",
     "ALTER TABLE users ADD COLUMN current_split VARCHAR(50)",
+    # Added: variable wake time support
+    "ALTER TABLE users ADD COLUMN wake_time_alt VARCHAR(10)",
+    "ALTER TABLE users ADD COLUMN wake_days_alt VARCHAR(50)",
     # Added: weight_logs table (CREATE TABLE IF NOT EXISTS)
     """CREATE TABLE IF NOT EXISTS weight_logs (
         id SERIAL PRIMARY KEY,

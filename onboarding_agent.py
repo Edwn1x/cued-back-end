@@ -76,7 +76,11 @@ def _get_missing_fields(user) -> list:
     if not user.workout_time:
         missing.append(("workout_time", "what time they prefer to work out"))
     if user.current_split is None:
-        missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
+        # Auto-fill "none" for users with no experience — skip the question entirely
+        if user.experience == "none":
+            _auto_fill_current_split_none(user)
+        else:
+            missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     if not user.diet:
@@ -90,6 +94,28 @@ def _get_missing_fields(user) -> list:
         missing.append(("existing_tools", "fitness apps or wearables they currently use"))
 
     return missing
+
+
+def _auto_fill_current_split_none(user) -> None:
+    """
+    Write current_split = 'none' to the DB for users who indicated they don't
+    currently train. Called when experience == 'none' so we skip the split
+    question — there's nothing to ask about.
+    """
+    from models import get_session, User as UserModel
+    session = get_session()
+    try:
+        user_row = session.get(UserModel, user.id)
+        if user_row and user_row.current_split is None:
+            user_row.current_split = "none"
+            session.commit()
+            # Update the in-memory object so _get_missing_fields sees the new value
+            user.current_split = "none"
+            logger.info(f"Auto-filled current_split=none for {user_row.name} (experience=none)")
+    except Exception as e:
+        logger.error(f"Failed to auto-fill current_split for user {user.id}: {e}")
+    finally:
+        session.close()
 
 
 def _get_experience_context(user) -> str:
@@ -224,6 +250,8 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "cooking_situation": "cook_myself, dining_hall, mostly_eat_out, mix" or null,
   "injuries": "description of injuries" or "none" or null,
   "wake_time": "HH:MM in 24h format" or null,
+  "wake_time_alt": "HH:MM in 24h format" or null,
+  "wake_days_alt": "comma-separated day abbreviations that use the alt wake time, e.g. 'mon,wed,fri'" or null,
   "sleep_time": "HH:MM in 24h format" or null,
   "existing_tools": "comma separated app/device names" or "none" or null,
   "tools_decision": "integrate" or "acknowledged" or "none" or null,
@@ -272,6 +300,14 @@ Short answer rules:
 - "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none", tools_decision="none"
 - "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
 - Single number like "5" → map to whatever field was just asked about, not height
+
+wake_time / wake_time_alt / wake_days_alt rules:
+- "I wake up at 10" → wake_time="10:00", wake_time_alt=null, wake_days_alt=null
+- "10 on tues thurs, 12 on mon wed fri" → wake_time="10:00", wake_time_alt="12:00", wake_days_alt="mon,wed,fri"
+- "around 8 on weekdays, 10 on weekends" → wake_time="08:00", wake_time_alt="10:00", wake_days_alt="sat,sun"
+- "7am except friday when I sleep in till 9" → wake_time="07:00", wake_time_alt="09:00", wake_days_alt="fri"
+- Always put the EARLIER time as wake_time (primary), later time as wake_time_alt
+- wake_days_alt lists which days use the LATER/alt time
 
 Activity level — always extract something if the user described their daily movement. Use a short, plain-English phrase. Examples:
 - "desk job, mostly sitting" → "sedentary — desk job, mostly sitting"
@@ -341,6 +377,12 @@ def _store_extracted_data(user_id: int, data: dict):
             changed = True
         if data.get("wake_time") and not user.wake_time:
             user.wake_time = data["wake_time"]
+            changed = True
+        if data.get("wake_time_alt") and not user.wake_time_alt:
+            user.wake_time_alt = data["wake_time_alt"]
+            changed = True
+        if data.get("wake_days_alt") and not user.wake_days_alt:
+            user.wake_days_alt = data["wake_days_alt"]
             changed = True
         if data.get("sleep_time") and not user.sleep_time:
             user.sleep_time = data["sleep_time"]
@@ -445,6 +487,41 @@ def start_onboarding(user):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _maybe_auto_fill_no_training(user, message: str) -> None:
+    """
+    If the user's message contains clear no-training signals, write
+    current_split = 'none' immediately so we skip the question.
+    Only fires when current_split is still NULL.
+    """
+    import re as _re
+    no_training_patterns = [
+        r"\bi (don'?t|do not|never|haven'?t) (work out|workout|go to the gym|train|exercise|lift|lift weights)\b",
+        r"\bi'?ve never (been to|gone to|stepped in) (a |the )?gym\b",
+        r"\bi'?m not (currently |really )?(training|working out|lifting)\b",
+        r"\bi don'?t have (a |any )?(routine|program|split|workout plan)\b",
+        r"\bi need (you to build|a routine|a program|one built)\b",
+        r"\bbuild me (a |one|a routine|a program)\b",
+        r"\bi'?m (starting fresh|starting from scratch|brand new to (the gym|lifting|working out))\b",
+    ]
+    msg_lower = message.lower()
+    for pattern in no_training_patterns:
+        if _re.search(pattern, msg_lower):
+            from models import get_session, User as UserModel
+            session = get_session()
+            try:
+                user_row = session.get(UserModel, user.id)
+                if user_row and user_row.current_split is None:
+                    user_row.current_split = "none"
+                    session.commit()
+                    user.current_split = "none"
+                    logger.info(f"Auto-filled current_split=none for {user_row.name} (no-training signal detected)")
+            except Exception as e:
+                logger.error(f"Failed to auto-fill current_split for user {user.id}: {e}")
+            finally:
+                session.close()
+            break
+
+
 def handle_onboarding_reply(user, incoming_message: str) -> bool:
     """
     Called from webhook on every message while onboarding_step < 2.
@@ -468,6 +545,17 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     finally:
         session.close()
 
+    # Auto-fill current_split="none" if user explicitly indicated no training
+    # before we ask them the question (Fix 2)
+    if user_row.current_split is None:
+        _maybe_auto_fill_no_training(user_row, incoming_message)
+        # Re-fetch to pick up any write
+        session = get_session()
+        try:
+            user_row = session.get(UserModel, user.id)
+        finally:
+            session.close()
+
     missing_before = _get_missing_fields(user_row)
 
     if not missing_before:
@@ -477,7 +565,33 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             "that's right", "perfect", "ok", "sure", "let's go", "lets go",
             "good", "right", "yea", "ya", "bet", "fs",
         ]
-        is_confirmed = any(kw in incoming_message.lower().strip() for kw in confirmation_keywords)
+        msg_lower = incoming_message.lower().strip()
+        is_confirmed = any(kw in msg_lower for kw in confirmation_keywords)
+
+        # Check if the message also contains a question — if so, answer it first
+        # before completing onboarding (Fix 1)
+        import re as _re
+        has_question = (
+            "?" in incoming_message
+            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are)|how (do|can|should|long|much|many)|when (should|do|can|will)|why (do|should|is|are))\b', msg_lower))
+        )
+
+        if is_confirmed and has_question:
+            # Confirm AND answer the question before locking in
+            summary = _build_confirmation_summary(user_row)
+            system_prompt = _build_system_prompt(user_row)
+            instruction = (
+                f"Do NOT greet the user — you already said hello earlier.\n\n"
+                f"The user just confirmed their plan but also asked a question: \"{incoming_message}\"\n\n"
+                f"STEP 1: Answer their question directly and completely. Do not skip it or defer it.\n"
+                f"STEP 2: In the same message, briefly acknowledge that their plan is confirmed.\n"
+                f"STEP 3: Present this summary again so they can see it's locked:\n\n{summary}\n\n"
+                f"Keep it tight. One message. End with 'sound right?' or similar."
+            )
+            text = _generate(system_prompt, instruction)
+            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+            # Now complete onboarding — question answered, confirmation received
+            return _complete_onboarding(user_row, incoming_message)
 
         if is_confirmed:
             return _complete_onboarding(user_row, incoming_message)

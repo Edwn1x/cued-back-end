@@ -31,7 +31,9 @@ class User(Base):
     meals_per_day = Column(String(5))  # 1-2, 3, 4+
     schedule = Column(Text)  # workout days/times, class schedule
     schedule_details = Column(Text)  # freeform: classes, work, commitments
-    wake_time = Column(String(10), default=None)  # HH:MM format
+    wake_time = Column(String(10), default=None)  # HH:MM format — primary wake time
+    wake_time_alt = Column(String(10), default=None)  # HH:MM — secondary wake time (e.g. 12:00 on off days)
+    wake_days_alt = Column(String(50), default=None)  # comma-separated days that use wake_time_alt (e.g. "mon,wed,fri")
     sleep_time = Column(String(10), default=None)  # target bedtime
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
