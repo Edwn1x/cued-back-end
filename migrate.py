@@ -10,6 +10,7 @@ that ignores "column already exists" errors.
 """
 
 import logging
+import time
 from sqlalchemy import text
 from models import engine
 
@@ -72,6 +73,21 @@ MIGRATIONS = [
         notes TEXT
     )""",
 ]
+
+def wait_for_db(retries=10, delay=3):
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Database is ready.")
+            return
+        except Exception as e:
+            logger.warning(f"DB not ready (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise SystemExit("Could not connect to the database after multiple retries.")
+
+wait_for_db()
 
 with engine.connect() as conn:
     for sql in MIGRATIONS:
