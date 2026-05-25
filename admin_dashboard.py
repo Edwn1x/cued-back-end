@@ -324,7 +324,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
         <td>{{ u.avg_rating }}</td>
         <td>${{ u.cost_usd }}</td>
         <td>
-          {% if u.onboarding_step >= 2 %}<span class="badge badge-green">DONE</span>
+          {% if u.onboarding_step >= 3 %}<span class="badge badge-green">DONE</span>
           {% elif u.onboarding_step > 0 %}<span class="badge badge-yellow">IN PROGRESS</span>
           {% else %}<span class="badge badge-gray">NOT STARTED</span>{% endif %}
         </td>

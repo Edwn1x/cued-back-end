@@ -351,7 +351,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             return
 
         # If user is still in onboarding, route to onboarding handler
-        if (user.onboarding_step or 0) < 2:
+        if (user.onboarding_step or 0) < 3:
             handle_onboarding_reply(user, combined_body)
             return
 
@@ -555,7 +555,7 @@ def webhook():
 
         # Check for goodnight signal — handle immediately, skip buffer
         # Never trigger during onboarding — user is answering questions, not signing off
-        if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 2:
+        if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 3:
             from datetime import datetime, timedelta
             from zoneinfo import ZoneInfo
             wake_time = user.wake_time or "07:00"
@@ -590,7 +590,7 @@ def webhook():
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Adaptive buffer based on conversation momentum
-        if (user.onboarding_step or 0) < 2:
+        if (user.onboarding_step or 0) < 3:
             # Onboarding — tight buffer, user is actively engaged
             buffer_delay = (25, 35)
         else:
@@ -1158,7 +1158,7 @@ def admin_user(user_id):
         user_cost = round((total_sent + total_received) * 0.015 + total_sent * 0.006, 2)
 
         # Onboarding label
-        step_labels = {0: "Not started", 1: "In progress", 2: "Complete"}
+        step_labels = {0: "Not started", 1: "Hook sent", 2: "Collecting", 3: "Complete"}
         onboarding_label = step_labels.get(user.onboarding_step or 0, f"Step {user.onboarding_step}")
 
         return render_template_string(USER_DETAIL_HTML,

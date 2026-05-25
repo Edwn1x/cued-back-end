@@ -18,11 +18,12 @@ shapes HOW it asks questions (tone, depth of explanation).
 import os
 import json
 import logging
+import random
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from anthropic import Anthropic
-from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS
+from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS, PROFILE_BASE_URL
 from sms import send_sms
 from macro_calculator import calculate_targets
 
@@ -58,10 +59,81 @@ REQUIRED_FIELDS = [
     ("existing_tools", "fitness apps or wearables they currently use"),
 ]
 
+# Training-specific fields — skipped for nutrition-only users
+TRAINING_FIELDS = {"workout_days", "workout_time", "current_split", "injuries"}
+
+# Hook templates for A/B testing — one is randomly assigned per new user
+# Template variables: {name}, {goal_label}
+HOOK_TEMPLATES = [
+    {
+        "id": "hook_a_name",
+        "text": "yo wsp, I'm your cued coach. before anything — you want to give me a name? I go by whatever you want",
+    },
+    {
+        "id": "hook_b_casual",
+        "text": "hey I'm your cued coach, how's your day going?",
+        "followup": "alr well I'm here to make sure you actually hit your fitness goals — not just think about them lol. let's get into it — what's your height and weight?",
+    },
+    {
+        "id": "hook_c_fact",
+        "text": "hey it's your cued coach. quick — did you know the average person sets the same fitness goal 3 years in a row without hitting it? yeah that's not gonna be you. what's your height and weight so we can get started",
+    },
+    {
+        "id": "hook_d_direct",
+        "text": "hey I'm your cued coach. you signed up so I know you're serious — that's already more than most people do. let's make it count. height and weight?",
+    },
+    {
+        "id": "hook_e_personalized",
+        "text": "yo {name}, I'm your cued coach. just saw you signed up — what made you pull the trigger?",
+    },
+]
+
+# Goal label map for use in hook templates and summaries
+GOAL_LABELS = {
+    "fat_loss": "losing fat",
+    "muscle_building": "building muscle",
+    "fat_loss,muscle_building": "recomp",
+    "muscle_building,fat_loss": "recomp",
+    "general_fitness": "getting healthier",
+    "endurance": "building endurance",
+    "strength": "getting stronger",
+}
+
+
+def _goal_label(goal_str: str) -> str:
+    return GOAL_LABELS.get(goal_str or "", (goal_str or "your goal").replace("_", " "))
+
+
+def _determine_coaching_branch(user) -> str:
+    """Return 'training_nutrition' or 'nutrition_only' based on the user's goal."""
+    training_goals = {"muscle_building", "strength", "fat_loss", "general_fitness", "endurance"}
+    goal_parts = set((user.goal or "").replace(" ", "").split(","))
+    if goal_parts & training_goals:
+        return "training_nutrition"
+    return "nutrition_only"
+
+
+def _is_nutrition_only(user) -> bool:
+    """True when goal indicates no gym component. Used during collection before coaching_branch is set."""
+    return _determine_coaching_branch(user) == "nutrition_only"
+
+
+def _is_berkeley_student(user) -> bool:
+    """Heuristic: True if the user appears to be a Berkeley student."""
+    occ = (user.occupation or "").lower()
+    if any(sig in occ for sig in ["uc berkeley", "berkeley", "cal student", "ucb"]):
+        return True
+    if user.year in ("freshman", "sophomore", "junior", "senior", "transfer"):
+        return True
+    if getattr(user, "which_gym", None) in ("rsf", "dorm"):
+        return True
+    return False
+
 
 def _get_missing_fields(user) -> list:
     """Return list of (field_name, question_context) for fields still null."""
     missing = []
+    nutrition_only = _is_nutrition_only(user)
 
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
@@ -71,22 +143,21 @@ def _get_missing_fields(user) -> list:
         missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
     if user.avg_steps is None:
         missing.append(("avg_steps", "average daily step count — if they don't know, tell them: iPhone Health app (Browse > Activity > Steps), or Google Fit / Samsung Health on Android. Most phones track this automatically."))
-    if not user.workout_days:
-        missing.append(("workout_days", "how many days per week they can train"))
-    if not user.workout_time:
-        missing.append(("workout_time", "what time they prefer to work out"))
-    if user.current_split is None:
-        # Auto-fill "none" for users with no experience — skip the question entirely
-        if user.experience == "none":
-            _auto_fill_current_split_none(user)
-        else:
-            missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
+    if not nutrition_only:
+        if not user.workout_days:
+            missing.append(("workout_days", "how many days per week they can train"))
+        if not user.workout_time:
+            missing.append(("workout_time", "what time they prefer to work out"))
+        if user.current_split is None:
+            if user.experience == "none":
+                _auto_fill_current_split_none(user)
+            else:
+                missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     if not user.diet:
         missing.append(("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"))
-    # Injuries can be "none" which is a valid answer, so check differently
-    if user.injuries is None:
+    if not nutrition_only and user.injuries is None:
         missing.append(("injuries", "any injuries or physical limitations"))
     if not user.wake_time or not user.sleep_time:
         missing.append(("wake_sleep", "when they typically wake up and go to bed"))
@@ -194,15 +265,14 @@ def _build_system_prompt(user) -> str:
 
 ## ONBOARDING RULES
 - You are collecting information to build this user's coaching plan.
-- Ask ONE question at a time. Never ask two questions in one message.
-- CRITICAL: Never advance to the next onboarding step until you have fully responded to the user's most recent message. If the user asked a question, answer it completely. If the user made a comment or observation, acknowledge it. The user should never feel ignored or skipped over.
-- If the user asks a question instead of answering yours, answer their question FIRST — fully and directly — then circle back to your question.
+- CRITICAL: Never advance until you have fully responded to the user's most recent message. If they asked a question, answer it completely first.
+- If the user asks a question instead of answering yours, answer their question FIRST — fully and directly — then circle back.
 - If the user provides multiple data points in one message, acknowledge all of them.
-- Keep messages short — 1-2 sentences per message, max 2 messages.
+- Keep messages short — 2-3 sentences max.
 - Never mention database fields, system internals, or "your profile."
 - Never say "great question" or "that's a good point" — just answer and move on.
 - Reference their goal and obstacle naturally when relevant — don't re-explain them.
-- Do not use --- separators during onboarding. One message at a time.
+- Do not use --- separators during onboarding.
 """
 
 
@@ -444,31 +514,71 @@ def _build_confirmation_summary(user) -> str:
     )
 
 
+def _build_big_ask_message(user, system_prompt: str) -> str:
+    """
+    Generate the single 'dump everything' message sent after the hook reply.
+    Asks for all remaining fields conversationally in one message.
+    """
+    nutrition_only = _is_nutrition_only(user)
+    if nutrition_only:
+        fields_hint = (
+            "what they do (student, job, etc.), how active they are day-to-day and avg steps, "
+            "their food situation (cook, dining hall, eat out, or mix), any dietary restrictions, "
+            "when they wake up and go to bed, and any fitness apps or devices they use"
+        )
+    else:
+        fields_hint = (
+            "what they do (student, job, etc.), how active they are day-to-day and avg steps, "
+            "how many days/week they want to train and at what time, "
+            "whether they already have a workout routine or need one built, "
+            "their food situation (cook, dining hall, eat out, or mix), any dietary restrictions, "
+            "any injuries or physical limitations, when they wake up and go to bed, "
+            "and any fitness apps or devices they use"
+        )
+
+    instruction = (
+        f"You've got {user.name}'s height and weight. Now you need everything else.\n\n"
+        f"Send ONE message that asks for all remaining info in a single natural dump:\n"
+        f"- Acknowledge you have their height/weight, or react briefly to their last message if they said something worth responding to\n"
+        f"- Then ask them to drop everything in one text: {fields_hint}\n\n"
+        f"Frame it like: 'alr real talk — I need a few more things. drop it all in one text: [list the things conversationally]'\n"
+        f"Keep it tight. This is a text message, not a form. 3-4 sentences max. Make it feel like one natural ask, not a checklist.\n"
+        f"Do NOT greet them again."
+    )
+    return _generate(system_prompt, instruction)
+
+
+def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, system_prompt: str) -> str:
+    """
+    Generate a follow-up that asks about up to 2 remaining fields after the big ask dump.
+    """
+    gap_descriptions = [f[1] for f in missing_fields[:2]]
+    gaps_str = " and ".join(gap_descriptions)
+
+    instruction = (
+        f"Do NOT greet the user — you already said hello.\n\n"
+        f"The user just sent their info dump: \"{incoming_message}\"\n\n"
+        f"You still need: {gaps_str}\n\n"
+        f"STEP 1: If they said something that deserves a direct response (question, comment), handle it first.\n"
+        f"STEP 2: Ask about the missing info naturally — bundle both into one short message if there are two. "
+        f"Don't make it feel like a form. 1-2 sentences max.\n"
+        f"One message. Keep it natural."
+    )
+    return _generate(system_prompt, instruction)
+
+
 def start_onboarding(user):
     """
     Entry point — called from app.py after signup.
-    Sends the welcome message + first question in a background thread.
+    Sends a hook message from the template pool in a background thread.
     """
     def _run():
         from models import get_session, User as UserModel
         try:
-            system_prompt = _build_system_prompt(user)
+            hook = random.choice(HOOK_TEMPLATES)
+            goal = _goal_label(user.goal)
+            text = hook["text"].format(name=user.name, goal_label=goal)
 
-            missing = _get_missing_fields(user)
-            first_field = missing[0] if missing else None
-
-            instruction = (
-                f"Send the first message to {user.name}. They just signed up.\n"
-                f"Their experience: {user.experience}. Goal: {user.goal}. Biggest obstacle: {user.biggest_obstacle}.\n"
-                f"Equipment: {user.equipment}.\n\n"
-                f"In ONE message (2-3 sentences max):\n"
-                f"1. Welcome them warmly — reference something specific from their profile that shows you read it\n"
-                f"2. Tell them you need a few details to build their plan\n"
-                f"3. Ask the first question: {first_field[1] if first_field else 'nothing needed'}\n\n"
-                f"Do NOT explain how the service works. Do NOT list what's coming. Just welcome + first question."
-            )
-
-            text = _generate(system_prompt, instruction)
             send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
 
             session = get_session()
@@ -476,11 +586,12 @@ def start_onboarding(user):
                 user_row = session.get(UserModel, user.id)
                 if user_row:
                     user_row.onboarding_step = 1
+                    user_row.onboarding_hook_template = hook["id"]
                     session.commit()
             finally:
                 session.close()
 
-            logger.info(f"Onboarding started for {user.name}")
+            logger.info(f"Onboarding hook '{hook['id']}' sent to {user.name}")
         except Exception as e:
             logger.error(f"Onboarding start failed for {user.name}: {e}")
 
@@ -524,17 +635,18 @@ def _maybe_auto_fill_no_training(user, message: str) -> None:
 
 def handle_onboarding_reply(user, incoming_message: str) -> bool:
     """
-    Called from webhook on every message while onboarding_step < 2.
+    Called from webhook on every message while onboarding_step < 3.
 
-    1. Extract any data points from the user's message
-    2. Store them
-    3. Check what's still missing
-    4. If all collected → present confirmation with calculated targets
-    5. If confirmed → complete onboarding
-    6. If fields missing → ask about the next one
+    Flow:
+      step 1 — hook sent. First reply triggers: record first_reply_at, extract data,
+               send big ask for all remaining fields, advance to step 2.
+      step 2 — collecting. Extract from dump, follow up on gaps (max 2 bundled),
+               present confirmation when all fields filled.
+      step 3 — complete (set by _complete_onboarding).
 
     Returns True if onboarding is now complete.
     """
+    import re as _re
     from models import get_session, User as UserModel
 
     session = get_session()
@@ -545,21 +657,65 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     finally:
         session.close()
 
-    # Auto-fill current_split="none" if user explicitly indicated no training
-    # before we ask them the question (Fix 2)
-    if user_row.current_split is None:
-        _maybe_auto_fill_no_training(user_row, incoming_message)
-        # Re-fetch to pick up any write
+    # Record time-to-first-reply for A/B analysis
+    if not user_row.first_reply_at:
+        session = get_session()
+        try:
+            user_row = session.get(UserModel, user.id)
+            if user_row and not user_row.first_reply_at:
+                user_row.first_reply_at = datetime.now(timezone.utc)
+                session.commit()
+        finally:
+            session.close()
+        # Re-fetch
         session = get_session()
         try:
             user_row = session.get(UserModel, user.id)
         finally:
             session.close()
 
-    missing_before = _get_missing_fields(user_row)
+    # Auto-fill current_split="none" if user explicitly indicated no training
+    if user_row.current_split is None:
+        _maybe_auto_fill_no_training(user_row, incoming_message)
+        session = get_session()
+        try:
+            user_row = session.get(UserModel, user.id)
+        finally:
+            session.close()
 
-    if not missing_before:
-        # All data collected — this is a confirmation response
+    # Always try to extract data from whatever they sent
+    missing_before = _get_missing_fields(user_row)
+    last_asked = missing_before[0][0] if missing_before else None
+    extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=last_asked)
+    non_null = {k: v for k, v in extracted.items() if v is not None}
+    if non_null:
+        _store_extracted_data(user_row.id, extracted)
+        session = get_session()
+        try:
+            user_row = session.get(UserModel, user.id)
+        finally:
+            session.close()
+
+    missing_after = _get_missing_fields(user_row)
+    system_prompt = _build_system_prompt(user_row)
+
+    # ── Step 1 reply: send big ask ──────────────────────────────────────────
+    if (user_row.onboarding_step or 0) == 1 and len(missing_after) >= 3:
+        text = _build_big_ask_message(user_row, system_prompt)
+        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        session = get_session()
+        try:
+            u = session.get(UserModel, user.id)
+            if u:
+                u.onboarding_step = 2
+                session.commit()
+        finally:
+            session.close()
+        logger.info(f"Big ask sent to {user_row.name} ({len(missing_after)} fields remaining)")
+        return False
+
+    # ── All fields collected — confirmation flow ────────────────────────────
+    if not missing_after:
         confirmation_keywords = [
             "yeah", "yes", "yep", "sounds good", "looks good", "correct",
             "that's right", "perfect", "ok", "sure", "let's go", "lets go",
@@ -568,127 +724,64 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         msg_lower = incoming_message.lower().strip()
         is_confirmed = any(kw in msg_lower for kw in confirmation_keywords)
 
-        # Check if the message also contains a question — if so, answer it first
-        # before completing onboarding (Fix 1)
-        import re as _re
         has_question = (
             "?" in incoming_message
             or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are)|how (do|can|should|long|much|many)|when (should|do|can|will)|why (do|should|is|are))\b', msg_lower))
         )
 
         if is_confirmed and has_question:
-            # Confirm AND answer the question before locking in
             summary = _build_confirmation_summary(user_row)
-            system_prompt = _build_system_prompt(user_row)
             instruction = (
                 f"Do NOT greet the user — you already said hello earlier.\n\n"
-                f"The user just confirmed their plan but also asked a question: \"{incoming_message}\"\n\n"
-                f"STEP 1: Answer their question directly and completely. Do not skip it or defer it.\n"
-                f"STEP 2: In the same message, briefly acknowledge that their plan is confirmed.\n"
-                f"STEP 3: Present this summary again so they can see it's locked:\n\n{summary}\n\n"
+                f"The user confirmed their plan but also asked a question: \"{incoming_message}\"\n\n"
+                f"STEP 1: Answer their question directly and completely.\n"
+                f"STEP 2: Briefly acknowledge the plan is confirmed.\n"
+                f"STEP 3: Present this summary:\n\n{summary}\n\n"
                 f"Keep it tight. One message. End with 'sound right?' or similar."
             )
             text = _generate(system_prompt, instruction)
             send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-            # Now complete onboarding — question answered, confirmation received
             return _complete_onboarding(user_row, incoming_message)
 
         if is_confirmed:
             return _complete_onboarding(user_row, incoming_message)
-        else:
-            # User wants to adjust something
-            extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=None)
-            if any(v is not None for v in extracted.values()):
-                _store_extracted_data(user_row.id, extracted)
-                session = get_session()
-                try:
-                    user_row = session.get(UserModel, user.id)
-                finally:
-                    session.close()
 
-            system_prompt = _build_system_prompt(user_row)
-            instruction = (
-                f"Do NOT greet the user — you already said hello earlier.\n\n"
-                f"The user was shown their plan summary and targets but didn't confirm. "
-                f"They said: \"{incoming_message}\"\n\n"
-                f"Address their concern or make the adjustment they're asking for. "
-                f"Then re-present the updated summary and ask for confirmation again. "
-                f"One message, brief."
-            )
-            text = _generate(system_prompt, instruction)
-            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-            return False
-
-    # Determine what was just asked so extraction knows the context
-    last_asked = missing_before[0][0] if missing_before else None
-    extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=last_asked)
-
-    non_null = {k: v for k, v in extracted.items() if v is not None}
-    if non_null:
-        _store_extracted_data(user_row.id, extracted)
-
-    # Re-fetch after potential updates
-    session = get_session()
-    try:
-        user_row = session.get(UserModel, user.id)
-    finally:
-        session.close()
-
-    missing_after = _get_missing_fields(user_row)
-    system_prompt = _build_system_prompt(user_row)
-
-    if not missing_after:
-        # All fields collected — present confirmation
-        summary = _build_confirmation_summary(user_row)
-
+        # Not confirmed — user wants to adjust
         instruction = (
-            f"You've collected all the data you need. The user just said: \"{incoming_message}\"\n\n"
-            f"STEP 1: If the user's last message asked a question or said something that deserves a response, "
-            f"address it first — fully. Don't skip it.\n"
+            f"Do NOT greet the user — you already said hello earlier.\n\n"
+            f"The user was shown their plan summary but didn't confirm. They said: \"{incoming_message}\"\n\n"
+            f"Address their concern or adjustment. Then re-present the updated summary and ask for confirmation. "
+            f"One message, brief."
+        )
+        text = _generate(system_prompt, instruction)
+        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        return False
+
+    # ── Confirmation not yet reached — present it ───────────────────────────
+    if len(missing_after) == 0:
+        summary = _build_confirmation_summary(user_row)
+        instruction = (
+            f"You've collected everything you need. The user just said: \"{incoming_message}\"\n\n"
+            f"STEP 1: If they asked a question or said something worth responding to, address it first.\n"
             f"STEP 2: Present this summary and ask if it sounds right:\n\n{summary}\n\n"
-            f"STEP 3: After presenting the summary, briefly surface 2-3 capabilities they might not know about. "
-            f"Match your tone to their age tier (check the personality skill). Examples:\n"
-            f"- They can text a photo of their food and you'll break down the macros\n"
-            f"- If they want a meal idea, just ask\n"
-            f"- If they need a workout swap or modification, you've got them\n"
-            f"Keep the whole message tight. Ask 'sound right?' or 'does that look good?' at the end."
+            f"Keep it tight. Ask 'sound right?' at the end."
         )
         text = _generate(system_prompt, instruction)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         logger.info(f"Onboarding confirmation presented to {user_row.name}")
         return False
 
+    # ── Still missing fields — gap follow-up (max 2 bundled) ───────────────
+    if len(missing_after) <= 2:
+        text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
     else:
-        # Still missing fields — ask about the next one
-        next_field = missing_after[0]
+        # More than 2 still missing after the big ask dump — bundle the top 2
+        text = _bundle_gap_questions(missing_after[:2], user_row, incoming_message, system_prompt)
 
-        if non_null:
-            acknowledged_fields = ", ".join(non_null.keys())
-            instruction = (
-                f"Do NOT greet the user — you already said hello in your first message.\n\n"
-                f"The user just said: \"{incoming_message}\"\n"
-                f"You extracted and stored: {acknowledged_fields}.\n\n"
-                f"STEP 1: Read what they said carefully. Did they ask a question? Make a comment? "
-                f"Say something that deserves a response beyond just acknowledgment? If yes, answer it fully first.\n"
-                f"STEP 2: Briefly acknowledge the data they shared (one sentence).\n"
-                f"STEP 3: Ask about the next thing you need: {next_field[1]}.\n"
-                f"One message. Keep it natural. Never skip what they said to rush to the next question."
-            )
-        else:
-            instruction = (
-                f"Do NOT greet the user — you already said hello in your first message.\n\n"
-                f"The user said: \"{incoming_message}\"\n"
-                f"This didn't contain the data you needed — but before moving on, read it carefully.\n\n"
-                f"STEP 1: Respond fully to what they said. If they asked a question, answer it completely. "
-                f"If they made a comment, address it. Never ignore what they wrote.\n"
-                f"STEP 2: Then naturally transition to asking about: {next_field[1]}.\n"
-                f"One message, brief. The user should feel heard before you ask the next question."
-            )
-
-        text = _generate(system_prompt, instruction)
-        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-        logger.info(f"Onboarding — asked about {next_field[0]} for {user_row.name} ({len(missing_after)} fields remaining)")
-        return False
+    send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+    remaining_names = [f[0] for f in missing_after]
+    logger.info(f"Onboarding gap follow-up for {user_row.name} — still missing: {remaining_names}")
+    return False
 
 
 def _finalize_onboarding_profile(user_row):
@@ -747,28 +840,32 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         user_row.calorie_target = targets["calories"]
         user_row.protein_target = targets["protein"]
         user_row.confirmed_goal_priority = targets.get("goal_label", user_row.goal)
-        user_row.onboarding_step = 2  # complete
+        user_row.coaching_branch = _determine_coaching_branch(user_row)
+        user_row.onboarding_step = 3  # complete
 
         # Copy profile fields to confirmed counterparts
         _finalize_onboarding_profile(user_row)
 
         session.commit()
-        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein")
+        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, branch={user_row.coaching_branch}")
 
         try:
             schedule_user(user_row)
         except Exception as e:
             logger.error(f"Scheduling failed for {user_row.name}: {e}")
 
+        profile_url = f"{PROFILE_BASE_URL}/{user_row.phone.replace('+', '')}"
         system_prompt = _build_system_prompt(user_row)
         instruction = (
             f"The user just confirmed their plan. Onboarding is complete.\n"
             f"Targets: {targets['calories']} cal, {targets['protein']}g protein daily.\n"
+            f"Profile link: {profile_url}\n\n"
             f"Send ONE brief message that:\n"
             f"1. Confirms everything is locked in\n"
             f"2. Tells them when they'll hear from you next (based on their wake_time: {user_row.wake_time})\n"
-            f"3. Feels like the starting gun — they now have a coach\n"
-            f"No explanations. No previews of features. Just confidence."
+            f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_url}'\n"
+            f"4. Feels like the starting gun — they now have a coach\n"
+            f"No explanations. No feature previews. Just confidence."
         )
         text = _generate(system_prompt, instruction)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")

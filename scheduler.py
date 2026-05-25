@@ -380,7 +380,7 @@ def check_meal_adherence():
                 continue
 
             # Skip if user is still in onboarding
-            if (user.onboarding_step or 0) < 2:
+            if (user.onboarding_step or 0) < 3:
                 continue
 
             last_meal = (
