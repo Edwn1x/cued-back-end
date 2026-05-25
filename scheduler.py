@@ -426,6 +426,19 @@ def start_scheduler():
         id="global_adherence_check",
         replace_existing=True,
     )
+
+    from dining_scraper import scrape_all_halls
+    scheduler.add_job(
+        scrape_all_halls,
+        trigger=CronTrigger(hour=6, minute=30),
+        id="daily_dining_scrape",
+        replace_existing=True,
+    )
+    try:
+        scrape_all_halls()
+    except Exception as e:
+        logger.warning(f"Startup dining scrape failed: {e}")
+
     scheduler.start()
     logger.info("Scheduler started.")
 
