@@ -14,7 +14,7 @@ elif _raw_db_url.startswith("postgresql://"):
     _raw_db_url = _raw_db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 DATABASE_URL = _raw_db_url
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
-PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile")
+PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html")
 
 # CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]

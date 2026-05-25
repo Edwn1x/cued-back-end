@@ -25,14 +25,23 @@ SKILL_TRIGGERS = {
 }
 
 
+def _strip_yaml_front_matter(text: str) -> str:
+    """Remove YAML front matter (---...---) from the top of a skill file."""
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            return text[end + 3:].lstrip("\n")
+    return text
+
+
 def load_skill(skill_name):
-    """Load a single skill's SKILL.md content."""
+    """Load a single skill's SKILL.md content, stripping YAML front matter."""
     path = os.path.join(SKILLS_DIR, skill_name, "SKILL.md")
     try:
         with open(path, "r") as f:
             content = f.read()
             logger.debug(f"Loaded skill: {skill_name}")
-            return content
+            return _strip_yaml_front_matter(content)
     except FileNotFoundError:
         logger.warning(f"Skill not found: {skill_name}")
         return ""

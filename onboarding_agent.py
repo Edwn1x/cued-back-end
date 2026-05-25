@@ -37,7 +37,12 @@ def load_skill(skill_name: str) -> str:
     path = os.path.join(SKILLS_DIR, skill_name, "SKILL.md")
     try:
         with open(path) as f:
-            return f.read()
+            content = f.read()
+        if content.startswith("---"):
+            end = content.find("---", 3)
+            if end != -1:
+                content = content[end + 3:].lstrip("\n")
+        return content
     except FileNotFoundError:
         return ""
 
@@ -64,6 +69,7 @@ TRAINING_FIELDS = {"workout_days", "workout_time", "current_split", "injuries"}
 
 # Hook templates for A/B testing — one is randomly assigned per new user
 # Template variables: {name}, {goal_label}
+# Rules: zero data collection, every template ends with a low-effort question
 HOOK_TEMPLATES = [
     {
         "id": "hook_a_name",
@@ -72,15 +78,14 @@ HOOK_TEMPLATES = [
     {
         "id": "hook_b_casual",
         "text": "hey I'm your cued coach, how's your day going?",
-        "followup": "alr well I'm here to make sure you actually hit your fitness goals — not just think about them lol. let's get into it — what's your height and weight?",
     },
     {
         "id": "hook_c_fact",
-        "text": "hey it's your cued coach. quick — did you know the average person sets the same fitness goal 3 years in a row without hitting it? yeah that's not gonna be you. what's your height and weight so we can get started",
+        "text": "hey it's your cued coach. did you know the average person sets the same fitness goal 3 years in a row without hitting it? yeah that's not gonna be you. what's the main thing you're trying to change?",
     },
     {
         "id": "hook_d_direct",
-        "text": "hey I'm your cued coach. you signed up so I know you're serious — that's already more than most people do. let's make it count. height and weight?",
+        "text": "hey I'm your cued coach. you signed up so I know you're serious — that's already more than most people do. what made you decide to go for it?",
     },
     {
         "id": "hook_e_personalized",
@@ -854,7 +859,8 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         except Exception as e:
             logger.error(f"Scheduling failed for {user_row.name}: {e}")
 
-        profile_url = f"{PROFILE_BASE_URL}/{user_row.phone.replace('+', '')}"
+        phone_digits = user_row.phone.replace("+", "")
+        profile_url = f"{PROFILE_BASE_URL}?phone={phone_digits}"
         system_prompt = _build_system_prompt(user_row)
         instruction = (
             f"The user just confirmed their plan. Onboarding is complete.\n"
