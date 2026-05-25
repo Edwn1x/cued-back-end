@@ -72,6 +72,36 @@ MIGRATIONS = [
         weight_lbs FLOAT NOT NULL,
         notes TEXT
     )""",
+    # Added: Berkeley-specific profile fields
+    "ALTER TABLE users ADD COLUMN which_gym VARCHAR(50)",
+    "ALTER TABLE users ADD COLUMN meal_plan_status VARCHAR(20)",
+    "ALTER TABLE users ADD COLUMN year VARCHAR(20)",
+    # Added: onboarding A/B tracking
+    "ALTER TABLE users ADD COLUMN onboarding_hook_template VARCHAR(50)",
+    "ALTER TABLE users ADD COLUMN first_reply_at TIMESTAMP",
+    # Added: feature state tracking
+    "ALTER TABLE users ADD COLUMN features_introduced JSON",
+    "ALTER TABLE users ADD COLUMN coaching_branch VARCHAR(30)",
+    "ALTER TABLE users ADD COLUMN seen_exercise_demos JSON",
+    # Added: dining hall menu cache table
+    """CREATE TABLE IF NOT EXISTS dining_menu_items (
+        id SERIAL PRIMARY KEY,
+        scraped_date VARCHAR(10) NOT NULL,
+        hall VARCHAR(50) NOT NULL,
+        meal_period VARCHAR(20) NOT NULL,
+        station VARCHAR(100),
+        item_name VARCHAR(200) NOT NULL,
+        calories INTEGER,
+        protein_g FLOAT,
+        carbs_g FLOAT,
+        fat_g FLOAT,
+        fiber_g FLOAT,
+        serving_size VARCHAR(50),
+        allergens TEXT,
+        dietary_tags TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dining_date_hall ON dining_menu_items (scraped_date, hall)",
 ]
 
 def wait_for_db(retries=10, delay=3):

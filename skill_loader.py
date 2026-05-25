@@ -17,8 +17,9 @@ SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 SKILL_TRIGGERS = {
     "personality": ["always"],  # always loaded
     "safety": ["always"],  # always loaded
-    "training": ["workout_request", "workout_log", "post_workout"],
-    "nutrition": ["meal_suggestion", "meal_swap", "morning_briefing"],
+    "training": ["workout_request", "workout_log", "post_workout", "exercise_question", "pre_workout_check"],
+    "nutrition": ["meal_suggestion", "meal_swap", "morning_briefing", "craving_report",
+                  "dining_question", "photo_of_food", "food_related_message", "meal_check_in"],
     "readiness": ["morning_briefing", "readiness_check"],
     "onboarding": ["new_user_signup"],
 }

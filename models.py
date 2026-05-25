@@ -58,7 +58,7 @@ class User(Base):
     confirmed_training_days = Column(String(100), default=None)  # user-confirmed days, e.g. "mon,tue,thu,fri,sat"
     pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
-    onboarding_step = Column(Integer, default=0)  # 0=not started, 1=welcome sent, 2=clarification sent, 3=complete
+    onboarding_step = Column(Integer, default=0)  # 0=not started, 1=hook sent, 2=collecting, 3=complete
     quiet_until = Column(DateTime, default=None)  # suppress outbound messages until this time (set when user says goodnight)
     user_timezone = Column(String(50), default="America/Los_Angeles")  # IANA timezone string
     memory = Column(Text, default=None)  # permanent extracted facts about the user — preferences, life events, PRs, etc.
@@ -79,6 +79,20 @@ class User(Base):
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context
+
+    # Berkeley-specific profile fields
+    which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus
+    meal_plan_status = Column(String(20), default=None)  # meal_plan / no_meal_plan / flex_only
+    year = Column(String(20), default=None)              # freshman / sophomore / junior / senior / grad / other
+
+    # Onboarding A/B tracking
+    onboarding_hook_template = Column(String(50), default=None)  # which hook was assigned (for A/B analysis)
+    first_reply_at = Column(DateTime, default=None)              # timestamp of first inbound message after hook
+
+    # Feature state
+    features_introduced = Column(JSON, default=None)   # {"food_photo": true, "receipt": true}
+    coaching_branch = Column(String(30), default=None) # "training_nutrition" or "nutrition_only"
+    seen_exercise_demos = Column(JSON, default=None)   # {"bench_press": true, ...}
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
@@ -121,6 +135,10 @@ class User(Base):
             f"Wearable: {self.wearable}" if self.wearable else None,
             f"Motivation: {self.motivation}" if self.motivation else None,
             f"Food context (actual foods/restaurants they use): {self.food_context}" if self.food_context else None,
+            f"Gym: {self.which_gym}" if self.which_gym else None,
+            f"Meal plan: {self.meal_plan_status}" if self.meal_plan_status else None,
+            f"Year: {self.year}" if self.year else None,
+            f"Coaching branch: {self.coaching_branch}" if self.coaching_branch else None,
             f"Pending clarification — coach asked about '{self.pending_clarification_topic}' and is waiting for answer" if self.pending_clarification_topic and not self.pending_clarification_answer else None,
             f"Clarification received — coach asked about '{self.pending_clarification_topic}', user answered: {self.pending_clarification_answer}" if self.pending_clarification_topic and self.pending_clarification_answer else None,
         ]
@@ -202,6 +220,26 @@ class DailyLog(Base):
     workout_confirmed = Column(Boolean, default=False)  # True only when user explicitly confirmed training
 
     user = relationship("User", back_populates="daily_logs")
+
+
+class DiningMenuItem(Base):
+    __tablename__ = "dining_menu_items"
+
+    id = Column(Integer, primary_key=True)
+    scraped_date = Column(String(10), nullable=False)   # YYYY-MM-DD
+    hall = Column(String(50), nullable=False)           # crossroads / foothill / clark_kerr / cafe3
+    meal_period = Column(String(20), nullable=False)    # breakfast / lunch / dinner / brunch
+    station = Column(String(100))
+    item_name = Column(String(200), nullable=False)
+    calories = Column(Integer)
+    protein_g = Column(Float)
+    carbs_g = Column(Float)
+    fat_g = Column(Float)
+    fiber_g = Column(Float)
+    serving_size = Column(String(50))
+    allergens = Column(Text)     # comma-separated: nuts, gluten, dairy...
+    dietary_tags = Column(Text)  # comma-separated: vegan, vegetarian, halal
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def get_or_create_today_log(session, user_id: int) -> "DailyLog":

@@ -24,6 +24,8 @@ from models import get_session, User, Message
 
 
 # ── Layer 1: Profile-based default ──────────────────
+# BETA NOTE: All current users are 18-22 Berkeley students (Tier 1 always applies).
+# Tiers 2 (26-54) and 3 (55+) are unused during beta. Layer 2 mirroring remains fully active.
 
 def default_tone_from_profile(user: User) -> str:
     """Return a tone descriptor based on age and occupation."""
