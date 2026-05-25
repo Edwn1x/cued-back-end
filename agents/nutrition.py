@@ -544,3 +544,105 @@ Return ONLY valid JSON:
         "clarifying_question": None,
         "log_action": f"Logged meal: {meal_content.get('description')} ({meal_content.get('calories')} cal)",
     }
+
+
+def handle_receipt_photo(user, user_message: str, image_data: dict) -> dict:
+    """Analyze a grocery receipt photo — identify items, suggest meals, note gaps."""
+    personality = load_skill("personality")
+    safety = load_skill("safety")
+    nutrition_skill = load_skill("nutrition")
+    context = _build_nutrition_context(user)
+
+    system_prompt = f"""{personality}
+
+---
+
+{safety}
+
+---
+
+{nutrition_skill}
+
+---
+
+{context}
+
+## YOUR TASK — RECEIPT ANALYSIS
+
+The user sent a photo of a grocery receipt. Your job:
+1. Read the receipt and identify purchased items
+2. Categorize: protein sources, carb sources, produce, fats, other
+3. Suggest 2-3 simple meals from what they bought that fit their targets
+4. Note any missing macro categories (e.g. bought no protein source)
+
+Return ONLY valid JSON:
+{{
+  "intent": "receipt_analysis",
+  "content": {{
+    "items_purchased": ["item1", "item2", ...],
+    "protein_sources": ["item1", ...],
+    "carb_sources": ["item1", ...],
+    "produce": ["item1", ...],
+    "meal_suggestions": [
+      {{"name": "meal name", "ingredients": "from their receipt", "estimated_calories": number, "estimated_protein": number}},
+      ...
+    ],
+    "missing_categories": "what they're missing for balanced meals, or null",
+    "food_context_update": "brief summary of what they have stocked at home"
+  }},
+  "clarifying_question": null,
+  "coaching_note": "any coaching observation, or null"
+}}
+
+Rules:
+- If the receipt is unreadable or not a grocery receipt, say so in coaching_note
+- Meal suggestions should use ONLY items from the receipt
+- Keep food_context_update to one sentence — it gets appended to their profile
+"""
+
+    user_content = [
+        image_data,
+        {"type": "text", "text": user_message or "Here's my grocery receipt."},
+    ]
+
+    response = client.messages.create(
+        model=config.COACH_MODEL,
+        max_tokens=600,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+    text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    if "}" in text:
+        text = text[:text.rindex("}") + 1]
+
+    try:
+        parsed = json.loads(text)
+    except Exception as e:
+        logger.error(f"Receipt analysis JSON parse failed: {e}")
+        parsed = {
+            "intent": "receipt_analysis",
+            "content": {"note": "couldn't read the receipt clearly"},
+            "clarifying_question": "Can you tell me what you picked up?",
+            "coaching_note": None,
+        }
+
+    food_update = parsed.get("content", {}).get("food_context_update")
+    if food_update:
+        session = get_session()
+        try:
+            user_row = session.get(User, user.id)
+            if user_row:
+                existing = user_row.food_context or ""
+                user_row.food_context = f"{existing}; {food_update}" if existing else food_update
+                session.commit()
+        finally:
+            session.close()
+
+    return {
+        "agent": "nutrition",
+        "intent": parsed.get("intent", "receipt_analysis"),
+        "content": parsed.get("content", {}),
+        "clarifying_question": parsed.get("clarifying_question"),
+        "log_action": None,
+    }

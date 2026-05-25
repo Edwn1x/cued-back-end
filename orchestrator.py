@@ -96,11 +96,20 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
     - Personality/other: legacy monolith (coach.py)
     """
     from coach import get_coach_response
-    from agents.nutrition import handle as nutrition_handle, is_daily_log_query, handle_daily_log_query, handle_food_photo, handle_photo_refinement
+    from agents.nutrition import handle as nutrition_handle, is_daily_log_query, handle_daily_log_query, handle_food_photo, handle_photo_refinement, handle_receipt_photo
     from agents.training import handle as training_handle
     from agents.readiness import handle as readiness_handle
     from agents.personality import write_response
     from models import get_session, Message
+
+    # Fast-path: receipt photo
+    if message_type == "receipt_photo" and image_data:
+        logger.info(f"Receipt photo from {user.name}")
+        try:
+            structured = handle_receipt_photo(user, combined_body, image_data)
+            return write_response(user, structured, user_message=combined_body)
+        except Exception as e:
+            logger.error(f"Receipt pipeline failed, falling back: {e}")
 
     # Fast-path: daily log query
     if is_daily_log_query(combined_body) and not image_data:

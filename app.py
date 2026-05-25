@@ -646,6 +646,13 @@ def classify_message(body: str, has_image: bool = False) -> str:
             return "progress_photo"
         if any(kw in body_lower for kw in ["form", "check", "technique", "posture"]):
             return "form_check"
+        receipt_keywords = [
+            "receipt", "grocery", "groceries", "shopping", "bought", "picked up",
+            "tj's", "trader joe", "safeway", "target", "berkeley bowl",
+            "grocery outlet", "costco",
+        ]
+        if any(kw in body_lower for kw in receipt_keywords):
+            return "receipt_photo"
         return "food_photo"  # Default assumption for images — most common use case
 
     if body_lower in ("w", "workout", "send workout"):
