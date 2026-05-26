@@ -102,6 +102,7 @@ MIGRATIONS = [
         created_at TIMESTAMP DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_dining_date_hall ON dining_menu_items (scraped_date, hall)",
+    "ALTER TABLE users ADD COLUMN session_state JSON",
 ]
 
 def wait_for_db(retries=10, delay=3):

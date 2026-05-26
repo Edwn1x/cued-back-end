@@ -182,6 +182,33 @@ def extract_and_log_meal(user_id: int, user_message: str, coach_response: str, r
                     )
                     return
 
+            # Dedup: check if a similar meal was already logged in the last 5 minutes
+            from datetime import timedelta
+            recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+            existing_recent = (
+                session.query(Meal)
+                .filter(
+                    Meal.user_id == user_id,
+                    Meal.logged_at >= recent_cutoff,
+                )
+                .order_by(Meal.logged_at.desc())
+                .first()
+            )
+            if existing_recent:
+                new_desc = (meal_data.get("description") or "").lower()[:30]
+                old_desc = (existing_recent.description or "").lower()[:30]
+                desc_match = new_desc and old_desc and new_desc == old_desc
+                cal_close = abs((existing_recent.calories or 0) - (meal_data.get("calories") or 0)) < 100
+                if desc_match or cal_close:
+                    user.active_meal_id = existing_recent.id
+                    user.active_meal_updated_at = datetime.now(timezone.utc)
+                    session.commit()
+                    logger.info(
+                        f"Skipped duplicate meal for {user.name}: '{meal_data.get('description')}' "
+                        f"— existing meal {existing_recent.id} logged {existing_recent.logged_at}"
+                    )
+                    return
+
             # CREATE path — new meal row
             meal = Meal(
                 user_id=user_id,

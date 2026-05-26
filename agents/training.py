@@ -182,10 +182,24 @@ Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "unknown"}"""
     else:
         demo_block = ""
 
+    # Session state — what the user is currently doing
+    from models import get_session_state
+    current_state = get_session_state(user.id)
+    if current_state:
+        session_block = (
+            f"\n\n## ACTIVE SESSION\n"
+            f"The user is currently: {current_state.get('status', 'unknown')}. "
+            f"Started: {current_state.get('started_at', 'unknown')}. "
+            f"Keep responses brief and action-oriented — they're mid-session."
+        )
+    else:
+        session_block = ""
+
     return (
         f"## USER PROFILE\n{profile}\n\n"
         f"## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n"
-        f"## TODAY'S TRAINING STATUS\n{workout_status}\n\n"
+        f"## TODAY'S TRAINING STATUS\n{workout_status}"
+        f"{session_block}\n\n"
         f"## RECENT WORKOUT HISTORY\n{workout_history}"
         f"{memory_block}"
         f"{demo_block}\n\n"
@@ -247,6 +261,14 @@ Rules:
 - If workout_time is confirmed, reference it naturally ("your 5pm session") but don't repeat the reasoning
 - For workout logs, acknowledge what they hit and note any PRs or regressions
 - Keep exercises practical for their equipment access
+
+LIVE WORKOUT REPORTING RULES (when user is texting between sets):
+- Single set report (e.g. "set 1: 225x5") → brief ack. "Logged" or a one-line form cue. Do NOT ask about the next set or remaining sets — they're resting and will report when ready.
+- All sets reported at once (e.g. "bench 3x8 at 185") → log all sets, give a brief summary with any progression note.
+- Resting / "still resting" / "one more" / "doing another set" → acknowledge and wait. Don't coach. Don't suggest. "Take your time" or "got it" is enough.
+- Transition between exercises (e.g. "moving on to rows" / "done with bench") → summarize what they logged for the previous exercise (sets x reps x weight), acknowledge the transition. Don't prescribe the next exercise unless they ask.
+- End of workout (e.g. "done" / "that's it" / "heading out") → give a complete session summary: exercises, total sets, any PRs or notable numbers. Keep it tight.
+- During live reporting, keep ALL responses under 160 characters. The user is mid-set with their phone. Be terse.
 """
 
     response = client.messages.create(

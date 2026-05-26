@@ -3,7 +3,7 @@ import logging
 import threading
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -262,17 +262,17 @@ def maybe_update_coaching_summary(user_id: int):
 
         total_msgs = session.query(Message).filter(Message.user_id == user_id).count()
 
-        if total_msgs < 20:
+        if total_msgs < 12:
             return
 
-        if total_msgs % 10 != 0:
+        if total_msgs % 8 != 0:
             return
 
         older_messages = (
             session.query(Message)
             .filter(Message.user_id == user_id)
             .order_by(Message.created_at.asc())
-            .limit(total_msgs - 10)
+            .limit(total_msgs - 8)
             .all()
         )
 
@@ -361,6 +361,11 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
+
+        # Detect end-of-workout signals and clear session state
+        end_signals = ["done", "finished", "that's it", "thats it", "heading out", "heading home", "leaving gym", "left the gym"]
+        if any(sig in combined_body.lower() for sig in end_signals):
+            clear_session_state(user.id)
 
         # Extract and store any confirmed decisions (runs in background, doesn't block)
         threading.Thread(
@@ -534,10 +539,12 @@ def webhook():
                 session.add(workout)
                 session.commit()
             confirm_workout_today(user.id)
+            set_session_state(user.id, "at_gym")
             threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
         if message_type == "workout_request":
             confirm_workout_today(user.id)
+            set_session_state(user.id, "at_gym")
             threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
         # Catch training-day confirmations that don't look like workout logs —
@@ -546,6 +553,7 @@ def webhook():
         if message_type == "freeform" and not is_workout_confirmed_today(user.id):
             if _is_training_day_confirmation(body):
                 confirm_workout_today(user.id)
+                set_session_state(user.id, "at_gym")
                 logger.info(f"Training day confirmed via freeform reply for {user.name}")
                 threading.Thread(
                     target=maybe_infer_training_days,
@@ -575,6 +583,7 @@ def webhook():
                 quiet_until = wake_today + timedelta(days=1)
             user.quiet_until = quiet_until
             session.commit()
+            clear_session_state(user.id)
 
             import random
             response = random.choice([

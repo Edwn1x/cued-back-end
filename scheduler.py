@@ -164,6 +164,43 @@ def send_scheduled_message(user_id: int, message_type: str):
             logger.info(f"Skipping post_workout for {user.name} — no workout confirmed today")
             return
 
+        # Pre-workout session state probe: if state is unknown and user hasn't texted
+        # recently, send a casual "wyd?" instead of the normal pre-workout message.
+        if message_type == "pre_workout":
+            from models import get_session_state, Message as MsgModel
+            from datetime import timezone as _tz
+            state = get_session_state(user_id)
+            if not state:
+                last_in = (
+                    session.query(MsgModel)
+                    .filter(MsgModel.user_id == user_id, MsgModel.direction == "in")
+                    .order_by(MsgModel.created_at.desc())
+                    .first()
+                )
+                recently_active = (
+                    last_in and
+                    (datetime.now(_tz.utc) - last_in.created_at.replace(tzinfo=_tz.utc)).total_seconds() < 1800
+                )
+                # Only probe if not recently active and no probe sent today
+                if not recently_active:
+                    today_start = datetime.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    probe_today = (
+                        session.query(MsgModel)
+                        .filter(
+                            MsgModel.user_id == user_id,
+                            MsgModel.direction == "out",
+                            MsgModel.message_type == "session_probe",
+                            MsgModel.created_at >= today_start,
+                        )
+                        .first()
+                    )
+                    if not probe_today:
+                        import random
+                        probe = random.choice(["wyd?", "hey whatchu up to?", "wtm?"])
+                        send_sms(user.phone, probe, user_id=user.id, message_type="session_probe")
+                        logger.info(f"Sent session probe to {user.name} instead of pre_workout")
+                        return
+
         # No back-to-back outbound without a reply (except morning briefing which always fires)
         if message_type not in ("morning_briefing", "morning") and has_unanswered_outbound(user_id):
             logger.info(f"Skipping {message_type} for {user.name} — last outbound still unanswered")

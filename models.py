@@ -79,6 +79,7 @@ class User(Base):
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context
+    session_state = Column(JSON, default=None)  # {"status": "at_gym"|"logging_food"|"sleeping", "started_at": ISO, ...}
 
     # Berkeley-specific profile fields
     which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus
@@ -408,6 +409,61 @@ def clear_active_meal(user_id: int):
         if user:
             user.active_meal_id = None
             user.active_meal_updated_at = None
+            session.commit()
+    finally:
+        session.close()
+
+
+def get_session_state(user_id: int) -> dict | None:
+    """Return the user's current session state, or None if stale/unset."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user or not user.session_state:
+            return None
+        state = user.session_state
+        started_at = state.get("started_at")
+        if started_at:
+            started = datetime.fromisoformat(started_at)
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            # Auto-clear if from a previous calendar day (midnight reset)
+            if started.date() < now.date():
+                user.session_state = None
+                session.commit()
+                return None
+            # Auto-clear stale gym sessions (2+ hours)
+            if state.get("status") == "at_gym" and (now - started).total_seconds() > 7200:
+                user.session_state = None
+                session.commit()
+                return None
+        return state
+    finally:
+        session.close()
+
+
+def set_session_state(user_id: int, status: str, **kwargs):
+    """Set the user's session state."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if user:
+            state = {"status": status, "started_at": datetime.now(timezone.utc).isoformat()}
+            state.update(kwargs)
+            user.session_state = state
+            session.commit()
+    finally:
+        session.close()
+
+
+def clear_session_state(user_id: int):
+    """Clear the user's session state."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if user and user.session_state:
+            user.session_state = None
             session.commit()
     finally:
         session.close()

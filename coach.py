@@ -1,8 +1,9 @@
+import json
 import anthropic
 from datetime import datetime
 from pathlib import Path
 import config
-from models import get_session, User, Message, Workout, DailyLog
+from models import get_session, User, Message, Workout, DailyLog, Meal, ensure_todays_totals, get_session_state
 from skill_loader import get_skills_for_message_type, get_all_skills
 from engagement_tracker import get_tier
 from models import is_workout_confirmed_today
@@ -73,8 +74,12 @@ def build_context(user: User, message_type: str = "freeform") -> str:
     - morning_briefing -> personality + safety + nutrition + readiness
     - freeform, rating, evening_wrap -> personality + safety (all skills as fallback)
     """
+    ensure_todays_totals(user.id)
+
     session = get_session()
     try:
+        user = session.get(User, user.id)
+
         # Get recent conversation history
         recent_messages = (
             session.query(Message)
@@ -132,6 +137,33 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         except Exception:
             user_tz = ZoneInfo("America/Los_Angeles")
         now = datetime.now(user_tz)
+
+        # Today's meal log — so the coach knows what the user has eaten
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_meals = (
+            session.query(Meal)
+            .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start)
+            .order_by(Meal.eaten_at.asc())
+            .all()
+        )
+
+        if user.calorie_target:
+            cal_remaining = user.calorie_target - (user.calories_today or 0)
+            nutrition_today_block = (
+                f"Calories consumed today: {user.calories_today or 0} / {user.calorie_target} ({cal_remaining} remaining)\n"
+                f"Protein consumed today: {user.protein_today or 0}g / {f'{user.protein_target}g' if user.protein_target else '?'}"
+            )
+        else:
+            nutrition_today_block = "Nutrition targets not set yet."
+
+        if today_meals:
+            meals_lines = "\n".join(
+                f"  - {m.eaten_at.strftime('%I:%M %p')}: {m.description} ({m.calories} cal, {m.protein_g}g protein)"
+                for m in today_meals
+            )
+            nutrition_today_block += f"\n\nToday's logged meals:\n{meals_lines}"
+        else:
+            nutrition_today_block += "\nNo meals logged yet today."
 
         # Build last-outbound block for repetition prevention (Fix 4)
         if last_outbound:
@@ -191,6 +223,9 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 
         confirmed_decisions = "\n".join(decisions) if decisions else "No decisions confirmed yet — collect information before making recommendations."
 
+        session_state = get_session_state(user.id)
+        session_state_str = json.dumps(session_state) if session_state else "none — user is not in an active session"
+
         # Assemble the full system prompt: skills + user context
         system_prompt = f"""{skills_content}
 
@@ -216,10 +251,14 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 ## TRAINING LOG (recent sessions)
 {training_history}
 
+## TODAY'S NUTRITION TRACKING
+{nutrition_today_block}
+
 ## CURRENT CONTEXT
 Today: {now.strftime("%A, %B %d, %Y")}
 Time: ~{now.strftime("%I:%M %p")}
 Today's training status: {today_training_status}
+Session state: {session_state_str}
 Message type: {message_type}
 Days since last workout: {days_since}
 Engagement tier: {get_tier(user.unanswered_count or 0)} (unanswered streak: {user.unanswered_count or 0})
