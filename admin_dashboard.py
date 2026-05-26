@@ -413,23 +413,31 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 
   <div class="section">
     <div class="section-title">Recent Meals</div>
-    <div class="table-wrap">
-      <table>
-        <tr><th>User</th><th>When</th><th>Meal</th><th>Cal</th><th>Protein</th><th>Source</th><th>Confidence</th></tr>
-        {% for m in recent_meals %}
-        <tr class="clickable" onclick="window.location.href='/admin/user/{{ m.user_id }}'">
-          <td style="color:var(--accent);font-weight:500">{{ m.user_name }}</td>
-          <td>{{ m.eaten_at }}</td>
-          <td>{{ m.description[:60] }}{{ '…' if m.description|length > 60 else '' }}</td>
-          <td>{{ m.calories }}</td>
-          <td>{{ m.protein_g }}g</td>
-          <td><span class="badge badge-{{ 'blue' if m.source == 'photo' else 'gray' }}">{{ m.source }}</span></td>
-          <td><span class="badge badge-{{ 'green' if m.confidence == 'high' else 'yellow' if m.confidence == 'medium' else 'gray' }}">{{ m.confidence }}</span></td>
-        </tr>
-        {% endfor %}
-        {% if not recent_meals %}<tr><td colspan="7" class="empty">No meals logged yet.</td></tr>{% endif %}
-      </table>
+    {% for day in grouped_meals %}
+    <div style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px 8px 0 0">
+        <span style="font-weight:600;font-size:13px">{{ day.date }}</span>
+        <span style="font-size:12px;color:var(--text2)">{{ day.count }} meals &mdash; {{ day.total_calories }} cal / {{ day.total_protein }}g protein</span>
+      </div>
+      <div class="table-wrap" style="border-radius:0 0 12px 12px">
+        <table>
+          <tr><th>User</th><th>Time</th><th>Meal</th><th>Cal</th><th>Protein</th><th>Source</th><th>Confidence</th></tr>
+          {% for m in day.meals %}
+          <tr class="clickable" onclick="window.location.href='/admin/user/{{ m.user_id }}'">
+            <td style="color:var(--accent);font-weight:500">{{ m.user_name }}</td>
+            <td>{{ m.time_only }}</td>
+            <td>{{ m.description[:60] }}{{ '…' if m.description|length > 60 else '' }}</td>
+            <td>{{ m.calories }}</td>
+            <td>{{ m.protein_g }}g</td>
+            <td><span class="badge badge-{{ 'blue' if m.source == 'photo' else 'gray' }}">{{ m.source }}</span></td>
+            <td><span class="badge badge-{{ 'green' if m.confidence == 'high' else 'yellow' if m.confidence == 'medium' else 'gray' }}">{{ m.confidence }}</span></td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
     </div>
+    {% endfor %}
+    {% if not grouped_meals %}<p class="empty">No meals logged yet.</p>{% endif %}
   </div>
 </div>
 

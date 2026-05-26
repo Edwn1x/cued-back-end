@@ -22,4 +22,4 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",
 # Coach settings
 COACH_MODEL = "claude-sonnet-4-6"
 MAX_RESPONSE_TOKENS = 400  # keep SMS responses concise
-CONVERSATION_HISTORY_LIMIT = 25  # last N messages to include in prompt context
+CONVERSATION_HISTORY_LIMIT = 50  # last N messages to include in prompt context

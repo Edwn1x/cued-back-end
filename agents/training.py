@@ -207,7 +207,7 @@ Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "unknown"}"""
     )
 
 
-def handle(user: User, user_message: str) -> dict:
+def handle(user: User, user_message: str, image_data: dict = None) -> dict:
     """
     Process a training-related message and return structured coaching content.
 
@@ -271,11 +271,22 @@ LIVE WORKOUT REPORTING RULES (when user is texting between sets):
 - During live reporting, keep ALL responses under 160 characters. The user is mid-set with their phone. Be terse.
 """
 
+    user_content = [{"type": "text", "text": user_message}]
+    if image_data:
+        user_content.insert(0, {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image_data.get("content_type", "image/jpeg"),
+                "data": image_data["data"],
+            },
+        })
+
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[{"role": "user", "content": user_content}],
     )
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()

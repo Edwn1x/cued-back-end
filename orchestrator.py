@@ -175,7 +175,7 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
     if primary == "training" and confidence in ("high", "medium"):
         logger.info(f"Routing to training agent for {user.name}")
         try:
-            structured = training_handle(user, combined_body)
+            structured = training_handle(user, combined_body, image_data=image_data)
             response = write_response(user, structured, user_message=combined_body)
             from agents.weight_extractor import extract_and_log_weight
             threading.Thread(

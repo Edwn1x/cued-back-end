@@ -945,8 +945,15 @@ def admin():
             "message_type": m.message_type or "—",
         } for m in recent]
 
-        # ── RECENT MEALS ──
-        recent_meal_rows = sorted(all_meals, key=lambda m: m.eaten_at if m.eaten_at else now, reverse=True)[:40]
+        # ── RECENT MEALS (grouped by day) ──
+        from itertools import groupby
+        recent_meal_rows = sorted(all_meals, key=lambda m: m.eaten_at if m.eaten_at else now, reverse=True)[:60]
+
+        def meal_date_key(m):
+            if m.eaten_at:
+                return fmt_pst(m.eaten_at).split(" ")[0] if " " in fmt_pst(m.eaten_at) else m.eaten_at.strftime("%Y-%m-%d")
+            return "unknown"
+
         recent_meals_data = [{
             "user_id": m.user_id,
             "user_name": user_map.get(m.user_id, "Unknown"),
@@ -957,6 +964,28 @@ def admin():
             "source": m.source or "text",
             "confidence": m.confidence or "medium",
         } for m in recent_meal_rows]
+
+        grouped_meals = []
+        for _, meals_iter in groupby(recent_meal_rows, key=lambda m: m.eaten_at.strftime("%Y-%m-%d") if m.eaten_at else "unknown"):
+            meals_list = list(meals_iter)
+            day_cals = sum(m.calories or 0 for m in meals_list)
+            day_protein = sum(m.protein_g or 0 for m in meals_list)
+            grouped_meals.append({
+                "date": meals_list[0].eaten_at.strftime("%a %b %d") if meals_list[0].eaten_at else "Unknown",
+                "total_calories": day_cals,
+                "total_protein": round(day_protein),
+                "count": len(meals_list),
+                "meals": [{
+                    "user_id": m.user_id,
+                    "user_name": user_map.get(m.user_id, "Unknown"),
+                    "time_only": m.eaten_at.strftime("%-I:%M %p") if m.eaten_at else "",
+                    "description": m.description or "",
+                    "calories": m.calories or 0,
+                    "protein_g": m.protein_g or 0,
+                    "source": m.source or "text",
+                    "confidence": m.confidence or "medium",
+                } for m in meals_list],
+            })
 
         # ── AGENT PIPELINE STATS ──
         route_nutrition = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "nutrition" in m.message_type)
@@ -1008,6 +1037,7 @@ def admin():
             max_rating_count=max_rating_count,
             recent_messages=recent_messages_data,
             recent_meals=recent_meals_data,
+            grouped_meals=grouped_meals,
             route_nutrition=route_nutrition,
             route_training=route_training,
             route_readiness=route_readiness,

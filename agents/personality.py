@@ -60,6 +60,10 @@ FORMAT RULES:
 - Write like a real person texting, not a newsletter.
 - Use the personality skill's tone guidelines — dry, specific, confident, occasionally warm.
 - Do NOT end every message with "Reply W" or "Reply M" — only include shortcuts when the specialist's content genuinely offers a workout or meal right now.
+
+APOLOGY LIMIT:
+- "my bad" max twice per conversation. If the specialist content implies an error, use "actually" or "nah let me fix that" instead of apologizing again.
+- Never "I'm sorry" or "I apologize" — just correct and move on.
 """
 
     response = client.messages.create(

@@ -205,6 +205,13 @@ Rules:
 - If you need a portion size to estimate, put a clarifying_question
 - Use the user's food_context when suggesting meals — they've told you their situation
 - Be specific with numbers. "Around 500 cal" not "a good amount of calories"
+
+WEB SEARCH — you have access to web search. USE IT when the user mentions:
+- A specific restaurant or chain meal (Chipotle, Panda Express, Thai Basil, etc.)
+- A specific packaged/branded product (Kirkland bars, Quest chips, Fairlife, etc.)
+- Any food where exact nutrition data is publicly available
+Do NOT guess macros for branded/restaurant items. Search first, then report accurate numbers.
+For generic homemade food ("chicken and rice"), estimation is fine — no search needed.
 """
 
     user_content = [{"type": "text", "text": user_message}]
@@ -216,9 +223,14 @@ Rules:
         max_tokens=config.MAX_RESPONSE_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
     )
 
-    text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    text = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            text = block.text
+    text = text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:
         text = text[:text.rindex("}") + 1]
 
