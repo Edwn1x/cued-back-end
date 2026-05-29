@@ -143,11 +143,6 @@ def extract_and_log_meal(user_id: int, user_message: str, coach_response: str, r
             if not user:
                 return
 
-            try:
-                user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-            except Exception:
-                user_tz = ZoneInfo("America/Los_Angeles")
-
             if is_update and active_meal:
                 # UPDATE path — edit existing meal row in place
                 existing = session.get(Meal, active_meal.id)
@@ -212,7 +207,7 @@ def extract_and_log_meal(user_id: int, user_message: str, coach_response: str, r
             # CREATE path — new meal row
             meal = Meal(
                 user_id=user_id,
-                eaten_at=datetime.now(user_tz),
+                eaten_at=datetime.now(timezone.utc),
                 description=meal_data.get("description", ""),
                 calories=meal_data.get("calories", 0),
                 protein_g=meal_data.get("protein_g", 0),

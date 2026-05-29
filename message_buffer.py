@@ -9,7 +9,7 @@ coach feel human instead of instant.
 import threading
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("cued.buffer")
 
@@ -46,7 +46,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 "body": body,
                 "message_type": message_type,
                 "image_url": image_url,
-                "received_at": datetime.now().isoformat(),
+                "received_at": datetime.now(timezone.utc).isoformat(),
             })
             logger.info(f"Appended to buffer for {phone} ({len(_buffers[phone]['messages'])} messages)")
         else:
@@ -56,7 +56,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                     "body": body,
                     "message_type": message_type,
                     "image_url": image_url,
-                    "received_at": datetime.now().isoformat(),
+                    "received_at": datetime.now(timezone.utc).isoformat(),
                 }],
                 "user_id": user_id,
             }

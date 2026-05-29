@@ -1,6 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from models import get_session, User
 from coach import generate_scheduled_message
@@ -123,7 +123,11 @@ def _is_training_day(user) -> bool:
             "sat": 5, "saturday": 5,
             "sun": 6, "sunday": 6,
         }
-        today_num = datetime.now().weekday()
+        try:
+            _utz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            _utz = ZoneInfo("America/Los_Angeles")
+        today_num = datetime.now(_utz).weekday()
         tokens = re.split(r'[\s,/]+', days_str)
         for token in tokens:
             if day_map.get(token) == today_num:
@@ -142,8 +146,8 @@ def send_scheduled_message(user_id: int, message_type: str):
         if not user or not user.active:
             return
 
-        # Respect quiet_until — don't send scheduled messages if user said goodnight
-        if user.quiet_until and datetime.now() < user.quiet_until:
+        # Respect quiet_until (stored as naive UTC)
+        if user.quiet_until and datetime.now(timezone.utc).replace(tzinfo=None) < user.quiet_until:
             logger.info(f"Skipping {message_type} for {user.name} — quiet until {user.quiet_until}")
             return
 
@@ -183,7 +187,12 @@ def send_scheduled_message(user_id: int, message_type: str):
                 )
                 # Only probe if not recently active and no probe sent today
                 if not recently_active:
-                    today_start = datetime.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    try:
+                        _user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+                    except Exception:
+                        _user_tz = ZoneInfo("America/Los_Angeles")
+                    _local_midnight = datetime.now(_user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+                    today_start = _local_midnight.astimezone(_tz.utc).replace(tzinfo=None)
                     probe_today = (
                         session.query(MsgModel)
                         .filter(
@@ -405,15 +414,14 @@ def check_meal_adherence():
     Daily check: if a user has been active but hasn't logged a meal in 24+ hours, nudge them.
     After 48+ hours, slightly firmer tone.
     """
-    from datetime import timezone
     from models import Meal, Message
 
     session = get_session()
     try:
         users = session.query(User).filter(User.active == True).all()
         for user in users:
-            # Skip if user said goodnight recently
-            if user.quiet_until and datetime.now() < user.quiet_until:
+            # Skip if user said goodnight recently (quiet_until stored as naive UTC)
+            if user.quiet_until and datetime.now(timezone.utc).replace(tzinfo=None) < user.quiet_until:
                 continue
 
             # Skip if user is still in onboarding

@@ -8,7 +8,7 @@ Also updates the user's current weight on their profile.
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import anthropic
 import config
@@ -77,14 +77,9 @@ Examples:
             if not user:
                 return
 
-            try:
-                user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-            except Exception:
-                user_tz = ZoneInfo("America/Los_Angeles")
-
             log = WeightLog(
                 user_id=user_id,
-                weighed_at=datetime.now(user_tz),
+                weighed_at=datetime.now(timezone.utc),
                 weight_lbs=weight_lbs,
                 notes=notes,
             )

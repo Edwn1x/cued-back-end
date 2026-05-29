@@ -246,7 +246,13 @@ class DiningMenuItem(Base):
 def get_or_create_today_log(session, user_id: int) -> "DailyLog":
     """Get today's DailyLog for a user, creating it if it doesn't exist."""
     from sqlalchemy import func
-    today = datetime.now(timezone.utc).date()
+    from zoneinfo import ZoneInfo
+    user = session.get(User, user_id)
+    try:
+        user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles") if user else ZoneInfo("America/Los_Angeles")
+    except Exception:
+        user_tz = ZoneInfo("America/Los_Angeles")
+    today = datetime.now(user_tz).date()
     log = (
         session.query(DailyLog)
         .filter(

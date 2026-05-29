@@ -1,6 +1,6 @@
 import json
 import anthropic
-from datetime import datetime
+from datetime import datetime, timezone as _tz
 from pathlib import Path
 import config
 from models import get_session, User, Message, Workout, DailyLog, Meal, ensure_todays_totals, get_session_state
@@ -80,6 +80,12 @@ def build_context(user: User, message_type: str = "freeform") -> str:
     try:
         user = session.get(User, user.id)
 
+        from zoneinfo import ZoneInfo
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+
         # Get recent conversation history
         recent_messages = (
             session.query(Message)
@@ -91,7 +97,7 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         recent_messages.reverse()
 
         conversation_history = "\n".join(
-            f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
+            f"[{m.created_at.replace(tzinfo=_tz.utc).astimezone(user_tz).strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
             for m in recent_messages
         ) or "No previous messages yet -- this is the first interaction."
 
@@ -131,18 +137,14 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         else:
             training_history = "No training history yet -- this user is just getting started."
 
-        from zoneinfo import ZoneInfo
-        try:
-            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-        except Exception:
-            user_tz = ZoneInfo("America/Los_Angeles")
         now = datetime.now(user_tz)
 
-        # Today's meal log — so the coach knows what the user has eaten
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Today's meal log — convert local midnight to UTC for DB comparison
+        local_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start_utc = local_midnight.astimezone(_tz.utc)
         today_meals = (
             session.query(Meal)
-            .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start)
+            .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start_utc)
             .order_by(Meal.eaten_at.asc())
             .all()
         )
@@ -158,7 +160,7 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 
         if today_meals:
             meals_lines = "\n".join(
-                f"  - {m.eaten_at.strftime('%I:%M %p')}: {m.description} ({m.calories} cal, {m.protein_g}g protein)"
+                f"  - {m.eaten_at.replace(tzinfo=_tz.utc).astimezone(user_tz).strftime('%I:%M %p')}: {m.description} ({m.calories} cal, {m.protein_g}g protein)"
                 for m in today_meals
             )
             nutrition_today_block += f"\n\nToday's logged meals:\n{meals_lines}"

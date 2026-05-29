@@ -229,8 +229,13 @@ User: "yeah sounds good"
             if not user:
                 return
 
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%b %d")
+            from datetime import datetime, timezone as _tz_mem
+            from zoneinfo import ZoneInfo
+            try:
+                _utz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+            except Exception:
+                _utz = ZoneInfo("America/Los_Angeles")
+            timestamp = datetime.now(_tz_mem.utc).astimezone(_utz).strftime("%b %d")
             new_entries = "\n".join(f"- [{timestamp}] {fact}" for fact in new_facts)
 
             if user.memory:
@@ -504,9 +509,10 @@ def webhook():
             ), 200, {"Content-Type": "text/xml"}
 
         # Clear quiet_until if it's passed or if user is texting us
+        # quiet_until is stored as naive UTC
         if user.quiet_until:
-            from datetime import datetime
-            if datetime.now() >= user.quiet_until or body.strip():
+            from datetime import datetime as _dt, timezone as _tz_clear
+            if _dt.now(_tz_clear.utc).replace(tzinfo=None) >= user.quiet_until or body.strip():
                 user.quiet_until = None
                 session.commit()
 
@@ -564,7 +570,7 @@ def webhook():
         # Check for goodnight signal — handle immediately, skip buffer
         # Never trigger during onboarding — user is answering questions, not signing off
         if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 3:
-            from datetime import datetime, timedelta
+            from datetime import datetime, timedelta, timezone as _tz_store
             from zoneinfo import ZoneInfo
             wake_time = user.wake_time or "07:00"
             wake_h, wake_m = map(int, wake_time.split(":"))
@@ -575,13 +581,11 @@ def webhook():
             now_local = datetime.now(user_tz)
             wake_today = now_local.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0)
             if now_local < wake_today:
-                # After midnight but before wake time — user is ending their night,
-                # will wake up later today (same calendar day)
                 quiet_until = wake_today
             else:
-                # After wake time (e.g. 11 PM) — next wake is tomorrow
                 quiet_until = wake_today + timedelta(days=1)
-            user.quiet_until = quiet_until
+            # Store as UTC so comparisons with datetime.now(utc) are consistent
+            user.quiet_until = quiet_until.astimezone(_tz_store.utc).replace(tzinfo=None)
             session.commit()
             clear_session_state(user.id)
 
@@ -948,11 +952,6 @@ def admin():
         # ── RECENT MEALS (grouped by day) ──
         from itertools import groupby
         recent_meal_rows = sorted(all_meals, key=lambda m: m.eaten_at if m.eaten_at else now, reverse=True)[:60]
-
-        def meal_date_key(m):
-            if m.eaten_at:
-                return fmt_pst(m.eaten_at).split(" ")[0] if " " in fmt_pst(m.eaten_at) else m.eaten_at.strftime("%Y-%m-%d")
-            return "unknown"
 
         recent_meals_data = [{
             "user_id": m.user_id,

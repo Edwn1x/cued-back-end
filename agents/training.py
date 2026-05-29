@@ -82,8 +82,13 @@ def _get_demo_links_for_exercises(user, exercise_names: list[str]) -> dict[str, 
 
 def _build_training_context(user: User) -> str:
     """Build training-specific context — only what the training agent needs."""
-    from datetime import datetime
+    from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
+
+    try:
+        user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        user_tz = ZoneInfo("America/Los_Angeles")
 
     session = get_session()
     try:
@@ -97,7 +102,7 @@ def _build_training_context(user: User) -> str:
         )
         recent.reverse()
         conversation = "\n".join(
-            f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
+            f"[{m.created_at.replace(tzinfo=timezone.utc).astimezone(user_tz).strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
             for m in recent
         ) or "(no recent messages)"
 
