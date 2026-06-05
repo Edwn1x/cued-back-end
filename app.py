@@ -301,11 +301,31 @@ User: "yeah sounds good"
         logger.error(f"Memory extraction failed for user {user_id}: {e}")
 
 
-# ─── Coaching Summarizer ─────────────────────────────
+# ─── Coaching Summarizer (Phase B — watermark-driven incremental) ────────────
+#
+# Phase B design: eliminate the summary <-> raw-history overlap that the
+# original code created by summarizing "all-but-last-8" every 8 turns while
+# build_context separately pulled the last 50 raw messages. Messages 9-50
+# were double-counted.
+#
+# New invariant: User.last_compressed_message_id is the watermark. Summary
+# owns messages with id <= watermark; raw window owns id > watermark.
+# Summarization is incremental — only post-watermark older messages get
+# folded into the existing summary, instead of rebuilding wholesale.
+#
+# Cadence: every 8 messages once we have enough raw history past the
+# watermark (>= 16) to keep an 8-message buffer of fresh context unsummarized.
+
+_RAW_BUFFER_BEFORE_COMPRESS = 8  # how many recent messages stay raw, untouched
+_MIN_NEW_TO_COMPRESS = 8         # don't run summarizer for <8 new post-watermark messages
+
+
 def maybe_update_coaching_summary(user_id: int):
     """
-    If the user has enough messages, generate a rolling summary of older
-    conversations and store it. Runs periodically — every 10 new messages.
+    Watermark-driven incremental summarization. Folds NEW post-watermark
+    messages into the existing summary; advances the watermark. The raw
+    window (built in coach.build_context) starts at the watermark, so
+    nothing is double-counted.
     """
     import anthropic
 
@@ -315,28 +335,42 @@ def maybe_update_coaching_summary(user_id: int):
         if not user:
             return
 
-        total_msgs = session.query(Message).filter(Message.user_id == user_id).count()
+        watermark = user.last_compressed_message_id or 0
 
-        if total_msgs < 12:
-            return
-
-        if total_msgs % 8 != 0:
-            return
-
-        older_messages = (
+        # Count messages above the watermark — that's the "potentially
+        # summarizable" pool. We summarize everything except the most
+        # recent _RAW_BUFFER_BEFORE_COMPRESS messages, so the active
+        # conversation stays raw.
+        new_msgs_count = (
             session.query(Message)
-            .filter(Message.user_id == user_id)
-            .order_by(Message.created_at.asc())
-            .limit(total_msgs - 8)
-            .all()
+            .filter(Message.user_id == user_id, Message.id > watermark)
+            .count()
         )
 
-        if not older_messages:
+        # Need at least RAW_BUFFER + MIN_NEW above the watermark to even
+        # consider running. Otherwise there isn't a useful chunk to compress.
+        if new_msgs_count < (_RAW_BUFFER_BEFORE_COMPRESS + _MIN_NEW_TO_COMPRESS):
             return
+
+        # The cohort to summarize: post-watermark, but EXCLUDE the last
+        # _RAW_BUFFER_BEFORE_COMPRESS so they stay in the raw window.
+        new_to_summarize_count = new_msgs_count - _RAW_BUFFER_BEFORE_COMPRESS
+
+        cohort = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.id > watermark)
+            .order_by(Message.created_at.asc())
+            .limit(new_to_summarize_count)
+            .all()
+        )
+        if not cohort:
+            return
+
+        new_watermark = cohort[-1].id  # advance to last summarized msg
 
         conversation_text = "\n".join(
             f"[{m.created_at.strftime('%b %d %I:%M %p')}] {'Coach' if m.direction == 'out' else user.name}: {m.body}"
-            for m in older_messages
+            for m in cohort
         )
 
         existing_summary = user.coaching_summary or "(no prior summary)"
@@ -346,14 +380,14 @@ def maybe_update_coaching_summary(user_id: int):
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""You are maintaining a rolling summary of an SMS coaching relationship. Your job is to compress old conversation history into a structured summary of what's been discussed, decided, and tried.
+    prompt = f"""You are maintaining a rolling summary of an SMS coaching relationship. Your job is to FOLD new conversation into the existing summary — not rebuild it from scratch. Keep useful past context, integrate the new material, drop anything stale.
 
 The user's permanent personal details (preferences, stats, life events) are stored separately in a memory system — do NOT duplicate those here. Focus only on the COACHING ARC: what topics were discussed, what decisions were made, what workouts happened, what adjustments were tried, what the user struggled with or succeeded at.
 
-Prior summary:
+Existing summary:
 {existing_summary}
 
-Older conversation to summarize:
+NEW conversation to fold in (everything since the last summary update):
 {conversation_text}
 
 Return a structured summary under these headers. Keep it tight — each section 1-4 bullets max. Only include sections that have content.
@@ -373,7 +407,7 @@ Return a structured summary under these headers. Keep it tight — each section 
 ## Open Items
 (e.g., "User hasn't confirmed training time yet", "Considering whether to add cardio")
 
-Keep under 400 words total. This replaces the prior summary — include important past context from it if still relevant."""
+Keep under 400 words total. This REPLACES the prior summary — bring forward whatever from it is still load-bearing."""
 
     try:
         response = client.messages.create(
@@ -388,8 +422,12 @@ Keep under 400 words total. This replaces the prior summary — include importan
             user = session.get(User, user_id)
             if user:
                 user.coaching_summary = summary
+                user.last_compressed_message_id = new_watermark
                 session.commit()
-                logger.info(f"Updated coaching summary for {user_name} ({total_msgs} messages)")
+                logger.info(
+                    "COACHING_SUMMARY_UPDATE user=%s folded=%d new watermark=%d",
+                    user_name, len(cohort), new_watermark,
+                )
         finally:
             session.close()
     except Exception as e:

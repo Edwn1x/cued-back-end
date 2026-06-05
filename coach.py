@@ -87,10 +87,15 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         except Exception:
             user_tz = ZoneInfo("America/Los_Angeles")
 
-        # Get recent conversation history
+        # Phase B: raw conversation history starts AT the summary watermark.
+        # Summary owns id <= watermark; raw owns id > watermark. No overlap.
+        # CONVERSATION_HISTORY_LIMIT is a safety guardrail for if the
+        # summarizer falls behind (e.g. ultra-talkative user, summarizer
+        # errors). Without it, an unbounded raw window would blow up tokens.
+        watermark = user.last_compressed_message_id or 0
         recent_messages = (
             session.query(Message)
-            .filter(Message.user_id == user.id)
+            .filter(Message.user_id == user.id, Message.id > watermark)
             .order_by(Message.created_at.desc())
             .limit(config.CONVERSATION_HISTORY_LIMIT)
             .all()
