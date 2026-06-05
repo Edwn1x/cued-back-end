@@ -14,6 +14,7 @@ import anthropic
 import config
 from models import get_session, User, Message
 from skill_loader import load_skill
+from memory import build_memory_block
 
 logger = logging.getLogger("cued.nutrition")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -145,7 +146,9 @@ Food context: {user.food_context or "not collected yet"}"""
         "User has NOT confirmed training today. Do NOT assume they trained, do NOT ask how the workout went, do NOT reference a completed session unless the user mentions it first."
     )
 
-    return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n## TODAY'S TRAINING STATUS\n{workout_status}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}"
+    memory_block = build_memory_block(user, "nutrition")
+
+    return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n## TODAY'S TRAINING STATUS\n{workout_status}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}{memory_block}"
 
 
 def handle(user: User, user_message: str, image_url: dict = None) -> dict:

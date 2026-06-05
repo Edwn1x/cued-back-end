@@ -23,3 +23,11 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",
 COACH_MODEL = "claude-sonnet-4-6"
 MAX_RESPONSE_TOKENS = 400  # keep SMS responses concise
 CONVERSATION_HISTORY_LIMIT = 50  # last N messages to include in prompt context
+
+# Phase A memory architecture — see plans/cued-memory-architecture-joyful-ullman.md
+USER_PROFILE_MEMORY_CHAR_LIMIT = 2000  # global hard cap; eviction trigger
+USER_PROFILE_MEMORY_CATEGORY_SOFT_CAP = 400  # per-category soft cap so no bucket starves others
+COACHING_POINTS_CHAR_LIMIT = 1000  # delivered_coaching_points cap
+# Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
+# Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
+USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"

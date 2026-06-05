@@ -13,6 +13,7 @@ from admin_dashboard import ADMIN_HTML
 from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
+from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -147,11 +148,36 @@ If nothing can be extracted, return all null."""
 
 
 # ─── Memory Extractor ────────────────────────────────
+def _render_existing_profile_for_prompt(profile: dict) -> str:
+    """Render the current user_profile_memory as a per-category list for the
+    extraction prompt. Used so Haiku can target `update`/`skip` actions against
+    real existing facts via the `replaces_text` byte-exact contract."""
+    if not profile:
+        return "(no existing facts)"
+    lines = []
+    for cat in CATEGORIES:
+        entries = profile.get(cat) or []
+        if not entries:
+            continue
+        lines.append(f"[{cat}]")
+        for e in entries:
+            flag = " (safety)" if e.get("safety") else ""
+            lines.append(f"  - {e['text']}{flag}")
+    return "\n".join(lines) if lines else "(no existing facts)"
+
+
 def extract_and_store_memory(user_id: int, user_message: str, coach_response: str):
     """
-    After each exchange, extract any meaningful personal details the user revealed
-    and append them to the user's memory field. This creates a permanent record
-    of everything the coach should remember about this person.
+    Phase A2/A3 extraction. After each exchange, ask Haiku to emit categorized
+    fact records with action verbs (add/update/skip) and a safety_critical
+    flag. Apply them via memory.apply_facts() — which runs the action verbs,
+    the byte-exact replaces_text safe-overwrite, the dedup ladder, and
+    eviction — and write the result back atomically.
+
+    Column-as-source-of-truth: Haiku is told NOT to emit body metrics
+    (weight/height/body fat) or dietary identity (diet/restrictions). Those
+    fields have typed columns on User and are handled by the A5 regex
+    pre-pass + future logic, never by JSON facts.
     """
     import anthropic
     import json
@@ -163,88 +189,112 @@ def extract_and_store_memory(user_id: int, user_message: str, coach_response: st
         user = session.get(User, user_id)
         if not user:
             return
-        existing_memory = user.memory or ""
+        existing_profile = dict(user.user_profile_memory or {})
         user_name = user.name
     finally:
         session.close()
 
-    prompt = f"""You are extracting memorable facts about a fitness coaching client from a text message exchange. Your job is to identify any NEW personal details the user revealed that the coach should remember permanently.
+    existing_block = _render_existing_profile_for_prompt(existing_profile)
 
-Extract things like:
-- Preferences (loves deadlifts, hates running, prefers morning workouts)
-- Life events (sister's wedding June 15, starting new job, midterms next week)
-- Injuries or physical notes (left shoulder tweaked, bad knees, tight hips)
-- PRs or progress milestones (bench went from 135 to 185, squatted 225 for first time)
-- Relationships (training partner named Alex, girlfriend is vegan)
-- Emotional states worth remembering (stressed about finals, motivated after seeing progress)
-- Food preferences and habits (eats at Crossroads dining hall, hates cilantro, lactose intolerant)
-- Schedule details (Tuesdays are busy, gym closes at 10pm, travels for work monthly)
-- Goals and motivations (wants to look good for wedding, training for hiking trip)
-- Anything else that makes the user specific and real
+    prompt = f"""You are maintaining a structured memory of a fitness coaching client from a text-message exchange. You will emit one or more fact records that the storage layer applies verbatim. The storage layer enforces safety; you do not need to.
 
-Existing memory (DO NOT repeat facts already in here):
-{existing_memory if existing_memory else "(no existing memory)"}
+Categories (use exactly one of these per fact):
+  - identity                 — durable identity facts (school, year, job, training partner names, family context)
+  - constraints              — injuries, medical issues, doctor's orders, "can't do X" hard limits
+  - training_preferences     — exercise/style preferences (loves deadlifts, hates morning cardio, prefers structured plans)
+  - communication_preferences— how they want to be coached (blunt callouts, gentle reminders, long explanations, terse replies)
+  - schedule                 — recurring time constraints (Tuesdays class-heavy, gym closes 10pm, travels monthly for work)
+  - goals                    — durable goals/motivations (lean for summer, train for hike, look good for wedding)
+
+DO NOT emit facts for these (they have typed columns; storage handles them elsewhere):
+  - weight, height, body fat percentage
+  - diet identity (vegan, vegetarian, kosher, halal)
+  - food allergies / food restrictions (lactose, gluten, "allergic to whey")
+  - food context (which dining hall, favorite restaurants)
+  - confirmed plan decisions (training split, workout time, calorie/protein targets)
+
+Existing facts (use these for `replaces_text` on `update`, or to decide `skip`):
+{existing_block}
 
 User said: "{user_message}"
 Coach said: "{coach_response}"
 
-Return ONLY valid JSON:
-{{"new_facts": ["fact 1", "fact 2", ...]}}
+For each new or changed fact, emit a JSON object:
+  {{
+    "action": "add" | "update" | "skip",
+    "category": "<one of the six above>",
+    "text": "<concise statement about the user, present tense>",
+    "replaces_text": "<EXACT existing fact text being superseded, byte-for-byte; null if action != update>",
+    "safety_critical": <true if this is an injury / medical / doctor's order / hard physical limit; false otherwise>
+  }}
+
+Action semantics:
+  - add: a genuinely new fact not present in existing facts.
+  - update: the user revealed an updated version of an existing durable fact (e.g. gym changed, school year advanced, training partner name changed). `replaces_text` MUST exactly match the existing fact text — if you're not sure of the exact text, use `add` instead.
+  - skip: nothing meaningful was revealed, or the candidate is already present even if reworded. Use this liberally — empty output is fine.
 
 Rules:
-- Each fact should be ONE concise bullet, written as a statement about the user
-- Do NOT extract temporary states ("is tired today" — only extract if it's a recurring pattern)
-- Do NOT extract information the coach said unless the user confirmed it
-- Do NOT repeat anything in existing memory, even if reworded
-- If nothing new and meaningful was revealed, return: {{"new_facts": []}}
+  - Each fact is one concise sentence written as a statement about the user.
+  - Do NOT emit temporary states ("is tired today") unless they're a recurring pattern.
+  - Do NOT emit anything the coach said unless the user confirmed it.
+  - Do NOT emit body metrics or dietary identity (see exclusion list above).
+  - Doctor's orders / injuries / medical limits MUST have safety_critical=true.
+  - If nothing meaningful was revealed, return: {{"facts": []}}
+
+Return ONLY valid JSON:
+  {{"facts": [<fact object>, ...]}}
 
 Examples:
-User: "I'm 5'7 146, mostly cook at home, sometimes Chipotle"
-→ {{"new_facts": ["5'7 and 146lbs", "Cooks at home most of the time, occasionally Chipotle"]}}
+User: "I tweaked my left shoulder benching today"
+→ {{"facts": [{{"action": "add", "category": "constraints", "text": "left shoulder tweaks on heavy bench", "replaces_text": null, "safety_critical": true}}]}}
 
-User: "My shoulder has been bugging me since that bench PR"
-→ {{"new_facts": ["Shoulder started bothering them after recent bench PR"]}}
+User: "yeah I switched gyms — using the RSF now instead of my apartment gym"
+(existing: "trains at apartment gym")
+→ {{"facts": [{{"action": "update", "category": "identity", "text": "trains at the RSF", "replaces_text": "trains at apartment gym", "replaces_text_match_required": true, "safety_critical": false}}]}}
+
+User: "Tuesdays are crushing me with classes"
+→ {{"facts": [{{"action": "add", "category": "schedule", "text": "Tuesdays are class-heavy", "replaces_text": null, "safety_critical": false}}]}}
 
 User: "yeah sounds good"
-→ {{"new_facts": []}}"""
+→ {{"facts": []}}"""
 
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        if "}" in text:
-            text = text[:text.rindex("}") + 1]
-        data = json.loads(text)
-        new_facts = data.get("new_facts", [])
-
-        if not new_facts:
+        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        if "}" in raw:
+            raw = raw[:raw.rindex("}") + 1]
+        data = json.loads(raw)
+        facts = data.get("facts", [])
+        if not facts:
             return
 
         session = get_session()
         try:
-            user = session.get(User, user_id)
+            # Row-lock the user row so concurrent extractions / future uses-bumps
+            # serialize on a single critical section. SELECT ... FOR UPDATE is a
+            # no-op on SQLite but real on Postgres (production).
+            user = session.query(User).filter(User.id == user_id).with_for_update().one_or_none()
             if not user:
                 return
 
-            from datetime import datetime, timezone as _tz_mem
-            from zoneinfo import ZoneInfo
-            try:
-                _utz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-            except Exception:
-                _utz = ZoneInfo("America/Los_Angeles")
-            timestamp = datetime.now(_tz_mem.utc).astimezone(_utz).strftime("%b %d")
-            new_entries = "\n".join(f"- [{timestamp}] {fact}" for fact in new_facts)
-
-            if user.memory:
-                user.memory = f"{user.memory}\n{new_entries}"
-            else:
-                user.memory = new_entries
-
+            current_profile = dict(user.user_profile_memory or {})
+            new_profile, stats = apply_facts(current_profile, facts, user_id=user_id)
+            user.user_profile_memory = new_profile
+            # flag_modified is required: SQLAlchemy's JSON tracker treats
+            # in-place nested mutations as no-ops. Without this the apply_facts
+            # `update` action and the eviction path would silently fail to persist.
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(user, "user_profile_memory")
             session.commit()
-            logger.info(f"Added {len(new_facts)} memory entries for {user_name}")
+            logger.info(
+                "MEMORY_EXTRACT user=%s added=%d updated=%d deduped=%d mismatched=%d skipped=%d invalid=%d",
+                user_name, stats["added"], stats["updated"], stats["deduped"],
+                stats["mismatched"], stats["skipped"], stats["invalid"],
+            )
         finally:
             session.close()
     except Exception as e:
@@ -379,12 +429,50 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             daemon=True,
         ).start()
 
+        # A5: deterministic safety pre-pass — regex-only, runs BEFORE the LLM
+        # extraction queues so the JSON profile is already populated by the
+        # time Haiku reads existing facts. Idempotent + dedup-safe so even if
+        # the threads race, the row-lock + dedup ladder converge correctly.
+        threading.Thread(
+            target=apply_safety_signals_task,
+            args=(user.id, combined_body),
+            daemon=True,
+        ).start()
+
         # Extract and store user memory (runs in background, doesn't block)
         threading.Thread(
             target=extract_and_store_memory,
             args=(user.id, combined_body, response_text),
             daemon=True,
         ).start()
+
+        # A6: tag substantive coaching points delivered this turn so the
+        # coach can reference them rather than re-deliver them next time.
+        threading.Thread(
+            target=extract_and_store_coaching_points_task,
+            args=(user.id, combined_body, response_text),
+            daemon=True,
+        ).start()
+
+        # A4: async uses-bump for memory entries that were rendered into the
+        # agent's context this turn. We don't know which agent the orchestrator
+        # routed to without surfacing it back up, so we collect ids for every
+        # agent map and dedupe — bump_uses is keyed by id, so duplicates are
+        # free. Pure-Python (no DB) so this is cheap to compute synchronously
+        # before queueing the actual DB write to the daemon thread.
+        try:
+            injected_ids = set()
+            for _atype in ("nutrition", "training", "readiness", "coach"):
+                _, _ids = build_memory_block_with_ids(user, _atype)
+                injected_ids.update(_ids)
+            if injected_ids:
+                threading.Thread(
+                    target=update_memory_uses_task,
+                    args=(user.id, list(injected_ids)),
+                    daemon=True,
+                ).start()
+        except Exception as _e:
+            logger.warning(f"memory uses-bump queueing failed for user {user.id}: {_e}")
 
         # Update coaching summary periodically (runs in background, doesn't block)
         threading.Thread(
@@ -1226,6 +1314,7 @@ def admin_user(user_id):
             user_cost=user_cost,
             onboarding_label=onboarding_label,
             signed_up=fmt_date(user.created_at),
+            coach_memory=build_memory_block(user, "admin"),
         )
     finally:
         session.close()
@@ -1476,10 +1565,16 @@ tr:hover td{background:rgba(255,255,255,.02)}
         {% endif %}{% endfor %}
       </div>
     </div>
-    {% if user.memory %}
+    {% if coach_memory %}
     <div class="memory-box">
       <h3>Coach Memory</h3>
-      <p>{{ user.memory }}</p>
+      <p>{{ coach_memory }}</p>
+    </div>
+    {% endif %}
+    {% if user.delivered_coaching_points %}
+    <div class="memory-box">
+      <h3>Delivered Coaching Points</h3>
+      <p>{{ user.delivered_coaching_points }}</p>
     </div>
     {% endif %}
   </div>

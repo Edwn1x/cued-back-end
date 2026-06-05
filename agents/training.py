@@ -13,6 +13,7 @@ import threading
 import anthropic
 import config
 from models import get_session, User, Message, Workout
+from memory import build_memory_block
 from skill_loader import load_skill
 from models import is_workout_confirmed_today
 
@@ -170,7 +171,7 @@ Injuries: {user.injuries or "none reported"}
 Height: {f"{user.height_ft}'{user.height_in or 0}" if user.height_ft else "unknown"}
 Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "unknown"}"""
 
-    memory_block = f"\n\n## WHAT YOU REMEMBER ABOUT {user.name.upper()}\n{user.memory}" if user.memory else ""
+    memory_block = build_memory_block(user, "training")
 
     # Build available demo links (exercises user hasn't seen yet)
     seen = user.seen_exercise_demos or {}

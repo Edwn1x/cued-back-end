@@ -63,6 +63,11 @@ class User(Base):
     user_timezone = Column(String(50), default="America/Los_Angeles")  # IANA timezone string
     memory = Column(Text, default=None)  # permanent extracted facts about the user — preferences, life events, PRs, etc.
     coaching_summary = Column(Text, default=None)  # rolling summary of coaching decisions and progress
+    # Phase A memory architecture — categorized profile, per-call coaching points, summary watermark.
+    # Helper read/write happens in memory.py; column-as-source-of-truth rule keeps weight/diet/etc. out of this JSON.
+    user_profile_memory = Column(JSON, default=None)  # {category: [{id, text, ts, uses, safety?}]} — see memory.py
+    delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
+    last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     calories_today = Column(Integer, default=0)  # running total for today

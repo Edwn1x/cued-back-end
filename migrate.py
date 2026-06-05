@@ -103,6 +103,10 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_dining_date_hall ON dining_menu_items (scraped_date, hall)",
     "ALTER TABLE users ADD COLUMN session_state JSON",
+    # Phase A memory architecture: categorized profile JSON, coaching-point repetition guard, summary watermark
+    "ALTER TABLE users ADD COLUMN user_profile_memory JSON",
+    "ALTER TABLE users ADD COLUMN delivered_coaching_points TEXT",
+    "ALTER TABLE users ADD COLUMN last_compressed_message_id INTEGER",
 ]
 
 def wait_for_db(retries=10, delay=3):

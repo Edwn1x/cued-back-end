@@ -8,6 +8,7 @@ from skill_loader import get_skills_for_message_type, get_all_skills
 from engagement_tracker import get_tier
 from models import is_workout_confirmed_today
 from tone_analyzer import get_tone_instruction
+from memory import build_memory_block
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -196,11 +197,18 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         # Build adaptive tone instruction
         tone_instruction = get_tone_instruction(user)
 
-        # Build memory block
-        if user.memory:
-            memory_block = f"## WHAT YOU REMEMBER ABOUT {user.name.upper()}\nThese are permanent facts you've learned about this user over time. Reference them naturally when relevant — but never list them out or make the user feel surveilled.\n{user.memory}"
+        # Build memory block (routed through unified helper — see memory.py)
+        memory_block = build_memory_block(user, "coach")
+
+        # A6: delivered coaching points — repetition guard. Reference these
+        # rather than re-deliver them.
+        if (user.delivered_coaching_points or "").strip():
+            coaching_points_block = (
+                "## COACHING POINTS ALREADY DELIVERED (reference, do not re-explain)\n"
+                f"{user.delivered_coaching_points.strip()}"
+            )
         else:
-            memory_block = "## WHAT YOU REMEMBER ABOUT THIS USER\nNothing accumulated yet — you're just getting to know them."
+            coaching_points_block = ""
 
         # Build coaching summary block
         if user.coaching_summary:
@@ -239,6 +247,8 @@ def build_context(user: User, message_type: str = "freeform") -> str:
 {user.profile_summary}
 
 {memory_block}
+
+{coaching_points_block}
 
 {summary_block}
 

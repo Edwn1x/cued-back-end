@@ -13,6 +13,7 @@ import config
 from models import get_session, User, Message, DailyLog
 from skill_loader import load_skill
 from models import is_workout_confirmed_today
+from memory import build_memory_block
 
 logger = logging.getLogger("cued.readiness")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -94,7 +95,7 @@ Stress level (self-reported at signup): {user.stress_level or "unknown"}
 Wearable: {user.wearable or "none"}
 Weight: {f"{user.weight_lbs} lbs" if user.weight_lbs else "unknown"}"""
 
-    memory_block = f"\n\n## WHAT YOU REMEMBER ABOUT {user.name.upper()}\n{user.memory}" if user.memory else ""
+    memory_block = build_memory_block(user, "readiness")
 
     return (
         f"## USER PROFILE\n{profile}\n\n"
