@@ -248,6 +248,28 @@ class DiningMenuItem(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class TokenUsage(Base):
+    """
+    One row per Anthropic messages.create() call. Persisted because Railway
+    log retention can't support historical aggregation. Stores raw token
+    buckets (so we can recompute) AND the as-charged cost_usd at insert time
+    (so historical totals stay correct if MODEL_PRICING changes later).
+    See plans/cued-memory-architecture-joyful-ullman.md — Phase C1.5.
+    """
+    __tablename__ = "token_usage"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)  # null = system call
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    model = Column(String(10))   # "sonnet" | "haiku"
+    site = Column(String(60))    # e.g. "coach.get_coach_response", "extract_and_store_memory"
+    input_tokens = Column(Integer, default=0)                  # fresh uncached input
+    cache_creation_input_tokens = Column(Integer, default=0)
+    cache_read_input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    cost_usd = Column(Float, default=0.0)
+
+
 def get_or_create_today_log(session, user_id: int) -> "DailyLog":
     """Get today's DailyLog for a user, creating it if it doesn't exist."""
     from sqlalchemy import func

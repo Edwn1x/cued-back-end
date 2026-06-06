@@ -14,6 +14,7 @@ from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
+from cost_tracking import track as track_usage
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -83,6 +84,8 @@ If nothing can be extracted, return all null."""
             max_tokens=250,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_usage(user_id, "extract_and_store_decisions",
+                    "claude-haiku-4-5-20251001", response.usage)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]
@@ -264,6 +267,8 @@ User: "yeah sounds good"
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_usage(user_id, "extract_and_store_memory",
+                    "claude-haiku-4-5-20251001", response.usage)
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in raw:
             raw = raw[:raw.rindex("}") + 1]
@@ -415,6 +420,8 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_usage(user_id, "maybe_update_coaching_summary",
+                    "claude-sonnet-4-6", response.usage)
         summary = response.content[0].text.strip()
 
         session = get_session()
@@ -917,6 +924,133 @@ def activate_sms():
         session.close()
 
 
+# ─── Admin Dashboard — cost aggregations from token_usage ─────────────────
+def _compute_cost_metrics(session):
+    """
+    Phase C1.5 — read token_usage and produce the measured-cost dict the
+    Finances page consumes. Replaces the pre-C1.5 volume-based heuristic
+    (total_sent * 0.006). UTC day bucket for v1 (see plan notes).
+
+    Returns dict with keys: api_cost_today, api_cost_7d, api_cost_30d,
+    run_rate_30d, cost_sonnet_7d, cost_haiku_7d, pct_sonnet, pct_haiku,
+    cost_by_site (list of {site, calls, cost_usd, avg_cost_per_call}),
+    cache_ratio, cache_saved_7d, cost_per_active_user_per_day,
+    per_user_30d_cost (dict user_id -> sum_cost_usd).
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import func
+    from models import TokenUsage
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    seven_days_ago = now - timedelta(days=7)
+    thirty_days_ago = now - timedelta(days=30)
+
+    def _sum_cost(since):
+        v = (session.query(func.coalesce(func.sum(TokenUsage.cost_usd), 0.0))
+             .filter(TokenUsage.created_at >= since)
+             .scalar()) or 0.0
+        return round(float(v), 4)
+
+    api_cost_today = _sum_cost(today_start)
+    api_cost_7d = _sum_cost(seven_days_ago)
+    api_cost_30d = _sum_cost(thirty_days_ago)
+    run_rate_30d = round((api_cost_7d / 7.0) * 30.0, 2) if api_cost_7d else 0.0
+
+    # Model split — 7d
+    model_rows = (session.query(TokenUsage.model,
+                                func.coalesce(func.sum(TokenUsage.cost_usd), 0.0))
+                  .filter(TokenUsage.created_at >= seven_days_ago)
+                  .group_by(TokenUsage.model)
+                  .all())
+    model_split = {m: float(c or 0) for m, c in model_rows}
+    cost_sonnet_7d = round(model_split.get("sonnet", 0.0), 4)
+    cost_haiku_7d = round(model_split.get("haiku", 0.0), 4)
+    model_total = cost_sonnet_7d + cost_haiku_7d
+    pct_sonnet = round(cost_sonnet_7d / model_total * 100) if model_total > 0 else 0
+    pct_haiku = round(cost_haiku_7d / model_total * 100) if model_total > 0 else 0
+
+    # Per-site — 7d, ordered by cost desc
+    site_rows = (session.query(
+                    TokenUsage.site,
+                    func.count(TokenUsage.id),
+                    func.coalesce(func.sum(TokenUsage.cost_usd), 0.0),
+                 )
+                 .filter(TokenUsage.created_at >= seven_days_ago)
+                 .group_by(TokenUsage.site)
+                 .all())
+    cost_by_site = sorted([
+        {
+            "site": s or "(unknown)",
+            "calls": int(c or 0),
+            "cost_usd": round(float(cost or 0), 4),
+            "avg_cost_per_call": round(float(cost or 0) / c, 6) if c else 0.0,
+        }
+        for s, c, cost in site_rows
+    ], key=lambda r: -r["cost_usd"])
+
+    # Cache effectiveness — 7d
+    cache_agg = (session.query(
+                    func.coalesce(func.sum(TokenUsage.input_tokens), 0),
+                    func.coalesce(func.sum(TokenUsage.cache_creation_input_tokens), 0),
+                    func.coalesce(func.sum(TokenUsage.cache_read_input_tokens), 0),
+                 )
+                 .filter(TokenUsage.created_at >= seven_days_ago)
+                 .one())
+    inp_sum, cc_sum, cr_sum = (int(x or 0) for x in cache_agg)
+    denom = inp_sum + cc_sum + cr_sum
+    cache_ratio = round(cr_sum / denom * 100, 1) if denom > 0 else 0.0
+
+    # $ saved by cache reads, weighted by per-model input rate
+    model_cache_rows = (session.query(TokenUsage.model,
+                                      func.coalesce(func.sum(TokenUsage.cache_read_input_tokens), 0))
+                        .filter(TokenUsage.created_at >= seven_days_ago)
+                        .group_by(TokenUsage.model)
+                        .all())
+    cache_saved_7d = 0.0
+    for m, cr_tokens in model_cache_rows:
+        if not m or not cr_tokens:
+            continue
+        in_rate = config.MODEL_PRICING.get(m, {}).get("input", 0.0)
+        # Saving: would-have-paid (1.0 * in_rate) vs paid (0.10 * in_rate) per token
+        cache_saved_7d += int(cr_tokens) * in_rate * (1 - config.CACHE_READ_MULTIPLIER) / 1_000_000
+    cache_saved_7d = round(cache_saved_7d, 4)
+
+    # Cost / active user / day — distinct users in token_usage over 7d
+    active_user_count = (session.query(func.count(func.distinct(TokenUsage.user_id)))
+                         .filter(TokenUsage.created_at >= seven_days_ago,
+                                 TokenUsage.user_id.isnot(None))
+                         .scalar()) or 0
+    cost_per_active_user_per_day = (
+        round(api_cost_7d / active_user_count / 7.0, 4) if active_user_count > 0 else 0.0
+    )
+
+    # Per-user spend over 30d
+    per_user_rows = (session.query(TokenUsage.user_id,
+                                   func.coalesce(func.sum(TokenUsage.cost_usd), 0.0))
+                     .filter(TokenUsage.created_at >= thirty_days_ago,
+                             TokenUsage.user_id.isnot(None))
+                     .group_by(TokenUsage.user_id)
+                     .all())
+    per_user_30d_cost = {int(uid): round(float(c or 0), 4) for uid, c in per_user_rows}
+
+    return {
+        "api_cost_today": api_cost_today,
+        "api_cost_7d": api_cost_7d,
+        "api_cost_30d": api_cost_30d,
+        "run_rate_30d": run_rate_30d,
+        "cost_sonnet_7d": cost_sonnet_7d,
+        "cost_haiku_7d": cost_haiku_7d,
+        "pct_sonnet": pct_sonnet,
+        "pct_haiku": pct_haiku,
+        "cost_by_site": cost_by_site,
+        "cache_ratio": cache_ratio,
+        "cache_saved_7d": cache_saved_7d,
+        "cost_per_active_user_per_day": cost_per_active_user_per_day,
+        "per_user_30d_cost": per_user_30d_cost,
+    }
+
+
 # ─── Admin Dashboard ────────────────────────────────
 @app.route("/admin")
 def admin():
@@ -1042,9 +1176,9 @@ def admin():
 
             signed_up = fmt_pst(u.created_at) if u.created_at else "—"
 
-            user_sent = sum(1 for m in user_msgs if m.direction == "out")
-            user_received = len(user_incoming)
-            cost_usd = round((user_sent + user_received) * 0.015 + user_sent * 0.006, 2)
+            # Phase C1.5: real measured cost from token_usage (30d).
+            # Populated post-loop from cost_metrics["per_user_30d_cost"].
+            cost_usd = 0.0
             created_ts = int(u.created_at.timestamp()) if u.created_at else 0
 
             users_data.append({
@@ -1127,13 +1261,20 @@ def admin():
             for t, c in type_counts.most_common(12)
         ], key=lambda x: -x["count"])
 
-        # ── COST ESTIMATES ──
+        # ── COSTS (Phase C1.5 — measured API from token_usage; Twilio volume estimate) ──
+        cost_metrics = _compute_cost_metrics(session)
         total_msg_count = total_sent + total_received
-        twilio_cost = round(total_msg_count * 0.015, 2)
-        api_cost = round(total_sent * 0.006, 2)
+        twilio_cost = round(total_msg_count * config.TWILIO_COST_PER_SEGMENT, 2)
+        api_cost = cost_metrics["api_cost_30d"]
         total_cost = round(twilio_cost + api_cost, 2)
         cost_per_user = round(total_cost / active_users, 2) if active_users > 0 else 0
         cost_per_msg = round(total_cost / total_msg_count, 4) if total_msg_count > 0 else 0
+
+        # Patch real per-user 30d cost into users_data (replaces the old heuristic
+        # placeholder set inside the user loop).
+        per_user_30d = cost_metrics["per_user_30d_cost"]
+        for ud in users_data:
+            ud["cost_usd"] = round(per_user_30d.get(ud["id"], 0.0), 2)
 
         return render_template_string(ADMIN_HTML,
             now=now.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST"),
@@ -1173,6 +1314,19 @@ def admin():
             total_cost=total_cost,
             cost_per_user=cost_per_user,
             cost_per_msg=cost_per_msg,
+            # Phase C1.5 measured-cost vars
+            api_cost_today=cost_metrics["api_cost_today"],
+            api_cost_7d=cost_metrics["api_cost_7d"],
+            api_cost_30d=cost_metrics["api_cost_30d"],
+            run_rate_30d=cost_metrics["run_rate_30d"],
+            cost_sonnet_7d=cost_metrics["cost_sonnet_7d"],
+            cost_haiku_7d=cost_metrics["cost_haiku_7d"],
+            pct_sonnet=cost_metrics["pct_sonnet"],
+            pct_haiku=cost_metrics["pct_haiku"],
+            cost_by_site=cost_metrics["cost_by_site"],
+            cache_ratio=cost_metrics["cache_ratio"],
+            cache_saved_7d=cost_metrics["cache_saved_7d"],
+            cost_per_active_user_per_day=cost_metrics["cost_per_active_user_per_day"],
         )
     finally:
         session.close()

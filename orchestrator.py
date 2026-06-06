@@ -14,6 +14,7 @@ import logging
 import threading
 import anthropic
 import config
+from cost_tracking import track
 
 logger = logging.getLogger("cued.orchestrator")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -71,6 +72,8 @@ Examples:
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
+        track(None, "orchestrator.classify_message",
+              "claude-haiku-4-5-20251001", response.usage)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]

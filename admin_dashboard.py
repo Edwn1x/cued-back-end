@@ -469,47 +469,130 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 <div id="page-finances" class="page">
   <div class="page-header">
     <h1>Finances</h1>
-    <p>Estimated costs this month — based on usage volume</p>
+    <p>Measured API cost + Twilio estimate (last 30 days)</p>
   </div>
   <div class="grid grid-3">
     <div class="stat-card">
       <div class="stat-label">Twilio (SMS)</div>
       <div class="stat-val">${{ twilio_cost }}</div>
-      <div class="stat-sub">~$0.015/segment × {{ total_sent + total_received }} msgs</div>
+      <div class="stat-sub">~$0.015/segment × {{ total_sent + total_received }} msgs (estimate)</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Anthropic (API)</div>
-      <div class="stat-val">${{ api_cost }}</div>
-      <div class="stat-sub">~$0.006/call × {{ total_sent }} coach calls</div>
+      <div class="stat-val">${{ api_cost_30d }}</div>
+      <div class="stat-sub">measured from token_usage (30d)</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Total Burn</div>
       <div class="stat-val red">${{ total_cost }}</div>
-      <div class="stat-sub">this month (estimate)</div>
+      <div class="stat-sub">last 30 days</div>
     </div>
   </div>
+
   <div class="section">
-    <div class="section-title">Cost Per User</div>
+    <div class="section-title">Run Rate</div>
+    <div class="grid grid-3">
+      <div class="stat-card">
+        <div class="stat-label">Today (so far)</div>
+        <div class="stat-val">${{ api_cost_today }}</div>
+        <div class="stat-sub">API cost since UTC midnight</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last 7 days</div>
+        <div class="stat-val">${{ api_cost_7d }}</div>
+        <div class="stat-sub">measured API cost</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Projected 30-day</div>
+        <div class="stat-val">${{ run_rate_30d }}</div>
+        <div class="stat-sub">7d average × 30</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Foreground vs Background (7d)</div>
     <div class="grid grid-2">
       <div class="stat-card">
-        <div class="stat-label">Cost / Active User</div>
+        <div class="stat-label">Sonnet (foreground coaching)</div>
+        <div class="stat-val">${{ cost_sonnet_7d }}</div>
+        <div class="stat-sub">{{ pct_sonnet }}% of API cost (7d)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Haiku (background extraction)</div>
+        <div class="stat-val">${{ cost_haiku_7d }}</div>
+        <div class="stat-sub">{{ pct_haiku }}% of API cost (7d)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Unit Economics</div>
+    <div class="grid grid-3">
+      <div class="stat-card">
+        <div class="stat-label">Cost / Active User / Day</div>
+        <div class="stat-val">${{ cost_per_active_user_per_day }}</div>
+        <div class="stat-sub">7d API ÷ distinct users ÷ 7</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Cost / Active User (30d burn)</div>
         <div class="stat-val">${{ cost_per_user }}</div>
         <div class="stat-sub">total burn ÷ active users</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Cost / Message</div>
+        <div class="stat-label">Cost / Message (30d burn)</div>
         <div class="stat-val">${{ cost_per_msg }}</div>
         <div class="stat-sub">total burn ÷ total messages</div>
       </div>
     </div>
   </div>
+
+  <div class="section">
+    <div class="section-title">Prompt Cache Effectiveness (7d)</div>
+    <div class="grid grid-2">
+      <div class="stat-card">
+        <div class="stat-label">Cache Read Ratio</div>
+        <div class="stat-val">{{ cache_ratio }}%</div>
+        <div class="stat-sub">cached / (fresh + write + read) input tokens</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">$ Saved by Cache</div>
+        <div class="stat-val">${{ cache_saved_7d }}</div>
+        <div class="stat-sub">vs full-price input (reads 0 until C1 is live)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Cost by Call Site (7d)</div>
+    <table class="table">
+      <thead>
+        <tr><th>Site</th><th>Calls</th><th>Cost (7d)</th><th>Avg $/call</th></tr>
+      </thead>
+      <tbody>
+        {% for s in cost_by_site %}
+        <tr>
+          <td>{{ s.site }}</td>
+          <td>{{ s.calls }}</td>
+          <td>${{ "%.4f"|format(s.cost_usd) }}</td>
+          <td>${{ "%.6f"|format(s.avg_cost_per_call) }}</td>
+        </tr>
+        {% endfor %}
+        {% if not cost_by_site %}
+        <tr><td colspan="4" style="opacity:0.6">No API calls in the last 7 days.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
   <div class="section">
     <div class="section-title">Notes</div>
     <div class="info-card">
-      <div class="info-row"><span class="info-key">Twilio rate</span><span class="info-val">$0.0079/SMS segment (US), ~$0.015 fully loaded</span></div>
-      <div class="info-row"><span class="info-key">Anthropic rate</span><span class="info-val">~$0.006/response (Haiku + Sonnet blended estimate)</span></div>
+      <div class="info-row"><span class="info-key">Twilio rate</span><span class="info-val">$0.0079/SMS segment (US), ~$0.015 fully loaded — volume estimate</span></div>
+      <div class="info-row"><span class="info-key">Anthropic rate</span><span class="info-val">Measured per-call from token_usage. Sonnet 4.6: $3/$15 per 1M in/out. Haiku 4.5: $1/$5.</span></div>
+      <div class="info-row"><span class="info-key">Cache multipliers</span><span class="info-val">Write 1.25× input rate; read 0.10× input rate (90% off)</span></div>
+      <div class="info-row"><span class="info-key">Day bucket</span><span class="info-val">UTC midnight — see plan notes</span></div>
       <div class="info-row"><span class="info-key">Railway hosting</span><span class="info-val">Not included — check Railway dashboard</span></div>
-      <div class="info-row"><span class="info-key">Reset cadence</span><span class="info-val">Estimates are cumulative (all-time), not calendar month</span></div>
     </div>
   </div>
 </div>

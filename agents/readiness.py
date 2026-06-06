@@ -14,6 +14,7 @@ from models import get_session, User, Message, DailyLog
 from skill_loader import load_skill
 from models import is_workout_confirmed_today
 from memory import build_memory_block
+from cost_tracking import track
 
 logger = logging.getLogger("cued.readiness")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -116,7 +117,8 @@ def handle(user: User, user_message: str) -> dict:
     readiness_skill = load_skill("readiness")
     context = _build_readiness_context(user)
 
-    system_prompt = f"""{personality}
+    # block1_cacheable: skills + YOUR TASK + rules. Static across users.
+    block1_cacheable = f"""{personality}
 
 ---
 
@@ -127,8 +129,6 @@ def handle(user: User, user_message: str) -> dict:
 {readiness_skill}
 
 ---
-
-{context}
 
 ## YOUR TASK
 You are the readiness specialist. The user sent a message about sleep, recovery, energy, fatigue, or whether they should train today. Analyze and return STRUCTURED JSON. Another agent writes the SMS.
@@ -157,12 +157,25 @@ Rules:
 - Reference recent daily logs for trends — one bad night is fine, three in a row is a pattern worth addressing
 """
 
+    # block2_tail: per-user context (sleep history, recent daily logs).
+    block2_tail = context
+
+    if config.PROMPT_CACHING_ENABLED:
+        system_arg = [
+            {"type": "text", "text": block1_cacheable,
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": block2_tail},
+        ]
+    else:
+        system_arg = f"{block1_cacheable}\n\n{block2_tail}"
+
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=system_arg,
         messages=[{"role": "user", "content": user_message}],
     )
+    track(user.id, "readiness.handle", config.COACH_MODEL, response.usage)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:

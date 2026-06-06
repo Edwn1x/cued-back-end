@@ -15,6 +15,7 @@ import config
 from models import get_session, User, Message
 from skill_loader import load_skill
 from memory import build_memory_block
+from cost_tracking import track
 
 logger = logging.getLogger("cued.nutrition")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -169,7 +170,11 @@ def handle(user: User, user_message: str, image_url: dict = None) -> dict:
     nutrition_skill = load_skill("nutrition")
     context = _build_nutrition_context(user)
 
-    system_prompt = f"""{personality}
+    # block1_cacheable: skills + YOUR TASK + rules + WEB SEARCH guidance.
+    # Literal-static across all users — Anthropic prompt cache hits.
+    # NOTE: tools=[web_search] below is part of the cache key per Anthropic
+    # docs. Changing tools or max_uses invalidates the cache for this agent.
+    block1_cacheable = f"""{personality}
 
 ---
 
@@ -180,8 +185,6 @@ def handle(user: User, user_message: str, image_url: dict = None) -> dict:
 {nutrition_skill}
 
 ---
-
-{context}
 
 ## YOUR TASK
 You are the nutrition specialist. The user sent a message related to food, meals, or macros. Your job is to analyze what they need and return STRUCTURED JSON describing the coaching content. Another agent will turn your structured output into the actual SMS response.
@@ -218,6 +221,18 @@ Do NOT guess macros for branded/restaurant items. Search first, then report accu
 For generic homemade food ("chicken and rice"), estimation is fine — no search needed.
 """
 
+    # block2_tail: per-user context (profile, today's meals, conversation).
+    block2_tail = context
+
+    if config.PROMPT_CACHING_ENABLED:
+        system_arg = [
+            {"type": "text", "text": block1_cacheable,
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": block2_tail},
+        ]
+    else:
+        system_arg = f"{block1_cacheable}\n\n{block2_tail}"
+
     user_content = [{"type": "text", "text": user_message}]
     if image_url:
         user_content.insert(0, image_url)
@@ -225,10 +240,11 @@ For generic homemade food ("chicken and rice"), estimation is fine — no search
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=system_arg,
         messages=[{"role": "user", "content": user_content}],
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
     )
+    track(user.id, "nutrition.handle", config.COACH_MODEL, response.usage)
 
     text = ""
     for block in response.content:

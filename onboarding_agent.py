@@ -26,6 +26,7 @@ from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS, PROFILE_BASE_URL
 from sms import send_sms
 from macro_calculator import calculate_targets
+from cost_tracking import track as track_usage
 
 logger = logging.getLogger("cued.onboarding")
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -398,6 +399,9 @@ Activity level — always extract something if the user described their daily mo
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_usage(getattr(user, "id", None),
+                    "onboarding.extract_data_from_message",
+                    "claude-haiku-4-5-20251001", response.usage)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]
@@ -486,12 +490,18 @@ def _store_extracted_data(user_id: int, data: dict):
 
 
 def _generate(system_prompt: str, instruction: str) -> str:
+    # Onboarding Sonnet call. Not cached at the prompt level today — each
+    # caller passes a different system_prompt built from the user's current
+    # onboarding state, so block1 stability isn't guaranteed. Instrument
+    # only so cost lands in the dashboard; revisit caching if onboarding
+    # cost becomes meaningful in the Sonnet vs Haiku split.
     response = client.messages.create(
         model=COACH_MODEL,
         max_tokens=MAX_RESPONSE_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": instruction}],
     )
+    track_usage(None, "onboarding.generate", COACH_MODEL, response.usage)
     return response.content[0].text
 
 

@@ -13,17 +13,24 @@ import anthropic
 import config
 from skill_loader import load_skill
 from tone_analyzer import get_tone_instruction
+from cost_tracking import track
 
 logger = logging.getLogger("cued.personality")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 
-def _load_personality_context(user) -> str:
-    """Load the personality skill + user's communication style."""
+def _personality_skills_block() -> str:
+    """The cacheable static prefix: personality + safety skills.
+    Returns the same bytes for every user. Tone instruction is NOT included
+    here — it's per-user, so it goes in block2 instead."""
     personality = load_skill("personality")
     safety = load_skill("safety")
-    tone_instruction = get_tone_instruction(user)
-    return f"{personality}\n\n---\n\n{safety}\n\n---\n\n{tone_instruction}"
+    return f"{personality}\n\n---\n\n{safety}"
+
+
+def _personality_tone_block(user) -> str:
+    """The per-user dynamic suffix — just the tone instruction."""
+    return get_tone_instruction(user)
 
 
 def write_response(user, structured_input: dict, user_message: str = "") -> str:
@@ -42,10 +49,13 @@ def write_response(user, structured_input: dict, user_message: str = "") -> str:
         "log_action": "what was logged to the DB, if anything" or None,
     }
     """
-    personality_context = _load_personality_context(user)
     instruction = _build_instruction(structured_input, user_message, user)
 
-    system_prompt = f"""{personality_context}
+    # block1_cacheable: personality + safety + YOUR TASK + FORMAT RULES + APOLOGY LIMIT.
+    # Static across all users — cross-user cache hits.
+    block1_cacheable = f"""{_personality_skills_block()}
+
+---
 
 ## YOUR TASK
 You are the voice of Cued. A specialist agent has analyzed the user's message and returned structured coaching content. Your job is to turn that content into an SMS response in Cued's voice.
@@ -66,12 +76,26 @@ APOLOGY LIMIT:
 - Never "I'm sorry" or "I apologize" — just correct and move on.
 """
 
+    # block2_tail: per-user tone instruction.
+    block2_tail = _personality_tone_block(user)
+
+    if config.PROMPT_CACHING_ENABLED:
+        system_arg = [
+            {"type": "text", "text": block1_cacheable,
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": block2_tail},
+        ]
+    else:
+        system_arg = f"{block1_cacheable}\n\n{block2_tail}"
+
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=system_arg,
         messages=[{"role": "user", "content": instruction}],
     )
+    track(getattr(user, "id", None), "personality.write_response",
+          config.COACH_MODEL, response.usage)
 
     return response.content[0].text
 
@@ -118,15 +142,15 @@ def handle_casual_message(user, user_message: str, recent_context: str = "") -> 
     Handle messages that don't need a specialist — greetings, check-ins,
     casual chat, emotional messages. Just writes a natural response in Cued's voice.
     """
-    personality_context = _load_personality_context(user)
+    # block1_cacheable: personality + safety + YOUR TASK + FORMAT RULES.
+    # Independent from write_response's block1 — different YOUR TASK, so
+    # they cache as separate keys (per critique guidance: don't try to share).
+    block1_cacheable = f"""{_personality_skills_block()}
 
-    system_prompt = f"""{personality_context}
+---
 
 ## YOUR TASK
 The user sent a casual or conversational message. Respond naturally in Cued's voice. Do NOT force coaching content if it doesn't fit. Sometimes the right response is a simple warm reply.
-
-Recent conversation:
-{recent_context if recent_context else "(no recent context)"}
 
 FORMAT RULES:
 - Usually 1 message, rarely 2.
@@ -135,11 +159,29 @@ FORMAT RULES:
 - Don't force Reply W/M shortcuts.
 """
 
+    # block2_tail: per-user tone + per-turn recent conversation.
+    block2_tail = f"""{_personality_tone_block(user)}
+
+Recent conversation:
+{recent_context if recent_context else "(no recent context)"}
+"""
+
+    if config.PROMPT_CACHING_ENABLED:
+        system_arg = [
+            {"type": "text", "text": block1_cacheable,
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": block2_tail},
+        ]
+    else:
+        system_arg = f"{block1_cacheable}\n\n{block2_tail}"
+
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=system_arg,
         messages=[{"role": "user", "content": user_message}],
     )
+    track(getattr(user, "id", None), "personality.handle_casual_message",
+          config.COACH_MODEL, response.usage)
 
     return response.content[0].text

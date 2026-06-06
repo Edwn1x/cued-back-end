@@ -31,3 +31,16 @@ COACHING_POINTS_CHAR_LIMIT = 1000  # delivered_coaching_points cap
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"
+
+# Phase C1/C1.5 — prompt caching + cost telemetry.
+# Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
+MODEL_PRICING = {
+    "sonnet": {"input": 3.00, "output": 15.00},
+    "haiku":  {"input": 1.00, "output": 5.00},
+}
+CACHE_WRITE_MULTIPLIER = 1.25   # 5-min ephemeral cache write, on the input rate
+CACHE_READ_MULTIPLIER  = 0.10   # cached-input read (90% off), on the input rate
+TWILIO_COST_PER_SEGMENT = 0.015 # volume-based; keep separate from API cost
+# Feature flag — when false, system prompts ship as a single string (no cache_control blocks).
+# Lets us roll back the structural prompt-caching change without a redeploy if something breaks.
+PROMPT_CACHING_ENABLED = os.getenv("PROMPT_CACHING_ENABLED", "true").lower() == "true"

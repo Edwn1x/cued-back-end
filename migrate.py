@@ -107,6 +107,21 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN user_profile_memory JSON",
     "ALTER TABLE users ADD COLUMN delivered_coaching_points TEXT",
     "ALTER TABLE users ADD COLUMN last_compressed_message_id INTEGER",
+    # Phase C1.5: token_usage table for measured cost tracking
+    """CREATE TABLE IF NOT EXISTS token_usage (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW(),
+        model VARCHAR(10),
+        site VARCHAR(60),
+        input_tokens INTEGER DEFAULT 0,
+        cache_creation_input_tokens INTEGER DEFAULT 0,
+        cache_read_input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        cost_usd FLOAT DEFAULT 0
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage (created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_token_usage_user_created ON token_usage (user_id, created_at)",
 ]
 
 def wait_for_db(retries=10, delay=3):

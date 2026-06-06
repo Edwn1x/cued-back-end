@@ -9,6 +9,7 @@ from engagement_tracker import get_tier
 from models import is_workout_confirmed_today
 from tone_analyzer import get_tone_instruction
 from memory import build_memory_block
+from cost_tracking import track
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -66,14 +67,24 @@ def _training_day_status(user, now) -> str:
         return f"REST DAY{next_training_label}"
 
 
-def build_context(user: User, message_type: str = "freeform") -> str:
-    """Build the full system prompt with user context injected.
-    
-    Uses modular skills based on message_type:
-    - workout_request, workout_log, post_workout -> personality + safety + training
-    - meal_suggestion, meal_swap -> personality + safety + nutrition
-    - morning_briefing -> personality + safety + nutrition + readiness
-    - freeform, rating, evening_wrap -> personality + safety (all skills as fallback)
+def build_context(user: User, message_type: str = "freeform") -> tuple[str, str]:
+    """Build the system prompt split into two cache-aware blocks.
+
+    Returns (block1_cacheable, block2_tail):
+      - block1_cacheable: skills + HARD RULES + YOUR TASK + FORMAT RULES.
+        Literal-static given message_type, identical across all users.
+        Anthropic prompt cache reads this at 10% of input cost after the
+        first call for any given message_type.
+      - block2_tail: tone, user profile, memory/coaching points/summary,
+        confirmed decisions, last outbound, conversation history, training
+        log, nutrition tracking, CURRENT CONTEXT with timestamps and
+        conditional directives. Not cached — per-user, per-turn dynamic.
+
+    Skill selection per message_type:
+      - workout_request, workout_log, post_workout -> personality + safety + training
+      - meal_suggestion, meal_swap -> personality + safety + nutrition
+      - morning_briefing -> personality + safety + nutrition + readiness
+      - freeform, rating, evening_wrap -> all skills (fallback)
     """
     ensure_todays_totals(user.id)
 
@@ -241,10 +252,11 @@ def build_context(user: User, message_type: str = "freeform") -> str:
         session_state = get_session_state(user.id)
         session_state_str = json.dumps(session_state) if session_state else "none — user is not in an active session"
 
-        # Assemble the full system prompt: skills + user context
-        system_prompt = f"""{skills_content}
-
-{tone_instruction}
+        # ─── Block 2: per-user + per-turn dynamic tail (NOT cached) ──────
+        # Everything that varies per user or per turn lives here so the
+        # block1 cache stays byte-stable across all users + all turns of
+        # the same message_type.
+        block2_tail = f"""{tone_instruction}
 
 ---
 
@@ -293,12 +305,24 @@ Average daily steps: {f"{user.avg_steps:,}" if getattr(user, "avg_steps", None) 
 Current training split: {getattr(user, "current_split", None) or "not set — build from scratch if programming"}
 {"DO NOT ask any questions in this message. Deliver value only — meal, workout, or brief encouragement." if (user.unanswered_count or 0) >= 2 else ""}
 {"IMPORTANT: The user has NOT confirmed they trained today. Do NOT reference a completed session, do NOT ask them to rate it, do NOT say things like 'first day in the books'. If this is an evening wrap, just preview tomorrow." if not is_workout_confirmed_today(user.id) else "The user confirmed they trained today — you can reference the session."}
+"""
+
+        # ─── Block 1: cross-user cacheable static prefix ─────────────────
+        # Skills + HARD RULES + YOUR TASK + FORMAT RULES. Literal-static
+        # given message_type — identical bytes for every user receiving
+        # the same message_type, so the Anthropic prompt cache hits across
+        # users. Rule 0 references CONFIRMED DECISIONS (in block2) instead
+        # of inlining the user's calorie/protein numbers, which would
+        # poison cross-user caching.
+        block1_cacheable = f"""{skills_content}
+
+---
 
 ## HARD RULES — NEVER OVERRIDE THESE
 
-Rule 0 — Confirmed nutrition targets are locked: {"The user's confirmed daily targets are " + str(user.calorie_target) + " cal and " + str(user.protein_target) + "g protein. NEVER recalculate, re-derive, or override these numbers from the user's profile data. Always reference these exact values. If you see a different number in the profile or macro breakdown, ignore it — the confirmed targets are the source of truth." if user.calorie_target and user.protein_target else "Nutrition targets not yet confirmed — compute from profile when needed and explain the derivation."}
+Rule 0 — Confirmed nutrition targets are locked: If "Daily calories" and "Daily protein" appear in CONFIRMED DECISIONS above, those are the source of truth. NEVER recalculate, re-derive, or override them from the user's profile data. Always reference those exact values when discussing targets. If you see a different number anywhere else (profile, macro breakdown, intuition), ignore it — CONFIRMED DECISIONS wins. If targets are NOT in CONFIRMED DECISIONS, compute from profile when needed and explain the derivation.
 
-Rule 1 — Time awareness: The current time is shown above. The user's planned workout time is also shown. NEVER ask how a session went, reference a completed workout, or say anything implying the user has already trained if the current time is before their planned workout time and they have not confirmed training today. Before the workout time: you can reference what's coming up. After the workout time: you can ask how it went. This is non-negotiable.
+Rule 1 — Time awareness: The current time is shown in CURRENT CONTEXT. The user's planned workout time is also shown. NEVER ask how a session went, reference a completed workout, or say anything implying the user has already trained if the current time is before their planned workout time and they have not confirmed training today. Before the workout time: you can reference what's coming up. After the workout time: you can ask how it went. This is non-negotiable.
 
 Rule 2 — Pull-based meals: NEVER suggest specific food, recipes, or meals unless the user explicitly asks. Trigger phrases that invite a suggestion: "what should I eat," "give me a meal idea," "help me hit my protein," "what's good for lunch." When the user mentions eating without asking for help, respond with something like "nice, text me what you go with and I'll log it" or "cool, let me know what you eat." Exception: if the user is significantly under their protein or calorie target late in the day, you may flag it as an offer — "you're at 80g protein with dinner left, want help hitting 146?" — but do not prescribe what to eat.
 
@@ -321,15 +345,35 @@ FORMAT RULES:
 - One idea per message. No bullet points — write like a person texting.
 - Do not use --- for any other purpose.
 """
-        return system_prompt
+
+        return (block1_cacheable, block2_tail)
 
     finally:
         session.close()
 
 
+def _system_blocks(block1_cacheable: str, block2_tail: str):
+    """Format the two prompt blocks for the Anthropic SDK.
+
+    When PROMPT_CACHING_ENABLED is true, returns the content-blocks array
+    with cache_control on block1 so Anthropic caches it. When false,
+    returns a plain concatenated string — equivalent to the pre-C1 behavior,
+    giving us a no-redeploy rollback path.
+
+    cache_control belongs on the content BLOCK, not on messages=[...].
+    """
+    if not config.PROMPT_CACHING_ENABLED:
+        return f"{block1_cacheable}\n\n{block2_tail}"
+    return [
+        {"type": "text", "text": block1_cacheable,
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": block2_tail},
+    ]
+
+
 def get_coach_response(user: User, user_message: str, message_type: str = "freeform", image_data: dict = None) -> str:
     """Get an AI coaching response for a user's message. Supports image analysis."""
-    system_prompt = build_context(user, message_type)
+    block1, block2 = build_context(user, message_type)
 
     # Build the message content
     if image_data:
@@ -353,9 +397,10 @@ def get_coach_response(user: User, user_message: str, message_type: str = "freef
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=_system_blocks(block1, block2),
         messages=messages,
     )
+    track(user.id, "coach.get_coach_response", config.COACH_MODEL, response.usage)
 
     return response.content[0].text
 
@@ -406,7 +451,7 @@ def _build_pre_workout_trigger(user: User) -> str:
 
 def generate_scheduled_message(user: User, message_type: str) -> str:
     """Generate a scheduled coaching message (morning briefing, meal, etc.)."""
-    system_prompt = build_context(user, message_type)
+    block1, block2 = build_context(user, message_type)
 
     triggers = {
         "morning_briefing": (
@@ -484,17 +529,23 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
     response = client.messages.create(
         model=config.COACH_MODEL,
         max_tokens=config.MAX_RESPONSE_TOKENS,
-        system=system_prompt,
+        system=_system_blocks(block1, block2),
         messages=[
             {"role": "user", "content": trigger}
         ],
     )
+    track(user.id, "coach.generate_scheduled_message", config.COACH_MODEL, response.usage)
 
     return response.content[0].text
 
 
 def parse_workout_log(user: User, user_message: str) -> dict | None:
-    """Use AI to parse a natural language workout report into structured data."""
+    """Use AI to parse a natural language workout report into structured data.
+
+    No system prompt here — the parsing instructions are inline in the user
+    message. Not a caching candidate (no stable prefix), but we still record
+    usage for the dashboard.
+    """
     prompt = f"""Parse this workout report into JSON. Extract exercises with name, sets, reps, and weight.
 If something is unclear, make your best guess. Return ONLY valid JSON, no other text.
 
@@ -508,6 +559,7 @@ User's report: "{user_message}"
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
+        track(user.id, "coach.parse_workout_log", config.COACH_MODEL, response.usage)
         import json
         text = response.content[0].text.strip()
         text = text.replace("```json", "").replace("```", "").strip()

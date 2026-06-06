@@ -918,6 +918,11 @@ Rules:
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
+        # Defer import to avoid circular: memory.py is imported by app.py which
+        # also imports cost_tracking. cost_tracking imports models lazily.
+        from cost_tracking import track
+        track(user_id, "memory.extract_coaching_points",
+              "claude-haiku-4-5-20251001", response.usage)
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in raw:
             raw = raw[:raw.rindex("}") + 1]
