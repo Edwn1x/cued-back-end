@@ -259,7 +259,11 @@ class TokenUsage(Base):
     __tablename__ = "token_usage"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)  # null = system call
+    # ON DELETE SET NULL: when a user is deleted, the cost row survives
+    # (it represents real spend that already happened) but its user_id
+    # becomes NULL — treated as a "system call" thereafter. Without this,
+    # admin user-delete fails with ForeignKeyViolation on Postgres.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     model = Column(String(10))   # "sonnet" | "haiku"
     site = Column(String(60))    # e.g. "coach.get_coach_response", "extract_and_store_memory"

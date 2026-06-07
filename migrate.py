@@ -122,6 +122,13 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage (created_at)",
     "CREATE INDEX IF NOT EXISTS idx_token_usage_user_created ON token_usage (user_id, created_at)",
+    # Fix C1.5 FK gap: original token_usage.user_id FK had no ON DELETE clause,
+    # which defaults to NO ACTION on Postgres — meaning admin user-delete fails
+    # with ForeignKeyViolation if any token_usage rows reference that user.
+    # Switch to ON DELETE SET NULL so cost rows survive (real spend, keep them)
+    # but stop referencing the deleted user. Idempotent via DROP IF EXISTS.
+    "ALTER TABLE token_usage DROP CONSTRAINT IF EXISTS token_usage_user_id_fkey",
+    "ALTER TABLE token_usage ADD CONSTRAINT token_usage_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
 ]
 
 def wait_for_db(retries=10, delay=3):
