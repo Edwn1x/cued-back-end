@@ -474,15 +474,11 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             daemon=True,
         ).start()
 
-        # A5: deterministic safety pre-pass — regex-only, runs BEFORE the LLM
-        # extraction queues so the JSON profile is already populated by the
-        # time Haiku reads existing facts. Idempotent + dedup-safe so even if
-        # the threads race, the row-lock + dedup ladder converge correctly.
-        threading.Thread(
-            target=apply_safety_signals_task,
-            args=(user.id, combined_body),
-            daemon=True,
-        ).start()
+        # A5 safety pre-pass: now runs SYNCHRONOUSLY at the top of the webhook
+        # (see Fix 5 comment there). The previous daemon spawn here was
+        # bypassed by every webhook early-return path (goodnight, ack-
+        # suppression, logging-mode intercept), which silently dropped
+        # injuries reported alongside any of those signals. Removed.
 
         # Extract and store user memory (runs in background, doesn't block)
         threading.Thread(
@@ -574,6 +570,80 @@ def _is_training_day_confirmation(body: str) -> bool:
     return any(signal in body_lower for signal in training_signals)
 
 
+# Fix 1: closing-acknowledgment suppression. Token-based detection so the
+# whole message must be ack-only ("ok" / "alr bet") — never just "ack-leading"
+# (which would falsely suppress "ok can you help"). Suppression only fires
+# post-onboarding, when the coach's last outbound has no open question, and
+# when there's been a recent outbound at all (avoids suppressing first
+# contact after a long quiet window).
+_ACK_TOKENS = frozenset({
+    "ok", "okay", "k", "kk", "alr", "aight", "ight", "bet", "word",
+    "cool", "coolcool", "got", "gotit", "gotchu", "gotcha", "fasho",
+    "facts", "yup", "yep", "yessir", "sg", "alright", "ty", "thanks",
+    "damn", "💪", "👍", "🙏",
+})
+_ACK_PHRASES = frozenset({
+    "got it", "sounds good", "will do", "ok cool", "ok bet",
+    "thank you", "appreciate it", "ok thanks", "alr thanks",
+})
+
+
+def is_closing_acknowledgment(body: str) -> bool:
+    """True when the body is *exclusively* ack tokens. Token-based, not
+    prefix-based — 'ok can you help' must NOT suppress."""
+    b = body.lower().strip().rstrip(".!?").strip()
+    if not b:
+        return False
+    if b in _ACK_PHRASES:
+        return True
+    tokens = b.split()
+    if not tokens:
+        return False
+    return all(t.rstrip(".!?,") in _ACK_TOKENS for t in tokens)
+
+
+def should_suppress_ack(user_id: int, body: str) -> bool:
+    """Full Fix 1 condition. Returns True if the inbound is a pure ack AND
+    there's no open question to answer.
+
+    Suppression conditions (ALL must hold):
+      1. is_closing_acknowledgment(body)
+      2. No question (?) in coach's most recent outbound sent in last 30 min
+      3. There WAS at least one outbound in the last 12 hours (avoid
+         suppressing first contact after a long quiet window)
+    """
+    if not is_closing_acknowledgment(body):
+        return False
+
+    from datetime import datetime, timezone as _tz, timedelta
+    s = get_session()
+    try:
+        last_out = (
+            s.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_out or not last_out.created_at:
+            # No prior outbound at all — let the message through (cold start).
+            return False
+        last_out_ts = last_out.created_at
+        if last_out_ts.tzinfo is None:
+            last_out_ts = last_out_ts.replace(tzinfo=_tz.utc)
+        now = datetime.now(_tz.utc)
+        age = now - last_out_ts
+        # No outbound in last 12h → treat ack as a conversation opener.
+        if age > timedelta(hours=12):
+            return False
+        # Last outbound within 30 minutes AND contains a '?' anywhere
+        # → ack is answering an open question; let it through.
+        if age <= timedelta(minutes=30) and "?" in (last_out.body or ""):
+            return False
+        return True
+    finally:
+        s.close()
+
+
 def is_goodnight_signal(body: str) -> bool:
     """Detect if the user is signaling end-of-conversation."""
     body_lower = body.lower().strip()
@@ -652,6 +722,17 @@ def webhook():
         # Log the incoming message immediately
         log_incoming(user.id, body)
 
+        # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
+        # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
+        # buffer). Closes a pre-existing prod hole where goodnight messages
+        # bypassed safety extraction entirely (the daemon spawn in
+        # process_buffered_message never fired because goodnight returns
+        # before buffer_message). Safe to inline because the task is regex-
+        # only (no LLM), idempotent, and dedup-safe per its own docstring.
+        # Runs per raw message, before buffer combination — more robust
+        # than running on the combined blob.
+        apply_safety_signals_task(user.id, body)
+
         # Reset engagement decay counter on any reply
         reset_unanswered(user.id)
 
@@ -660,6 +741,19 @@ def webhook():
 
         # Resolve pending clarification
         resolve_pending_clarification(user.id, body)
+
+        # Fix 1: closing-acknowledgment suppression. Post-onboarding, when
+        # the user replies with a pure ack ("ok", "alr bet") AND the coach's
+        # most recent outbound has no open '?', end the turn silently —
+        # log_incoming + reset_unanswered already ran upstream; the safety
+        # pre-pass (Fix 5) already ran above. We just need to cancel the
+        # buffer and return empty TwiML. This breaks the wind-down loop
+        # and skips a Sonnet call.
+        if (user.onboarding_step or 0) >= 3 and should_suppress_ack(user.id, body):
+            from message_buffer import cancel_buffer
+            cancel_buffer(from_number)
+            logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}")
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Classify the message
         message_type = classify_message(body, has_image=image_url is not None)

@@ -551,13 +551,19 @@ def _build_big_ask_message(user, system_prompt: str) -> str:
             "and any fitness apps or devices they use"
         )
 
+    # Fix 4: make acknowledgment a REQUIRED step, not optional. Drop the
+    # false "You've got their height and weight" premise — this handler
+    # fires before height/weight is collected.
     instruction = (
-        f"You've got {user.name}'s height and weight. Now you need everything else.\n\n"
-        f"Send ONE message that asks for all remaining info in a single natural dump:\n"
-        f"- Acknowledge you have their height/weight, or react briefly to their last message if they said something worth responding to\n"
-        f"- Then ask them to drop everything in one text: {fields_hint}\n\n"
-        f"Frame it like: 'alr real talk — I need a few more things. drop it all in one text: [list the things conversationally]'\n"
-        f"Keep it tight. This is a text message, not a form. 3-4 sentences max. Make it feel like one natural ask, not a checklist.\n"
+        f"STEP 1 (required): React to what {user.name} just said. If they named you, "
+        f"confirm it warmly and naturally (e.g. 'CJ it is' / 'love it — CJ it is'). "
+        f"If they asked or proposed something else, respond to it briefly first. "
+        f"If they only answered the previous question without adding anything, a "
+        f"quick acknowledgment of their answer is enough. NEVER skip straight to "
+        f"the ask without responding to them.\n\n"
+        f"STEP 2: Ask them to drop everything in one text: {fields_hint}\n\n"
+        f"Frame it naturally — 'alr real talk — need a few more things'. "
+        f"3-4 sentences max. Make it feel like one natural ask, not a checklist. "
         f"Do NOT greet them again."
     )
     return _generate(system_prompt, instruction)

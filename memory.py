@@ -629,11 +629,27 @@ _CLAUSE_STOP = r"(?:[.!?\n]|,\s*(?:also|and|but|plus)\b)"
 
 _INJURY_RE = re.compile(
     r"\b("
+    # Verb-leading: "tweaked my shoulder", "pulled my hamstring"
     r"(?:tweaked|hurts?|hurt|pulled|tore|torn|sprained|broke|broken|strained|"
-    r"injured|aching|stiff|jammed)"
+    r"injured|aching|stiff|jammed|wrecked|messed\s+up|screwed\s+up|fucked\s+up)"
     rf"(?:(?!{_CLAUSE_STOP}).){{0,80}}"
     r"|"
+    # "bad knee/shoulder/back/..." possessive form
     r"bad\s+(?:knee|shoulder|back|hip|wrist|ankle|elbow|neck)"
+    rf"(?:(?!{_CLAUSE_STOP}).){{0,40}}"
+    r"|"
+    # Body-part-leading complaint: "shoulder's killing me", "my knees are sore",
+    # "back is acting up", "hip's been bothering me". Added because verb-
+    # leading patterns miss natural SMS phrasing like "my shoulder's killing me"
+    # which is exactly the kind of injury report a goodnight-bypass would drop.
+    # Allow up to ~20 chars of auxiliary words (is, are, been, has been, etc.)
+    # between the body part and the complaint verb.
+    r"(?:knees?|shoulders?|backs?|hips?|wrists?|ankles?|elbows?|necks?|"
+    r"hamstrings?|quads?|calves?|biceps?|triceps?|delts?|lats?|traps?|"
+    r"glutes?|abs?|pecs?|forearms?)"
+    r"[\s'a-z]{0,20}?"  # non-greedy gap for possessive + auxiliaries
+    r"\b(?:killing|aching|sore|acting\s+up|bothering|hurting|tight|"
+    r"throbbing|locked\s+up|shot|toast|wrecked)\b"
     rf"(?:(?!{_CLAUSE_STOP}).){{0,40}}"
     r")",
     re.IGNORECASE,
