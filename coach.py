@@ -543,27 +543,46 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
     return response.content[0].text
 
 
-def parse_workout_log(user: User, user_message: str) -> dict | None:
+def parse_workout_log(user: User, user_message: str,
+                      model: str = None) -> dict | None:
     """Use AI to parse a natural language workout report into structured data.
 
     No system prompt here — the parsing instructions are inline in the user
     message. Not a caching candidate (no stable prefix), but we still record
     usage for the dashboard.
+
+    `model` defaults to config.COACH_MODEL (Sonnet) for the existing one-shot
+    `workout_log` classification path. Part B's logging-mode intercept passes
+    config.HAIKU_MODEL since structured set extraction is exactly Haiku's
+    job and 3x cheaper per set — load-bearing because every set is a message.
+
+    Few-shot examples below include an explicit empty-output case so Haiku
+    has a sanctioned response when the message contains no set data (e.g.
+    chitchat in mid-session). Without this, Haiku tends to confabulate.
     """
+    if model is None:
+        model = config.COACH_MODEL
     prompt = f"""Parse this workout report into JSON. Extract exercises with name, sets, reps, and weight.
-If something is unclear, make your best guess. Return ONLY valid JSON, no other text.
+If something is unclear, make your best guess. If the message contains NO actual set data, return an empty exercises list. Return ONLY valid JSON, no other text.
 
 Format: {{"exercises": [{{"name": "...", "sets": N, "reps": N, "weight": N}}, ...], "notes": "..."}}
+
+Examples:
+"bench 185x5" → {{"exercises": [{{"name": "bench", "sets": 1, "reps": 5, "weight": 185}}], "notes": ""}}
+"squat 225x5x3" → {{"exercises": [{{"name": "squat", "sets": 3, "reps": 5, "weight": 225}}], "notes": ""}}
+"rows 3x10 at bodyweight" → {{"exercises": [{{"name": "rows", "sets": 3, "reps": 10, "weight": 0}}], "notes": "bodyweight"}}
+"what should my next set be?" → {{"exercises": [], "notes": ""}}
+"crushed legs today" → {{"exercises": [], "notes": "user reported good leg session, no specific numbers"}}
 
 User's report: "{user_message}"
 """
     try:
         response = client.messages.create(
-            model=config.COACH_MODEL,
+            model=model,
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
-        track(user.id, "coach.parse_workout_log", config.COACH_MODEL, response.usage)
+        track(user.id, "coach.parse_workout_log", model, response.usage)
         import json
         text = response.content[0].text.strip()
         text = text.replace("```json", "").replace("```", "").strip()

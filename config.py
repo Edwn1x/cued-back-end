@@ -44,3 +44,12 @@ TWILIO_COST_PER_SEGMENT = 0.015 # volume-based; keep separate from API cost
 # Feature flag — when false, system prompts ship as a single string (no cache_control blocks).
 # Lets us roll back the structural prompt-caching change without a redeploy if something breaks.
 PROMPT_CACHING_ENABLED = os.getenv("PROMPT_CACHING_ENABLED", "true").lower() == "true"
+
+# Part B — workout logging mode. State machine that puts the coach in silent
+# set-by-set logging mode until the user texts an exit signal. See
+# plans/cued-memory-architecture-joyful-ullman.md Part B.
+HAIKU_MODEL = "claude-haiku-4-5-20251001"      # per-set parse uses Haiku (3x cheaper than Sonnet)
+WORKOUT_LOG_TIMEOUT_HOURS = 4                  # stale-session auto-finalize threshold
+WORKOUT_LOG_EXIT_SUMMARY = "silent"            # "silent" | "brief" | "full" — default per user
+WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 185x5"; if False, just "✓"
+WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() == "true"

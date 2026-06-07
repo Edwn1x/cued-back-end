@@ -1,9 +1,10 @@
 import os
+import re
 import logging
 import threading
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -644,6 +645,231 @@ def should_suppress_ack(user_id: int, body: str) -> bool:
         s.close()
 
 
+# ─── Part B: workout logging mode ─────────────────────────────────────────
+# State machine that puts the coach in silent set-by-set logging mode until
+# the user exits. Mode state = {"status": "workout_logging", "started_at": ISO,
+# "workout_id": <int>}. The in-progress Workout row has completed=False and
+# its exercises JSON gets appended-to per set. On exit, completed=True is set
+# and (per default config) only a silent stats line is sent. See plan Part B.
+
+_WORKOUT_LOG_ENTRY_PHRASES = frozenset({
+    "workout logging mode", "log mode", "logging mode",
+    "start logging", "start workout log",
+})
+
+_WORKOUT_LOG_EXIT_TOKENS = ("done", "finished", "that's it", "thats it",
+                            "end", "exit", "stop", "wrapping up",
+                            "heading out", "leaving gym", "left the gym")
+
+# Lifting vocabulary for the regex pre-pass that gates Haiku.
+_LIFT_KEYWORD_RE = re.compile(
+    r"\b(bench|squat|deadlift|press|row|curl|dip|pull|push|ohp|rdl|"
+    r"chin|lunge|raise|fly|extension|shrug|hip|leg|chest|back|shoulder|"
+    r"clean|snatch|jerk|thrust|bridge|crunch|plank|abs)\b",
+    re.IGNORECASE,
+)
+
+_SET_MARKER_RE = re.compile(
+    r"[x×@]|\b(sets?|reps?|lbs?|kg)\b", re.IGNORECASE,
+)
+
+_NUMERIC_RE = re.compile(r"\d")
+
+
+def is_workout_log_entry(body: str) -> bool:
+    """Detect the explicit mode-enter trigger. Matches exact phrases like
+    'workout logging mode' / 'log mode' / 'start logging', stripped of
+    trailing punctuation."""
+    b = body.lower().strip().rstrip(":.!?").strip()
+    return b in _WORKOUT_LOG_ENTRY_PHRASES
+
+
+def _looks_like_set_data(body: str) -> bool:
+    """Regex pre-pass: numeric tokens + (lift keyword OR set marker x/×/@).
+    Gates the Haiku call so we don't waste a call on chitchat AND we don't
+    risk Haiku confabulating exercises from non-set messages."""
+    if not _NUMERIC_RE.search(body):
+        return False
+    return bool(_LIFT_KEYWORD_RE.search(body) or _SET_MARKER_RE.search(body))
+
+
+def _is_workout_log_exit(body: str) -> bool:
+    """True if the message looks like an explicit exit signal."""
+    bl = body.lower().strip()
+    return any(sig in bl for sig in _WORKOUT_LOG_EXIT_TOKENS)
+
+
+def _logging_session_stale(state: dict) -> bool:
+    """True if the in-progress session is older than the timeout or from
+    a previous calendar day. Note: get_session_state already has a midnight
+    auto-clear (models.py:465), so this is redundant for the day-rollover
+    case but defensive."""
+    from datetime import datetime, timezone, timedelta
+    started_raw = state.get("started_at")
+    if not started_raw:
+        return True
+    try:
+        started = datetime.fromisoformat(started_raw)
+    except ValueError:
+        return True
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if now - started > timedelta(hours=config.WORKOUT_LOG_TIMEOUT_HOURS):
+        return True
+    if started.date() != now.date():
+        return True
+    return False
+
+
+def _create_in_progress_workout(user_id: int) -> int:
+    """Create a fresh in-progress Workout row and return its id."""
+    from datetime import datetime, timezone
+    s = get_session()
+    try:
+        w = Workout(
+            user_id=user_id,
+            date=datetime.now(timezone.utc),
+            workout_type="logged",
+            exercises=[],
+            completed=False,
+        )
+        s.add(w)
+        s.commit()
+        return w.id
+    finally:
+        s.close()
+
+
+def _append_sets_to_workout(workout_id: int, new_exercises: list) -> None:
+    """Append parsed exercises to the in-progress Workout's exercises JSON.
+    Uses flag_modified per Phase A pattern — SQLAlchemy's JSON column tracker
+    treats nested mutations as no-ops without it, so the append would silently
+    not persist."""
+    from sqlalchemy.orm.attributes import flag_modified
+    s = get_session()
+    try:
+        w = s.query(Workout).filter(Workout.id == workout_id).with_for_update().one_or_none()
+        if not w:
+            return
+        existing = list(w.exercises or [])
+        existing.extend(new_exercises)
+        w.exercises = existing
+        flag_modified(w, "exercises")
+        s.commit()
+    finally:
+        s.close()
+
+
+def _short_render_sets(parsed_exercises: list) -> str:
+    """Render parsed exercises as a brief ack. With WORKOUT_LOG_ACK_VERBOSE
+    false (default per plan: Twilio rate concern), returns just '✓' — single
+    byte, avoids the 1-msg/sec soft rate limit on rapid-fire set logging."""
+    if not config.WORKOUT_LOG_ACK_VERBOSE:
+        return "✓"
+    # Verbose mode: show the first exercise's parse for confirmation.
+    parts = []
+    for ex in parsed_exercises[:1]:
+        name = ex.get("name", "?")
+        sets = ex.get("sets", 1)
+        reps = ex.get("reps", "?")
+        wt = ex.get("weight")
+        if sets and sets > 1:
+            parts.append(f"{name} {sets}x{reps}" + (f"@{wt}" if wt else ""))
+        else:
+            parts.append(f"{name} {reps}" + (f"@{wt}" if wt else ""))
+    suffix = f" +{len(parsed_exercises)-1} more" if len(parsed_exercises) > 1 else ""
+    return f"✓ {parts[0]}{suffix}" if parts else "✓"
+
+
+def _finalize_workout_log(user, state: dict, reason: str) -> None:
+    """Mark the in-progress Workout completed, clear session_state, and send
+    the exit message per config.WORKOUT_LOG_EXIT_SUMMARY.
+
+    Per default ('silent'): send a stats line "✓ saved. N lifts, M sets."
+    Stale finalize never sends a summary (user didn't ask for one)."""
+    from models import confirm_workout_today
+    s = get_session()
+    n_ex = 0
+    n_sets = 0
+    try:
+        w = s.query(Workout).filter(Workout.id == state.get("workout_id")).one_or_none()
+        if w:
+            w.completed = True
+            exs = list(w.exercises or [])
+            n_ex = len(exs)
+            n_sets = sum(int(e.get("sets") or 0) for e in exs) or n_ex
+            w.ai_notes = f"Logged via workout_logging mode ({reason}). {n_ex} lifts, {n_sets} sets."
+            s.commit()
+    finally:
+        s.close()
+    confirm_workout_today(user.id)
+    clear_session_state(user.id)
+
+    if reason == "stale":
+        # Stale finalize is silent — the user didn't ask for an exit summary.
+        return
+
+    mode = config.WORKOUT_LOG_EXIT_SUMMARY
+    if mode == "silent":
+        stats = f"✓ saved. {n_ex} lifts, {n_sets} sets." if n_ex else "✓ saved."
+        send_sms(user.phone, stats, user_id=user.id, message_type="workout_log_summary")
+    elif mode == "brief":
+        # Brief mode: stats line + one personality riff. Personality riff is
+        # an opt-in Sonnet call — deferred per plan (silent default ships first).
+        stats = f"✓ saved. {n_ex} lifts, {n_sets} sets." if n_ex else "✓ saved."
+        send_sms(user.phone, stats, user_id=user.id, message_type="workout_log_summary")
+    else:  # "full" — hand to the coach for normal commentary
+        # Deferred per plan. Falls back to silent.
+        stats = f"✓ saved. {n_ex} lifts, {n_sets} sets." if n_ex else "✓ saved."
+        send_sms(user.phone, stats, user_id=user.id, message_type="workout_log_summary")
+
+
+def _handle_logging_mode_message(user, body: str, state: dict) -> bool:
+    """Mode intercept. Returns True if the message was handled (caller skips
+    coaching + buffer). Always handles the message in some way — never falls
+    through to normal flow, because falling through risks creating an orphan
+    one-row Workout via the webhook-level workout_log one-shot path.
+
+    Stale path: silently finalize the stale row, open a fresh in-progress
+    row, then handle the current message as the start of the new session
+    (NOT as fall-through, per plan note on orphan rows)."""
+
+    # Stale-session guard FIRST. Finalize the old session and start fresh
+    # WITHOUT returning False — see plan: returning False would let the
+    # message fall through to the webhook one-shot path which would create
+    # an orphan single-set completed Workout. Instead we open a fresh
+    # in-progress workout and treat this message as set 1.
+    if _logging_session_stale(state):
+        _finalize_workout_log(user, state, reason="stale")
+        new_workout_id = _create_in_progress_workout(user.id)
+        set_session_state(user.id, "workout_logging", workout_id=new_workout_id)
+        # Refresh state so the rest of this call uses the new workout_id.
+        state = get_session_state(user.id) or {}
+
+    # Explicit exit
+    if _is_workout_log_exit(body):
+        _finalize_workout_log(user, state, reason="explicit")
+        return True
+
+    # Regex pre-pass: gate Haiku to prevent confabulation on chitchat
+    if not _looks_like_set_data(body):
+        send_sms(user.phone, "didn't catch sets. send the lift or text 'done' to wrap.",
+                 user_id=user.id, message_type="workout_log_clarify")
+        return True
+
+    parsed = parse_workout_log(user, body, model=config.HAIKU_MODEL)
+    if not parsed or not parsed.get("exercises"):
+        send_sms(user.phone, "didn't catch sets. send the lift or text 'done' to wrap.",
+                 user_id=user.id, message_type="workout_log_clarify")
+        return True
+
+    _append_sets_to_workout(state["workout_id"], parsed["exercises"])
+    ack = _short_render_sets(parsed["exercises"])
+    send_sms(user.phone, ack, user_id=user.id, message_type="workout_log_ack")
+    return True
+
+
 def is_goodnight_signal(body: str) -> bool:
     """Detect if the user is signaling end-of-conversation."""
     body_lower = body.lower().strip()
@@ -758,8 +984,33 @@ def webhook():
         # Classify the message
         message_type = classify_message(body, has_image=image_url is not None)
 
-        # Track workout intent
-        if message_type == "workout_log":
+        # Part B: workout logging mode entry trigger ("workout logging mode" / "log mode" / etc).
+        # Bypass buffer, create the in-progress Workout row, set session_state, reply terse.
+        if message_type == "workout_log_start" and config.WORKOUT_LOGGING_ENABLED \
+                and (user.onboarding_step or 0) >= 3:
+            new_workout_id = _create_in_progress_workout(user.id)
+            set_session_state(user.id, "workout_logging", workout_id=new_workout_id)
+            send_sms(
+                user.phone,
+                "📋 logging mode on. text your sets — say 'done' when you're finished.",
+                user_id=user.id,
+                message_type="workout_log_start",
+            )
+            from message_buffer import cancel_buffer as _cb_start
+            _cb_start(from_number)
+            logger.info(f"Part B: workout logging mode entered for {user.name} (workout_id={new_workout_id})")
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+        # Part B: Gate the existing one-shot workout_log row creation and the
+        # *_state(at_gym) writes when the user is already in logging mode —
+        # otherwise we'd create a duplicate completed Workout (the in-progress
+        # row gets the set appended by the mode intercept below), AND we'd
+        # clobber workout_logging state with at_gym.
+        _pb_state = get_session_state(user.id) if config.WORKOUT_LOGGING_ENABLED else None
+        _pb_in_mode = bool(_pb_state and _pb_state.get("status") == "workout_logging")
+
+        # Track workout intent (skip in logging mode)
+        if message_type == "workout_log" and not _pb_in_mode:
             parsed = parse_workout_log(user, body)
             if parsed:
                 workout = Workout(
@@ -775,7 +1026,7 @@ def webhook():
             set_session_state(user.id, "at_gym")
             threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
-        if message_type == "workout_request":
+        if message_type == "workout_request" and not _pb_in_mode:
             confirm_workout_today(user.id)
             set_session_state(user.id, "at_gym")
             threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
@@ -783,7 +1034,7 @@ def webhook():
         # Catch training-day confirmations that don't look like workout logs —
         # e.g. "yeah hitting legs today" in reply to the morning briefing.
         # Only fires if today's workout hasn't been confirmed yet.
-        if message_type == "freeform" and not is_workout_confirmed_today(user.id):
+        if message_type == "freeform" and not is_workout_confirmed_today(user.id) and not _pb_in_mode:
             if _is_training_day_confirmation(body):
                 confirm_workout_today(user.id)
                 set_session_state(user.id, "at_gym")
@@ -827,6 +1078,15 @@ def webhook():
             # Cancel any pending buffer so it doesn't flush after goodnight
             from message_buffer import cancel_buffer
             cancel_buffer(from_number)
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+        # Part B: workout logging mode intercept. Bypasses buffer (per plan —
+        # 20-30s buffer would combine multiple sets in 60s into one blob,
+        # breaking per-set ack). Mode = synchronous logging like goodnight.
+        # The _handle_logging_mode_message helper always returns True (never
+        # falls through to normal flow — see plan note on orphan-row bug).
+        if _pb_in_mode and _pb_state is not None:
+            _handle_logging_mode_message(user, body, _pb_state)
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Adaptive buffer based on conversation momentum
@@ -895,6 +1155,11 @@ def classify_message(body: str, has_image: bool = False) -> str:
             return "receipt_photo"
         return "food_photo"  # Default assumption for images — most common use case
 
+    # Part B: workout logging mode entry — check BEFORE generic lift-keyword
+    # workout_log classifier so "start logging" doesn't get classified as a
+    # set report (which would spuriously create a Workout row at the webhook).
+    if is_workout_log_entry(body):
+        return "workout_log_start"
     if body_lower in ("w", "workout", "send workout"):
         return "workout_request"
     if body_lower in ("m", "menu", "options", "swap"):
