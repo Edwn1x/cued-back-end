@@ -129,6 +129,16 @@ MIGRATIONS = [
     # but stop referencing the deleted user. Idempotent via DROP IF EXISTS.
     "ALTER TABLE token_usage DROP CONSTRAINT IF EXISTS token_usage_user_id_fkey",
     "ALTER TABLE token_usage ADD CONSTRAINT token_usage_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
+    # Waitlist endpoint — new live site (cued.fit) signs users up here before
+    # admin activates. See plans/cued-memory-architecture-joyful-ullman.md.
+    "ALTER TABLE users ADD COLUMN email VARCHAR(200)",
+    "ALTER TABLE users ADD COLUMN signup_source VARCHAR(40)",
+    "ALTER TABLE users ADD COLUMN waitlist_status VARCHAR(20)",
+    "ALTER TABLE users ADD COLUMN activated_at TIMESTAMP",
+    # Partial index for the admin Waitlist tab — keeps the query fast even
+    # as the waitlist grows. Postgres-only syntax (SQLite ignores WHERE
+    # clause silently; that's fine for dev).
+    "CREATE INDEX IF NOT EXISTS idx_users_waitlist_pending ON users (waitlist_status) WHERE waitlist_status = 'pending'",
 ]
 
 def wait_for_db(retries=10, delay=3):

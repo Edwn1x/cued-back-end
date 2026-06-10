@@ -95,6 +95,14 @@ class User(Base):
     onboarding_hook_template = Column(String(50), default=None)  # which hook was assigned (for A/B analysis)
     first_reply_at = Column(DateTime, default=None)              # timestamp of first inbound message after hook
 
+    # Waitlist (live site at cued.fit signs users up here before admin activates).
+    # See plans/cued-memory-architecture-joyful-ullman.md — Waitlist Endpoint section.
+    # User.active stays True for waitlist users; waitlist_status is the sole waitlist marker.
+    email = Column(String(200), default=None)              # optional, validated only if present
+    signup_source = Column(String(40), default=None)       # "hero"|"nav"|... — accept any string ≤40 chars; don't validate
+    waitlist_status = Column(String(20), default=None)     # None = not on waitlist (legacy + activated). "pending" = currently on waitlist.
+    activated_at = Column(DateTime, default=None)          # stamped when admin promotes from waitlist; source of truth for "ever activated"
+
     # Feature state
     features_introduced = Column(JSON, default=None)   # {"food_photo": true, "receipt": true}
     coaching_branch = Column(String(30), default=None) # "training_nutrition" or "nutrition_only"

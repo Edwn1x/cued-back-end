@@ -2,8 +2,12 @@ import os
 import re
 import logging
 import threading
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
@@ -24,6 +28,30 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 CORS(app, origins=config.ALLOWED_ORIGINS)
+
+# ProxyFix: Railway runs behind a TCP proxy. Without this, request.remote_addr
+# resolves to Railway's edge IP, so Flask-Limiter would rate-limit ALL users
+# to a single shared bucket. ProxyFix reads X-Forwarded-For and exposes the
+# real client IP. x_for=1 = trust the first proxy hop (Railway). Don't increase
+# without auditing each hop.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+# Per-IP rate limiter for public endpoints (currently /waitlist only). Memory
+# backend is single-dyno; switch storage_uri to redis:// when Cued scales out.
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    storage_uri="memory://",
+    default_limits=[],
+)
+
+@app.errorhandler(429)
+def _ratelimit_handler(e):
+    """Frontend reads response.json().message — return the spec'd shape."""
+    return jsonify({
+        "status": "error",
+        "message": "Too many submissions. Try again in a minute.",
+    }), 429
 
 # Initialize DB on startup
 init_db()
@@ -870,6 +898,47 @@ def _handle_logging_mode_message(user, body: str, state: dict) -> bool:
     return True
 
 
+# ─── Waitlist endpoint helpers ─────────────────────────────────────────────
+def _normalize_phone(raw: str, strict: bool = False) -> str:
+    """Normalize a US phone to E.164 (+1XXXXXXXXXX).
+
+    strict=True (used by /waitlist): rejects anything that isn't 10 digits
+    (after stripping non-digits), 11 digits starting with 1, or already
+    properly formatted +1XXXXXXXXXX / +XX...
+
+    strict=False (legacy behavior of /signup and /activate-sms): permissively
+    auto-prepends +1 to whatever digits are left. Has a known bug where it
+    will mangle international numbers if the user accidentally deletes the +,
+    but fixing it touches the chat overlay flow and is out of scope for the
+    waitlist work.
+    """
+    if not raw:
+        raise ValueError("Phone number is required.")
+    raw = raw.strip()
+    if raw.startswith("+"):
+        digits = re.sub(r"\D", "", raw)
+        if 11 <= len(digits) <= 15:
+            return "+" + digits
+        if strict:
+            raise ValueError("Please enter a valid phone number.")
+        return raw
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if strict:
+        raise ValueError("Please enter a 10-digit US phone number.")
+    return "+1" + digits
+
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+def _looks_like_email(s: str) -> bool:
+    """Cheap email format check. Not RFC-perfect; just rejects obvious junk."""
+    return bool(s) and len(s) <= 200 and bool(_EMAIL_RE.match(s.strip()))
+
+
 def is_goodnight_signal(body: str) -> bool:
     """Detect if the user is signaling end-of-conversation."""
     body_lower = body.lower().strip()
@@ -1283,6 +1352,84 @@ def activate_sms():
         session.close()
 
 
+# ─── Waitlist Endpoint ──────────────────────────────────────────────────
+@app.route("/waitlist", methods=["POST"])
+@limiter.limit("3/minute;20/hour")
+def waitlist_signup():
+    """
+    Public waitlist signup. JSON-only. CORS-restricted to ALLOWED_ORIGINS
+    (must be set to https://cued.fit,https://www.cued.fit in prod env).
+    Does NOT send an SMS — admin promotes from waitlist later via
+    /admin/user/<id>/activate-waitlist, which sends the first SMS via
+    start_onboarding.
+    """
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Expected JSON body."}), 400
+    data = request.get_json(silent=True) or {}
+
+    name = (data.get("name") or "").strip()
+    raw_phone = (data.get("phone") or "").strip()
+    raw_email = (data.get("email") or "").strip() or None
+    source = (data.get("source") or "").strip()[:40] or None
+    timezone_str = (data.get("timezone") or "America/Los_Angeles").strip()[:50]
+
+    # Validation
+    if not name or len(name) > 100:
+        return jsonify({"status": "error", "message": "Please enter your name."}), 400
+    try:
+        phone = _normalize_phone(raw_phone, strict=True)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    if raw_email and not _looks_like_email(raw_email):
+        return jsonify({"status": "error", "message": "That email doesn't look right."}), 400
+
+    session = get_session()
+    try:
+        existing = session.query(User).filter(User.phone == phone).first()
+        if existing:
+            # Log delta for manual admin reconciliation; do NOT mutate the row.
+            # This protects against denial-of-modification: an unauthenticated
+            # endpoint must never silently rewrite name/email on an existing row.
+            logger.info(
+                "WAITLIST_DUP phone=%s existing_name=%r existing_email=%r "
+                "incoming_name=%r incoming_email=%r incoming_source=%r",
+                phone, existing.name, existing.email or "—",
+                name, raw_email or "—", source or "—",
+            )
+            if existing.waitlist_status == "pending":
+                return jsonify({"status": "exists",
+                                "message": "You're already on the waitlist."}), 200
+            return jsonify({"status": "exists",
+                            "message": "This number is already signed up."}), 200
+
+        user = User(
+            phone=phone,
+            name=name,
+            email=raw_email,
+            signup_source=source,
+            user_timezone=timezone_str,
+            waitlist_status="pending",
+            # User.active stays True (default). The spec's request body sends
+            # active=false but it's intent-level — the frontend never reads it
+            # back. waitlist_status='pending' is the sole waitlist marker so
+            # User.active can keep its eventual pause/block semantic.
+            onboarding_step=0,
+        )
+        session.add(user)
+        session.commit()
+        logger.info(
+            "WAITLIST_NEW phone=%s name=%r source=%r email=%r",
+            phone, name, source or "—", raw_email or "—",
+        )
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"/waitlist error: {e}", exc_info=True)
+        return jsonify({"status": "error",
+                        "message": "Something went wrong. Try again."}), 500
+    finally:
+        session.close()
+
+
 # ─── Admin Dashboard — cost aggregations from token_usage ─────────────────
 def _compute_cost_metrics(session):
     """
@@ -1436,9 +1583,20 @@ def admin():
             return dt.astimezone(pst).strftime("%b %d, %I:%M %p")
  
         # ── USER STATS ──
-        all_users = session.query(User).all()
+        # Split waitlist out so it doesn't skew the existing metrics. Pending
+        # waitlist users live in the same table but are excluded from response
+        # rate, dN_rate, total_users, etc. They get their own table in the
+        # admin Waitlist tab.
+        _all_users_raw = session.query(User).all()
+        pending_waitlist = sorted(
+            (u for u in _all_users_raw if u.waitlist_status == "pending"),
+            key=lambda u: u.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        all_users = [u for u in _all_users_raw if u.waitlist_status is None]
         total_users = len(all_users)
         active_users = sum(1 for u in all_users if u.active)
+        waitlist_count = len(pending_waitlist)
  
         # ── MESSAGE STATS ──
         all_messages = session.query(Message).all()
@@ -1635,6 +1793,24 @@ def admin():
         for ud in users_data:
             ud["cost_usd"] = round(per_user_30d.get(ud["id"], 0.0), 2)
 
+        # Waitlist tab data (Joined date in PST for admin readability).
+        waitlist_data = []
+        for wu in pending_waitlist:
+            joined_str = "—"
+            if wu.created_at:
+                ts = wu.created_at if wu.created_at.tzinfo else wu.created_at.replace(tzinfo=timezone.utc)
+                joined_str = ts.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST")
+            waitlist_data.append({
+                "id": wu.id,
+                "name": wu.name,
+                "phone": wu.phone[-4:] if wu.phone else "—",
+                "phone_full": wu.phone or "—",
+                "email": wu.email or "—",
+                "source": wu.signup_source or "—",
+                "joined": joined_str,
+                "timezone": wu.user_timezone or "—",
+            })
+
         return render_template_string(ADMIN_HTML,
             now=now.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST"),
             total_users=total_users,
@@ -1686,6 +1862,9 @@ def admin():
             cache_ratio=cost_metrics["cache_ratio"],
             cache_saved_7d=cost_metrics["cache_saved_7d"],
             cost_per_active_user_per_day=cost_metrics["cost_per_active_user_per_day"],
+            # Waitlist
+            waitlist=waitlist_data,
+            waitlist_count=waitlist_count,
         )
     finally:
         session.close()
@@ -1705,6 +1884,43 @@ def admin_send():
             send_sms(user.phone, body, user_id=user.id, message_type="admin")
             return jsonify({"status": "ok"})
         return jsonify({"status": "error"}), 400
+    finally:
+        session.close()
+
+
+# ─── Activate Waitlist User (admin) ──────────────────────
+@app.route("/admin/user/<int:user_id>/activate-waitlist", methods=["POST"])
+def admin_activate_waitlist(user_id):
+    """Promote a waitlisted user to active. Sends the first SMS via
+    start_onboarding. Idempotent guard: returns 400 if user is not on
+    the waitlist (already activated or never was on it)."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."}), 404
+        if user.waitlist_status != "pending":
+            return jsonify({"status": "error",
+                            "message": "User is not on the waitlist."}), 400
+        user.waitlist_status = None
+        user.activated_at = datetime.now(timezone.utc)
+        session.commit()
+        # Refresh from a new session so start_onboarding sees the committed state.
+        fresh = session.get(User, user_id)
+        # start_onboarding ONLY. Do NOT also call schedule_user — wake_time is
+        # None until onboarding completes, so schedule_user would just log a
+        # warning and no-op. The existing onboarding-completion path re-calls
+        # schedule_user once wake_time is set.
+        start_onboarding(fresh)
+        logger.info("WAITLIST_ACTIVATE user_id=%s phone=%s name=%r",
+                    fresh.id, fresh.phone, fresh.name)
+        return jsonify({"status": "ok",
+                        "message": f"{fresh.name} activated."}), 200
+    except Exception as e:
+        logger.error(f"/admin/user/{user_id}/activate-waitlist error: {e}",
+                     exc_info=True)
+        return jsonify({"status": "error",
+                        "message": "Activation failed."}), 500
     finally:
         session.close()
 

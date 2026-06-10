@@ -141,6 +141,12 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <span class="icon">◉</span> Users
     <span class="badge-count">{{ total_users }}</span>
   </button>
+  <button class="nav-item" onclick="showPage('waitlist',this)">
+    <span class="icon">◌</span> Waitlist
+    {% if waitlist_count and waitlist_count > 0 %}
+    <span class="badge-count">{{ waitlist_count }}</span>
+    {% endif %}
+  </button>
   <button class="nav-item" onclick="showPage('messages',this)">
     <span class="icon">◎</span> Messages
   </button>
@@ -384,6 +390,51 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
       {% if not recent_messages %}<p class="empty">No messages yet.</p>{% endif %}
     </div>
   </div>
+</div>
+
+<!-- ─── WAITLIST ─── -->
+<div id="page-waitlist" class="page">
+  <div class="page-header">
+    <h1>Waitlist</h1>
+    <p>Signups from cued.fit waiting for activation. Activate sends the first SMS.</p>
+  </div>
+
+  <div class="grid grid-3" style="margin-bottom:20px">
+    <div class="stat-card">
+      <div class="stat-label">Pending</div>
+      <div class="stat-val">{{ waitlist_count }}</div>
+      <div class="stat-sub">awaiting activation</div>
+    </div>
+  </div>
+
+  {% if waitlist %}
+  <div class="table-wrap">
+    <table id="waitlist-table">
+      <tr>
+        <th>Name</th><th>Phone</th><th>Email</th><th>Source</th>
+        <th>Timezone</th><th>Joined Waitlist</th><th></th>
+      </tr>
+      {% for w in waitlist %}
+      <tr data-id="{{ w.id }}">
+        <td style="color:var(--text);font-weight:500">{{ w.name }}</td>
+        <td>{{ w.phone_full }}</td>
+        <td>{{ w.email }}</td>
+        <td>{{ w.source }}</td>
+        <td>{{ w.timezone }}</td>
+        <td>{{ w.joined }}</td>
+        <td>
+          <button class="btn btn-primary btn-sm"
+                  onclick="activateWaitlist({{ w.id }}, '{{ w.name|replace("'","\\'") }}', this)">
+            Activate
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No one on the waitlist right now.</p>
+  {% endif %}
 </div>
 
 <!-- ─── MEALS ─── -->
@@ -762,6 +813,29 @@ async function deleteUser(userId, name) {
   const data = await res.json();
   if (data.status === 'ok') location.reload();
   else alert('Error: ' + data.message);
+}
+
+async function activateWaitlist(userId, name, btn) {
+  if (!confirm('Activate ' + name + '? This sends them the onboarding SMS now.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Activating…';
+  try {
+    const res = await fetch('/admin/user/' + userId + '/activate-waitlist', {method: 'POST'});
+    const data = await res.json();
+    if (data.status === 'ok') {
+      // Remove the row in-place so the admin can keep working without a reload.
+      const row = btn.closest('tr');
+      if (row) row.remove();
+    } else {
+      alert('Error: ' + (data.message || 'Activation failed.'));
+      btn.disabled = false;
+      btn.textContent = 'Activate';
+    }
+  } catch (err) {
+    alert('Network error. Try again.');
+    btn.disabled = false;
+    btn.textContent = 'Activate';
+  }
 }
 
 async function sendManual(e) {
