@@ -1,12 +1,19 @@
+import logging
+import time
+
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+
 import config
 from models import get_session, Message
-import time
+from sms_encoding import normalize_for_sms, residual_non_gsm, estimate_segments
+
+logger = logging.getLogger("cued.sms")
 
 client = Client(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
 
 SMS_SPLIT_DELAY = 2.5  # seconds between split messages
+SMS_SEGMENT_WARN_THRESHOLD = 6  # ~900+ GSM-7 chars; log when bodies get this large
 
 
 def _send_single(phone: str, body: str) -> str:
@@ -48,7 +55,39 @@ def split_message(body: str) -> list[str]:
 
 
 def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform"):
-    """Send an SMS, splitting longer messages into sequential texts with a delay."""
+    """Send an SMS, splitting longer messages into sequential texts with a delay.
+
+    Body is normalized to GSM-7 here (before split + dispatch) so the carrier
+    encodes our outbound as 1-segment GSM-7 (160 chars/seg) instead of the
+    UCS-2 fallback (67 chars/seg) that gets triggered by a single em-dash or
+    smart quote. The transform is the LAST thing we do before split so any
+    upstream finalization (orchestrator → personality layer → send_sms) is
+    captured. Logging-mode acks and templated stats lines benefit too — any
+    `✓` glyph would force UCS-2 if it slipped through.
+
+    See sms_encoding.py for the character map and why we don't rely solely
+    on Twilio's server-side Smart Encoding toggle.
+    """
+    # Last transform before dispatch — normalize once on the full body so the
+    # warning log (next 6 lines) reports per-logical-message, not per-segment.
+    body = normalize_for_sms(body)
+
+    # Telemetry: residual non-GSM (e.g. an emoji slipped through) forces UCS-2
+    # and roughly halves capacity. Oversized GSM-7 bodies risk delivery limits.
+    # Logged, never blocked — coaching content keeps flowing.
+    residual = residual_non_gsm(body)
+    enc, segs = estimate_segments(body)
+    if residual:
+        logger.warning(
+            "SMS_UCS2 user_id=%s message_type=%s segments=%d chars=%d residual=%s",
+            user_id, message_type, segs, len(body), residual,
+        )
+    elif segs > SMS_SEGMENT_WARN_THRESHOLD:
+        logger.warning(
+            "SMS_LARGE_GSM user_id=%s message_type=%s segments=%d chars=%d",
+            user_id, message_type, segs, len(body),
+        )
+
     parts = split_message(body)
 
     last_sid = None
