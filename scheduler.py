@@ -475,7 +475,7 @@ def start_scheduler():
     from dining_scraper import scrape_all_halls
     scheduler.add_job(
         scrape_all_halls,
-        trigger=CronTrigger(hour=6, minute=30),
+        trigger=CronTrigger(hour=5, minute=30, timezone=ZoneInfo("America/Los_Angeles")),
         id="daily_dining_scrape",
         replace_existing=True,
     )

@@ -169,6 +169,8 @@ def handle(user: User, user_message: str, image_url: dict = None) -> dict:
     safety = load_skill("safety")
     nutrition_skill = load_skill("nutrition")
     context = _build_nutrition_context(user)
+    from dining_scraper import build_dining_block
+    context += build_dining_block(user, user_message)
 
     # block1_cacheable: skills + YOUR TASK + rules + WEB SEARCH guidance.
     # Literal-static across all users — Anthropic prompt cache hits.
