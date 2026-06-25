@@ -266,6 +266,49 @@ GENERIC_DINING_TERMS = [
     "on campus", "the dc", "what's on the menu", "whats on the menu",
 ]
 
+# Maps each canonical Berkeley allergen id (lowercased, as stored on
+# DiningMenuItem.allergens) to the whole-word triggers we look for in the user's
+# free-text restrictions ("allergies, dislikes"). Word-boundary matched, so "nut"
+# won't fire on "nutrition" and "egg" won't fire on "eggplant" — while still
+# catching natural phrasing like "peanut allergy", "dairy", or "no shellfish".
+# Output keys MUST stay in Berkeley's allergen vocabulary so get_todays_menu's
+# set-intersection against stored allergen ids still matches.
+_ALLERGEN_SYNONYMS = {
+    "milk":      ["milk", "dairy", "lactose", "lactaid", "casein", "whey"],
+    "egg":       ["egg", "eggs"],
+    "fish":      ["fish", "salmon", "tuna", "tilapia", "cod", "halibut"],
+    "shellfish": ["shellfish", "shrimp", "crab", "lobster", "prawn", "clam",
+                  "oyster", "mussel", "scallop", "crawfish"],
+    "tree nuts": ["tree nut", "tree nuts", "almond", "walnut", "cashew", "pecan",
+                  "pistachio", "hazelnut", "macadamia"],
+    "wheat":     ["wheat"],
+    "peanuts":   ["peanut", "peanuts", "groundnut"],
+    "soybeans":  ["soy", "soya", "soybean", "soybeans", "edamame", "tofu"],
+    "gluten":    ["gluten", "celiac", "coeliac"],
+    "sesame":    ["sesame", "tahini"],
+    "pork":      ["pork", "bacon", "ham", "pig"],
+}
+# A bare "nut"/"nuts" with no qualifier (e.g. "no nuts", "nut allergy") implies
+# both tree nuts and peanuts.
+_GENERIC_NUT_ALLERGENS = ["tree nuts", "peanuts"]
+
+
+def _excluded_allergens(restrictions: str) -> list[str]:
+    """Map a user's free-text restrictions to canonical Berkeley allergen ids."""
+    low = (restrictions or "").lower()
+    if not low.strip():
+        return []
+    out = set()
+    for canonical, triggers in _ALLERGEN_SYNONYMS.items():
+        if any(re.search(rf"\b{re.escape(t)}\b", low) for t in triggers):
+            out.add(canonical)
+    # A bare "nut"/"nuts" implies both nut families — but only when it isn't already
+    # qualified (so "tree nuts" alone doesn't also exclude peanuts, and vice versa).
+    unqualified = re.sub(r"\b(?:tree|pea|ground)\s*nuts?\b", " ", low)
+    if re.search(r"\bnuts?\b", unqualified):
+        out.update(_GENERIC_NUT_ALLERGENS)
+    return sorted(out)
+
 
 def detect_halls(message: str) -> list[str]:
     """Return canonical hall keys named in the message (empty if none)."""
@@ -371,12 +414,7 @@ def build_dining_block(user, user_message: str) -> str:
             meal_period = mp
             break
 
-    exclude = []
-    restrictions = (getattr(user, "restrictions", "") or "").lower()
-    for allergen in ["milk", "egg", "fish", "shellfish", "tree nuts", "wheat",
-                     "peanuts", "soybeans", "gluten", "sesame", "pork"]:
-        if allergen in restrictions:
-            exclude.append(allergen)
+    exclude = _excluded_allergens(getattr(user, "restrictions", ""))
 
     items = get_todays_menu(halls=halls, meal_period=meal_period,
                             exclude_allergens=exclude or None)
