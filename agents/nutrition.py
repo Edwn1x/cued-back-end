@@ -370,7 +370,7 @@ def handle_daily_log_query(user) -> str:
         session.close()
 
 
-def handle_food_photo(user, user_message: str, image_url: dict) -> dict:
+def handle_food_photo(user, user_message: str, image_url: dict, recent_context: str = "") -> dict:
     """First pass on a food photo. Estimates a range and asks clarifying questions."""
     import json as json_lib
     from models import get_session, User
@@ -379,6 +379,8 @@ def handle_food_photo(user, user_message: str, image_url: dict) -> dict:
     safety = load_skill("safety")
     nutrition_skill = load_skill("nutrition")
     context = _build_nutrition_context(user)
+    from dining_scraper import build_dining_block
+    context += build_dining_block(user, user_message, recent_context)
 
     system_prompt = f"""{personality}
 
@@ -405,6 +407,14 @@ DO NOT log the meal yet. The user will answer your questions and then you'll ref
 
 Common things to clarify: portion size, cooking method (grilled vs fried, oil used),
 added sauces/dressings, whether it's a branded item, whether they ate all of it.
+
+DINING HALL — exact macros beat estimates:
+- If a "## TODAY'S DINING HALL MENU" block appears in your context above, match the plate to
+  those menu items and use their EXACT calories/protein instead of eyeballing. Name the items
+  you think it is.
+- If there's NO such block but this could be a campus dining-hall meal (tray, buffet-style
+  plating, or the user eats at the halls), make your clarifying_question ask whether it's from
+  a dining hall and which one — if it is, you can pull exact Berkeley macros instead of guessing.
 
 Return ONLY valid JSON:
 {{
@@ -471,7 +481,7 @@ Return ONLY valid JSON:
     }
 
 
-def handle_photo_refinement(user, user_message: str) -> dict:
+def handle_photo_refinement(user, user_message: str, recent_context: str = "") -> dict:
     """User answered clarifying questions about a food photo. Refine and log."""
     import json as json_lib
     from models import get_session, User, Meal, ensure_todays_totals, set_active_meal
@@ -491,6 +501,8 @@ def handle_photo_refinement(user, user_message: str) -> dict:
     safety = load_skill("safety")
     nutrition_skill = load_skill("nutrition")
     context = _build_nutrition_context(user)
+    from dining_scraper import build_dining_block
+    context += build_dining_block(user, user_message, recent_context)
 
     initial_estimate = pending.get("initial_estimate", {})
     initial_question = pending.get("clarifying_question", "")
@@ -516,6 +528,10 @@ Earlier you analyzed a photo and estimated:
 
 You asked the user: "{initial_question}"
 They just answered: "{user_message}"
+
+If a "## TODAY'S DINING HALL MENU" block appears in your context above (the user pointed you to
+a dining hall), match the meal to those items and use their EXACT macros instead of your earlier
+visual estimate.
 
 Now refine your estimate into a single number (not a range) and prepare to log.
 

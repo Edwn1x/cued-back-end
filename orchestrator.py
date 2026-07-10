@@ -143,8 +143,10 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
     # agent, which is the only path that injects today's real menu. The LLM
     # classifier doesn't know Berkeley hall names like "crossroads" and mislabels
     # these as personality/casual (observed in prod), so a dining mention skips
-    # the classifier entirely and forces the nutrition path.
-    if mentions_dining(combined_body) and not image_data:
+    # the classifier entirely and forces the nutrition path. Applies to photos
+    # too — the nutrition pipeline routes an image to the (now menu-aware) photo
+    # handler, so a captioned dining-hall photo also lands there.
+    if mentions_dining(combined_body):
         primary, confidence = "nutrition", "high"
         logger.info(f"Dining mention from {user.name} -> forcing nutrition agent")
     else:
@@ -158,9 +160,9 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
         logger.info(f"Routing to nutrition agent for {user.name}")
         try:
             if image_data:
-                structured = handle_food_photo(user, combined_body, image_data)
+                structured = handle_food_photo(user, combined_body, image_data, recent_context=recent_context)
             elif user.pending_photo_meal:
-                refined = handle_photo_refinement(user, combined_body)
+                refined = handle_photo_refinement(user, combined_body, recent_context=recent_context)
                 structured = refined if refined else nutrition_handle(user, combined_body, recent_context=recent_context)
             else:
                 structured = nutrition_handle(user, combined_body, recent_context=recent_context)
