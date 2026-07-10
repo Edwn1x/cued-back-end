@@ -103,6 +103,7 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
     from agents.training import handle as training_handle
     from agents.readiness import handle as readiness_handle
     from agents.personality import write_response
+    from dining_scraper import mentions_dining
     from models import get_session, Message
 
     # Fast-path: receipt photo
@@ -137,12 +138,19 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
     finally:
         session.close()
 
-    # Classify
-    classification = classify_message(combined_body, recent_context)
-    logger.info(f"Classified message from {user.name}: {classification}")
-
-    primary = classification.get("primary_agent", "personality")
-    confidence = classification.get("confidence", "low")
+    # Deterministic override: campus-dining questions must reach the nutrition
+    # agent, which is the only path that injects today's real menu. The LLM
+    # classifier doesn't know Berkeley hall names like "crossroads" and mislabels
+    # these as personality/casual (observed in prod), so a dining mention skips
+    # the classifier entirely and forces the nutrition path.
+    if mentions_dining(combined_body) and not image_data:
+        primary, confidence = "nutrition", "high"
+        logger.info(f"Dining mention from {user.name} -> forcing nutrition agent")
+    else:
+        classification = classify_message(combined_body, recent_context)
+        logger.info(f"Classified message from {user.name}: {classification}")
+        primary = classification.get("primary_agent", "personality")
+        confidence = classification.get("confidence", "low")
 
     # === NUTRITION PIPELINE ===
     if primary == "nutrition" and confidence in ("high", "medium"):

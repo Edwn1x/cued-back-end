@@ -329,6 +329,31 @@ def _today_pacific() -> str:
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
 
 
+def ensure_today_scraped() -> None:
+    """
+    Self-healing freshness: if we have no menu rows for today (Pacific) yet,
+    scrape all halls once, right now. This keeps dining answers correct even
+    when the daily background cron never fires (e.g. the web container sleeps
+    when idle, so the in-memory scheduler's 5:30 AM job never runs). At most one
+    scrape_all_halls() per day — once today's rows exist, this is a no-op.
+    """
+    today = _today_pacific()
+    session = get_session()
+    try:
+        have_today = session.query(DiningMenuItem.id).filter(
+            DiningMenuItem.scraped_date == today
+        ).first() is not None
+    finally:
+        session.close()
+    if have_today:
+        return
+    logger.info(f"[dining_scraper] no rows for {today} yet — lazy scraping on demand")
+    try:
+        scrape_all_halls()
+    except Exception as e:
+        logger.warning(f"[dining_scraper] lazy scrape failed: {e}")
+
+
 def get_todays_menu(halls: list[str] = None, meal_period: str = None,
                     exclude_allergens: list[str] = None) -> list[DiningMenuItem]:
     """Query today's (Pacific) menu rows, optionally filtered by hall/meal/allergen."""
@@ -404,6 +429,10 @@ def build_dining_block(user, user_message: str) -> str:
     """
     if not mentions_dining(user_message):
         return ""
+
+    # Make sure today's menu is actually in the DB before we query it — don't
+    # depend on the background cron having run.
+    ensure_today_scraped()
 
     halls = detect_halls(user_message) or None  # None -> all open halls today
 
