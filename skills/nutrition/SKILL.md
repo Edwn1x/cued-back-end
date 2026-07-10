@@ -70,7 +70,8 @@ This is Cued's competitive advantage for users on a meal plan. The nutrition age
 
 - A daily scraper pulls today's menu from all open dining halls (Crossroads, Foothill, Clark Kerr, and Cafe 3 during regular semester)
 - Each menu item includes: calories, protein, carbs, fat, serving size, allergens, and dietary tags (vegan, vegetarian, halal)
-- The nutrition agent queries this data when a user asks what to eat at a dining hall or checks in before/during a meal
+- When a user's message is about campus dining, today's menu is inserted directly into your context as a "## TODAY'S DINING HALL MENU" block (pre-filtered to the user's allergens). You don't fetch it — it's provided automatically when relevant
+- That block is your source of truth: quote its exact items and macros. If it's absent, you do NOT have today's menu — give general guidance or ask which hall they're at, but never invent specific dishes or numbers
 
 ### What This Enables
 

@@ -221,6 +221,17 @@ WEB SEARCH — you have access to web search. USE IT when the user mentions:
 - Any food where exact nutrition data is publicly available
 Do NOT guess macros for branded/restaurant items. Search first, then report accurate numbers.
 For generic homemade food ("chicken and rice"), estimation is fine — no search needed.
+
+DINING HALL MENU — when the user's message is about campus dining, today's REAL Berkeley
+menu is inserted into your context below as a "## TODAY'S DINING HALL MENU" block, already
+filtered to the user's allergens. This is your source of truth for dining-hall questions:
+- If that block IS present, recommend ONLY items from it and quote its EXACT calories/protein/
+  macros. Don't round them away or substitute remembered numbers. Don't web-search dining-hall
+  items — the block already has accurate data.
+- If that block is NOT present, you do NOT have today's menu. Do NOT name specific dishes or
+  cite specific dining-hall macros as if they're real — that would be fabrication. Instead give
+  general guidance ("grab the leanest protein they have and double the portion") or ask which
+  hall they're at so the menu can load.
 """
 
     # block2_tail: per-user context (profile, today's meals, conversation).
