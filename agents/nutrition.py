@@ -227,7 +227,9 @@ menu is inserted into your context below as a "## TODAY'S DINING HALL MENU" bloc
 filtered to the user's allergens. This is your source of truth for dining-hall questions:
 - If that block IS present, recommend ONLY items from it and quote its EXACT calories/protein/
   macros. Don't round them away or substitute remembered numbers. Don't web-search dining-hall
-  items — the block already has accurate data.
+  items — the block already has accurate data. Still return JSON: put your picks and their exact
+  macros inside the content fields (e.g. content.meal_description / content.options). Do NOT
+  break format and write the answer as prose — the JSON is still required.
 - If that block is NOT present, you do NOT have today's menu. Do NOT name specific dishes or
   cite specific dining-hall macros as if they're real — that would be fabrication. Instead give
   general guidance ("grab the leanest protein they have and double the portion") or ask which
@@ -270,7 +272,20 @@ filtered to the user's allergens. This is your source of truth for dining-hall q
     try:
         parsed = json.loads(text)
     except Exception as e:
-        logger.error(f"Nutrition agent returned invalid JSON: {text[:200]} — {e}")
+        # The model answered in prose instead of JSON — common on dining-menu
+        # replies, where it just writes out the recommendation with real macros.
+        # That prose IS a good answer; don't discard it for a canned fallback.
+        # Pass it to the voice layer as a draft to tighten into SMS form.
+        if text and len(text) > 15:
+            logger.warning(f"Nutrition agent returned prose, not JSON — passing through: {text[:120]}")
+            return {
+                "agent": "nutrition",
+                "intent": "nutrition_reply",
+                "content": {"reply_draft": text},
+                "clarifying_question": None,
+                "log_action": None,
+            }
+        logger.error(f"Nutrition agent returned unusable output: {text[:200]} — {e}")
         parsed = {
             "intent": "nutrition_general",
             "content": {"note": "Unable to parse specialist output"},

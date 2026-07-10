@@ -115,6 +115,13 @@ def _build_instruction(structured_input: dict, user_message: str, user) -> str:
         f"\nStructured coaching content to communicate:\n{_format_content(content)}",
     ]
 
+    if "reply_draft" in content:
+        parts.append(
+            "\nThe specialist already drafted a near-final reply (above). Keep its exact food "
+            "items and macro numbers — do not invent, drop, or alter any dish or number. Just "
+            "tighten it into Cued's voice and SMS format (strip any markdown like ** or bullets)."
+        )
+
     if log_action:
         parts.append(f"\nAction taken in the background: {log_action}")
         parts.append("Mention this subtly if relevant — don't make it feel like a system notification.")
