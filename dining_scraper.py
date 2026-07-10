@@ -325,6 +325,15 @@ def mentions_dining(message: str) -> bool:
     return bool(detect_halls(message)) or any(t in low for t in GENERIC_DINING_TERMS)
 
 
+def _detect_meal_period(text: str) -> str | None:
+    """Return the first named meal period in the text, or None."""
+    low = (text or "").lower()
+    for mp in ("breakfast", "brunch", "lunch", "dinner"):
+        if mp in low:
+            return mp
+    return None
+
+
 def _today_pacific() -> str:
     return datetime.now(PACIFIC).strftime("%Y-%m-%d")
 
@@ -421,27 +430,31 @@ def format_menu_for_coach(items: list[DiningMenuItem]) -> str:
     return "\n".join(lines).strip()
 
 
-def build_dining_block(user, user_message: str) -> str:
+def build_dining_block(user, user_message: str, recent_context: str = "") -> str:
     """
-    Returns a '## TODAY'S DINING HALL MENU' block when the message is about
-    campus dining, else ''. Filters to named halls (or all open halls), the
-    relevant meal period when one is named, and the user's allergen restrictions.
+    Returns a '## TODAY'S DINING HALL MENU' block when the turn is about campus
+    dining, else ''. Filters to named halls (or all open halls), the relevant
+    meal period when one is named, and the user's allergen restrictions.
+
+    Sticky: if this message doesn't name a hall but the recent conversation did
+    (e.g. a "what else is there?" / "not the ground beef" follow-up), the hall
+    (and meal period) are inherited from recent_context so the thread keeps its
+    menu instead of silently dropping it.
     """
-    if not mentions_dining(user_message):
-        return ""
+    if mentions_dining(user_message):
+        halls = detect_halls(user_message) or None  # None -> all open halls today
+    else:
+        # Follow-up with no hall named — only inject if we're clearly continuing
+        # a dining conversation (a hall was named in the last few messages).
+        halls = detect_halls(recent_context)
+        if not halls:
+            return ""
 
     # Make sure today's menu is actually in the DB before we query it — don't
     # depend on the background cron having run.
     ensure_today_scraped()
 
-    halls = detect_halls(user_message) or None  # None -> all open halls today
-
-    low = (user_message or "").lower()
-    meal_period = None
-    for mp in ("breakfast", "brunch", "lunch", "dinner"):
-        if mp in low:
-            meal_period = mp
-            break
+    meal_period = _detect_meal_period(user_message) or _detect_meal_period(recent_context)
 
     exclude = _excluded_allergens(getattr(user, "restrictions", ""))
 

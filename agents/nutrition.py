@@ -152,7 +152,7 @@ Food context: {user.food_context or "not collected yet"}"""
     return f"## USER PROFILE\n{profile}\n\n## CONFIRMED DECISIONS (settled — do not re-ask or re-explain reasoning)\n{confirmed_block}\n\n## TODAY'S TRAINING STATUS\n{workout_status}\n\n## TODAY'S TRACKING\n{totals_block}\n\n## RECENT CONVERSATION\n{conversation}{memory_block}"
 
 
-def handle(user: User, user_message: str, image_url: dict = None) -> dict:
+def handle(user: User, user_message: str, image_url: dict = None, recent_context: str = "") -> dict:
     """
     Process a nutrition-related message and return structured coaching content.
 
@@ -170,7 +170,7 @@ def handle(user: User, user_message: str, image_url: dict = None) -> dict:
     nutrition_skill = load_skill("nutrition")
     context = _build_nutrition_context(user)
     from dining_scraper import build_dining_block
-    context += build_dining_block(user, user_message)
+    context += build_dining_block(user, user_message, recent_context)
 
     # block1_cacheable: skills + YOUR TASK + rules + WEB SEARCH guidance.
     # Literal-static across all users — Anthropic prompt cache hits.

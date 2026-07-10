@@ -59,6 +59,7 @@ Rules:
 - "I had chicken and rice" → nutrition (meal report). "What should I eat?" → nutrition (meal question)
 - "Did 155 on bench for 5" → training (workout log). "How's my bench progressing?" → training
 - Multiple domains possible: "I ate chicken then did chest day" → primary nutrition, secondary training
+- Terse follow-ups continuing a food/dining thread (recent context is about a meal or dining hall) → nutrition, even if short: "what else is there", "anything without beef?", "other options?", "is that it?"
 
 Examples:
 - "goodnight" → {{"primary_agent": "personality", "secondary_agents": [], "intent_type": "goodnight", "confidence": "high"}}
@@ -160,9 +161,9 @@ def route_message(user, combined_body: str, message_type: str, image_data: dict 
                 structured = handle_food_photo(user, combined_body, image_data)
             elif user.pending_photo_meal:
                 refined = handle_photo_refinement(user, combined_body)
-                structured = refined if refined else nutrition_handle(user, combined_body)
+                structured = refined if refined else nutrition_handle(user, combined_body, recent_context=recent_context)
             else:
-                structured = nutrition_handle(user, combined_body)
+                structured = nutrition_handle(user, combined_body, recent_context=recent_context)
 
             response = write_response(user, structured, user_message=combined_body)
 
