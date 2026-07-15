@@ -43,6 +43,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      # lxml 5.2.2 (pinned in requirements.txt) has no cp313 wheel, so pip builds
+      # it from sdist and needs the libxml2/libxslt dev headers. Installing them
+      # here keeps requirements.txt untouched for Phase 0 (additive only).
+      - name: Install system build deps
+        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libxslt1-dev
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
