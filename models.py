@@ -1,7 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import config
+
+logger = logging.getLogger("cued.models")
 
 engine = create_engine(config.DATABASE_URL, echo=False)
 Session = sessionmaker(bind=engine)
@@ -280,6 +284,74 @@ class TokenUsage(Base):
     cache_read_input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
     cost_usd = Column(Float, default=0.0)
+
+
+class ProcessedMessage(Base):
+    """
+    Webhook idempotency ledger — one row per Twilio MessageSid we have accepted
+    for processing. The UNIQUE constraint on message_sid is the whole mechanism:
+    a re-delivered inbound (Twilio retries webhooks it can't answer within ~15s,
+    which a slow synchronous classify_message can trip) hits the constraint and
+    is deduped instead of double-writing state. Append-only; kept off the hot
+    `messages` table so it's independently revertable.
+
+    Claimed at the top of the webhook (so concurrent retries dedupe) and RELEASED
+    on an unhandled exception in the synchronous pass (so a crash-after-claim
+    doesn't leave a poisoned claim that would silently drop Twilio's retry).
+    """
+    __tablename__ = "processed_messages"
+
+    id = Column(Integer, primary_key=True)
+    message_sid = Column(String(64), unique=True, nullable=False)
+    # ON DELETE SET NULL so deleting a user never fails on this ledger (same
+    # discipline as token_usage); the dedup row is not worth blocking a delete.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+def claim_message_sid(message_sid: str, user_id: int = None) -> bool:
+    """
+    Claim a Twilio MessageSid for idempotent processing.
+
+    Returns True  -> PROCEED (newly claimed, OR fail-open on a missing sid /
+                     unexpected error — a rare duplicate beats a dropped message).
+    Returns False -> this sid was already processed; caller should stop (duplicate).
+
+    Fail-open is deliberate: on a messaging rail, never let dedup bookkeeping drop
+    a real message. Only a genuine UNIQUE violation returns False.
+    """
+    if not message_sid:
+        return True
+    session = get_session()
+    try:
+        session.add(ProcessedMessage(message_sid=message_sid, user_id=user_id))
+        session.commit()
+        return True
+    except IntegrityError:
+        session.rollback()
+        return False
+    except Exception as e:  # noqa: BLE001 — fail open on anything unexpected
+        session.rollback()
+        logger.warning("SID_CLAIM_FAILED sid=%s err=%s — failing open", message_sid, e)
+        return True
+    finally:
+        session.close()
+
+
+def release_message_sid(message_sid: str):
+    """Release a claimed MessageSid (best-effort) so a crashed pass can be retried."""
+    if not message_sid:
+        return
+    session = get_session()
+    try:
+        session.query(ProcessedMessage).filter(
+            ProcessedMessage.message_sid == message_sid).delete()
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        logger.warning("SID_RELEASE_FAILED sid=%s err=%s", message_sid, e)
+    finally:
+        session.close()
 
 
 def get_or_create_today_log(session, user_id: int) -> "DailyLog":

@@ -139,6 +139,15 @@ MIGRATIONS = [
     # as the waitlist grows. Postgres-only syntax (SQLite ignores WHERE
     # clause silently; that's fine for dev).
     "CREATE INDEX IF NOT EXISTS idx_users_waitlist_pending ON users (waitlist_status) WHERE waitlist_status = 'pending'",
+    # Phase 1: webhook idempotency ledger — dedup Twilio MessageSid retries so a
+    # slow-webhook re-delivery can't double-write state. UNIQUE(message_sid) is
+    # the whole mechanism. ON DELETE SET NULL so user-delete never blocks on it.
+    """CREATE TABLE IF NOT EXISTS processed_messages (
+        id SERIAL PRIMARY KEY,
+        message_sid VARCHAR(64) UNIQUE NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        received_at TIMESTAMP DEFAULT NOW()
+    )""",
 ]
 
 def wait_for_db(retries=10, delay=3):

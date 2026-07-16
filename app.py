@@ -8,7 +8,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -965,6 +965,9 @@ def webhook():
     """Handle incoming SMS from Twilio. Buffers messages before processing."""
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
+    # Twilio's idempotency key. Parsed up here so it's in scope for the release
+    # in the except handler even if a crash happens before the claim.
+    message_sid = request.form.get("MessageSid", "")
 
     # Check for MMS image
     num_media = int(request.form.get("NumMedia", 0))
@@ -1005,6 +1008,16 @@ def webhook():
                 "Hey! You're not signed up for Cued yet. "
                 "Visit cued.fit to get started."
             ), 200, {"Content-Type": "text/xml"}
+
+        # Webhook idempotency (claim-at-top): a Twilio retry of the SAME MessageSid
+        # — which a slow synchronous classify_message can trigger by blowing the
+        # ~15s webhook timeout — is deduped here before any state write, so we don't
+        # double-log the message / double-write meals. Fail-open: a missing sid or
+        # an unexpected claim error falls through and processes. The claim is
+        # RELEASED in the except handler so a crash-after-claim can be retried.
+        if not claim_message_sid(message_sid, user.id):
+            logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
         # Clear quiet_until if it's passed or if user is texting us
         # quiet_until is stored as naive UTC
@@ -1198,6 +1211,12 @@ def webhook():
 
     except Exception as e:
         logger.error(f"Error handling SMS from {from_number}: {e}", exc_info=True)
+        # Release the idempotency claim so this message isn't permanently deduped
+        # against a pass that never finished — a later Twilio retry can reprocess
+        # it cleanly. (We keep the friendly 200 here; the observed bug is the
+        # concurrent-retry double-write, which claim-at-top already fixes. Actively
+        # forcing a retry via 5xx is a separate, deferred decision — see CHANGESPEC.)
+        release_message_sid(message_sid)
         return get_twiml_response("Something went wrong on my end — I'll be back shortly."), 200, {"Content-Type": "text/xml"}
     finally:
         session.close()

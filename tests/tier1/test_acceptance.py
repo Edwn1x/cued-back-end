@@ -143,12 +143,10 @@ def test_changed_numeric_fact_yields_one_current_value(db):
 
 # ─── Failure 9 (investigation): no webhook idempotency ───────────────────────
 
-@pytest.mark.xfail(strict=True, reason="webhook idempotency — no MessageSid "
-                   "dedup, so a Twilio retry double-writes; fixed in Phase 1")
 def test_duplicate_message_sid_produces_one_inbound(db, driver):
     """Twilio re-delivers a message (slow synchronous classify_message exceeds
     its ~15s webhook timeout). Replaying the same MessageSid must write state
-    once. Today it writes twice — the likely duplicate-meal root cause."""
+    once. FIXED in Phase 1 (claim-at-top MessageSid dedup) — marker removed."""
     from tests.factories import make_user
     from models import get_session, Message
 
