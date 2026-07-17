@@ -85,8 +85,9 @@ def test_already_at_gym_suppresses_pre_workout_nudge(db, sms_capture):
 
 # ─── Failure 5a: injuries are immortal (never heal) ──────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="failure 5a — no heal-invalidation path; "
-                   "fixed when validity-window invalidation lands (Phase 1/3)")
+@pytest.mark.xfail(strict=True, reason="failure 5a — invalidation MECHANISM landed "
+                   "in Phase 1 (invalidate_entry + safety-trigger guard); the heal "
+                   "DETECTION trigger that calls it lands in Phase 3 (remember-invalidate)")
 def test_healed_injury_leaves_active_context(db, driver):
     """A previously-reported injury should leave active context once the user
     says it healed. Today nothing invalidates it, so it renders forever."""
@@ -115,12 +116,10 @@ def test_healed_injury_leaves_active_context(db, driver):
 
 # ─── Failure 5b: contradictory numeric facts coexist ─────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="failure 5b — numeric-divergent facts "
-                   "coexist; fixed in Phase 1 (substring-match + validity windows)")
 def test_changed_numeric_fact_yields_one_current_value(db):
     """'trains 3 days/week' then 'trains 5 days/week' should collapse to one
-    current fact. Today the dedup ladder treats different numbers as distinct
-    facts, so both persist."""
+    current fact. FIXED in Phase 1 (supersession of numeric-divergent near-matches
+    + validity windows: the old value moves to history) — xfail marker removed."""
     from memory import apply_facts
 
     profile, _ = apply_facts(None, [{

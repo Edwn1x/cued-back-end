@@ -62,6 +62,12 @@ CATEGORIES = (
     "goals",
 )
 
+# Validity windows: an invalidated entry is MOVED out of its category list into
+# this bucket, so every live reader (render, dedup, caps) sees only valid entries
+# with no per-reader filtering. Exempt from the injectable-size budget. Absence of
+# `invalidated_at` == valid, so pre-existing profiles need no backfill.
+HISTORY_KEY = "__history__"
+
 
 COACH_EMPTY_BLOCK = (
     "## WHAT YOU REMEMBER ABOUT THIS USER\n"
@@ -354,6 +360,55 @@ def _find_duplicate(category_entries: list, candidate_text: str):
     return None
 
 
+def _nonnumeric_core(text: str) -> set:
+    return {t for t in _tokenize(text) if not t.isdigit()}
+
+
+def _find_supersession_target(entries: list, candidate_text: str):
+    """
+    Failure-5b: a valid same-category entry that is the SAME fact with an updated
+    numeric value — 'trains 3 days/week' vs 'trains 5 days/week'. These are the
+    near-matches _find_duplicate deliberately skips as "numeric divergence"; here
+    we treat a UNIQUE such match as a supersession (recency wins) instead of
+    letting the contradiction coexist. Safety entries are never supersession
+    targets (they close only via explicit invalidate_entry). Zero or >1 match ->
+    None (ambiguous -> plain add, never guess).
+    """
+    cand_nums = _numeric_tokens(candidate_text)
+    if not cand_nums:
+        return None
+    cand_core = _nonnumeric_core(candidate_text)
+    matches = []
+    for e in entries:
+        if e.get("safety"):
+            continue
+        e_nums = _numeric_tokens(e.get("text", ""))
+        if e_nums and e_nums != cand_nums and \
+                _jaccard(cand_core, _nonnumeric_core(e.get("text", ""))) >= _JACCARD_DEDUP_THRESHOLD:
+            matches.append(e)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _find_substring_match(entries: list, fragment: str):
+    """
+    Distinctive-substring update matching (replaces byte-exact): a valid entry
+    whose text contains the fragment (or vice versa), case-insensitive. Requires
+    a UNIQUE non-safety match; zero or >1 -> None so the caller falls back to the
+    mismatch-logged-then-add path and never guesses.
+    """
+    frag = (fragment or "").strip().lower()
+    if not frag:
+        return None
+    matches = []
+    for e in entries:
+        if e.get("safety"):
+            continue
+        etext = (e.get("text") or "").lower()
+        if frag in etext or etext in frag:
+            matches.append(e)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -372,7 +427,7 @@ def _new_entry(text: str, safety: bool = False) -> dict:
 
 def _profile_total_chars(profile: dict) -> int:
     return sum(len(e.get("text", ""))
-               for entries in profile.values()
+               for cat, entries in profile.items() if cat != HISTORY_KEY
                for e in (entries or []))
 
 
@@ -391,7 +446,8 @@ def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
     text, reason} so we can tune caps.
     """
     candidates = []  # (uses, ts, category, idx, entry)
-    targets = [prefer_category] if prefer_category else list(profile.keys())
+    targets = ([prefer_category] if prefer_category
+               else [c for c in profile.keys() if c != HISTORY_KEY])
     for cat in targets:
         entries = profile.get(cat) or []
         for i, e in enumerate(entries):
@@ -421,6 +477,8 @@ def _enforce_caps(profile: dict, user_id=None) -> None:
     hard = config.USER_PROFILE_MEMORY_CHAR_LIMIT
 
     for cat in list(profile.keys()):
+        if cat == HISTORY_KEY:
+            continue
         while _category_chars(profile.get(cat) or []) > soft:
             if not _evict_one(profile, prefer_category=cat,
                               user_id=user_id, reason="category_soft_cap"):
@@ -502,14 +560,15 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
 
         if action == "update":
             if replaces_text:
-                target = next((e for e in entries if e.get("text") == replaces_text), None)
+                target = _find_substring_match(entries, replaces_text)
                 if target is not None:
-                    # Don't downgrade a safety entry to non-safety on update.
-                    new_safety = bool(target.get("safety")) or is_safety
-                    target["text"] = text
-                    target["ts"] = _now_iso()
-                    if new_safety:
-                        target["safety"] = True
+                    # Distinctive-substring match (was byte-exact). Invalidate the
+                    # old value (history-preserving, auditable) and add the new one.
+                    # Safety targets are excluded by _find_substring_match — a safety
+                    # fact closes only via the explicit trigger-guarded invalidate.
+                    invalidate_entry(profile, target["id"], by="superseded",
+                                     trigger=(f"user_id:{user_id}" if user_id else "apply_facts_update"))
+                    entries.append(_new_entry(text, safety=is_safety))
                     stats["updated"] += 1
                     continue
                 logger.warning(
@@ -538,6 +597,19 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
                 dup["safety"] = True
             stats["deduped"] += 1
             continue
+
+        # Failure-5b supersession: a numeric-divergent near-match (same fact, new
+        # value — "trains 3 days/week" -> "trains 5 days/week") is superseded, not
+        # left to coexist. Non-safety only; a unique match required (ambiguous ->
+        # plain add, never guess).
+        if not is_safety:
+            super_target = _find_supersession_target(entries, text)
+            if super_target is not None:
+                invalidate_entry(profile, super_target["id"], by="superseded_by_recency",
+                                 trigger=(f"user_id:{user_id}" if user_id else "apply_facts_add"))
+                entries.append(_new_entry(text, safety=is_safety))
+                stats["updated"] += 1
+                continue
 
         entries.append(_new_entry(text, safety=is_safety))
         stats["added"] += 1
@@ -596,11 +668,53 @@ def bump_uses(profile, entry_ids) -> dict:
     if not entry_ids:
         return profile
     target = set(entry_ids)
-    for entries in (profile or {}).values():
+    for cat, entries in (profile or {}).items():
+        if cat == HISTORY_KEY:
+            continue
         for e in entries or []:
             if e.get("id") in target:
                 e["uses"] = (e.get("uses") or 0) + 1
     return profile
+
+
+def invalidate_entry(profile, entry_id, *, by, trigger=None, at=None) -> bool:
+    """
+    Invalidate a currently-valid entry by id: stamp lifecycle metadata and MOVE
+    it into HISTORY_KEY (out of every live reader's path). Returns True if
+    invalidated, False if not found OR rejected.
+
+    Safety guard (load-bearing once the model gets write access in Phase 3): a
+    `safety:true` entry may only be closed WITH a recorded `trigger` — the message
+    id / actor that justified it. A safety closure without a trigger is REJECTED
+    (the entry stays valid) and logged; a hallucinated invalidation of a real
+    allergy/injury is the worst single write this system can make. Every genuine
+    safety closure logs at WARNING so nightly consolidation can surface it.
+    """
+    for cat in list((profile or {}).keys()):
+        if cat == HISTORY_KEY:
+            continue
+        entries = profile.get(cat) or []
+        for i, e in enumerate(entries):
+            if e.get("id") != entry_id:
+                continue
+            if e.get("safety") and not (trigger and str(trigger).strip()):
+                logger.warning(
+                    "SAFETY_INVALIDATION_REJECTED entry_id=%s by=%s reason=no_trigger text=%r",
+                    entry_id, by, e.get("text"),
+                )
+                return False
+            e["invalidated_at"] = at or _now_iso()
+            e["invalidated_by"] = by
+            e["invalidated_trigger"] = trigger
+            profile.setdefault(HISTORY_KEY, []).append({**e, "category": cat})
+            entries.pop(i)
+            if e.get("safety"):
+                logger.warning(
+                    "SAFETY_INVALIDATION entry_id=%s by=%s trigger=%s text=%r",
+                    entry_id, by, trigger, e.get("text"),
+                )
+            return True
+    return False
 
 
 # ─── A5: deterministic safety pre-pass ───────────────────────────────────────
