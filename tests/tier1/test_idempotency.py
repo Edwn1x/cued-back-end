@@ -44,9 +44,12 @@ def test_duplicate_sid_writes_state_once(db, driver):
     assert ledger == 1
 
 
-def test_crash_after_claim_releases_sid_so_retry_reprocesses(db, driver, monkeypatch):
+def test_crash_after_claim_releases_sid_so_redelivery_reprocesses(db, driver, monkeypatch):
     """A crash in the synchronous pass after the claim must not permanently
-    dedupe the message — the claim is released so Twilio's retry reprocesses."""
+    dedupe the message — the claim is released so a genuine re-delivery of the
+    same sid (or a user resend) can reprocess. NOTE: Twilio does not auto-retry
+    inbound webhooks by default, so the crash itself is logged WEBHOOK_DROPPED;
+    the release only prevents a poisoned claim from blocking a later delivery."""
     import app
     from tests.factories import make_user
     from models import get_session, Message, ProcessedMessage

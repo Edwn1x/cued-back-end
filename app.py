@@ -1210,12 +1210,19 @@ def webhook():
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     except Exception as e:
-        logger.error(f"Error handling SMS from {from_number}: {e}", exc_info=True)
-        # Release the idempotency claim so this message isn't permanently deduped
-        # against a pass that never finished — a later Twilio retry can reprocess
-        # it cleanly. (We keep the friendly 200 here; the observed bug is the
-        # concurrent-retry double-write, which claim-at-top already fixes. Actively
-        # forcing a retry via 5xx is a separate, deferred decision — see CHANGESPEC.)
+        # Twilio does NOT retry inbound-message webhooks on 5xx or read-timeout by
+        # default — its default retry policy is connect-timeout only (verified
+        # against Twilio's webhook connection-overrides docs). So a crash here
+        # cannot self-heal via an automatic retry; the inbound is dropped. We:
+        #   (a) log it at ERROR as WEBHOOK_DROPPED so the drop is OBSERVABLE, and
+        #   (b) release the idempotency claim so that IF this sid is genuinely
+        #       re-delivered (occasional duplicate deliveries do happen) or the
+        #       user resends, it can be reprocessed instead of deduped against a
+        #       pass that never finished.
+        # (Returning 5xx would only help if Twilio were configured with an rp
+        # override / fallback URL — a messaging-rail config decision, not code.)
+        logger.error("WEBHOOK_DROPPED sid=%s from=%s err=%s",
+                     message_sid, from_number, e, exc_info=True)
         release_message_sid(message_sid)
         return get_twiml_response("Something went wrong on my end — I'll be back shortly."), 200, {"Content-Type": "text/xml"}
     finally:

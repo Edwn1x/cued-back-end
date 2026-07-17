@@ -99,10 +99,23 @@ turn — the drift source (failure 4).
 
 ## 5. MessageSid idempotency (NOT flag-gated — ships live on merge)
 
-**Verified root cause (Phase 0):** webhook reads `From/Body/NumMedia/MediaUrl0`, **never
-`MessageSid`**; no dedup; `Message` has no provider-sid column/constraint. A slow synchronous
-`classify_message` before Twilio's HTTP response exceeds Twilio's ~15s webhook timeout → Twilio
-re-delivers → whole synchronous pass + a fresh buffer cycle run twice → double write.
+**CORRECTION (Twilio semantics verified against docs — Phase 0 over-claimed the mechanism).**
+What was verified in Phase 0 and holds: the webhook reads `From/Body/NumMedia/MediaUrl0`, **never
+`MessageSid`**; there is no dedup and `Message` has no provider-sid column/constraint. What was
+*assumed* and is **wrong**: that a slow `classify_message` → ~15s timeout makes Twilio re-deliver.
+Twilio's **default inbound-webhook retry policy is connect-timeout only (`rp=ct`)** — 5xx and
+read-timeouts are **not** retried unless the `rp` param is overridden; on failure Twilio invokes a
+configured **fallback URL**, not an automatic primary retry
+(https://www.twilio.com/docs/usage/webhooks/webhooks-connection-overrides). So a slow-but-responding
+webhook does **not** trigger a duplicate delivery.
+
+**Revised duplicate-meal read:** the observed duplicate meals are most likely the **within-request
+photo+text double-write** (one photo firing both the photo handler and a text-extraction path) —
+a single MessageSid, which **dedup does not catch** and which is fixed at source in **Phase 3** —
+and/or occasional **genuine** duplicate deliveries (same sid re-sent by Twilio/carriers), which dedup
+**does** catch. **The MessageSid dedup is still correct and worth keeping**: it's a real idempotency
+primitive and catches genuine duplicate deliveries; its rationale just shifts from "fixes the
+timeout-retry duplicate" to "catches genuine duplicate deliveries + defense-in-depth."
 
 **Most conservative design (this is the one item that live-patches the founder's own rail):**
 - **Storage:** a dedicated `processed_messages` table with a **UNIQUE** column on the Twilio
@@ -114,12 +127,14 @@ re-delivers → whole synchronous pass + a fresh buffer cycle run twice → doub
     so *concurrent* retries — the observed bug: Twilio re-delivers while the slow first pass is
     still running — hit the unique violation and early-return. On unique-violation: early-return
     empty TwiML + loud `WEBHOOK_DUPLICATE sid=… user=…`.
-  - **Release the claim on unhandled exception** in the synchronous pass (delete the row / mark
-    failed) so a pass that *crashes after claiming* doesn't leave a poisoned claim that would
-    silently drop Twilio's retry — that would be fail-closed sneaking into a fail-open design.
-    Known mode (slow LLM → late 200 → retry after success) **keeps** the claim; unknown mode
-    (crash) **releases** it so the retry reprocesses cleanly. Requires the crash to yield a
-    retry-eligible response — see change-spec decision on the existing friendly-200 handler.
+  - **Release the claim on unhandled exception** in the synchronous pass (delete the row) so a
+    crash-after-claim doesn't leave a **poisoned claim** that would dedupe (drop) a *genuine* later
+    re-delivery of the same sid. Because Twilio does not auto-retry inbound webhooks (above), a
+    crash cannot self-heal via retry — so the except handler **logs `WEBHOOK_DROPPED` at ERROR**
+    (the drop is observable, not silent) and keeps the friendly 200. The release is justified by
+    "don't poison a genuine re-delivery," **not** by a 5xx self-heal (which would require Twilio-side
+    `rp`/fallback config, out of scope). This is the honest version of the earlier "self-heal"
+    framing, which was wrong given Twilio's actual retry semantics.
 - **Fail-open (critical):** a dedup *miss* must never drop a real message. Missing sid (shouldn't
   happen with Twilio) or any **non-uniqueness** insert error → **fall through and process** (a rare
   duplicate beats a dropped message). The uniqueness guarantee is the DB constraint, not app logic.
@@ -128,9 +143,10 @@ re-delivers → whole synchronous pass + a fresh buffer cycle run twice → doub
 - **Isolated commit**, its own migration + migration test, and a **DEPLOY NOTE** in the phase
   summary (changes prod webhook behavior for every inbound the moment it merges; run `migrate.py`
   before/with deploy so the table exists). **Post-deploy observability:** grep Railway logs for
-  `WEBHOOK_DUPLICATE` over a few days — hits correlating with slow requests both confirm the fix
-  and *quantify* how often the duplicate bug was firing, closing the duplicate-meal loop with data
-  instead of inference.
+  `WEBHOOK_DUPLICATE` (genuine duplicate deliveries the dedup caught — quantifies how often Twilio/
+  carriers actually re-deliver) and `WEBHOOK_DROPPED` (inbounds lost to a crash — should be ~zero;
+  each one is a real dropped message to investigate). Note the duplicate-meal *source* fix is the
+  Phase 3 photo+text double-write, not this dedup.
 
 ## 6. External facts to verify (spec Rule 1)
 
