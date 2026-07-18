@@ -19,6 +19,7 @@ from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
+from events import apply_event_signals_task
 from cost_tracking import track as track_usage
 
 # ─── Setup ──────────────────────────────────────────
@@ -1040,6 +1041,13 @@ def webhook():
         # Runs per raw message, before buffer combination — more robust
         # than running on the combined blob.
         apply_safety_signals_task(user.id, body)
+
+        # Fix 3 event floor: synchronous, deterministic detection of the two
+        # nudge-critical statuses (went_to_gym, in_class) — same floor pattern as
+        # the safety pre-pass, and for the same reason: the failure being fixed is
+        # "I *just* said it", so the scheduler gates must be able to read it
+        # immediately, without waiting on the buffer or an LLM. Regex only.
+        apply_event_signals_task(user.id, body)
 
         # Reset engagement decay counter on any reply
         reset_unanswered(user.id)

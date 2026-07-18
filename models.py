@@ -309,6 +309,28 @@ class ProcessedMessage(Base):
     received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class Event(Base):
+    """
+    Append-only episodic record: things that happened. Written synchronously on
+    the inbound path by a deterministic regex floor for the two nudge-critical
+    types (went_to_gym, in_class) — same pattern as the safety pre-pass. Read via
+    events.todays_events(), which windows by the user's LOCAL day (a 5pm-Pacific
+    gym visit is 1am-UTC-tomorrow, so a naive UTC window would mis-bucket it).
+
+    Timestamps are stored as naive UTC (matching quiet_until / session_state).
+    """
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life
+    occurred_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    ends_at = Column(DateTime, nullable=True)         # e.g. in_class end (naive UTC); None = use default duration
+    source = Column(String(20), default="regex")      # regex | model
+    raw_text = Column(Text)                            # the message snippet that triggered detection
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 def claim_message_sid(message_sid: str, user_id: int = None) -> bool:
     """
     Claim a Twilio MessageSid for idempotent processing.

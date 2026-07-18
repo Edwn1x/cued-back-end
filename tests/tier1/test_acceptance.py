@@ -57,14 +57,12 @@ def test_cross_domain_fact_reaches_a_different_agent(db):
 
 # ─── Failure 3: scheduler blind to conversation ("already went") ─────────────
 
-@pytest.mark.xfail(strict=True, reason="failure 3 — scheduler gates ignore "
-                   "'already went'/'in class'; fixed in Phase 1 (Event table)")
 def test_already_at_gym_suppresses_pre_workout_nudge(db, sms_capture):
-    """User is already at the gym (session_state=at_gym). A pre_workout nudge
-    should not fire. Today no scheduler gate consults that signal, so it does."""
+    """A went_to_gym event today must suppress the pre_workout nudge. FIXED in
+    Phase 1 (Event table + scheduler gate) — xfail marker removed."""
     from tests.factories import make_user
-    from models import set_session_state
     from engagement_tracker import should_send
+    from events import record_event
     import scheduler
 
     user = make_user(
@@ -72,15 +70,14 @@ def test_already_at_gym_suppresses_pre_workout_nudge(db, sms_capture):
         confirmed_training_days="mon,tue,wed,thu,fri,sat,sun",  # always a training day
         unanswered_count=0,
     )
-    set_session_state(user.id, "at_gym")
+    record_event(user.id, "went_to_gym")  # the Phase 1 mechanism for "already went"
 
-    # Guard: the ONLY reason to suppress should be the already-went signal, not
-    # engagement gating — otherwise a spurious XPASS. Assert the message would
-    # otherwise be allowed to send.
+    # Guard: the ONLY reason to suppress should be the event, not engagement
+    # gating — otherwise a spurious pass. Assert it would otherwise be allowed.
     assert should_send(user, "pre_workout"), "engagement gate would suppress; fix setup"
 
     scheduler.send_scheduled_message(user.id, "pre_workout")
-    assert sms_capture == [], f"nudge fired despite already being at the gym: {sms_capture}"
+    assert sms_capture == [], f"nudge fired despite an already-went-to-gym event: {sms_capture}"
 
 
 # ─── Failure 5a: injuries are immortal (never heal) ──────────────────────────

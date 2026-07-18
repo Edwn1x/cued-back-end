@@ -148,6 +148,20 @@ MIGRATIONS = [
         user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         received_at TIMESTAMP DEFAULT NOW()
     )""",
+    # Phase 1: append-only episodic Event table (went_to_gym, in_class, ...),
+    # written synchronously by the deterministic inbound detector; read by the
+    # scheduler gates windowed to the user's LOCAL day.
+    """CREATE TABLE IF NOT EXISTS events (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        event_type VARCHAR(30) NOT NULL,
+        occurred_at TIMESTAMP DEFAULT NOW(),
+        ends_at TIMESTAMP,
+        source VARCHAR(20) DEFAULT 'regex',
+        raw_text TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_events_user_occurred ON events (user_id, occurred_at)",
 ]
 
 def wait_for_db(retries=10, delay=3):
@@ -163,19 +177,27 @@ def wait_for_db(retries=10, delay=3):
                 time.sleep(delay)
     raise SystemExit("Could not connect to the database after multiple retries.")
 
-wait_for_db()
+def run_migrations():
+    """Apply every idempotent statement in MIGRATIONS. Importable so the suite
+    can run it against a test DB (guarded below so `import migrate` has no side
+    effects)."""
+    with engine.connect() as conn:
+        for sql in MIGRATIONS:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+                logger.info(f"OK: {sql[:60]}...")
+            except Exception as e:
+                conn.rollback()
+                if "already exists" in str(e).lower():
+                    logger.info(f"SKIP (already exists): {sql[:60]}...")
+                else:
+                    logger.error(f"FAILED: {sql[:60]}... — {e}")
+    logger.info("Migration complete.")
 
-with engine.connect() as conn:
-    for sql in MIGRATIONS:
-        try:
-            conn.execute(text(sql))
-            conn.commit()
-            logger.info(f"OK: {sql[:60]}...")
-        except Exception as e:
-            conn.rollback()
-            if "already exists" in str(e).lower():
-                logger.info(f"SKIP (already exists): {sql[:60]}...")
-            else:
-                logger.error(f"FAILED: {sql[:60]}... — {e}")
+
+if __name__ == "__main__":
+    wait_for_db()
+    run_migrations()
 
 logger.info("Migration complete.")

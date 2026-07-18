@@ -157,6 +157,23 @@ def send_scheduled_message(user_id: int, message_type: str):
             logger.info(f"Skipping {message_type} for {user.name} (tier={tier}, unanswered={user.unanswered_count})")
             return
 
+        # Fix 3 event floor: suppress workout nudges when today's events say the
+        # coach would be wrong to send one. Suppression-only (can only WITHHOLD a
+        # message, never send a wrong one), so no feature flag — it ships live but
+        # in the safe direction. Every suppression is logged for the burn-in grep.
+        if message_type in ("pre_workout", "post_workout"):
+            from events import went_to_gym_today, in_class_now, todays_events
+            if message_type == "pre_workout" and went_to_gym_today(user_id):
+                ev = todays_events(user_id, "went_to_gym")
+                logger.info("NUDGE_SUPPRESSED type=%s user=%s reason=went_to_gym event_id=%s",
+                            message_type, user.name, ev[0].id if ev else None)
+                return
+            if in_class_now(user_id):
+                ev = todays_events(user_id, "in_class")
+                logger.info("NUDGE_SUPPRESSED type=%s user=%s reason=in_class event_id=%s",
+                            message_type, user.name, ev[0].id if ev else None)
+                return
+
         # pre/post_workout nudges only fire on known training days
         if message_type in ("pre_workout", "post_workout"):
             if not _is_training_day(user):
