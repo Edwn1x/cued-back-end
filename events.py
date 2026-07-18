@@ -144,6 +144,13 @@ def apply_event_signals_task(user_id: int, message: str):
         logger.info("EVENT_DETECTED user_id=%s type=%s event_id=%s ends_at=%s",
                     user_id, sig["event_type"], eid, ends_at)
 
+        # A completed gym visit is a "user confirms a completed day" trigger for
+        # the split pointer. A day named in the same message ("...did legs") is
+        # confirmed; otherwise code infers the next day. Write-time only.
+        if sig["event_type"] == "went_to_gym":
+            from split_pointer import advance_split_pointer, parse_named_split_day
+            advance_split_pointer(user_id, named_day=parse_named_split_day(message))
+
 
 def _local_day_window_utc(user) -> tuple[datetime, datetime]:
     """[start, end) of the user's LOCAL calendar day, as naive UTC."""

@@ -85,6 +85,15 @@ class User(Base):
     tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
     avg_steps = Column(Integer, default=None)  # average daily step count from onboarding
     current_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", "bro_split", "custom", "none"
+    # Phase 1 split pointer: two facts + provenance. The last COMPLETED split day
+    # and when, advanced only by code (split_pointer.advance_split_pointer). source
+    # distinguishes a user-confirmed day from an inferred one (an unnamed "already
+    # went" advance), so the model can hedge on inferred days and a named
+    # correction overwrites an inferred same-day value. NOT a "today's workout"
+    # field — the model derives that from the pointer at reasoning time.
+    split_pointer_day = Column(String(30), default=None)
+    split_pointer_at = Column(DateTime, default=None)
+    split_pointer_source = Column(String(10), default=None)  # "confirmed" | "inferred"
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context

@@ -162,6 +162,10 @@ MIGRATIONS = [
         created_at TIMESTAMP DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_events_user_occurred ON events (user_id, occurred_at)",
+    # Phase 1: split pointer (last completed split day + when + provenance).
+    "ALTER TABLE users ADD COLUMN split_pointer_day VARCHAR(30)",
+    "ALTER TABLE users ADD COLUMN split_pointer_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN split_pointer_source VARCHAR(10)",
 ]
 
 def wait_for_db(retries=10, delay=3):
