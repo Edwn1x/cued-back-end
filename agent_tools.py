@@ -194,6 +194,68 @@ MANAGE_LOG_TOOL = {
     },
 }
 
+LOG_MEAL_TOOL = {
+    "name": "log_meal",
+    "description": (
+        "Log a meal the user reports eating. READ-BEFORE-WRITE: first check "
+        "'TODAY'S LOGGED MEALS' in your context. If this is the SAME serving already "
+        "logged, do NOT log it again — reference the existing entry instead. If it's "
+        "a genuine SECOND serving of something similar, log it and set saw_similar to "
+        "the id(s) of the similar entries you saw (so the choice is auditable). If "
+        "you're unsure whether it's a repeat, ask the user one short question before "
+        "logging — never guess in either direction. Include macros if you can estimate them."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string"},
+            "calories": {"type": "integer"},
+            "protein_g": {"type": "integer"},
+            "carbs_g": {"type": "integer"},
+            "fat_g": {"type": "integer"},
+            "saw_similar": {"type": "array", "items": {"type": "integer"},
+                            "description": "ids of similar already-logged meals you saw and judged to be a distinct serving"},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Create a Meal (the model already did the read-before-write judgment) and
+    recompute today's totals. Records saw_similar so an intentional near-duplicate
+    is auditable and correctable via manage_log."""
+    description = (tool_input.get("description") or "").strip()
+    if not description:
+        return "error: description required"
+    saw_similar = tool_input.get("saw_similar") or []
+
+    session = get_session()
+    try:
+        note = f"saw_similar={saw_similar}" if saw_similar else None
+        meal = Meal(
+            user_id=user_id, description=description,
+            calories=tool_input.get("calories"), protein_g=tool_input.get("protein_g"),
+            carbs_g=tool_input.get("carbs_g"), fat_g=tool_input.get("fat_g"),
+            source="text", log_type="user_reported", notes=note,
+            eaten_at=_naive_utcnow(),
+        )
+        session.add(meal)
+        session.commit()
+        mid = meal.id
+    finally:
+        session.close()
+
+    recompute_daily_totals(user_id)
+    if saw_similar:
+        logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
+                    user_id, mid, saw_similar)
+    logger.info("LOG_MEAL user=%s meal_id=%s desc=%r", user_id, mid, description[:40])
+    return (f"ok: logged meal id={mid} ({tool_input.get('calories') or 0}cal/"
+            f"{tool_input.get('protein_g') or 0}g)"
+            + (f" [saw_similar={saw_similar}]" if saw_similar else ""))
+
+
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
 _EDITABLE = {
     "meal": {"calories", "protein_g", "carbs_g", "fat_g", "description", "notes"},
@@ -273,6 +335,7 @@ _HANDLERS = {
     "remember": handle_remember,
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
+    "log_meal": handle_log_meal,
 }
 
 
