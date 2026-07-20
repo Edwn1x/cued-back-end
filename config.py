@@ -61,3 +61,7 @@ WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() =
 # low effort held constant (see rewrite/phase-2/INVESTIGATION.md §5).
 AGENT_LOOP_MODEL = "claude-sonnet-5"
 SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lower() == "true"
+
+# Phase 3 tools — each behind its own flag, added one at a time.
+AGENT_LOOP_MAX_TOOL_ITERS = 5   # safety bound on the tool-execution loop
+REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"

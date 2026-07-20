@@ -139,8 +139,9 @@ def build_loop_context(user, session) -> str:
     return "\n\n".join(parts)
 
 
-def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None) -> str:
-    """One model call → the reply text. Raises on failure (caller falls back to legacy)."""
+def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
+                   message_id: str = None) -> str:
+    """One agentic turn → the reply text. Raises on failure (caller falls back to legacy)."""
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -161,22 +162,47 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     else:
         user_content = combined_body
 
-    resp = client.messages.create(
-        model=config.AGENT_LOOP_MODEL,
-        max_tokens=config.MAX_RESPONSE_TOKENS,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "low"},
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-    )
+    # Assemble the enabled tool set (each behind its own flag, added one at a time).
+    tools = []
+    if config.REMEMBER_TOOL_ENABLED:
+        from agent_tools import REMEMBER_TOOL
+        tools.append(REMEMBER_TOOL)
 
-    try:
-        track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp.usage)
-    except Exception as e:  # cost telemetry must never break the reply
-        logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
+    messages = [{"role": "user", "content": user_content}]
+    for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
+        kwargs = dict(
+            model=config.AGENT_LOOP_MODEL,
+            max_tokens=config.MAX_RESPONSE_TOKENS,
+            thinking={"type": "adaptive"},  # held constant; switching modes breaks the messages cache
+            output_config={"effort": "low"},
+            system=system,
+            messages=messages,
+        )
+        if tools:
+            kwargs["tools"] = tools
+        resp = client.messages.create(**kwargs)
 
-    # Adaptive thinking can put (empty) thinking blocks first — take the text block.
-    text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-    if not text.strip():
-        raise RuntimeError("agent loop returned no text block")
-    return text
+        try:
+            track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp.usage)
+        except Exception as e:  # cost telemetry must never break the reply
+            logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
+
+        # The model requested a tool: execute it (code-mediated), feed the result back.
+        if getattr(resp, "stop_reason", None) == "tool_use":
+            from agent_tools import dispatch_tool
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for block in resp.content:
+                if getattr(block, "type", None) == "tool_use":
+                    out = dispatch_tool(block.name, block.input, user.id, message_id=message_id)
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+            messages.append({"role": "user", "content": results})
+            continue
+
+        # Adaptive thinking can put (empty) thinking blocks first — take the text block.
+        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
+        if not text.strip():
+            raise RuntimeError("agent loop returned no text block")
+        return text
+
+    raise RuntimeError("agent loop exceeded max tool iterations")
