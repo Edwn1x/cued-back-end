@@ -23,7 +23,7 @@ import anthropic
 import config
 from cost_tracking import track
 from memory import render_categories, CATEGORIES, render_body_line, render_dietary_line
-from models import get_session, User, Message, Workout
+from models import get_session, User, Message, Workout, Meal, active
 from events import todays_events
 from split_pointer import get_split_pointer
 
@@ -116,12 +116,35 @@ def build_loop_context(user, session) -> str:
         )
         parts.append(f"## RECENT CONVERSATION\n{window}")
 
-    # 7. Recent training log.
-    workouts = (session.query(Workout)
-                .filter(Workout.user_id == user.id)
+    # 7. Today's logged meals (ACTIVE only) — with short IDs + macros. This is the
+    # "read" for read-before-write: the model sees what's already logged and decides
+    # log vs skip vs a legitimate second serving, instead of a deterministic dedup
+    # silently dropping real calories. It also lets the model reference/correct an
+    # entry by id via manage_log.
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo as _ZI
+    try:
+        _tz = _ZI(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        _tz = _ZI("America/Los_Angeles")
+    _mid = datetime.now(_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    _start = _mid.astimezone(timezone.utc).replace(tzinfo=None)
+    _end = (_mid + _td(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    meals = (active(session, Meal, user_id=user.id)
+             .filter(Meal.eaten_at >= _start, Meal.eaten_at < _end)
+             .order_by(Meal.eaten_at).all())
+    if meals:
+        ml = "\n".join(
+            f"[id {m.id}] {m.eaten_at:%H:%M}Z {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
+            for m in meals)
+        parts.append("## TODAY'S LOGGED MEALS (already recorded — reference by id; do not "
+                     "double-log the same serving; a genuine second serving is fine)\n" + ml)
+
+    # 8. Recent training log (active only).
+    workouts = (active(session, Workout, user_id=user.id)
                 .order_by(Workout.date.desc()).limit(5).all())
     if workouts:
-        wl = "\n".join(f"{w.date:%m-%d} ({w.workout_type})" for w in workouts)
+        wl = "\n".join(f"[id {w.id}] {w.date:%m-%d} ({w.workout_type})" for w in workouts)
         parts.append(f"## RECENT WORKOUTS\n{wl}")
 
     # 8. Known gaps + follow-up permission.

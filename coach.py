@@ -3,7 +3,7 @@ import anthropic
 from datetime import datetime, timezone as _tz
 from pathlib import Path
 import config
-from models import get_session, User, Message, Workout, DailyLog, Meal, ensure_todays_totals, get_session_state
+from models import get_session, User, Message, Workout, DailyLog, Meal, ensure_todays_totals, get_session_state, active
 from skill_loader import get_skills_for_message_type, get_all_skills
 from engagement_tracker import get_tier
 from models import is_workout_confirmed_today
@@ -160,7 +160,7 @@ def build_context(user: User, message_type: str = "freeform") -> tuple[str, str]
         local_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(_tz.utc)
         today_meals = (
-            session.query(Meal)
+            active(session, Meal)
             .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start_utc)
             .order_by(Meal.eaten_at.asc())
             .all()

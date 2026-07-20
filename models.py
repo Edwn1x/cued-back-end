@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -196,6 +196,7 @@ class Workout(Base):
     user_notes = Column(Text)  # what the user reported back
     ai_notes = Column(Text)  # coach's parsed observations
     completed = Column(Boolean, default=False)
+    deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()
 
     user = relationship("User", back_populates="workouts")
 
@@ -216,6 +217,7 @@ class Meal(Base):
     log_type = Column(String(30))  # "user_reported", "confirmed_suggestion"
     confidence = Column(String(10))  # "high", "medium", "low"
     notes = Column(Text)  # any clarifying details
+    deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()
 
     user = relationship("User", back_populates="meals")
 
@@ -338,6 +340,7 @@ class Event(Base):
     source = Column(String(20), default="regex")      # regex | model
     raw_text = Column(Text)                            # the message snippet that triggered detection
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
 
 
 def claim_message_sid(message_sid: str, user_id: int = None) -> bool:
@@ -662,6 +665,46 @@ def ensure_todays_totals(user_id: int):
             user.fat_today = 0
             user.totals_date = today_str
             session.commit()
+    finally:
+        session.close()
+
+
+def active(session, Model, user_id=None):
+    """Soft-delete CHOKEPOINT. Every reader of a soft-deletable table (Meal,
+    Workout, Event) queries through this, so a future reader can't forget the
+    deleted filter and resurrect ghost rows. Returns a Query to further filter/order."""
+    q = session.query(Model).filter(Model.deleted_at.is_(None))
+    if user_id is not None:
+        q = q.filter(Model.user_id == user_id)
+    return q
+
+
+def recompute_daily_totals(user_id: int):
+    """Recompute today's cal/protein/carb/fat from ACTIVE meals in the user's local
+    day. The counters are denormalized (incremented per meal), so a soft-delete or
+    edit must recompute from source — not just filter a query — or a deleted meal's
+    macros linger in the totals (the correction round-trip depends on this)."""
+    from zoneinfo import ZoneInfo
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return
+        try:
+            tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            tz = ZoneInfo("America/Los_Angeles")
+        midnight_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = midnight_local.astimezone(timezone.utc).replace(tzinfo=None)
+        end = (midnight_local + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+        meals = (active(session, Meal, user_id=user_id)
+                 .filter(Meal.eaten_at >= start, Meal.eaten_at < end).all())
+        user.calories_today = sum(m.calories or 0 for m in meals)
+        user.protein_today = sum(m.protein_g or 0 for m in meals)
+        user.carbs_today = sum(m.carbs_g or 0 for m in meals)
+        user.fat_today = sum(m.fat_g or 0 for m in meals)
+        user.totals_date = midnight_local.strftime("%Y-%m-%d")
+        session.commit()
     finally:
         session.close()
 
