@@ -202,6 +202,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.GET_DINING_MENU_TOOL_ENABLED:
         from agent_tools import GET_DINING_MENU_TOOL
         tools.append(GET_DINING_MENU_TOOL)
+    if config.WEB_SEARCH_TOOL_ENABLED:
+        # Server-side tool: Anthropic runs the search inline and returns results as
+        # content blocks; no client handler. Output/query hygiene are prompt rules
+        # in voice.md (speak findings naturally, no links; no user PII in queries).
+        tools.append({"type": "web_search_20260209", "name": "web_search",
+                      "max_uses": config.WEB_SEARCH_MAX_USES})
 
     messages = [{"role": "user", "content": user_content}]
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
@@ -222,7 +228,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         except Exception as e:  # cost telemetry must never break the reply
             logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
 
-        # The model requested a tool: execute it (code-mediated), feed the result back.
+        # Server-side tool (web_search) hit its iteration limit — re-send to resume.
+        if getattr(resp, "stop_reason", None) == "pause_turn":
+            messages.append({"role": "assistant", "content": resp.content})
+            continue
+
+        # The model requested a client tool: execute it (code-mediated), feed the result back.
         if getattr(resp, "stop_reason", None) == "tool_use":
             from agent_tools import dispatch_tool
             messages.append({"role": "assistant", "content": resp.content})
