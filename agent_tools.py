@@ -15,7 +15,7 @@ import logging
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from models import get_session, User
+from models import get_session, User, Workout, confirm_workout_today
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
 logger = logging.getLogger("cued.agent_tools")
@@ -103,8 +103,74 @@ def handle_remember(user_id: int, tool_input: dict, *, message_id=None) -> str:
         session.close()
 
 
+LOG_WORKOUT_TOOL = {
+    "name": "log_workout",
+    "description": (
+        "Log a COMPLETED workout the user reports doing. Records the session and "
+        "advances the split pointer (code-mediated). Pass split_day when the user "
+        "names it ('did legs') — that's a confirmed advance; omit it for a plain "
+        "'just worked out' and code infers the next day. Include exercises the user "
+        "mentioned with any sets/reps/weight."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "split_day": {"type": "string",
+                          "description": "the named day if the user said it: push/pull/legs/upper/lower/full_body"},
+            "exercises": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "sets": {"type": "integer"},
+                        "reps": {"type": "integer"},
+                        "weight": {"type": "number"},
+                    },
+                    "required": ["name"],
+                },
+            },
+            "notes": {"type": "string", "description": "anything the user said about the session"},
+        },
+        "required": [],
+    },
+}
+
+
+def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Create a Workout and advance the split pointer under the Phase-1 policy."""
+    from split_pointer import advance_split_pointer, parse_named_split_day
+
+    exercises = tool_input.get("exercises") or []
+    split_day = (tool_input.get("split_day") or "").strip().lower() or None
+    notes = tool_input.get("notes")
+
+    session = get_session()
+    try:
+        user = (session.query(User).filter(User.id == user_id)
+                .with_for_update().one_or_none())
+        if not user:
+            return "error: user not found"
+        w = Workout(user_id=user_id, workout_type=(split_day or "logged"),
+                    exercises=exercises, user_notes=notes, completed=True)
+        session.add(w)
+        session.commit()
+        wid = w.id
+    finally:
+        session.close()
+
+    confirm_workout_today(user_id)
+    # named day -> confirmed advance; else infer from the notes, then the cycle.
+    day = split_day or parse_named_split_day(notes or "")
+    pointer = advance_split_pointer(user_id, named_day=day)
+    logger.info("LOG_WORKOUT_TOOL user=%s workout_id=%s split_day=%s pointer=%s",
+                user_id, wid, split_day, pointer)
+    return (f"ok: logged workout (id={wid}, {len(exercises)} exercises)"
+            + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else ""))
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
-_HANDLERS = {"remember": handle_remember}
+_HANDLERS = {"remember": handle_remember, "log_workout": handle_log_workout}
 
 
 def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> str:

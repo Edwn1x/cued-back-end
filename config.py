@@ -65,3 +65,4 @@ SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lowe
 # Phase 3 tools — each behind its own flag, added one at a time.
 AGENT_LOOP_MAX_TOOL_ITERS = 5   # safety bound on the tool-execution loop
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
+LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
