@@ -180,8 +180,15 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     else:
         system = f"{voice}\n\n{context}"
 
-    if image_data:
-        user_content = [image_data, {"type": "text", "text": combined_body or "(image)"}]
+    if image_data and config.READ_IMAGE_ENABLED:
+        # The model sees the image and routes it in-call (food/calendar/whiteboard/
+        # other) — no pre-classifier. Log the receipt as corpus for schema tuning.
+        logger.info("AGENT_LOOP_IMAGE user=%s — vision routing (read_image corpus marker)", user.id)
+        user_content = [image_data, {"type": "text", "text": combined_body or "(the user sent an image)"}]
+    elif image_data:
+        # read_image off: don't send vision; note it so the coach can ask, never invent.
+        user_content = ((combined_body or "")
+                        + "\n[the user sent an image you can't see — ask them what it shows]")
     else:
         user_content = combined_body
 

@@ -73,3 +73,7 @@ GET_DINING_MENU_TOOL_ENABLED = os.getenv("GET_DINING_MENU_TOOL_ENABLED", "false"
 # inline, no client handler. Adds per-search billing on top of tokens.
 WEB_SEARCH_TOOL_ENABLED = os.getenv("WEB_SEARCH_TOOL_ENABLED", "false").lower() == "true"
 WEB_SEARCH_MAX_USES = 3
+# read_image: send inbound MMS to the model's vision so IT routes food/calendar/
+# whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
+# real screenshots refine it (see voice.md).
+READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
