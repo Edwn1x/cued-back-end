@@ -1,7 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import config
+
+logger = logging.getLogger("cued.models")
 
 engine = create_engine(config.DATABASE_URL, echo=False)
 Session = sessionmaker(bind=engine)
@@ -81,6 +85,15 @@ class User(Base):
     tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
     avg_steps = Column(Integer, default=None)  # average daily step count from onboarding
     current_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", "bro_split", "custom", "none"
+    # Phase 1 split pointer: two facts + provenance. The last COMPLETED split day
+    # and when, advanced only by code (split_pointer.advance_split_pointer). source
+    # distinguishes a user-confirmed day from an inferred one (an unnamed "already
+    # went" advance), so the model can hedge on inferred days and a named
+    # correction overwrites an inferred same-day value. NOT a "today's workout"
+    # field — the model derives that from the pointer at reasoning time.
+    split_pointer_day = Column(String(30), default=None)
+    split_pointer_at = Column(DateTime, default=None)
+    split_pointer_source = Column(String(10), default=None)  # "confirmed" | "inferred"
     pending_photo_meal = Column(Text, default=None)  # JSON blob of initial photo estimate, cleared after user answers
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context
@@ -280,6 +293,96 @@ class TokenUsage(Base):
     cache_read_input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
     cost_usd = Column(Float, default=0.0)
+
+
+class ProcessedMessage(Base):
+    """
+    Webhook idempotency ledger — one row per Twilio MessageSid we have accepted
+    for processing. The UNIQUE constraint on message_sid is the whole mechanism:
+    a re-delivered inbound (Twilio retries webhooks it can't answer within ~15s,
+    which a slow synchronous classify_message can trip) hits the constraint and
+    is deduped instead of double-writing state. Append-only; kept off the hot
+    `messages` table so it's independently revertable.
+
+    Claimed at the top of the webhook (so concurrent retries dedupe) and RELEASED
+    on an unhandled exception in the synchronous pass (so a crash-after-claim
+    doesn't leave a poisoned claim that would silently drop Twilio's retry).
+    """
+    __tablename__ = "processed_messages"
+
+    id = Column(Integer, primary_key=True)
+    message_sid = Column(String(64), unique=True, nullable=False)
+    # ON DELETE SET NULL so deleting a user never fails on this ledger (same
+    # discipline as token_usage); the dedup row is not worth blocking a delete.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Event(Base):
+    """
+    Append-only episodic record: things that happened. Written synchronously on
+    the inbound path by a deterministic regex floor for the two nudge-critical
+    types (went_to_gym, in_class) — same pattern as the safety pre-pass. Read via
+    events.todays_events(), which windows by the user's LOCAL day (a 5pm-Pacific
+    gym visit is 1am-UTC-tomorrow, so a naive UTC window would mis-bucket it).
+
+    Timestamps are stored as naive UTC (matching quiet_until / session_state).
+    """
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life
+    occurred_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    ends_at = Column(DateTime, nullable=True)         # e.g. in_class end (naive UTC); None = use default duration
+    source = Column(String(20), default="regex")      # regex | model
+    raw_text = Column(Text)                            # the message snippet that triggered detection
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+def claim_message_sid(message_sid: str, user_id: int = None) -> bool:
+    """
+    Claim a Twilio MessageSid for idempotent processing.
+
+    Returns True  -> PROCEED (newly claimed, OR fail-open on a missing sid /
+                     unexpected error — a rare duplicate beats a dropped message).
+    Returns False -> this sid was already processed; caller should stop (duplicate).
+
+    Fail-open is deliberate: on a messaging rail, never let dedup bookkeeping drop
+    a real message. Only a genuine UNIQUE violation returns False.
+    """
+    if not message_sid:
+        return True
+    session = get_session()
+    try:
+        session.add(ProcessedMessage(message_sid=message_sid, user_id=user_id))
+        session.commit()
+        return True
+    except IntegrityError:
+        session.rollback()
+        return False
+    except Exception as e:  # noqa: BLE001 — fail open on anything unexpected
+        session.rollback()
+        logger.warning("SID_CLAIM_FAILED sid=%s err=%s — failing open", message_sid, e)
+        return True
+    finally:
+        session.close()
+
+
+def release_message_sid(message_sid: str):
+    """Release a claimed MessageSid (best-effort) so a crashed pass can be retried."""
+    if not message_sid:
+        return
+    session = get_session()
+    try:
+        session.query(ProcessedMessage).filter(
+            ProcessedMessage.message_sid == message_sid).delete()
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        logger.warning("SID_RELEASE_FAILED sid=%s err=%s", message_sid, e)
+    finally:
+        session.close()
 
 
 def get_or_create_today_log(session, user_id: int) -> "DailyLog":

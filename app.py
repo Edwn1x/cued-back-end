@@ -8,7 +8,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state
+from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -19,6 +19,7 @@ from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
+from events import apply_event_signals_task
 from cost_tracking import track as track_usage
 
 # ─── Setup ──────────────────────────────────────────
@@ -965,6 +966,9 @@ def webhook():
     """Handle incoming SMS from Twilio. Buffers messages before processing."""
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
+    # Twilio's idempotency key. Parsed up here so it's in scope for the release
+    # in the except handler even if a crash happens before the claim.
+    message_sid = request.form.get("MessageSid", "")
 
     # Check for MMS image
     num_media = int(request.form.get("NumMedia", 0))
@@ -1006,6 +1010,16 @@ def webhook():
                 "Visit cued.fit to get started."
             ), 200, {"Content-Type": "text/xml"}
 
+        # Webhook idempotency (claim-at-top): a Twilio retry of the SAME MessageSid
+        # — which a slow synchronous classify_message can trigger by blowing the
+        # ~15s webhook timeout — is deduped here before any state write, so we don't
+        # double-log the message / double-write meals. Fail-open: a missing sid or
+        # an unexpected claim error falls through and processes. The claim is
+        # RELEASED in the except handler so a crash-after-claim can be retried.
+        if not claim_message_sid(message_sid, user.id):
+            logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
         # Clear quiet_until if it's passed or if user is texting us
         # quiet_until is stored as naive UTC
         if user.quiet_until:
@@ -1027,6 +1041,13 @@ def webhook():
         # Runs per raw message, before buffer combination — more robust
         # than running on the combined blob.
         apply_safety_signals_task(user.id, body)
+
+        # Fix 3 event floor: synchronous, deterministic detection of the two
+        # nudge-critical statuses (went_to_gym, in_class) — same floor pattern as
+        # the safety pre-pass, and for the same reason: the failure being fixed is
+        # "I *just* said it", so the scheduler gates must be able to read it
+        # immediately, without waiting on the buffer or an LLM. Regex only.
+        apply_event_signals_task(user.id, body)
 
         # Reset engagement decay counter on any reply
         reset_unanswered(user.id)
@@ -1197,7 +1218,20 @@ def webhook():
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     except Exception as e:
-        logger.error(f"Error handling SMS from {from_number}: {e}", exc_info=True)
+        # Twilio does NOT retry inbound-message webhooks on 5xx or read-timeout by
+        # default — its default retry policy is connect-timeout only (verified
+        # against Twilio's webhook connection-overrides docs). So a crash here
+        # cannot self-heal via an automatic retry; the inbound is dropped. We:
+        #   (a) log it at ERROR as WEBHOOK_DROPPED so the drop is OBSERVABLE, and
+        #   (b) release the idempotency claim so that IF this sid is genuinely
+        #       re-delivered (occasional duplicate deliveries do happen) or the
+        #       user resends, it can be reprocessed instead of deduped against a
+        #       pass that never finished.
+        # (Returning 5xx would only help if Twilio were configured with an rp
+        # override / fallback URL — a messaging-rail config decision, not code.)
+        logger.error("WEBHOOK_DROPPED sid=%s from=%s err=%s",
+                     message_sid, from_number, e, exc_info=True)
+        release_message_sid(message_sid)
         return get_twiml_response("Something went wrong on my end — I'll be back shortly."), 200, {"Content-Type": "text/xml"}
     finally:
         session.close()

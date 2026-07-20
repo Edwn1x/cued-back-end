@@ -139,6 +139,33 @@ MIGRATIONS = [
     # as the waitlist grows. Postgres-only syntax (SQLite ignores WHERE
     # clause silently; that's fine for dev).
     "CREATE INDEX IF NOT EXISTS idx_users_waitlist_pending ON users (waitlist_status) WHERE waitlist_status = 'pending'",
+    # Phase 1: webhook idempotency ledger — dedup Twilio MessageSid retries so a
+    # slow-webhook re-delivery can't double-write state. UNIQUE(message_sid) is
+    # the whole mechanism. ON DELETE SET NULL so user-delete never blocks on it.
+    """CREATE TABLE IF NOT EXISTS processed_messages (
+        id SERIAL PRIMARY KEY,
+        message_sid VARCHAR(64) UNIQUE NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        received_at TIMESTAMP DEFAULT NOW()
+    )""",
+    # Phase 1: append-only episodic Event table (went_to_gym, in_class, ...),
+    # written synchronously by the deterministic inbound detector; read by the
+    # scheduler gates windowed to the user's LOCAL day.
+    """CREATE TABLE IF NOT EXISTS events (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        event_type VARCHAR(30) NOT NULL,
+        occurred_at TIMESTAMP DEFAULT NOW(),
+        ends_at TIMESTAMP,
+        source VARCHAR(20) DEFAULT 'regex',
+        raw_text TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_events_user_occurred ON events (user_id, occurred_at)",
+    # Phase 1: split pointer (last completed split day + when + provenance).
+    "ALTER TABLE users ADD COLUMN split_pointer_day VARCHAR(30)",
+    "ALTER TABLE users ADD COLUMN split_pointer_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN split_pointer_source VARCHAR(10)",
 ]
 
 def wait_for_db(retries=10, delay=3):
@@ -154,19 +181,27 @@ def wait_for_db(retries=10, delay=3):
                 time.sleep(delay)
     raise SystemExit("Could not connect to the database after multiple retries.")
 
-wait_for_db()
+def run_migrations():
+    """Apply every idempotent statement in MIGRATIONS. Importable so the suite
+    can run it against a test DB (guarded below so `import migrate` has no side
+    effects)."""
+    with engine.connect() as conn:
+        for sql in MIGRATIONS:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+                logger.info(f"OK: {sql[:60]}...")
+            except Exception as e:
+                conn.rollback()
+                if "already exists" in str(e).lower():
+                    logger.info(f"SKIP (already exists): {sql[:60]}...")
+                else:
+                    logger.error(f"FAILED: {sql[:60]}... — {e}")
+    logger.info("Migration complete.")
 
-with engine.connect() as conn:
-    for sql in MIGRATIONS:
-        try:
-            conn.execute(text(sql))
-            conn.commit()
-            logger.info(f"OK: {sql[:60]}...")
-        except Exception as e:
-            conn.rollback()
-            if "already exists" in str(e).lower():
-                logger.info(f"SKIP (already exists): {sql[:60]}...")
-            else:
-                logger.error(f"FAILED: {sql[:60]}... — {e}")
+
+if __name__ == "__main__":
+    wait_for_db()
+    run_migrations()
 
 logger.info("Migration complete.")
