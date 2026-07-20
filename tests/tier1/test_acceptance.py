@@ -88,25 +88,38 @@ def test_already_at_gym_suppresses_pre_workout_nudge(db, sms_capture):
 
 # ─── Failure 5a: injuries are immortal (never heal) ──────────────────────────
 
-@pytest.mark.xfail(strict=True, reason="failure 5a — invalidation MECHANISM landed "
-                   "in Phase 1 (invalidate_entry + safety-trigger guard); the heal "
-                   "DETECTION trigger that calls it lands in Phase 3 (remember-invalidate)")
-def test_healed_injury_leaves_active_context(db, driver):
-    """A previously-reported injury should leave active context once the user
-    says it healed. Today nothing invalidates it, so it renders forever."""
+def test_healed_injury_leaves_active_context(db, driver, monkeypatch, anthropic_stub):
+    """A reported injury leaves active context once the user says it healed. FIXED
+    in Phase 3 — the loop calls remember(invalidate) on the heal, and the Phase-1
+    invalidation moves it to history (safety close carries a trigger). xfail removed.
+    (The model's real heal-DETECTION judgment is validated in tier-2.)"""
+    import config
+    from tests._fake_anthropic import ToolUse
     from tests.factories import make_user
     from memory import apply_facts, build_memory_block
     from models import get_session, User
 
-    user = make_user(db)
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
+    monkeypatch.setattr(config, "REMEMBER_TOOL_ENABLED", True)
+
     profile, _ = apply_facts(None, [{
         "action": "add", "category": "constraints",
-        "text": "tweaked left shoulder", "replaces_text": None,
-        "safety_critical": True,
+        "text": "tweaked left shoulder", "replaces_text": None, "safety_critical": True,
     }])
-    user.user_profile_memory = profile
-    db.commit()
+    user = make_user(db, user_profile_memory=profile)
+    entry_id = profile["constraints"][0]["id"]
 
+    loop_calls = []
+
+    def handler(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        loop_calls.append(1)
+        if len(loop_calls) == 1:
+            return ToolUse("remember", {"action": "invalidate", "entry_id": entry_id})
+        return "glad the shoulder's healed up — we'll ease back into pressing"
+
+    anthropic_stub.reply_with(handler)
     driver.send(user, "good news — my shoulder is all healed now, back to normal")
 
     s = get_session()
