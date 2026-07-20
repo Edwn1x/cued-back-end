@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import logging
 
+from datetime import datetime, timezone
+
 from sqlalchemy.orm.attributes import flag_modified
 
-from models import get_session, User, Workout, confirm_workout_today
+from models import (get_session, User, Workout, Meal, Event, active,
+                    recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
 logger = logging.getLogger("cued.agent_tools")
@@ -169,8 +172,108 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
             + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else ""))
 
 
+MANAGE_LOG_TOOL = {
+    "name": "manage_log",
+    "description": (
+        "List, edit, or soft-delete the user's logged meals / workouts / events by "
+        "their short id (shown in your context). Use delete for a duplicate or wrong "
+        "entry, edit to fix macros or details. IMPORTANT: only confirm a change to "
+        "the user AFTER this returns 'ok' — if it returns an 'error', tell them you "
+        "couldn't make the change; never claim you did."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "delete", "edit"]},
+            "entity": {"type": "string", "enum": ["meal", "workout", "event"]},
+            "id": {"type": "integer", "description": "the short id of the entry (delete/edit)"},
+            "fields": {"type": "object",
+                       "description": "for edit: fields to update, e.g. {\"calories\": 400, \"protein_g\": 30}"},
+        },
+        "required": ["action"],
+    },
+}
+
+_ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
+_EDITABLE = {
+    "meal": {"calories", "protein_g", "carbs_g", "fat_g", "description", "notes"},
+    "workout": {"workout_type", "user_notes"},
+    "event": {"event_type", "ends_at"},
+}
+
+
+def _naive_utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """List / edit / soft-delete the user's records by short id. Deletes are soft;
+    meal changes recompute today's totals. Returns 'ok:...' ONLY on real success —
+    this is what makes the honesty invariant satisfiable."""
+    action = (tool_input.get("action") or "").lower()
+
+    if action == "list":
+        session = get_session()
+        try:
+            meals = active(session, Meal, user_id=user_id).order_by(Meal.eaten_at.desc()).limit(15).all()
+            workouts = active(session, Workout, user_id=user_id).order_by(Workout.date.desc()).limit(10).all()
+            lines = [f"meal [id {m.id}] {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g"
+                     for m in meals]
+            lines += [f"workout [id {w.id}] {w.workout_type}" for w in workouts]
+            return "ok:\n" + ("\n".join(lines) if lines else "(nothing logged)")
+        finally:
+            session.close()
+
+    if action not in ("delete", "edit"):
+        return f"error: unknown action {action!r}"
+
+    entity = (tool_input.get("entity") or "").lower()
+    Model = _ENTITY_MODEL.get(entity)
+    if Model is None:
+        return f"error: unknown entity {entity!r}"
+    entry_id = tool_input.get("id")
+    if not entry_id:
+        return f"error: {action} requires an id"
+
+    session = get_session()
+    try:
+        row = (active(session, Model, user_id=user_id)
+               .filter(Model.id == entry_id).one_or_none())
+        if row is None:
+            return f"error: no active {entity} with id {entry_id} (already deleted or wrong id)"
+
+        if action == "delete":
+            row.deleted_at = _naive_utcnow()
+            session.commit()
+            if entity == "meal":
+                recompute_daily_totals(user_id)
+            logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
+            return f"ok: deleted {entity} id={entry_id}"
+
+        # edit
+        fields = tool_input.get("fields") or {}
+        applied = {}
+        for k, v in fields.items():
+            if k in _EDITABLE.get(entity, set()):
+                setattr(row, k, v)
+                applied[k] = v
+        if not applied:
+            return f"error: no editable fields in {list(fields)} for {entity}"
+        session.commit()
+        if entity == "meal":
+            recompute_daily_totals(user_id)
+        logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
+        return f"ok: edited {entity} id={entry_id} ({applied})"
+    finally:
+        session.close()
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
-_HANDLERS = {"remember": handle_remember, "log_workout": handle_log_workout}
+_HANDLERS = {
+    "remember": handle_remember,
+    "log_workout": handle_log_workout,
+    "manage_log": handle_manage_log,
+}
 
 
 def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> str:

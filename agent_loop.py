@@ -193,6 +193,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_WORKOUT_TOOL_ENABLED:
         from agent_tools import LOG_WORKOUT_TOOL
         tools.append(LOG_WORKOUT_TOOL)
+    if config.MANAGE_LOG_TOOL_ENABLED:
+        from agent_tools import MANAGE_LOG_TOOL
+        tools.append(MANAGE_LOG_TOOL)
 
     messages = [{"role": "user", "content": user_content}]
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
