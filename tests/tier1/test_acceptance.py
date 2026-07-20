@@ -35,14 +35,14 @@ def test_cross_domain_fact_reaches_the_seeding_agent(db):
     assert "organic chem exam" in build_memory_block(user, "training")
 
 
-@pytest.mark.xfail(strict=True, reason="failure 1 — per-agent slice map drops "
-                   "cross-domain facts; fixed in Phase 2 (unified render)")
-def test_cross_domain_fact_reaches_a_different_agent(db):
-    """A schedule fact the user mentioned should be usable when a later message
-    routes to nutrition. Today the per-agent slice map ('schedule' not in the
-    nutrition map, and it isn't safety) drops it."""
+def test_cross_domain_fact_reaches_the_unified_loop_context(db):
+    """A schedule fact is available to the single loop regardless of domain — the
+    unified render (all categories) is the Phase-2 fix for the per-agent slice map
+    that dropped cross-domain facts. FIXED in Phase 2 — xfail marker removed."""
     from tests.factories import make_user
-    from memory import apply_facts, build_memory_block
+    from memory import apply_facts
+    from agent_loop import build_loop_context
+    from models import get_session
 
     user = make_user(db)
     profile, _ = apply_facts(None, [{
@@ -52,7 +52,13 @@ def test_cross_domain_fact_reaches_a_different_agent(db):
     }])
     user.user_profile_memory = profile
     db.commit()
-    assert "organic chem exam" in build_memory_block(user, "nutrition")
+
+    s = get_session()
+    try:
+        ctx = build_loop_context(user, s)
+    finally:
+        s.close()
+    assert "organic chem exam" in ctx
 
 
 # ─── Failure 3: scheduler blind to conversation ("already went") ─────────────

@@ -20,6 +20,7 @@ from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
 from events import apply_event_signals_task
+from agent_loop import run_agent_loop
 from cost_tracking import track as track_usage
 
 # ─── Setup ──────────────────────────────────────────
@@ -485,9 +486,20 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             handle_onboarding_reply(user, combined_body)
             return
 
-        # Get AI coaching response (routed through orchestrator)
-        from orchestrator import route_message
-        response_text = route_message(user, combined_body, message_type, image_data=image_url)
+        # Phase 2: single agent loop behind a flag. On ANY runtime failure, fall
+        # back to the legacy classifier->specialists pipeline and log loudly — the
+        # user never sees a gap (invariant #5). Legacy stays live until Phase 6.
+        response_text = None
+        if config.SINGLE_AGENT_LOOP_ENABLED:
+            try:
+                response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url)
+            except Exception as e:
+                logger.error("AGENT_LOOP_FALLBACK user=%s falling back to legacy: %s",
+                             user.id, e, exc_info=True)
+                response_text = None
+        if response_text is None:
+            from orchestrator import route_message
+            response_text = route_message(user, combined_body, message_type, image_data=image_url)
 
         # Send the response
         send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
