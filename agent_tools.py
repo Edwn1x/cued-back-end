@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from models import (get_session, User, Workout, Meal, Event, active,
+from models import (get_session, User, Workout, Meal, Event, DiningMenuItem, active,
                     recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
@@ -330,12 +330,59 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         session.close()
 
 
+GET_DINING_MENU_TOOL = {
+    "name": "get_dining_menu",
+    "description": (
+        "Get today's UC Berkeley dining-hall menu with macros, on demand. Use it "
+        "when the user asks what to eat at a hall (crossroads / foothill / clark_kerr "
+        "/ cafe3). Optionally filter by meal period. Returns items with calories and "
+        "protein so you can recommend a specific pick."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "hall": {"type": "string", "enum": ["crossroads", "foothill", "clark_kerr", "cafe3"]},
+            "meal_period": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "brunch"]},
+        },
+        "required": ["hall"],
+    },
+}
+
+
+def handle_get_dining_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read today's scraped menu for a hall (on-demand, replaces context injection)."""
+    from zoneinfo import ZoneInfo
+    from dining_scraper import _canonical_hall
+
+    hall = _canonical_hall(tool_input.get("hall") or "")
+    meal_period = (tool_input.get("meal_period") or "").strip().lower() or None
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+    session = get_session()
+    try:
+        q = (session.query(DiningMenuItem)
+             .filter(DiningMenuItem.scraped_date == today, DiningMenuItem.hall == hall))
+        if meal_period:
+            q = q.filter(DiningMenuItem.meal_period == meal_period)
+        items = q.limit(80).all()
+    finally:
+        session.close()
+
+    if not items:
+        return (f"error: no menu for {hall} today ({today}) — it may be closed for "
+                f"summer or not scraped yet")
+    lines = [f"{i.item_name} ({i.meal_period}): {i.calories or '?'}cal, "
+             f"{round(i.protein_g) if i.protein_g else '?'}g protein" for i in items]
+    return f"ok: {hall} menu today:\n" + "\n".join(lines)
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
 _HANDLERS = {
     "remember": handle_remember,
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
     "log_meal": handle_log_meal,
+    "get_dining_menu": handle_get_dining_menu,
 }
 
 

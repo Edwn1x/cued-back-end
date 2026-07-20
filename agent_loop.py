@@ -199,6 +199,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_MEAL_TOOL_ENABLED:
         from agent_tools import LOG_MEAL_TOOL
         tools.append(LOG_MEAL_TOOL)
+    if config.GET_DINING_MENU_TOOL_ENABLED:
+        from agent_tools import GET_DINING_MENU_TOOL
+        tools.append(GET_DINING_MENU_TOOL)
 
     messages = [{"role": "user", "content": user_content}]
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
