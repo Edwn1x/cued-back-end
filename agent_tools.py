@@ -204,7 +204,9 @@ LOG_MEAL_TOOL = {
         "a genuine SECOND serving of something similar, log it and set saw_similar to "
         "the id(s) of the similar entries you saw (so the choice is auditable). If "
         "you're unsure whether it's a repeat, ask the user one short question before "
-        "logging — never guess in either direction. Include macros if you can estimate them."
+        "logging — never guess in either direction. Include macros if you can estimate "
+        "them. For a multi-item plate ('chicken, rice, and a coke'), pass an `items` "
+        "list — one call is cheaper than several and less likely to truncate."
     ),
     "input_schema": {
         "type": "object",
@@ -216,45 +218,65 @@ LOG_MEAL_TOOL = {
             "fat_g": {"type": "integer"},
             "saw_similar": {"type": "array", "items": {"type": "integer"},
                             "description": "ids of similar already-logged meals you saw and judged to be a distinct serving"},
+            "items": {"type": "array",
+                      "description": "OR log several items at once: a list of "
+                                     "{description, calories?, protein_g?, carbs_g?, fat_g?, saw_similar?} objects.",
+                      "items": {"type": "object", "properties": {
+                          "description": {"type": "string"},
+                          "calories": {"type": "integer"}, "protein_g": {"type": "integer"},
+                          "carbs_g": {"type": "integer"}, "fat_g": {"type": "integer"},
+                          "saw_similar": {"type": "array", "items": {"type": "integer"}},
+                      }, "required": ["description"]}},
         },
-        "required": ["description"],
     },
 }
 
 
 def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Create a Meal (the model already did the read-before-write judgment) and
-    recompute today's totals. Records saw_similar so an intentional near-duplicate
-    is auditable and correctable via manage_log."""
-    description = (tool_input.get("description") or "").strip()
-    if not description:
+    """Create Meal(s) (the model already did the read-before-write judgment) and
+    recompute today's totals ONCE. Accepts a single meal or an `items` list (a
+    multi-item plate). Records saw_similar so an intentional near-duplicate is
+    auditable and correctable via manage_log."""
+    items = tool_input.get("items")
+    if not isinstance(items, list):
+        items = [tool_input]           # single-meal form (backward compatible)
+    items = [it for it in items if (it.get("description") or "").strip()]
+    if not items:
         return "error: description required"
-    saw_similar = tool_input.get("saw_similar") or []
 
+    logged = []
     session = get_session()
     try:
-        note = f"saw_similar={saw_similar}" if saw_similar else None
-        meal = Meal(
-            user_id=user_id, description=description,
-            calories=tool_input.get("calories"), protein_g=tool_input.get("protein_g"),
-            carbs_g=tool_input.get("carbs_g"), fat_g=tool_input.get("fat_g"),
-            source="text", log_type="user_reported", notes=note,
-            eaten_at=_naive_utcnow(),
-        )
-        session.add(meal)
+        for it in items:
+            saw = it.get("saw_similar") or []
+            meal = Meal(
+                user_id=user_id, description=it["description"].strip(),
+                calories=it.get("calories"), protein_g=it.get("protein_g"),
+                carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
+                source="text", log_type="user_reported",
+                notes=(f"saw_similar={saw}" if saw else None), eaten_at=_naive_utcnow(),
+            )
+            session.add(meal)
+            session.flush()
+            logged.append((meal.id, meal.description, it.get("calories") or 0,
+                           it.get("protein_g") or 0, saw))
         session.commit()
-        mid = meal.id
     finally:
         session.close()
 
-    recompute_daily_totals(user_id)
-    if saw_similar:
-        logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
-                    user_id, mid, saw_similar)
-    logger.info("LOG_MEAL user=%s meal_id=%s desc=%r", user_id, mid, description[:40])
-    return (f"ok: logged meal id={mid} ({tool_input.get('calories') or 0}cal/"
-            f"{tool_input.get('protein_g') or 0}g)"
-            + (f" [saw_similar={saw_similar}]" if saw_similar else ""))
+    recompute_daily_totals(user_id)  # once, after all inserts
+    for mid, desc, _cal, _pro, saw in logged:
+        if saw:
+            logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
+                        user_id, mid, saw)
+        logger.info("LOG_MEAL user=%s meal_id=%s desc=%r", user_id, mid, desc[:40])
+
+    if len(logged) == 1:
+        mid, _desc, cal, pro, saw = logged[0]
+        return f"ok: logged meal id={mid} ({cal}cal/{pro}g)" + (f" [saw_similar={saw}]" if saw else "")
+    ids = [m for m, _d, _c, _p, _s in logged]
+    total_cal = sum(c for _m, _d, c, _p, _s in logged)
+    return f"ok: logged {len(logged)} items (ids {ids}, {total_cal}cal total)"
 
 
 LOG_EVENT_TOOL = {
@@ -267,17 +289,26 @@ LOG_EVENT_TOOL = {
         "(those go to remember with category 'schedule'). Times are the user's LOCAL "
         "time, 24-hour 'HH:MM'. This is how a dated commitment survives to the day it "
         "matters and stays visible for a timely check-in — a semantic memory fact would "
-        "be wrong (it never expires) and gets crowded out."
+        "be wrong (it never expires) and gets crowded out. For a whole calendar / a day "
+        "with several commitments, pass an `events` list — ONE call for the screenshot "
+        "is cheaper and far less likely to truncate than five separate calls."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "description": {"type": "string", "description": "what it is, e.g. 'founder summit'"},
+            "description": {"type": "string", "description": "single event: what it is, e.g. 'founder summit'"},
             "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h, optional)"},
             "ends_at": {"type": "string", "description": "local end time 'HH:MM' (24h, optional)"},
             "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+            "events": {"type": "array",
+                       "description": "OR log several at once (a calendar screenshot): a list of "
+                                      "{description, starts_at?, ends_at?, date?} objects.",
+                       "items": {"type": "object", "properties": {
+                           "description": {"type": "string"},
+                           "starts_at": {"type": "string"}, "ends_at": {"type": "string"},
+                           "date": {"type": "string"},
+                       }, "required": ["description"]}},
         },
-        "required": ["description"],
     },
 }
 
@@ -317,8 +348,11 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
     Dated items belong here, not in the `schedule` memory category — that's the
     burn-in fix (schedule facts were landing in memory and getting evicted)."""
     from events import record_event
-    desc = (tool_input.get("description") or "").strip()
-    if not desc:
+    items = tool_input.get("events")
+    if not isinstance(items, list):
+        items = [tool_input]           # single-event form (backward compatible)
+    items = [it for it in items if (it.get("description") or "").strip()]
+    if not items:
         return "error: description required"
 
     session = get_session()
@@ -328,14 +362,23 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
     finally:
         session.close()
 
-    starts = _parse_local_dt(tz_str, tool_input.get("date"), tool_input.get("starts_at"))
-    ends = _parse_local_dt(tz_str, tool_input.get("date"), tool_input.get("ends_at"))
-    eid = record_event(user_id, "scheduled", ends_at=ends, source="model",
-                       raw_text=desc, occurred_at=starts)
-    logger.info("LOG_EVENT user=%s event_id=%s desc=%r start=%s end=%s",
-                user_id, eid, desc[:40], starts, ends)
-    when = f" at {tool_input.get('starts_at')}" if tool_input.get("starts_at") else ""
-    return f"ok: noted '{desc}'{when} (event id={eid})"
+    logged = []
+    for it in items:
+        desc = it["description"].strip()
+        starts = _parse_local_dt(tz_str, it.get("date"), it.get("starts_at"))
+        ends = _parse_local_dt(tz_str, it.get("date"), it.get("ends_at"))
+        eid = record_event(user_id, "scheduled", ends_at=ends, source="model",
+                           raw_text=desc, occurred_at=starts)
+        logged.append((eid, desc, it.get("starts_at")))
+        logger.info("LOG_EVENT user=%s event_id=%s desc=%r start=%s end=%s",
+                    user_id, eid, desc[:40], starts, ends)
+
+    if len(logged) == 1:
+        eid, desc, st = logged[0]
+        return f"ok: noted '{desc}'{f' at {st}' if st else ''} (event id={eid})"
+    ids = [e for e, _d, _s in logged]
+    names = ", ".join(f"'{d}'" for _e, d, _s in logged)
+    return f"ok: noted {len(logged)} events: {names} (ids {ids})"
 
 
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}

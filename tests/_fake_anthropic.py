@@ -39,6 +39,13 @@ class ToolUse:
         self.id = id
 
 
+class Truncated:
+    """Marker: make the fake return stop_reason='max_tokens' (output cap hit),
+    optionally with partial text. Empty text => truncated before any text block."""
+    def __init__(self, text: str = ""):
+        self.text = text
+
+
 class _Usage:
     def __init__(self, input_tokens=1, output_tokens=1):
         self.input_tokens = input_tokens
@@ -89,6 +96,12 @@ class FakeAnthropicController:
             r = _Response("")
             r.content = [_ToolUseBlock(value.name, value.input, value.id)]
             r.stop_reason = "tool_use"
+            return r
+        if isinstance(value, Truncated):
+            r = _Response(value.text)
+            r.stop_reason = "max_tokens"
+            if not value.text:
+                r.content = []  # truncated before emitting any text block
             return r
         return _Response(str(value))
 
