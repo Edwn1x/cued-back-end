@@ -107,3 +107,20 @@ def test_log_event_via_loop_persists(db, driver, monkeypatch, anthropic_stub):
     assert any(e.raw_text == "61A lecture" and e.source == "model" for e in evs), \
         "log_event tool call did not persist the dated event"
     assert any("61a" in r.lower() for r in replies)
+
+
+def test_handle_log_event_batch_creates_all(db):
+    """A calendar screenshot with several items → one call, one Event each."""
+    from tests.factories import make_user
+    from agent_tools import handle_log_event
+
+    user = make_user(db)
+    out = handle_log_event(user.id, {"events": [
+        {"description": "lab", "ends_at": "14:00"},
+        {"description": "founder summit", "starts_at": "12:00", "ends_at": "14:30"},
+        {"description": "61A lecture", "starts_at": "17:00", "ends_at": "19:00"},
+    ]})
+    assert out.startswith("ok") and "3 events" in out, out
+    evs = _todays_events(user.id)
+    assert {e.raw_text for e in evs} >= {"lab", "founder summit", "61A lecture"}
+    assert all(e.source == "model" and e.event_type == "scheduled" for e in evs)

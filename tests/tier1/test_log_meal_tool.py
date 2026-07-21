@@ -81,3 +81,25 @@ def test_log_meal_via_loop(db, driver, monkeypatch, anthropic_stub):
     user = make_user(db)
     driver.send(user, "just had a chipotle burrito bowl")
     assert len(_active_meals(user.id)) == 1, "log_meal tool did not persist the meal"
+
+
+def test_log_meal_batch_items_recomputes_once(db):
+    """A multi-item plate via `items` → one Meal each, totals recomputed once."""
+    from tests.factories import make_user
+    from agent_tools import handle_log_meal
+    from models import get_session, User
+
+    user = make_user(db)
+    out = handle_log_meal(user.id, {"items": [
+        {"description": "chicken", "calories": 400, "protein_g": 40},
+        {"description": "rice", "calories": 200, "protein_g": 5},
+        {"description": "coke", "calories": 140, "protein_g": 0},
+    ]})
+    assert out.startswith("ok") and "3 items" in out, out
+    assert len(_active_meals(user.id)) == 3
+    s = get_session()
+    try:
+        u = s.get(User, user.id)
+        assert u.calories_today == 740 and u.protein_today == 45  # summed once from all three
+    finally:
+        s.close()

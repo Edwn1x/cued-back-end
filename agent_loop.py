@@ -182,9 +182,16 @@ def build_loop_context(user, session) -> str:
     return "\n\n".join(parts)
 
 
+# Returned when the loop can't produce a clean reply but the turn's tool writes have
+# already persisted — a neutral ack beats raising into legacy (which would re-answer and
+# ignore the work done) or asking to resend (which would re-log). Rare with the raised cap.
+_LOOP_DEGRADE_REPLY = "got it."
+
+
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
                    message_id: str = None) -> str:
-    """One agentic turn → the reply text. Raises on failure (caller falls back to legacy)."""
+    """One agentic turn → the reply text. Raises only on genuine anomalies (caller
+    falls back to legacy); truncation and the iteration bound degrade gracefully."""
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -240,10 +247,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                       "max_uses": config.WEB_SEARCH_MAX_USES})
 
     messages = [{"role": "user", "content": user_content}]
-    for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
+    last_text = ""
+    for i in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
         kwargs = dict(
             model=config.AGENT_LOOP_MODEL,
-            max_tokens=config.MAX_RESPONSE_TOKENS,
+            max_tokens=config.AGENT_LOOP_MAX_TOKENS,  # room for thinking + tool JSON + reply
             thinking={"type": "adaptive"},  # held constant; switching modes breaks the messages cache
             output_config={"effort": "low"},
             system=system,
@@ -258,13 +266,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         except Exception as e:  # cost telemetry must never break the reply
             logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
 
+        stop = getattr(resp, "stop_reason", None)
+        block_types = [getattr(b, "type", None) for b in resp.content]
+
         # Server-side tool (web_search) hit its iteration limit — re-send to resume.
-        if getattr(resp, "stop_reason", None) == "pause_turn":
+        if stop == "pause_turn":
             messages.append({"role": "assistant", "content": resp.content})
             continue
 
-        # The model requested a client tool: execute it (code-mediated), feed the result back.
-        if getattr(resp, "stop_reason", None) == "tool_use":
+        # The model requested client tools: execute them (code-mediated), feed results back.
+        if stop == "tool_use":
             from agent_tools import dispatch_tool
             messages.append({"role": "assistant", "content": resp.content})
             results = []
@@ -275,10 +286,33 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             messages.append({"role": "user", "content": results})
             continue
 
-        # Adaptive thinking can put (empty) thinking blocks first — take the text block.
+        # Any text this turn (adaptive thinking can lead with empty thinking blocks).
         text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-        if not text.strip():
-            raise RuntimeError("agent loop returned no text block")
-        return text
+        if text.strip():
+            last_text = text.strip()
 
-    raise RuntimeError("agent loop exceeded max tool iterations")
+        # Truncation is its OWN branch: the output cap was hit (thinking + tools + reply
+        # didn't fit). Log it BY NAME with the blocks we actually got — the observability
+        # that "no text block" was missing — and degrade gracefully instead of raising
+        # into fallback (which would re-answer via legacy and ignore any tool writes).
+        if stop == "max_tokens":
+            logger.warning("AGENT_LOOP_TRUNCATED user=%s iter=%d stop=max_tokens blocks=%s "
+                           "max_tokens=%d — degrading, not raising",
+                           user.id, i, block_types, config.AGENT_LOOP_MAX_TOKENS)
+            return last_text or _LOOP_DEGRADE_REPLY
+
+        # Normal terminal turn with a reply.
+        if text.strip():
+            return text.strip()
+
+        # A terminal stop with no text is a genuine anomaly — log stop_reason + block
+        # types (not a token-count guessing game) and fall back to legacy.
+        logger.error("AGENT_LOOP_NO_TEXT user=%s iter=%d stop_reason=%s blocks=%s",
+                     user.id, i, stop, block_types)
+        raise RuntimeError(f"agent loop returned no text block (stop_reason={stop}, blocks={block_types})")
+
+    # Iteration bound reached: the tools ran (writes persisted) but the model never
+    # emitted a final reply. Degrade with what we have — never raise into fallback.
+    logger.warning("AGENT_LOOP_MAX_ITERS user=%s iters=%d — returning best-effort reply",
+                   user.id, config.AGENT_LOOP_MAX_TOOL_ITERS)
+    return last_text or _LOOP_DEGRADE_REPLY

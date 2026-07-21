@@ -61,9 +61,18 @@ WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() =
 # low effort held constant (see rewrite/phase-2/INVESTIGATION.md §5).
 AGENT_LOOP_MODEL = "claude-sonnet-5"
 SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lower() == "true"
+# The loop's output ceiling is SEPARATE from MAX_RESPONSE_TOKENS (400 = SMS reply
+# length, used by legacy). A loop turn must fit adaptive-thinking tokens + one or more
+# tool-call JSONs + the reply, all of which count against output on Sonnet 5 — 400
+# truncates a multi-item turn (e.g. a calendar screenshot → several log_event calls),
+# giving stop_reason=max_tokens with no text. Output is cheap relative to that failure.
+AGENT_LOOP_MAX_TOKENS = int(os.getenv("AGENT_LOOP_MAX_TOKENS", "2000"))
 
 # Phase 3 tools — each behind its own flag, added one at a time.
-AGENT_LOOP_MAX_TOOL_ITERS = 5   # safety bound on the tool-execution loop
+# Bound the tool loop (unbounded agent loops = runaway bills). 8 comfortably fits the
+# realistic worst case — a schedule dump wanting ~6 events plus a meal photo in one
+# buffer flush — even if the model works through them across turns rather than batching.
+AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"
