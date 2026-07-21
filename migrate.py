@@ -166,6 +166,10 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN split_pointer_day VARCHAR(30)",
     "ALTER TABLE users ADD COLUMN split_pointer_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN split_pointer_source VARCHAR(10)",
+    # Phase 3: soft-delete for manage_log (filter via models.active()).
+    "ALTER TABLE meals ADD COLUMN deleted_at TIMESTAMP",
+    "ALTER TABLE workouts ADD COLUMN deleted_at TIMESTAMP",
+    "ALTER TABLE events ADD COLUMN deleted_at TIMESTAMP",
 ]
 
 def wait_for_db(retries=10, delay=3):

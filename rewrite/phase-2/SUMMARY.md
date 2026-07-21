@@ -31,13 +31,23 @@ suite and honestly lands in Phase 3 (heal-detection trigger for remember-invalid
   AFTER the tier-2 voice eval + cost measurement pass.
 - No migration needed (no schema change this phase).
 
-## Gated on the funded `ANTHROPIC_API_KEY` (task #15)
-1. **Tier-2 voice eval** validates `prompts/voice.md` (one persona + warm accountability).
-2. **Measured per-message cost**, recorded at BOTH intro ($2/$10) and standard ($3/$15);
-   **Phase 4's heartbeat cost model consumes the standard number.**
-3. **Prompt-cache verification** — `usage.cache_read_input_tokens > 0` across turns.
-4. Only then: flip the flag (a logged event) and, after burn-in on the founder's
-   number, begin retiring legacy paths (Phase 6).
+## Tier-2 results (live, `tests/tier2/test_voice_and_cost.py --run-tier2`)
+Ran the real loop (Sonnet 5 + `voice.md` + unified context) on 3 scenarios:
+1. **Voice validated** — one consistent lowercase-peer voice, precise numbers, the
+   shoulder injury respected from unified context ("skip overhead press… landmine
+   press instead"), and warm accountability on a skipped-twice message. No emoji /
+   no hype (asserted).
+2. **Measured per-message cost: `$0.0072` standard / `$0.0048` intro.** **Phase 4's
+   heartbeat cost model consumes the standard number ($0.0072/decision).** Worst-case
+   sketch (pre-gate): 20 ticks/user/day × $0.0072 × 50 users ≈ **$7.2/day (~$216/mo)**
+   before the Phase-4 rules/Haiku pre-gate cuts obvious-silence ticks.
+3. **Prompt caching confirmed** — `cache_read_input_tokens=6866` across the run (stable
+   voice prefix cached and re-read).
+4. Live-response parsing on SDK 0.116 works (also closes the SDK-bump residual).
+
+**Remaining before the flag flips:** founder review of `voice.md`, then flip
+`SINGLE_AGENT_LOOP_ENABLED` (a logged event) and burn-in on the founder's number
+before beta; legacy retires in Phase 6.
 
 ## Parked (unchanged)
 - Rotate the Railway Postgres password.

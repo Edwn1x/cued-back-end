@@ -37,8 +37,12 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     global _CLUSTER
-    # dummy secrets so import-time client constructors (Anthropic, Twilio) succeed
-    os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-tier1")
+    # dummy secrets so import-time client constructors (Anthropic, Twilio) succeed.
+    # Under --run-tier2 we do NOT set a dummy Anthropic key: config.load_dotenv()
+    # then supplies the real key from .env for the live-graded tests. Tier-1 stays
+    # mocked regardless (the Messages.create stub is autouse for non-tier2 tests).
+    if not config.getoption("--run-tier2"):
+        os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-dummy-tier1")
     os.environ.setdefault("TWILIO_ACCOUNT_SID", "ACdummy")
     os.environ.setdefault("TWILIO_AUTH_TOKEN", "dummytoken")
     os.environ.setdefault("TWILIO_PHONE_NUMBER", "+15550000000")

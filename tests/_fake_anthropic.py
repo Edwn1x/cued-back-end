@@ -22,6 +22,23 @@ class _Block:
         self.text = text
 
 
+class _ToolUseBlock:
+    def __init__(self, name: str, input: dict, id: str = "toolu_stub"):
+        self.type = "tool_use"
+        self.name = name
+        self.input = input
+        self.id = id
+
+
+class ToolUse:
+    """Marker a test scripts to make the fake return a tool_use response
+    (stop_reason='tool_use') for the agent tool-execution loop."""
+    def __init__(self, name: str, input: dict, id: str = "toolu_stub"):
+        self.name = name
+        self.input = input
+        self.id = id
+
+
 class _Usage:
     def __init__(self, input_tokens=1, output_tokens=1):
         self.input_tokens = input_tokens
@@ -68,6 +85,11 @@ class FakeAnthropicController:
     def _coerce(self, value) -> _Response:
         if isinstance(value, _Response):
             return value
+        if isinstance(value, ToolUse):
+            r = _Response("")
+            r.content = [_ToolUseBlock(value.name, value.input, value.id)]
+            r.stop_reason = "tool_use"
+            return r
         return _Response(str(value))
 
     def handle(self, kwargs) -> _Response:

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import anthropic
 import config
-from models import get_session, User, Meal, ensure_todays_totals, get_active_meal, set_active_meal, clear_active_meal
+from models import get_session, User, Meal, ensure_todays_totals, get_active_meal, set_active_meal, clear_active_meal, active
 from cost_tracking import track
 
 logger = logging.getLogger("cued.meal_extractor")
@@ -184,7 +184,7 @@ def extract_and_log_meal(user_id: int, user_message: str, coach_response: str, r
             from datetime import timedelta
             recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
             existing_recent = (
-                session.query(Meal)
+                active(session, Meal)
                 .filter(
                     Meal.user_id == user_id,
                     Meal.logged_at >= recent_cutoff,

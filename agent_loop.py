@@ -23,7 +23,7 @@ import anthropic
 import config
 from cost_tracking import track
 from memory import render_categories, CATEGORIES, render_body_line, render_dietary_line
-from models import get_session, User, Message, Workout
+from models import get_session, User, Message, Workout, Meal, active
 from events import todays_events
 from split_pointer import get_split_pointer
 
@@ -116,12 +116,35 @@ def build_loop_context(user, session) -> str:
         )
         parts.append(f"## RECENT CONVERSATION\n{window}")
 
-    # 7. Recent training log.
-    workouts = (session.query(Workout)
-                .filter(Workout.user_id == user.id)
+    # 7. Today's logged meals (ACTIVE only) — with short IDs + macros. This is the
+    # "read" for read-before-write: the model sees what's already logged and decides
+    # log vs skip vs a legitimate second serving, instead of a deterministic dedup
+    # silently dropping real calories. It also lets the model reference/correct an
+    # entry by id via manage_log.
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo as _ZI
+    try:
+        _tz = _ZI(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        _tz = _ZI("America/Los_Angeles")
+    _mid = datetime.now(_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    _start = _mid.astimezone(timezone.utc).replace(tzinfo=None)
+    _end = (_mid + _td(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    meals = (active(session, Meal, user_id=user.id)
+             .filter(Meal.eaten_at >= _start, Meal.eaten_at < _end)
+             .order_by(Meal.eaten_at).all())
+    if meals:
+        ml = "\n".join(
+            f"[id {m.id}] {m.eaten_at:%H:%M}Z {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
+            for m in meals)
+        parts.append("## TODAY'S LOGGED MEALS (already recorded — reference by id; do not "
+                     "double-log the same serving; a genuine second serving is fine)\n" + ml)
+
+    # 8. Recent training log (active only).
+    workouts = (active(session, Workout, user_id=user.id)
                 .order_by(Workout.date.desc()).limit(5).all())
     if workouts:
-        wl = "\n".join(f"{w.date:%m-%d} ({w.workout_type})" for w in workouts)
+        wl = "\n".join(f"[id {w.id}] {w.date:%m-%d} ({w.workout_type})" for w in workouts)
         parts.append(f"## RECENT WORKOUTS\n{wl}")
 
     # 8. Known gaps + follow-up permission.
@@ -139,8 +162,9 @@ def build_loop_context(user, session) -> str:
     return "\n\n".join(parts)
 
 
-def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None) -> str:
-    """One model call → the reply text. Raises on failure (caller falls back to legacy)."""
+def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
+                   message_id: str = None) -> str:
+    """One agentic turn → the reply text. Raises on failure (caller falls back to legacy)."""
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -156,27 +180,82 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     else:
         system = f"{voice}\n\n{context}"
 
-    if image_data:
-        user_content = [image_data, {"type": "text", "text": combined_body or "(image)"}]
+    if image_data and config.READ_IMAGE_ENABLED:
+        # The model sees the image and routes it in-call (food/calendar/whiteboard/
+        # other) — no pre-classifier. Log the receipt as corpus for schema tuning.
+        logger.info("AGENT_LOOP_IMAGE user=%s — vision routing (read_image corpus marker)", user.id)
+        user_content = [image_data, {"type": "text", "text": combined_body or "(the user sent an image)"}]
+    elif image_data:
+        # read_image off: don't send vision; note it so the coach can ask, never invent.
+        user_content = ((combined_body or "")
+                        + "\n[the user sent an image you can't see — ask them what it shows]")
     else:
         user_content = combined_body
 
-    resp = client.messages.create(
-        model=config.AGENT_LOOP_MODEL,
-        max_tokens=config.MAX_RESPONSE_TOKENS,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "low"},
-        system=system,
-        messages=[{"role": "user", "content": user_content}],
-    )
+    # Assemble the enabled tool set (each behind its own flag, added one at a time).
+    tools = []
+    if config.REMEMBER_TOOL_ENABLED:
+        from agent_tools import REMEMBER_TOOL
+        tools.append(REMEMBER_TOOL)
+    if config.LOG_WORKOUT_TOOL_ENABLED:
+        from agent_tools import LOG_WORKOUT_TOOL
+        tools.append(LOG_WORKOUT_TOOL)
+    if config.MANAGE_LOG_TOOL_ENABLED:
+        from agent_tools import MANAGE_LOG_TOOL
+        tools.append(MANAGE_LOG_TOOL)
+    if config.LOG_MEAL_TOOL_ENABLED:
+        from agent_tools import LOG_MEAL_TOOL
+        tools.append(LOG_MEAL_TOOL)
+    if config.GET_DINING_MENU_TOOL_ENABLED:
+        from agent_tools import GET_DINING_MENU_TOOL
+        tools.append(GET_DINING_MENU_TOOL)
+    if config.WEB_SEARCH_TOOL_ENABLED:
+        # Server-side tool: Anthropic runs the search inline and returns results as
+        # content blocks; no client handler. Output/query hygiene are prompt rules
+        # in voice.md (speak findings naturally, no links; no user PII in queries).
+        tools.append({"type": "web_search_20260209", "name": "web_search",
+                      "max_uses": config.WEB_SEARCH_MAX_USES})
 
-    try:
-        track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp.usage)
-    except Exception as e:  # cost telemetry must never break the reply
-        logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
+    messages = [{"role": "user", "content": user_content}]
+    for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
+        kwargs = dict(
+            model=config.AGENT_LOOP_MODEL,
+            max_tokens=config.MAX_RESPONSE_TOKENS,
+            thinking={"type": "adaptive"},  # held constant; switching modes breaks the messages cache
+            output_config={"effort": "low"},
+            system=system,
+            messages=messages,
+        )
+        if tools:
+            kwargs["tools"] = tools
+        resp = client.messages.create(**kwargs)
 
-    # Adaptive thinking can put (empty) thinking blocks first — take the text block.
-    text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-    if not text.strip():
-        raise RuntimeError("agent loop returned no text block")
-    return text
+        try:
+            track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp.usage)
+        except Exception as e:  # cost telemetry must never break the reply
+            logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
+
+        # Server-side tool (web_search) hit its iteration limit — re-send to resume.
+        if getattr(resp, "stop_reason", None) == "pause_turn":
+            messages.append({"role": "assistant", "content": resp.content})
+            continue
+
+        # The model requested a client tool: execute it (code-mediated), feed the result back.
+        if getattr(resp, "stop_reason", None) == "tool_use":
+            from agent_tools import dispatch_tool
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for block in resp.content:
+                if getattr(block, "type", None) == "tool_use":
+                    out = dispatch_tool(block.name, block.input, user.id, message_id=message_id)
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+            messages.append({"role": "user", "content": results})
+            continue
+
+        # Adaptive thinking can put (empty) thinking blocks first — take the text block.
+        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
+        if not text.strip():
+            raise RuntimeError("agent loop returned no text block")
+        return text
+
+    raise RuntimeError("agent loop exceeded max tool iterations")

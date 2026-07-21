@@ -431,7 +431,7 @@ def check_meal_adherence():
     Daily check: if a user has been active but hasn't logged a meal in 24+ hours, nudge them.
     After 48+ hours, slightly firmer tone.
     """
-    from models import Meal, Message
+    from models import Meal, Message, active
 
     session = get_session()
     try:
@@ -446,7 +446,7 @@ def check_meal_adherence():
                 continue
 
             last_meal = (
-                session.query(Meal)
+                active(session, Meal)
                 .filter(Meal.user_id == user.id)
                 .order_by(Meal.eaten_at.desc())
                 .first()

@@ -23,7 +23,7 @@ client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 def _build_nutrition_context(user: User) -> str:
     """Build nutrition-specific context — profile, today's totals, recent meals, and conversation."""
-    from models import Meal, ensure_todays_totals
+    from models import Meal, ensure_todays_totals, active
     from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
 
@@ -62,7 +62,7 @@ def _build_nutrition_context(user: User) -> str:
         local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(timezone.utc)
         today_meals = (
-            session.query(Meal)
+            active(session, Meal)
             .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start_utc)
             .order_by(Meal.eaten_at.asc())
             .all()
@@ -71,7 +71,7 @@ def _build_nutrition_context(user: User) -> str:
         # Last 3 days meals (excluding today)
         three_days_ago = today_start_utc - timedelta(days=3)
         recent_meals = (
-            session.query(Meal)
+            active(session, Meal)
             .filter(
                 Meal.user_id == user.id,
                 Meal.eaten_at >= three_days_ago,
@@ -320,7 +320,7 @@ def is_daily_log_query(message: str) -> bool:
 
 def handle_daily_log_query(user) -> str:
     """Return a formatted summary of today's meals and totals."""
-    from models import Meal, ensure_todays_totals, get_session, User
+    from models import Meal, ensure_todays_totals, get_session, User, active
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
@@ -338,7 +338,7 @@ def handle_daily_log_query(user) -> str:
         local_midnight = datetime.now(user_tz).replace(hour=0, minute=0, second=0, microsecond=0)
         today_start_utc = local_midnight.astimezone(timezone.utc)
         todays_meals = (
-            session.query(Meal)
+            active(session, Meal)
             .filter(Meal.user_id == user.id, Meal.eaten_at >= today_start_utc)
             .order_by(Meal.eaten_at.asc())
             .all()
@@ -484,7 +484,7 @@ Return ONLY valid JSON:
 def handle_photo_refinement(user, user_message: str, recent_context: str = "") -> dict:
     """User answered clarifying questions about a food photo. Refine and log."""
     import json as json_lib
-    from models import get_session, User, Meal, ensure_todays_totals, set_active_meal
+    from models import get_session, User, Meal, ensure_todays_totals, set_active_meal, active
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
