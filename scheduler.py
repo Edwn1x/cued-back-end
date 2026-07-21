@@ -53,48 +53,10 @@ def user_local_to_utc(hour: int, minute: int, tz_str: str) -> tuple[int, int]:
     return utc_dt.hour, utc_dt.minute
 
 
-def has_unanswered_outbound(user_id: int) -> bool:
-    """
-    Return True if the last outbound message sent TODAY has not received a reply.
-    Prevents back-to-back unsolicited messages when the user hasn't responded.
-    Only looks at today's window — a stale unanswered message from yesterday
-    shouldn't block today's scheduled touchpoints.
-    """
-    from models import Message
-    from datetime import timezone
-    session = get_session()
-    try:
-        now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        last_out_today = (
-            session.query(Message)
-            .filter(
-                Message.user_id == user_id,
-                Message.direction == "out",
-                Message.created_at >= today_start,
-            )
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if not last_out_today:
-            return False  # nothing sent today, no block
-
-        last_in_today = (
-            session.query(Message)
-            .filter(
-                Message.user_id == user_id,
-                Message.direction == "in",
-                Message.created_at >= today_start,
-            )
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if not last_in_today:
-            return True  # sent today, no reply today
-        return last_out_today.created_at > last_in_today.created_at
-    finally:
-        session.close()
+# has_unanswered_outbound moved to engagement_tracker.py (a coach-free home) so the
+# proactive path can gate on it without importing this legacy templated-scheduler
+# module. Re-exported here for the scheduler's own callers. See phase-6 INVESTIGATION.
+from engagement_tracker import has_unanswered_outbound
 
 
 def _is_training_day(user) -> bool:
