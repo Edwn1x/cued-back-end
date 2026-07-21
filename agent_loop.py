@@ -192,6 +192,20 @@ def build_loop_context(user, session) -> str:
 _LOOP_DEGRADE_REPLY = "got it."
 
 
+def _join_text(content) -> str:
+    """The reply is EVERY text block in the response, concatenated in order — not just
+    the first. A single Sonnet 5 response interleaves blocks: thinking, then text, then
+    (for inline server-side web_search) server_tool_use + web_search_tool_result, then
+    MORE text; citations likewise split the answer across multiple text blocks. Taking
+    only the first text block sent a lead-in ("from what I can find:") and silently
+    dropped the substance that came after the tool result (burn-in finding). Non-text
+    blocks (thinking / tool_use / server_tool_use / *_tool_result) contribute nothing."""
+    return "".join(
+        b.text for b in content
+        if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+    ).strip()
+
+
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
                    message_id: str = None) -> str:
     """One agentic turn → the reply text. Raises only on genuine anomalies (caller
@@ -290,10 +304,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             messages.append({"role": "user", "content": results})
             continue
 
-        # Any text this turn (adaptive thinking can lead with empty thinking blocks).
-        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-        if text.strip():
-            last_text = text.strip()
+        # ALL text blocks, concatenated (adaptive thinking + inline web_search / citations
+        # split the reply across several — see _join_text). This is the burn-in fix.
+        text = _join_text(resp.content)
+        if text:
+            last_text = text
 
         # Truncation is its OWN branch: the output cap was hit (thinking + tools + reply
         # didn't fit). Log it BY NAME with the blocks we actually got — the observability
@@ -305,9 +320,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                            user.id, i, block_types, config.AGENT_LOOP_MAX_TOKENS)
             return last_text or _LOOP_DEGRADE_REPLY
 
-        # Normal terminal turn with a reply.
-        if text.strip():
-            return text.strip()
+        # Safety refusal (Sonnet 5 classifiers, HTTP 200 + stop_reason=refusal): content
+        # is empty pre-output or partial mid-stream. Don't raise into legacy — it would
+        # re-answer the same declined request. Return what we have (or a neutral line).
+        if stop == "refusal":
+            logger.warning("AGENT_LOOP_REFUSAL user=%s iter=%d blocks=%s", user.id, i, block_types)
+            return text or _LOOP_DEGRADE_REPLY
+
+        # Normal terminal turn (end_turn / stop_sequence) with a reply.
+        if text:
+            return text
 
         # A terminal stop with no text is a genuine anomaly — log stop_reason + block
         # types (not a token-count guessing game) and fall back to legacy.
