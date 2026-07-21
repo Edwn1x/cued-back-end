@@ -77,6 +77,12 @@ WEB_SEARCH_MAX_USES = 3
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
 READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
+# log_event: the agent's write path for DATED, day-scoped calendar items (a
+# calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
+# local-day windowed — NOT semantic memory facts. Without this the model had no way
+# to persist schedule items; they fell to legacy extraction into the `schedule`
+# memory category and got evicted by the per-category soft cap (burn-in finding).
+LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() == "true"
 
 # Phase 4 — heartbeat (proactive). A dumb clock, a smart decision, default silent.
 # Burn-in runs on the founder's number only (allowlist), on top of the live loop.
