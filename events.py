@@ -184,10 +184,14 @@ def todays_events(user_id: int, event_type: str = None) -> list:
 
 
 def in_class_now(user_id: int) -> bool:
-    """True if there's an in_class event today whose end time is still in the future."""
+    """True if there's a regex-FLOOR in_class event today whose end is still in the
+    future. This is a deterministic hard gate (high-precision regex source only): a
+    model-sourced event (source='model', e.g. a logged 'summit') deliberately does NOT
+    trip it — model events inform proactive JUDGMENT (context), floor events hard-gate.
+    See rewrite/phase-4 (heartbeat) + the log_event burn-in fix."""
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     for ev in todays_events(user_id, "in_class"):
-        if ev.ends_at and ev.ends_at > now_utc:
+        if ev.source == "regex" and ev.ends_at and ev.ends_at > now_utc:
             return True
     return False
 

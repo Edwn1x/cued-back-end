@@ -129,6 +129,56 @@ def test_guardrail_unanswered_outbound_blocks(db, monkeypatch, sms_capture, anth
     assert anthropic_stub.calls == []
 
 
+# ---- floor events hard-gate; model events inform (deterministic guardrails) --
+
+def test_floor_in_class_event_hard_gates(db, monkeypatch, sms_capture, anthropic_stub):
+    """A regex-floor in_class event (high precision) suppresses the tick in code —
+    don't ping someone provably mid-lecture — before any model call."""
+    import heartbeat
+    from events import record_event
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    future = _utcnow_naive() + timedelta(hours=1)
+    record_event(user.id, "in_class", ends_at=future, source="regex", raw_text="in class till 2")
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert _ticks(user.id)[-1].reason == "guardrail:in_class"
+    assert anthropic_stub.calls == [], "floor event must hard-gate BEFORE the model call"
+
+
+def test_model_scheduled_event_informs_but_does_not_hard_gate(db, monkeypatch, sms_capture, anthropic_stub):
+    """A MODEL-logged event ('summit') must NOT hard-gate — it reaches the decision
+    call and informs it via context. Deterministic guardrails, model decisions."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+    from agent_tools import handle_log_event
+    from models import get_session, User
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    handle_log_event(user.id, {"description": "founder summit", "starts_at": "12:00",
+                               "ends_at": "14:30", "date": "today"})
+    anthropic_stub.reply_with(lambda kw: ToolUse("stay_silent", {"reason": "nothing to add"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    # reached the decision (model was called) rather than being hard-gated
+    assert anthropic_stub.calls, "a model event must not hard-gate the tick"
+    tick = _ticks(user.id)[-1]
+    assert not (tick.reason or "").startswith("guardrail:")
+    # and it INFORMS: the event is in the decision context
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+    assert "founder summit" in ctx
+
+
 # ---- decision branches ------------------------------------------------------
 
 def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_stub):
