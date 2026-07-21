@@ -131,3 +131,44 @@ def test_manage_log_delete_via_loop(db, driver, monkeypatch, anthropic_stub):
     finally:
         s.close()
     assert remaining == 0, "manage_log tool did not soft-delete the meal"
+
+
+def test_manage_log_lists_and_deletes_events(db):
+    """The deletion surface must follow the new write path: a model-logged Event
+    shows in list WITH an id, deletes by id, and then disappears from the context
+    the heartbeat reads (todays_events → build_loop_context)."""
+    import re
+    from tests.factories import make_user
+    from agent_tools import handle_log_event, handle_manage_log
+    from agent_loop import build_loop_context
+    from events import todays_events
+    from models import get_session, User
+
+    user = make_user(db)
+    handle_log_event(user.id, {"description": "founder summit", "starts_at": "12:00", "ends_at": "14:30"})
+
+    # list surfaces the event with an id (delete/edit already accept entity=event)
+    listing = handle_manage_log(user.id, {"action": "list"})
+    assert "event [id" in listing and "founder summit" in listing, listing
+    eid = int(re.search(r"event \[id (\d+)\]", listing).group(1))
+
+    # and it's referenceable by id in the loop/heartbeat context
+    s = get_session()
+    try:
+        ctx_before = build_loop_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+    assert f"[id {eid}]" in ctx_before and "founder summit" in ctx_before
+
+    # delete by id → real deletion, honest ok
+    out = handle_manage_log(user.id, {"action": "delete", "entity": "event", "id": eid})
+    assert out.startswith("ok: deleted event"), out
+
+    # gone from the event floor AND from the context the heartbeat sees
+    assert all("founder summit" not in (e.raw_text or "") for e in todays_events(user.id))
+    s = get_session()
+    try:
+        ctx_after = build_loop_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+    assert "founder summit" not in ctx_after

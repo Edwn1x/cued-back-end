@@ -92,8 +92,12 @@ def build_loop_context(user, session) -> str:
                     span = f" until {e.ends_at:%H:%M}Z"
                 else:
                     span = ""
-                return label + span
-            return e.event_type + (f" until {e.ends_at:%H:%M}Z" if e.ends_at else "")
+            else:
+                label = e.event_type
+                span = f" until {e.ends_at:%H:%M}Z" if e.ends_at else ""
+            # [id N] so the model can reference/correct/delete an event via manage_log,
+            # the same way it can for meals and workouts.
+            return f"[id {e.id}] {label}{span}"
         ev_txt = "; ".join(_fmt_event(e) for e in evs)
         parts.append(f"## TODAY'S EVENTS\n{ev_txt}")
 
