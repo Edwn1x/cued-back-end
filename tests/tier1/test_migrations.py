@@ -26,13 +26,16 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
 
     insp = inspect(models.engine)
     tables = set(insp.get_table_names())
-    assert {"events", "processed_messages"} <= tables
+    assert {"events", "processed_messages", "heartbeat_ticks"} <= tables
 
     event_cols = {c["name"] for c in insp.get_columns("events")}
     assert {"user_id", "event_type", "occurred_at", "ends_at", "source", "raw_text"} <= event_cols
 
     pm_cols = {c["name"] for c in insp.get_columns("processed_messages")}
     assert {"message_sid", "user_id", "received_at"} <= pm_cols
+
+    hb_cols = {c["name"] for c in insp.get_columns("heartbeat_ticks")}
+    assert {"user_id", "decided_at", "spoke", "reason", "message"} <= hb_cols
 
 
 def test_legacy_profile_survives_and_renders_as_valid(db):

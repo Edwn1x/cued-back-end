@@ -343,6 +343,20 @@ class Event(Base):
     deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
 
 
+class HeartbeatTick(Base):
+    """One row per heartbeat tick decision (spoke or silent + why). Fed back into
+    the next tick's context so the coach can't re-conclude and re-send the same
+    nudge three times (the anti-repetition signal, distinct from the daily cap)."""
+    __tablename__ = "heartbeat_ticks"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    decided_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    spoke = Column(Boolean, default=False)
+    reason = Column(Text)              # silence reason, or "spoke"
+    message = Column(Text)             # the composed message when spoke
+
+
 def claim_message_sid(message_sid: str, user_id: int = None) -> bool:
     """
     Claim a Twilio MessageSid for idempotent processing.

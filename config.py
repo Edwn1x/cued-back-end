@@ -77,3 +77,15 @@ WEB_SEARCH_MAX_USES = 3
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
 READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
+
+# Phase 4 — heartbeat (proactive). A dumb clock, a smart decision, default silent.
+# Burn-in runs on the founder's number only (allowlist), on top of the live loop.
+HEARTBEAT_ENABLED = os.getenv("HEARTBEAT_ENABLED", "false").lower() == "true"
+HEARTBEAT_ALLOWLIST = [p.strip() for p in os.getenv("HEARTBEAT_ALLOWLIST", "").split(",") if p.strip()]
+HEARTBEAT_TICK_MINUTES = int(os.getenv("HEARTBEAT_TICK_MINUTES", "45"))     # dumb clock interval
+HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 0-10 min offset — kills the :00/:30 tell
+HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
+HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
+HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
+# Burn-in ships search ON on the proactive path; measure speak rate, then decide a budget.
+HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "true").lower() == "true"

@@ -170,6 +170,16 @@ MIGRATIONS = [
     "ALTER TABLE meals ADD COLUMN deleted_at TIMESTAMP",
     "ALTER TABLE workouts ADD COLUMN deleted_at TIMESTAMP",
     "ALTER TABLE events ADD COLUMN deleted_at TIMESTAMP",
+    # Phase 4: heartbeat tick decision log (anti-repetition signal).
+    """CREATE TABLE IF NOT EXISTS heartbeat_ticks (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        decided_at TIMESTAMP DEFAULT NOW(),
+        spoke BOOLEAN DEFAULT FALSE,
+        reason TEXT,
+        message TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_heartbeat_user_decided ON heartbeat_ticks (user_id, decided_at)",
 ]
 
 def wait_for_db(retries=10, delay=3):
