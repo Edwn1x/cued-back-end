@@ -404,9 +404,13 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         try:
             meals = active(session, Meal, user_id=user_id).order_by(Meal.eaten_at.desc()).limit(15).all()
             workouts = active(session, Workout, user_id=user_id).order_by(Workout.date.desc()).limit(10).all()
+            events = active(session, Event, user_id=user_id).order_by(Event.occurred_at.desc()).limit(10).all()
             lines = [f"meal [id {m.id}] {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g"
                      for m in meals]
             lines += [f"workout [id {w.id}] {w.workout_type}" for w in workouts]
+            lines += [f"event [id {e.id}] {(e.raw_text or e.event_type or '').strip()}"
+                      + (f" ({e.occurred_at:%m-%d %H:%M}Z)" if e.occurred_at else "")
+                      for e in events]
             return "ok:\n" + ("\n".join(lines) if lines else "(nothing logged)")
         finally:
             session.close()

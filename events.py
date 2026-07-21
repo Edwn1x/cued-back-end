@@ -165,17 +165,20 @@ def _local_day_window_utc(user) -> tuple[datetime, datetime]:
 
 
 def todays_events(user_id: int, event_type: str = None) -> list:
-    """Events that occurred during the user's LOCAL today. Optionally filter by type."""
+    """Events that occurred during the user's LOCAL today (soft-deleted excluded).
+    Optionally filter by type. Goes through models.active so a manage_log delete
+    actually removes the event from every reader — the loop context AND the heartbeat —
+    not just from the list. Without this the coach could honestly say "deleted" while
+    the row still drove context."""
+    from models import active
     session = get_session()
     try:
         user = session.get(User, user_id)
         if not user:
             return []
         start, end = _local_day_window_utc(user)
-        q = (session.query(Event)
-             .filter(Event.user_id == user_id,
-                     Event.occurred_at >= start,
-                     Event.occurred_at < end))
+        q = (active(session, Event, user_id=user_id)
+             .filter(Event.occurred_at >= start, Event.occurred_at < end))
         if event_type:
             q = q.filter(Event.event_type == event_type)
         return q.order_by(Event.occurred_at.desc()).all()
