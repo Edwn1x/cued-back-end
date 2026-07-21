@@ -102,6 +102,16 @@ def build_loop_context(user, session) -> str:
     if (user.delivered_coaching_points or "").strip():
         parts.append(f"## ALREADY TOLD THEM (don't repeat)\n{user.delivered_coaching_points.strip()}")
 
+    # 5b. Recent episodic notes (Phase 5) — non-fitness life context worth following
+    # up on. The heartbeat's raw material ("how'd the midterm go"); the reactive loop
+    # sees it too. Flag-gated; distinct ground from the coaching summary above.
+    if config.EPISODIC_ENABLED:
+        from episodic import recent_episodic
+        notes = recent_episodic(user.id)
+        if notes:
+            nl = "\n".join(f"- {n.occurred_on:%m-%d}: {n.text}" for n in notes)
+            parts.append(f"## RECENT LIFE CONTEXT (personal — follow up naturally)\n{nl}")
+
     # 6. Recent conversation window (reuse the watermark boundary — no overlap with summary).
     watermark = user.last_compressed_message_id or 0
     msgs = (session.query(Message)

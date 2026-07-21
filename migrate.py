@@ -180,6 +180,29 @@ MIGRATIONS = [
         message TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_heartbeat_user_decided ON heartbeat_ticks (user_id, decided_at)",
+    # Phase 5: nightly consolidation audit/rollback + episodic digest.
+    "ALTER TABLE users ADD COLUMN last_episodic_message_id INTEGER",
+    """CREATE TABLE IF NOT EXISTS consolidation_runs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        ran_at TIMESTAMP DEFAULT NOW(),
+        valid_before INTEGER DEFAULT 0,
+        removed_count INTEGER DEFAULT 0,
+        aborted BOOLEAN DEFAULT FALSE,
+        summary TEXT,
+        diff JSONB,
+        prev_profile JSONB
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_consolidation_user_ran ON consolidation_runs (user_id, ran_at)",
+    """CREATE TABLE IF NOT EXISTS episodic_digests (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        occurred_on TIMESTAMP DEFAULT NOW(),
+        text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        deleted_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_user_occurred ON episodic_digests (user_id, occurred_on)",
 ]
 
 def wait_for_db(retries=10, delay=3):

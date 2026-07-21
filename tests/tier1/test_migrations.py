@@ -26,7 +26,17 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
 
     insp = inspect(models.engine)
     tables = set(insp.get_table_names())
-    assert {"events", "processed_messages", "heartbeat_ticks"} <= tables
+    assert {"events", "processed_messages", "heartbeat_ticks",
+            "consolidation_runs", "episodic_digests"} <= tables
+
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    assert "last_episodic_message_id" in user_cols
+
+    cr_cols = {c["name"] for c in insp.get_columns("consolidation_runs")}
+    assert {"user_id", "aborted", "summary", "diff", "prev_profile", "removed_count"} <= cr_cols
+
+    ep_cols = {c["name"] for c in insp.get_columns("episodic_digests")}
+    assert {"user_id", "occurred_on", "text", "deleted_at"} <= ep_cols
 
     event_cols = {c["name"] for c in insp.get_columns("events")}
     assert {"user_id", "event_type", "occurred_at", "ends_at", "source", "raw_text"} <= event_cols
