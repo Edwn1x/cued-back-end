@@ -42,18 +42,24 @@ immediately falsified it: `heartbeat → scheduler → coach` (scheduler top-lev
 scheduler). Fixed by moving that one coach-free gate to `engagement_tracker.py`. The
 closure is now genuinely disjoint — the deletion isn't blocked on the Gate A commit.
 
-## Prepared deletion commits (apply when a gate goes green)
-1. **Gate A** — remove `scheduler` templated touchpoints (`send_scheduled_message`,
-   `schedule_user`, `schedule_all_users`, `check_meal_adherence`, `_is_training_day`,
-   `_get_wake_time_for_day`) + `from coach import generate_scheduled_message`; trim
-   `start_scheduler`. Extend the isolation test: scheduler no longer imports coach.
-2. **Gate B** — remove `app.extract_and_store_memory` / `extract_and_store_decisions` /
-   `extract_and_store_coaching_points_task` + their daemon spawns. **Retain the
-   deterministic safety pre-pass floor.** Extend the isolation roots to include `app`.
-3. **Pipeline** — delete `orchestrator.py`, `agents/`, `coach.py`, `skill_loader.py`,
-   `tone_analyzer.py`; remove the app fallback branch + legacy top-level imports. The
-   loop becomes the sole responder (the Phase-2 fallback retires here, post-burn-in).
-   Flip the isolation test to assert the modules are GONE.
+## Prepared deletion commits — see `DELETION_PLAYBOOK.md`
+The deletions are gated on live evidence weeks out; a branch cut now would drift from
+`main` before the gates green. So the prepared form is an **exact, line-anchored
+playbook** (`rewrite/phase-6/DELETION_PLAYBOOK.md`) that turns each gate into a
+mechanical change verified by the isolation test + tier-1 suite. Summary:
+1. **Commit A (Gate A green)** — delete `scheduler` templated touchpoints +
+   `coach.generate_scheduled_message`; reconcile the `schedule_user` call sites in
+   `app.py` + `onboarding_agent.py`; trim `start_scheduler`.
+2. **Commit B (Gate B green)** — delete the three `extract_and_store_*` functions + their
+   daemon spawns + the dead A4 per-agent uses-bump; delete the (now-obsolete) parity eval.
+   **Retain the deterministic safety floor** + the watermark summarizer.
+3. **Commit C (loop trusted + B done)** — delete `orchestrator`/`agents/`/`coach`/
+   `skill_loader`/`tone_analyzer`; make the loop the SOLE responder (on failure: safe
+   minimal reply + loud log, no legacy — update the fallback test to this invariant);
+   flip the isolation test to assert the modules are gone.
+
+The mapping is exact because building the isolation test forced a full call-site audit —
+every legacy import site is now enumerated in the playbook.
 
 ## Launch path (founder)
 1. Merge the stack #4 → #7 → this; retarget bases to `main` as each lands.

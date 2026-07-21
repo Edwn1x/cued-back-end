@@ -57,11 +57,15 @@ provably safe.
   and the legacy-retirement note.
 - **Where:** `README.md`.
 
-## Prepared deletion commits (staged separately; land when a gate goes green)
-Not in this PR. Order + contents in INVESTIGATION §"Prepared deletion commits":
-Gate A (templated scheduler touchpoints + `coach.generate_scheduled_message`),
-Gate B (per-turn LLM extraction; retain the deterministic safety floor), pipeline
-removal (`orchestrator`/`agents/`/`coach`/`skill_loader`/`tone_analyzer` + app fallback).
+## Prepared deletion commits — `DELETION_PLAYBOOK.md`
+Not code in this PR — a branch cut now would drift from `main` before the gates green
+(weeks out). Instead, `rewrite/phase-6/DELETION_PLAYBOOK.md` is the exact, line-anchored
+playbook (every legacy call site enumerated, since the isolation test forced the audit):
+Commit A (Gate A — templated schedulers + `coach.generate_scheduled_message`, reconcile
+`schedule_user` callers), Commit B (Gate B — the `extract_and_store_*` functions + spawns
++ the dead A4 uses-bump + the obsolete parity eval; retain the safety floor + watermark
+summarizer), Commit C (pipeline — delete the five modules, loop becomes sole responder,
+flip the isolation test).
 
 ## Tests
 `tier1: 106 passed, 2 skipped, 0 xfails` (+3 isolation tests, heartbeat guardrail patch
