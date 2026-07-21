@@ -114,3 +114,55 @@ def test_no_text_anomaly_logs_diagnostics_then_raises(db, monkeypatch, anthropic
 
     assert "stop_reason=end_turn" in str(exc.value) and "blocks=" in str(exc.value)
     assert "AGENT_LOOP_NO_TEXT" in caplog.text
+
+
+def test_loop_concatenates_all_text_blocks(db, monkeypatch, anthropic_stub):
+    """The burn-in bug: an inline web_search response interleaves
+    [text lead-in, web_search_tool_result, text answer]. The reply must be BOTH text
+    blocks joined — not just the first ("from what I can find:" with the answer dropped)."""
+    from agent_loop import run_agent_loop
+    from tests._fake_anthropic import MultiText
+    from tests.factories import make_user
+
+    _enable_loop(monkeypatch)
+    anthropic_stub.reply_with(lambda kw: MultiText(
+        "from what i can find: ",
+        ("web_search_tool_result", ""),          # non-text block — must be skipped
+        "the rsf closes at 11 tonight.",
+    ))
+    user = make_user(db)
+
+    reply = run_agent_loop(user, "when does the rsf close?", "freeform")
+    assert reply == "from what i can find: the rsf closes at 11 tonight.", reply
+
+
+def test_loop_skips_thinking_block_and_returns_text(db, monkeypatch, anthropic_stub):
+    """A leading (empty) thinking block must not shadow the text block after it."""
+    from agent_loop import run_agent_loop
+    from tests._fake_anthropic import MultiText
+    from tests.factories import make_user
+
+    _enable_loop(monkeypatch)
+    anthropic_stub.reply_with(lambda kw: MultiText(("thinking", ""), "here's the plan."))
+    user = make_user(db)
+
+    assert run_agent_loop(user, "hi", "freeform") == "here's the plan."
+
+
+def test_refusal_degrades_not_raises(db, monkeypatch, anthropic_stub, caplog):
+    """stop_reason=refusal with empty content: return a neutral line + log by name,
+    never raise into legacy (which would re-answer the declined request)."""
+    import logging
+    from agent_loop import run_agent_loop, _LOOP_DEGRADE_REPLY
+    from tests._fake_anthropic import MultiText
+    from tests.factories import make_user
+
+    _enable_loop(monkeypatch)
+    anthropic_stub.reply_with(lambda kw: MultiText(stop_reason="refusal"))  # no blocks
+    user = make_user(db)
+
+    with caplog.at_level(logging.WARNING):
+        reply = run_agent_loop(user, "something", "freeform")  # must NOT raise
+
+    assert reply == _LOOP_DEGRADE_REPLY
+    assert "AGENT_LOOP_REFUSAL" in caplog.text

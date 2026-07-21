@@ -46,6 +46,16 @@ class Truncated:
         self.text = text
 
 
+class MultiText:
+    """Marker: a response whose content is the given blocks IN ORDER. A str becomes a
+    text block; a (type, text) tuple becomes a non-text block (e.g.
+    ('web_search_tool_result', '')). Models the interleaved shape Sonnet 5 returns so
+    tests can assert the loop concatenates ALL text blocks and skips the rest."""
+    def __init__(self, *blocks, stop_reason: str = "end_turn"):
+        self.blocks = blocks
+        self.stop_reason = stop_reason
+
+
 class _Usage:
     def __init__(self, input_tokens=1, output_tokens=1):
         self.input_tokens = input_tokens
@@ -102,6 +112,14 @@ class FakeAnthropicController:
             r.stop_reason = "max_tokens"
             if not value.text:
                 r.content = []  # truncated before emitting any text block
+            return r
+        if isinstance(value, MultiText):
+            r = _Response("")
+            r.content = [
+                _Block(b[1], type=b[0]) if isinstance(b, tuple) else _Block(b)
+                for b in value.blocks
+            ]
+            r.stop_reason = value.stop_reason
             return r
         return _Response(str(value))
 
