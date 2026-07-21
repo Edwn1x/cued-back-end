@@ -53,3 +53,11 @@ WORKOUT_LOG_TIMEOUT_HOURS = 4                  # stale-session auto-finalize thr
 WORKOUT_LOG_EXIT_SUMMARY = "silent"            # "silent" | "brief" | "full" — default per user
 WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 185x5"; if False, just "✓"
 WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() == "true"
+
+# Phase 2 — single agent loop (inbound). Separate model key from the legacy
+# COACH_MODEL (which stays on claude-sonnet-4-6 until Phase 6): the loop runs on
+# current-gen Sonnet 5, which REJECTS temperature/top_p/top_k and manual
+# budget_tokens with a 400. Loop passes no sampling params; adaptive thinking +
+# low effort held constant (see rewrite/phase-2/INVESTIGATION.md §5).
+AGENT_LOOP_MODEL = "claude-sonnet-5"
+SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lower() == "true"
