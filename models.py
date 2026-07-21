@@ -72,6 +72,7 @@ class User(Base):
     user_profile_memory = Column(JSON, default=None)  # {category: [{id, text, ts, uses, safety?}]} — see memory.py
     delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
     last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
+    last_episodic_message_id = Column(Integer, default=None)  # Phase 5 watermark: episodic digest idempotency (independent of the summary watermark)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     calories_today = Column(Integer, default=0)  # running total for today
@@ -355,6 +356,41 @@ class HeartbeatTick(Base):
     spoke = Column(Boolean, default=False)
     reason = Column(Text)              # silence reason, or "spoke"
     message = Column(Text)             # the composed message when spoke
+
+
+class ConsolidationRun(Base):
+    """One row per nightly consolidation attempt per user. Home for the three
+    audit guarantees: the JSON diff, the human-readable summary (founder's daily
+    sanity check), and the pre-run profile snapshot for rollback. `aborted` marks
+    a run the bounded-delta guardrail rejected (live memory left untouched)."""
+    __tablename__ = "consolidation_runs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    ran_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    valid_before = Column(Integer, default=0)      # count of valid (non-history) entries pre-run
+    removed_count = Column(Integer, default=0)     # entries closed/merged out this run
+    aborted = Column(Boolean, default=False)       # bounded-delta guardrail tripped -> nothing written
+    summary = Column(Text)                         # one-line human-readable per-user change summary
+    diff = Column(JSON)                            # structured before/after of touched entries
+    prev_profile = Column(JSON)                    # pre-run user_profile_memory snapshot (rollback)
+
+
+class EpisodicDigest(Base):
+    """A short dated prose note of the non-obvious substance of a session —
+    especially NON-fitness life context ("orgo midterm tomorrow", "moving out").
+    The heartbeat's raw material for personal follow-ups. Kept OUT of
+    user_profile_memory so nightly consolidation never dedupes/closes it. Distinct
+    from the watermark summarizer (coaching decisions) and from Event (structured
+    nudge detections). Soft-deletable — filter via models.active()."""
+    __tablename__ = "episodic_digests"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    occurred_on = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    deleted_at = Column(DateTime, default=None)    # soft delete — filter via models.active()
 
 
 def claim_message_sid(message_sid: str, user_id: int = None) -> bool:

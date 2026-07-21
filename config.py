@@ -89,3 +89,21 @@ HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
 # Burn-in ships search ON on the proactive path; measure speak rate, then decide a budget.
 HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "true").lower() == "true"
+
+# Phase 5 — nightly consolidation + episodic digest. The first writers to memory
+# NOT triggered by a user turn, so every knob below is a guardrail against silent
+# cross-night drift. All default off/safe.
+CONSOLIDATION_ENABLED = os.getenv("CONSOLIDATION_ENABLED", "false").lower() == "true"
+CONSOLIDATION_STALE_DAYS = int(os.getenv("CONSOLIDATION_STALE_DAYS", "30"))  # never-used non-safety fact older than this -> close
+CONSOLIDATION_MAX_DELTA_FRACTION = float(os.getenv("CONSOLIDATION_MAX_DELTA_FRACTION", "0.5"))  # a run removing >this fraction of valid entries ABORTS
+CONSOLIDATION_HOUR = int(os.getenv("CONSOLIDATION_HOUR", "4"))               # nightly run hour, off-peak (Pacific; single-tz base)
+CONSOLIDATION_MODEL = HAIKU_MODEL                                            # coaching-summary refresh (cheap)
+# Episodic digest — a cheap dated prose note of non-fitness life context when a
+# conversation goes quiet. Raw material for heartbeat follow-ups; distinct from the
+# watermark summarizer (which owns coaching decisions).
+EPISODIC_ENABLED = os.getenv("EPISODIC_ENABLED", "false").lower() == "true"
+EPISODIC_QUIET_MINUTES = int(os.getenv("EPISODIC_QUIET_MINUTES", "90"))      # conversation "quiet" threshold (the trigger)
+EPISODIC_SWEEP_MINUTES = int(os.getenv("EPISODIC_SWEEP_MINUTES", "30"))      # how often the sweep looks for quiet convos
+EPISODIC_MODEL = HAIKU_MODEL                                                 # cheap digest pass
+EPISODIC_RECENT_DAYS = int(os.getenv("EPISODIC_RECENT_DAYS", "5"))          # window recent_episodic() surfaces into context
+EPISODIC_MIN_MESSAGES = int(os.getenv("EPISODIC_MIN_MESSAGES", "4"))        # don't digest a trivial 1-2 line exchange

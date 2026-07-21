@@ -522,6 +522,30 @@ def start_scheduler():
         logger.info("Heartbeat scheduled: every %s min (+/- %ss jitter).",
                     config.HEARTBEAT_TICK_MINUTES, config.HEARTBEAT_JITTER_SECONDS)
 
+    # Phase 5 — nightly consolidation (off-peak; single-tz user base) + episodic
+    # digest sweep (fires when a conversation has gone quiet). Both flag-gated.
+    if config.CONSOLIDATION_ENABLED:
+        from consolidation import consolidate_all
+        scheduler.add_job(
+            consolidate_all,
+            trigger=CronTrigger(hour=config.CONSOLIDATION_HOUR, minute=0,
+                                timezone=ZoneInfo("America/Los_Angeles")),
+            id="nightly_consolidation", replace_existing=True,
+            coalesce=True, max_instances=1,
+        )
+        logger.info("Consolidation scheduled: daily at %02d:00 Pacific.", config.CONSOLIDATION_HOUR)
+
+    if config.EPISODIC_ENABLED:
+        from apscheduler.triggers.interval import IntervalTrigger
+        from episodic import digest_all
+        scheduler.add_job(
+            digest_all,
+            trigger=IntervalTrigger(minutes=config.EPISODIC_SWEEP_MINUTES),
+            id="episodic_digest_sweep", replace_existing=True,
+            coalesce=True, max_instances=1,
+        )
+        logger.info("Episodic digest sweep scheduled: every %s min.", config.EPISODIC_SWEEP_MINUTES)
+
     scheduler.start()
     logger.info("Scheduler started.")
 
