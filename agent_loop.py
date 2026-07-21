@@ -78,13 +78,23 @@ def build_loop_context(user, session) -> str:
     if (user.food_context or "").strip():
         parts.append(f"Food context: {user.food_context.strip()}")
 
-    # 3. Today's events (local-day; from the Phase 1 Event floor).
+    # 3. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
+    # model-logged dated schedule items (log_event) — the latter carry a description
+    # in raw_text + a start/end window, so a timely check-in can reference them.
     evs = todays_events(user.id)
     if evs:
-        ev_txt = "; ".join(
-            e.event_type + (f" until {e.ends_at:%H:%M}Z" if e.ends_at else "")
-            for e in evs
-        )
+        def _fmt_event(e):
+            if e.source == "model":
+                label = (e.raw_text or e.event_type or "").strip()
+                if e.occurred_at:
+                    span = f" {e.occurred_at:%H:%M}Z" + (f"–{e.ends_at:%H:%M}Z" if e.ends_at else "")
+                elif e.ends_at:
+                    span = f" until {e.ends_at:%H:%M}Z"
+                else:
+                    span = ""
+                return label + span
+            return e.event_type + (f" until {e.ends_at:%H:%M}Z" if e.ends_at else "")
+        ev_txt = "; ".join(_fmt_event(e) for e in evs)
         parts.append(f"## TODAY'S EVENTS\n{ev_txt}")
 
     # 4. Split pointer WITH provenance — the model hedges on inferred days.
@@ -216,6 +226,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_MEAL_TOOL_ENABLED:
         from agent_tools import LOG_MEAL_TOOL
         tools.append(LOG_MEAL_TOOL)
+    if config.LOG_EVENT_TOOL_ENABLED:
+        from agent_tools import LOG_EVENT_TOOL
+        tools.append(LOG_EVENT_TOOL)
     if config.GET_DINING_MENU_TOOL_ENABLED:
         from agent_tools import GET_DINING_MENU_TOOL
         tools.append(GET_DINING_MENU_TOOL)

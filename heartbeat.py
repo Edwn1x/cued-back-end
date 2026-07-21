@@ -104,6 +104,13 @@ def guardrail_reason(user, session) -> str | None:
     from engagement_tracker import has_unanswered_outbound
     if has_unanswered_outbound(user.id):
         return "unanswered_gap"
+    # FLOOR events hard-gate (deterministic): don't interrupt someone who is provably
+    # mid-class. Only the high-precision regex floor gates here; a MODEL-logged event
+    # ("summit 12-2:30") deliberately does NOT hard-gate — it informs the decision call
+    # via context instead (deterministic guardrails, model decisions). See in_class_now.
+    from events import in_class_now
+    if in_class_now(user.id):
+        return "in_class"
     return None
 
 

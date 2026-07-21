@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -256,6 +257,87 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
             + (f" [saw_similar={saw_similar}]" if saw_similar else ""))
 
 
+LOG_EVENT_TOOL = {
+    "name": "log_event",
+    "description": (
+        "Save a DATED, day-scoped commitment on the user's calendar — a one-off thing "
+        "happening today or on a specific day (from a calendar screenshot, or text like "
+        "'lab till 2 today', 'founder summit noon to 2:30', 'orgo exam friday 9am'). "
+        "Use this for time-bound events — NOT recurring habits or standing preferences "
+        "(those go to remember with category 'schedule'). Times are the user's LOCAL "
+        "time, 24-hour 'HH:MM'. This is how a dated commitment survives to the day it "
+        "matters and stays visible for a timely check-in — a semantic memory fact would "
+        "be wrong (it never expires) and gets crowded out."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "what it is, e.g. 'founder summit'"},
+            "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h, optional)"},
+            "ends_at": {"type": "string", "description": "local end time 'HH:MM' (24h, optional)"},
+            "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def _parse_local_dt(tz_str: str, date_str, hhmm):
+    """Combine a date (today/tomorrow/YYYY-MM-DD) + local 'HH:MM' -> naive UTC.
+    Returns None if no time given (caller lets the Event default occurred_at=now)."""
+    if not hhmm:
+        return None
+    try:
+        parts = str(hhmm).split(":")
+        hh, mm = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return None
+    try:
+        tz = ZoneInfo(tz_str or "America/Los_Angeles")
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    today_local = datetime.now(tz).date()
+    ds = (date_str or "today").strip().lower()
+    if ds == "tomorrow":
+        d = today_local + timedelta(days=1)
+    elif ds in ("", "today"):
+        d = today_local
+    else:
+        try:
+            d = date.fromisoformat(ds)
+        except ValueError:
+            d = today_local
+    local_dt = datetime(d.year, d.month, d.day, hh, mm, tzinfo=tz)
+    return local_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Persist a dated schedule item as an Event (source='model'), so it auto-expires
+    with its day and surfaces in TODAY'S EVENTS for the reactive loop AND the heartbeat.
+    Dated items belong here, not in the `schedule` memory category — that's the
+    burn-in fix (schedule facts were landing in memory and getting evicted)."""
+    from events import record_event
+    desc = (tool_input.get("description") or "").strip()
+    if not desc:
+        return "error: description required"
+
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz_str = (user.user_timezone if user else None) or "America/Los_Angeles"
+    finally:
+        session.close()
+
+    starts = _parse_local_dt(tz_str, tool_input.get("date"), tool_input.get("starts_at"))
+    ends = _parse_local_dt(tz_str, tool_input.get("date"), tool_input.get("ends_at"))
+    eid = record_event(user_id, "scheduled", ends_at=ends, source="model",
+                       raw_text=desc, occurred_at=starts)
+    logger.info("LOG_EVENT user=%s event_id=%s desc=%r start=%s end=%s",
+                user_id, eid, desc[:40], starts, ends)
+    when = f" at {tool_input.get('starts_at')}" if tool_input.get("starts_at") else ""
+    return f"ok: noted '{desc}'{when} (event id={eid})"
+
+
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
 _EDITABLE = {
     "meal": {"calories", "protein_g", "carbs_g", "fat_g", "description", "notes"},
@@ -382,6 +464,7 @@ _HANDLERS = {
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
     "log_meal": handle_log_meal,
+    "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
 }
 
