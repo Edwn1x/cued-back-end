@@ -501,6 +501,27 @@ def start_scheduler():
     except Exception as e:
         logger.warning(f"Startup dining scrape failed: {e}")
 
+    # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
+    # decision (default silent) with guardrails in code. Jitter the interval so
+    # ticks never land on a predictable :00/:45 boundary — the message-shape tell
+    # the founder called out. The tick itself is cheap when silent; the decision
+    # call only runs after code guardrails pass.
+    import config
+    if config.HEARTBEAT_ENABLED:
+        from apscheduler.triggers.interval import IntervalTrigger
+        from heartbeat import heartbeat_all
+        scheduler.add_job(
+            heartbeat_all,
+            trigger=IntervalTrigger(minutes=config.HEARTBEAT_TICK_MINUTES),
+            id="global_heartbeat",
+            jitter=config.HEARTBEAT_JITTER_SECONDS,
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("Heartbeat scheduled: every %s min (+/- %ss jitter).",
+                    config.HEARTBEAT_TICK_MINUTES, config.HEARTBEAT_JITTER_SECONDS)
+
     scheduler.start()
     logger.info("Scheduler started.")
 
