@@ -101,7 +101,7 @@ def guardrail_reason(user, session) -> str | None:
         if age_min < config.HEARTBEAT_ACTIVE_CONVO_MINUTES:
             return "active_conversation"
     # minimum gap after an unanswered outbound — don't pile on
-    from scheduler import has_unanswered_outbound
+    from engagement_tracker import has_unanswered_outbound
     if has_unanswered_outbound(user.id):
         return "unanswered_gap"
     return None

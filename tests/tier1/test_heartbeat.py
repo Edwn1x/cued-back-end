@@ -116,12 +116,12 @@ def test_guardrail_active_conversation_blocks(db, monkeypatch, sms_capture, anth
 
 
 def test_guardrail_unanswered_outbound_blocks(db, monkeypatch, sms_capture, anthropic_stub):
-    import heartbeat, scheduler
+    import heartbeat, engagement_tracker
     from tests.factories import make_user
 
     user = make_user(db)
     _allow(monkeypatch, user)
-    monkeypatch.setattr(scheduler, "has_unanswered_outbound", lambda _uid: True)
+    monkeypatch.setattr(engagement_tracker, "has_unanswered_outbound", lambda _uid: True)
 
     heartbeat.heartbeat_tick(user.id)
 

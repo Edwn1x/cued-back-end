@@ -13,7 +13,57 @@ Content (meals, workouts) keeps coming in FULL and QUIET.
 What decays is questions and check-in frequency.
 """
 
+from datetime import datetime, timezone
+
 from models import get_session, User, Message
+
+
+def has_unanswered_outbound(user_id: int) -> bool:
+    """
+    Return True if the last outbound message sent TODAY has not received a reply.
+    Prevents back-to-back unsolicited messages when the user hasn't responded.
+    Only looks at today's window — a stale unanswered message from yesterday
+    shouldn't block today's scheduled touchpoints.
+
+    Lives here (a coach-free outbound-gating helper) rather than in scheduler.py so
+    the proactive path — the heartbeat — can use it without the single-agent brain's
+    import closure reaching the legacy templated scheduler (and through it, coach.py).
+    See rewrite/phase-6/INVESTIGATION.md (new-path isolation).
+    """
+    session = get_session()
+    try:
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        last_out_today = (
+            session.query(Message)
+            .filter(
+                Message.user_id == user_id,
+                Message.direction == "out",
+                Message.created_at >= today_start,
+            )
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_out_today:
+            return False  # nothing sent today, no block
+
+        last_in_today = (
+            session.query(Message)
+            .filter(
+                Message.user_id == user_id,
+                Message.direction == "in",
+                Message.created_at >= today_start,
+            )
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_in_today:
+            return True  # sent today, no reply today
+        return last_out_today.created_at > last_in_today.created_at
+    finally:
+        session.close()
+
 
 # Which touchpoints are allowed per tier
 TIER_TOUCHPOINTS = {
