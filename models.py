@@ -198,6 +198,7 @@ class Workout(Base):
     ai_notes = Column(Text)  # coach's parsed observations
     completed = Column(Boolean, default=False)
     deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()
+    edits = Column(JSON, default=None)  # append-only manage_log edit audit: [{at,field,old,new}]
 
     user = relationship("User", back_populates="workouts")
 
@@ -219,6 +220,7 @@ class Meal(Base):
     confidence = Column(String(10))  # "high", "medium", "low"
     notes = Column(Text)  # any clarifying details
     deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()
+    edits = Column(JSON, default=None)  # append-only manage_log edit audit: [{at,field,old,new}]
 
     user = relationship("User", back_populates="meals")
 
@@ -342,6 +344,7 @@ class Event(Base):
     raw_text = Column(Text)                            # the message snippet that triggered detection
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
+    edits = Column(JSON, default=None)                 # append-only manage_log edit audit
 
 
 class HeartbeatTick(Base):

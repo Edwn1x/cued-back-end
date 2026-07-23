@@ -189,7 +189,10 @@ MANAGE_LOG_TOOL = {
             "entity": {"type": "string", "enum": ["meal", "workout", "event"]},
             "id": {"type": "integer", "description": "the short id of the entry (delete/edit)"},
             "fields": {"type": "object",
-                       "description": "for edit: fields to update, e.g. {\"calories\": 400, \"protein_g\": 30}"},
+                       "description": "for edit: only the fields to change (others untouched). "
+                       "meal: calories/protein_g/carbs_g/fat_g/description/notes. "
+                       "workout: workout_type/notes. event: description/starts_at/ends_at "
+                       "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"})."},
         },
         "required": ["action"],
     },
@@ -382,11 +385,25 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
 
 
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
-_EDITABLE = {
-    "meal": {"calories", "protein_g", "carbs_g", "fat_g", "description", "notes"},
-    "workout": {"workout_type", "user_notes"},
-    "event": {"event_type", "ends_at"},
+# model-facing field -> (column, kind). kind: "str" | "int" | "event_time" (a local
+# 'HH:MM' -> naive UTC on the row's CURRENT local day, so editing the time keeps the day).
+# Partial edits touch only supplied fields; never a free-text re-description of the row.
+_EDIT_FIELDS = {
+    "meal": {"calories": ("calories", "int"), "protein_g": ("protein_g", "int"),
+             "carbs_g": ("carbs_g", "int"), "fat_g": ("fat_g", "int"),
+             "description": ("description", "str"), "notes": ("notes", "str")},
+    "workout": {"workout_type": ("workout_type", "str"),
+                "user_notes": ("user_notes", "str"), "notes": ("user_notes", "str")},
+    "event": {"description": ("raw_text", "str"),
+              "starts_at": ("occurred_at", "event_time"),
+              "ends_at": ("ends_at", "event_time"),
+              "event_type": ("event_type", "str")},
 }
+
+
+def _ser(x):
+    """Audit/serialize a field value (datetimes -> iso) for the edits log + result string."""
+    return x.isoformat() if hasattr(x, "isoformat") else x
 
 
 def _naive_utcnow():
@@ -441,15 +458,45 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
             return f"ok: deleted {entity} id={entry_id}"
 
-        # edit
+        # edit — field-level, ID-targeted, AUDITED. Only supplied fields change; each
+        # change captures its prior value into row.edits (an edited row otherwise silently
+        # claims to have always held its new value). Recompute totals, never patch a delta.
         fields = tool_input.get("fields") or {}
-        applied = {}
-        for k, v in fields.items():
-            if k in _EDITABLE.get(entity, set()):
-                setattr(row, k, v)
-                applied[k] = v
+        spec = _EDIT_FIELDS.get(entity, {})
+        applied, audit, tz_str = {}, list(row.edits or []), None
+        for mfield, value in fields.items():
+            if mfield not in spec:
+                continue
+            column, kind = spec[mfield]
+            if kind == "int":
+                try:
+                    newval = int(value)
+                except (TypeError, ValueError):
+                    return f"error: {mfield} must be a number"
+            elif kind == "event_time":
+                if tz_str is None:
+                    u = session.get(User, user_id)
+                    tz_str = (u.user_timezone if u else None) or "America/Los_Angeles"
+                try:
+                    tz = ZoneInfo(tz_str)
+                except Exception:
+                    tz = ZoneInfo("America/Los_Angeles")
+                base = getattr(row, "occurred_at", None) or _naive_utcnow()
+                day = base.replace(tzinfo=timezone.utc).astimezone(tz).date().isoformat()
+                newval = _parse_local_dt(tz_str, day, str(value))  # keep day, edit clock
+                if newval is None:
+                    return f"error: {mfield} must be a local time like '13:00'"
+            else:
+                newval = str(value).strip()
+            old = getattr(row, column)
+            audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
+                          "old": _ser(old), "new": _ser(newval)})
+            setattr(row, column, newval)
+            applied[mfield] = _ser(newval)
         if not applied:
             return f"error: no editable fields in {list(fields)} for {entity}"
+        row.edits = audit
+        flag_modified(row, "edits")
         session.commit()
         if entity == "meal":
             recompute_daily_totals(user_id)
