@@ -41,6 +41,10 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
     event_cols = {c["name"] for c in insp.get_columns("events")}
     assert {"user_id", "event_type", "occurred_at", "ends_at", "source", "raw_text"} <= event_cols
 
+    # Burn-in: manage_log edit audit column on all three editable tables.
+    for tbl in ("meals", "workouts", "events"):
+        assert "edits" in {c["name"] for c in insp.get_columns(tbl)}, f"{tbl}.edits missing"
+
     pm_cols = {c["name"] for c in insp.get_columns("processed_messages")}
     assert {"message_sid", "user_id", "received_at"} <= pm_cols
 

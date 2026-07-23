@@ -92,6 +92,10 @@ READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
 # to persist schedule items; they fell to legacy extraction into the `schedule`
 # memory category and got evicted by the per-category soft cap (burn-in finding).
 LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() == "true"
+# Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
+# and inject a code-computed macro totals block. Default ON (these are corrections);
+# the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.
+CONTEXT_LOCAL_TIME_ENABLED = os.getenv("CONTEXT_LOCAL_TIME_ENABLED", "true").lower() == "true"
 
 # Phase 4 — heartbeat (proactive). A dumb clock, a smart decision, default silent.
 # Burn-in runs on the founder's number only (allowlist), on top of the live loop.

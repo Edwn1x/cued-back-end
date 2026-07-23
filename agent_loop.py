@@ -61,6 +61,17 @@ def build_loop_context(user, session) -> str:
     profile = user.user_profile_memory or {}
     parts: list[str] = []
 
+    # Render every timestamp in the user's LOCAL zone (burn-in fix) — the model has no
+    # local clock to reason "tomorrow/later" against otherwise, and bare UTC is 7h ahead.
+    from timefmt import render_time, render_date, now_anchor, local_day_bounds
+    _local = config.CONTEXT_LOCAL_TIME_ENABLED
+
+    def _t(dt, *, relative=True):
+        return render_time(dt, user, relative=relative) if _local else f"{dt:%H:%M}Z"
+
+    def _d(dt):
+        return render_date(dt, user) if _local else f"{dt:%m-%d}"
+
     # 1. Unified memory (ALL categories, safety appended universally).
     mem_text, _ids = render_categories(profile, CATEGORIES, include_safety_universal=True)
     if mem_text:
@@ -87,14 +98,15 @@ def build_loop_context(user, session) -> str:
             if e.source == "model":
                 label = (e.raw_text or e.event_type or "").strip()
                 if e.occurred_at:
-                    span = f" {e.occurred_at:%H:%M}Z" + (f"–{e.ends_at:%H:%M}Z" if e.ends_at else "")
+                    span = f" {_t(e.occurred_at, relative=False)}" + (
+                        f"–{_t(e.ends_at, relative=False)}" if e.ends_at else "")
                 elif e.ends_at:
-                    span = f" until {e.ends_at:%H:%M}Z"
+                    span = f" until {_t(e.ends_at, relative=False)}"
                 else:
                     span = ""
             else:
                 label = e.event_type
-                span = f" until {e.ends_at:%H:%M}Z" if e.ends_at else ""
+                span = f" until {_t(e.ends_at, relative=False)}" if e.ends_at else ""
             # [id N] so the model can reference/correct/delete an event via manage_log,
             # the same way it can for meals and workouts.
             return f"[id {e.id}] {label}{span}"
@@ -123,7 +135,7 @@ def build_loop_context(user, session) -> str:
         from episodic import recent_episodic
         notes = recent_episodic(user.id)
         if notes:
-            nl = "\n".join(f"- {n.occurred_on:%m-%d}: {n.text}" for n in notes)
+            nl = "\n".join(f"- {_d(n.occurred_on)}: {n.text}" for n in notes)
             parts.append(f"## RECENT LIFE CONTEXT (personal — follow up naturally)\n{nl}")
 
     # 6. Recent conversation window (reuse the watermark boundary — no overlap with summary).
@@ -145,30 +157,40 @@ def build_loop_context(user, session) -> str:
     # log vs skip vs a legitimate second serving, instead of a deterministic dedup
     # silently dropping real calories. It also lets the model reference/correct an
     # entry by id via manage_log.
-    from datetime import timedelta as _td
-    from zoneinfo import ZoneInfo as _ZI
-    try:
-        _tz = _ZI(user.user_timezone or "America/Los_Angeles")
-    except Exception:
-        _tz = _ZI("America/Los_Angeles")
-    _mid = datetime.now(_tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    _start = _mid.astimezone(timezone.utc).replace(tzinfo=None)
-    _end = (_mid + _td(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    _start, _end = local_day_bounds(user)   # ONE shared local-day window (timefmt)
     meals = (active(session, Meal, user_id=user.id)
              .filter(Meal.eaten_at >= _start, Meal.eaten_at < _end)
              .order_by(Meal.eaten_at).all())
     if meals:
         ml = "\n".join(
-            f"[id {m.id}] {m.eaten_at:%H:%M}Z {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
+            f"[id {m.id}] {_t(m.eaten_at)} {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
             for m in meals)
         parts.append("## TODAY'S LOGGED MEALS (already recorded — reference by id; do not "
                      "double-log the same serving; a genuine second serving is fine)\n" + ml)
+
+        # Code-computed totals — the model must NOT re-add these (LLM arithmetic drifts).
+        # Authoritative source: the SUM over these already-fetched active meals (soft-delete
+        # filtered via active(), local-day windowed). Denormalized user.calories_today
+        # counters exist for legacy use but deliberately do NOT reach the prompt.
+        tot_cal = sum(m.calories or 0 for m in meals)
+        tot_pro = sum(m.protein_g or 0 for m in meals)
+        tot_carb = sum(m.carbs_g or 0 for m in meals)
+        tot_fat = sum(m.fat_g or 0 for m in meals)
+        lines = [f"calories: {tot_cal} | protein: {tot_pro}g | carbs: {tot_carb}g | fat: {tot_fat}g"]
+        if user.calorie_target:
+            lines.append(f"calories remaining vs target: {user.calorie_target - tot_cal} "
+                         f"({tot_cal}/{user.calorie_target})")
+        if user.protein_target:
+            lines.append(f"protein remaining vs target: {user.protein_target - tot_pro}g "
+                         f"({tot_pro}/{user.protein_target}g)")
+        parts.append("## TODAY'S TOTALS (computed — quote these exactly, never re-add or "
+                     "re-derive them)\n" + "\n".join(lines))
 
     # 8. Recent training log (active only).
     workouts = (active(session, Workout, user_id=user.id)
                 .order_by(Workout.date.desc()).limit(5).all())
     if workouts:
-        wl = "\n".join(f"[id {w.id}] {w.date:%m-%d} ({w.workout_type})" for w in workouts)
+        wl = "\n".join(f"[id {w.id}] {_d(w.date)} ({w.workout_type})" for w in workouts)
         parts.append(f"## RECENT WORKOUTS\n{wl}")
 
     # 8. Known gaps + follow-up permission.
@@ -179,9 +201,12 @@ def build_loop_context(user, session) -> str:
             ". If one matters to this reply, you may ask at most ONE follow-up."
         )
 
-    now = datetime.now(timezone.utc)
-    parts.append(f"## NOW\n{now:%A %Y-%m-%d %H:%M}Z (resolve times against the user's timezone: "
-                 f"{user.user_timezone or 'America/Los_Angeles'})")
+    if _local:
+        parts.append(f"## NOW\n{now_anchor(user)}")
+    else:
+        now = datetime.now(timezone.utc)
+        parts.append(f"## NOW\n{now:%A %Y-%m-%d %H:%M}Z (resolve times against the user's "
+                     f"timezone: {user.user_timezone or 'America/Los_Angeles'})")
 
     return "\n\n".join(parts)
 

@@ -203,6 +203,10 @@ MIGRATIONS = [
         deleted_at TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_episodic_user_occurred ON episodic_digests (user_id, occurred_on)",
+    # Burn-in: append-only edit audit for manage_log edits (meals/workouts/events).
+    "ALTER TABLE meals ADD COLUMN edits JSONB",
+    "ALTER TABLE workouts ADD COLUMN edits JSONB",
+    "ALTER TABLE events ADD COLUMN edits JSONB",
 ]
 
 def wait_for_db(retries=10, delay=3):
