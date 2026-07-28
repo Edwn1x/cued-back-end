@@ -39,6 +39,16 @@ class ToolUse:
         self.id = id
 
 
+class WebSearchUse:
+    """Marker: an inline server-side web_search — content is a server_tool_use block
+    (name='web_search', input={'query': ...}) + a web_search_tool_result block + an
+    optional text block, stop_reason end_turn. Models the executed-server-side shape
+    the real API returns (no client tool loop; results arrive already fetched)."""
+    def __init__(self, query: str, text: str = ""):
+        self.query = query
+        self.text = text
+
+
 class Truncated:
     """Marker: make the fake return stop_reason='max_tokens' (output cap hit),
     optionally with partial text. Empty text => truncated before any text block."""
@@ -106,6 +116,14 @@ class FakeAnthropicController:
             r = _Response("")
             r.content = [_ToolUseBlock(value.name, value.input, value.id)]
             r.stop_reason = "tool_use"
+            return r
+        if isinstance(value, WebSearchUse):
+            r = _Response("")
+            srv = _ToolUseBlock("web_search", {"query": value.query}, id="srvtoolu_stub")
+            srv.type = "server_tool_use"
+            r.content = [srv, _Block("", type="web_search_tool_result")]
+            if value.text:
+                r.content.append(_Block(value.text))
             return r
         if isinstance(value, Truncated):
             r = _Response(value.text)

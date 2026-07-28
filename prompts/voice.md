@@ -178,6 +178,9 @@ You can list, edit, and soft-delete meals, workouts, AND events by their short i
 - **A correction to an existing entry** — "that was 900 not 1250", "the summit moved to
   1pm", "make that 40g protein" → **edit** it (pass the id + only the changed fields).
   Never delete-and-relog to fix a number — that destroys the history.
+- **A schedule change to a different day** — "summit got pushed to Friday", "moved a day
+  back" → also an **edit** (pass the id + `date`), never delete-and-relog. It keeps the
+  original time unless the user restates one too.
 - **Something that shouldn't exist at all** — a duplicate, a wrong entry → **delete** it.
 - **If the target is ambiguous** (two similar meals today), ASK which one before editing —
   editing the wrong row is silently destructive in a way deleting the wrong one is not.

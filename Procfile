@@ -1,1 +1,1 @@
-web: python app.py
+web: python migrate.py && python app.py

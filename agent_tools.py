@@ -191,8 +191,10 @@ MANAGE_LOG_TOOL = {
             "fields": {"type": "object",
                        "description": "for edit: only the fields to change (others untouched). "
                        "meal: calories/protein_g/carbs_g/fat_g/description/notes. "
-                       "workout: workout_type/notes. event: description/starts_at/ends_at "
-                       "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"})."},
+                       "workout: workout_type/notes. event: description/starts_at/ends_at/date "
+                       "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"}; `date` moves "
+                       "the event to a new day — 'today'/'tomorrow'/'YYYY-MM-DD' — keeping its "
+                       "existing time unless starts_at/ends_at are also given in the same call)."},
         },
         "required": ["action"],
     },
@@ -316,6 +318,25 @@ LOG_EVENT_TOOL = {
 }
 
 
+def _resolve_local_date(tz: ZoneInfo, date_str, *, strict: bool = False) -> date:
+    """Resolve 'today' (default) / 'tomorrow' / 'YYYY-MM-DD' to a date in tz.
+    Non-strict (log_event): unparseable input silently falls back to today, the
+    existing behavior. Strict (manage_log date edit): unparseable input raises
+    ValueError — a silent wrong-day edit is worse than a rejected one."""
+    today_local = datetime.now(tz).date()
+    ds = (date_str or "today").strip().lower()
+    if ds == "tomorrow":
+        return today_local + timedelta(days=1)
+    if ds in ("", "today"):
+        return today_local
+    try:
+        return date.fromisoformat(ds)
+    except ValueError:
+        if strict:
+            raise
+        return today_local
+
+
 def _parse_local_dt(tz_str: str, date_str, hhmm):
     """Combine a date (today/tomorrow/YYYY-MM-DD) + local 'HH:MM' -> naive UTC.
     Returns None if no time given (caller lets the Event default occurred_at=now)."""
@@ -330,17 +351,7 @@ def _parse_local_dt(tz_str: str, date_str, hhmm):
         tz = ZoneInfo(tz_str or "America/Los_Angeles")
     except Exception:
         tz = ZoneInfo("America/Los_Angeles")
-    today_local = datetime.now(tz).date()
-    ds = (date_str or "today").strip().lower()
-    if ds == "tomorrow":
-        d = today_local + timedelta(days=1)
-    elif ds in ("", "today"):
-        d = today_local
-    else:
-        try:
-            d = date.fromisoformat(ds)
-        except ValueError:
-            d = today_local
+    d = _resolve_local_date(tz, date_str)
     local_dt = datetime(d.year, d.month, d.day, hh, mm, tzinfo=tz)
     return local_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
@@ -386,7 +397,9 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
 
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
 # model-facing field -> (column, kind). kind: "str" | "int" | "event_time" (a local
-# 'HH:MM' -> naive UTC on the row's CURRENT local day, so editing the time keeps the day).
+# 'HH:MM' -> naive UTC on the row's CURRENT local day, so editing the time keeps the day)
+# | "event_date" (moves occurred_at/ends_at to a new local day, keeping each's existing
+# time-of-day — a day move, not a time move; see handle_manage_log's field ordering).
 # Partial edits touch only supplied fields; never a free-text re-description of the row.
 _EDIT_FIELDS = {
     "meal": {"calories": ("calories", "int"), "protein_g": ("protein_g", "int"),
@@ -397,6 +410,7 @@ _EDIT_FIELDS = {
     "event": {"description": ("raw_text", "str"),
               "starts_at": ("occurred_at", "event_time"),
               "ends_at": ("ends_at", "event_time"),
+              "date": ("occurred_at", "event_date"),
               "event_type": ("event_type", "str")},
 }
 
@@ -464,7 +478,14 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         fields = tool_input.get("fields") or {}
         spec = _EDIT_FIELDS.get(entity, {})
         applied, audit, tz_str = {}, list(row.edits or []), None
-        for mfield, value in fields.items():
+        # A day move (event_date) must land BEFORE a time move (event_time) in the
+        # same call — event_time reads its target day off the row's CURRENT
+        # occurred_at, so a combined {"date": ..., "starts_at": ...} edit only lands
+        # on the new day if the date move has already been applied to the row.
+        ordered_fields = sorted(
+            fields.items(), key=lambda kv: spec.get(kv[0], (None, ""))[1] != "event_date"
+        )
+        for mfield, value in ordered_fields:
             if mfield not in spec:
                 continue
             column, kind = spec[mfield]
@@ -473,6 +494,33 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                     newval = int(value)
                 except (TypeError, ValueError):
                     return f"error: {mfield} must be a number"
+            elif kind == "event_date":
+                if tz_str is None:
+                    u = session.get(User, user_id)
+                    tz_str = (u.user_timezone if u else None) or "America/Los_Angeles"
+                try:
+                    tz = ZoneInfo(tz_str)
+                except Exception:
+                    tz = ZoneInfo("America/Los_Angeles")
+                try:
+                    new_day = _resolve_local_date(tz, str(value), strict=True)
+                except ValueError:
+                    return f"error: {mfield} must be a local date like 'YYYY-MM-DD', 'today', or 'tomorrow'"
+                # Moves BOTH occurred_at and ends_at (whichever are set) to the new
+                # day, each keeping its own local time-of-day — a day move, not a
+                # time move. event_time (below/next) can still adjust the clock.
+                for col in ("occurred_at", "ends_at"):
+                    old = getattr(row, col, None)
+                    if old is None:
+                        continue
+                    local_time = old.replace(tzinfo=timezone.utc).astimezone(tz).time()
+                    newcol = (datetime.combine(new_day, local_time, tzinfo=tz)
+                              .astimezone(timezone.utc).replace(tzinfo=None))
+                    audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
+                                  "old": _ser(old), "new": _ser(newcol)})
+                    setattr(row, col, newcol)
+                applied[mfield] = new_day.isoformat()
+                continue
             elif kind == "event_time":
                 if tz_str is None:
                     u = session.get(User, user_id)
