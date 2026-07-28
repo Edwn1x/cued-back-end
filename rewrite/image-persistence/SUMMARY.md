@@ -61,11 +61,25 @@ fixes plus one small code change; no new tables, tools, or flags.
   replay against a real label fixture (`tests/fixtures/tenders_label.png`, "NET WT
   1.5 LB (680 g)") asserting the weight reaches durable state in turn 1 and is used —
   not re-asked — after the window is wiped; and the retrieval-honesty case with
-  claim-level assertions that no delivery-failure phrasing appears. **NOT YET RUN: this
-  workspace has no funded key (no `.env`, no env var).** Both cases collect and gate
-  correctly under `--run-tier2`. ⚠️ Definition-of-done item outstanding — run
-  `pytest --run-tier2 -s tests/tier2/test_image_fact_persistence.py` with the funded
-  key and record results here before any merge/flag decision.
+  claim-level assertions that no delivery-failure phrasing appears.
+
+  **RUN 2026-07-28 against the funded key: 2/2 passed.** Recorded transcripts:
+  - Tenders turn 1 (package photo): the model called `remember` unprompted; durable
+    state after the turn: `"has a 1.5 lb (680g) package of raw chicken tenders on
+    hand, uncooked — not eaten yet"`. Reply: "solid haul — that's like 4-5 servings
+    of protein sitting there. when you cook em up just tell me how much you eat and
+    i'll log it."
+  - Tenders turn 2 (window wiped, "cooking the whole package now, eating all of
+    it"): "logged the whole tray — 750 cal, 156g protein, basically zero carbs/fat.
+    …" — meal logged from the stored weight, no re-ask.
+  - Honesty case (marker present, nothing saved): "nah, i don't have a weight saved
+    from that pic — what'd the package say?" — gap admitted, zero delivery claims.
+
+  First run surfaced two bugs in the TESTS, not the product (fixed): the turn-2 user
+  object was stale (test session held the pre-write profile; prod refetches per
+  webhook — `db.expire_all()` added), and the honesty positive-phrase list missed the
+  legitimate "not seeing a weight saved" phrasing. The honesty run-1 reply was already
+  correct behavior.
 
 ## Scope held
 

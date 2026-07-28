@@ -89,7 +89,9 @@ def test_tenders_replay_weight_persists_and_is_not_reasked(db, monkeypatch):
     # The window rolls past the image turn entirely.
     _wipe_messages(user.id)
 
-    # Turn 2 — eating the whole package.
+    # Turn 2 — eating the whole package. Refetch the user first (prod loads the row
+    # fresh per webhook); the test-session object still holds the pre-write profile.
+    db.expire_all()
     reply2 = run_agent_loop(user, "cooking the whole package now, eating all of it", "freeform")
     print(f"[TENDERS turn 2] {reply2!r}")
 
@@ -135,7 +137,11 @@ def test_retrieval_gap_admitted_never_blamed_on_delivery(db, monkeypatch):
                    "glitch", "connection"):
         assert banned not in low, \
             f"coach asserted a false delivery cause ({banned!r}): {reply!r}"
-    # And it owns the gap / asks for the number instead of bluffing a weight.
+    # And it owns the gap / asks for the number instead of bluffing a weight. The
+    # phrasings all say "no saved detail on MY side" (first run: "not seeing a
+    # weight saved from that pic on my end — what did the package say?").
     assert any(p in low for p in ("didn't save", "don't have", "not saved", "didn't log",
-                                  "didn't catch", "didn't note", "didn't write")), \
+                                  "didn't catch", "didn't note", "didn't write",
+                                  "not seeing", "don't see", "no weight saved",
+                                  "isn't saved", "nothing saved")), \
         f"coach neither admitted the gap nor asked for the detail: {reply!r}"
