@@ -85,9 +85,12 @@ strings live in `config.py` (Sonnet-class loop, Haiku-class gates).
 
 ## Deployment
 
-Railway + managed Postgres. Set env vars in the dashboard, run `python migrate.py` on
-deploy. Cost at beta scale is dominated by Twilio SMS + Claude tokens (~$0.007 / normal
-reply; a searching turn ~$0.08).
+Railway + managed Postgres. Set env vars in the dashboard; migrations run automatically
+at container start (`Procfile`: `python migrate.py && python app.py`) before the app
+serves traffic, so a manual `python migrate.py` step is no longer part of the deploy —
+a failed migration now blocks boot instead of racing a half-migrated live app. Cost at
+beta scale is dominated by Twilio SMS + Claude tokens (~$0.007 / normal reply; a
+searching turn ~$0.08).
 
 ## Project structure
 

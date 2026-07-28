@@ -225,7 +225,14 @@ def wait_for_db(retries=10, delay=3):
 def run_migrations():
     """Apply every idempotent statement in MIGRATIONS. Importable so the suite
     can run it against a test DB (guarded below so `import migrate` has no side
-    effects)."""
+    effects).
+
+    Raises if any statement fails for a reason OTHER than "already exists" — a
+    genuine failure must stop the caller (boot), not get logged and ignored.
+    Deploy runs this before the app starts (see Procfile); an uncaught raise
+    here exits non-zero and blocks the app from serving with a half-applied
+    schema."""
+    failures = []
     with engine.connect() as conn:
         for sql in MIGRATIONS:
             try:
@@ -238,11 +245,15 @@ def run_migrations():
                     logger.info(f"SKIP (already exists): {sql[:60]}...")
                 else:
                     logger.error(f"FAILED: {sql[:60]}... — {e}")
+                    failures.append((sql, e))
     logger.info("Migration complete.")
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} migration statement(s) failed: "
+            + "; ".join(f"{sql[:60]}... ({e})" for sql, e in failures)
+        )
 
 
 if __name__ == "__main__":
     wait_for_db()
     run_migrations()
-
-logger.info("Migration complete.")

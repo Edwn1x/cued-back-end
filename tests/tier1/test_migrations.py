@@ -52,6 +52,39 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
     assert {"user_id", "decided_at", "spoke", "reason", "message"} <= hb_cols
 
 
+def test_run_migrations_swallows_already_exists(db, monkeypatch):
+    """Deploy hardening (post-burn-in): migrate.py now runs at boot (Procfile), and a
+    genuine failure must block boot — but idempotency (re-running an already-applied
+    ALTER/CREATE) must still be silently OK, or every normal boot would fail."""
+    import migrate
+
+    from migrate import run_migrations as _apply_baseline
+    _apply_baseline()  # ensure the columns/tables below already exist on this DB
+
+    monkeypatch.setattr(migrate, "MIGRATIONS", [
+        # deliberately WITHOUT "IF NOT EXISTS" / "already exists" guards, so these
+        # only pass if the swallow branch (not the raise branch) catches them.
+        "ALTER TABLE users ADD COLUMN user_timezone VARCHAR(50)",
+        "CREATE TABLE events (id SERIAL PRIMARY KEY)",
+    ])
+    migrate.run_migrations()  # must not raise
+
+
+def test_run_migrations_raises_on_genuine_failure(db, monkeypatch):
+    """A real failure (not 'already exists') must raise so the Procfile's `&&` chain
+    blocks the app from booting against a half-migrated schema."""
+    import migrate
+
+    monkeypatch.setattr(migrate, "MIGRATIONS", [
+        "ALTER TABLE this_table_does_not_exist ADD COLUMN x INTEGER",
+    ])
+    try:
+        migrate.run_migrations()
+        assert False, "expected run_migrations() to raise on a genuine failure"
+    except RuntimeError as e:
+        assert "this_table_does_not_exist" in str(e) or "failed" in str(e).lower()
+
+
 def test_legacy_profile_survives_and_renders_as_valid(db):
     """A pre-validity-windows profile (entries with no invalidated_* fields, no
     __history__ bucket) is fully valid and renders — no backfill required."""

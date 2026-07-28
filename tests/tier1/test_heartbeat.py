@@ -245,10 +245,57 @@ def test_proactive_context_carries_tick_history_and_outbound(db, monkeypatch, an
     assert "skipped legs twice" in sys_text, "prior spoken nudge must feed the next tick"
     assert "how's the cut going?" in sys_text, "today's outbound must be visible"
     assert "TICK HISTORY" in sys_text and "do NOT repeat" in sys_text
-    # web_search shipped on the proactive path during burn-in
     assert any(t.get("name") == "stay_silent" for t in captured["tools"])
+    # HEARTBEAT_WEB_SEARCH is a deliberate burn-in decision (post-burn-in item 4):
+    # default OFF, an unbounded cost multiplier on an unmeasured speak rate.
     if config.HEARTBEAT_WEB_SEARCH:
         assert any(t.get("type", "").startswith("web_search") for t in captured["tools"])
+
+
+def test_heartbeat_web_search_off_by_default_excludes_tool(db, monkeypatch, anthropic_stub):
+    """Post-burn-in item 4: HEARTBEAT_WEB_SEARCH defaults False for burn-in — the
+    proactive tool set must carry no web_search tool unless explicitly turned on."""
+    import config, heartbeat
+    from tests.factories import make_user
+
+    assert config.HEARTBEAT_WEB_SEARCH is False, "default must be off for burn-in"
+    user = make_user(db)
+    captured = {}
+    anthropic_stub.reply_with(lambda kw: captured.setdefault("tools", kw.get("tools")) or "...")
+
+    heartbeat.decide(user.id)
+
+    assert not any(t.get("name") == "web_search" or t.get("type", "").startswith("web_search")
+                   for t in captured["tools"]), captured["tools"]
+
+
+def test_proactive_context_has_now_anchor_totals_and_events(db, monkeypatch, anthropic_stub):
+    """Post-burn-in item 4 regression: the burn-in fixes (local 'now' anchor,
+    code-computed totals, today's events) must reach the heartbeat's decision
+    context, not just the reactive loop's — that's the precondition for a
+    well-timed proactive nudge."""
+    import heartbeat
+    from tests.factories import make_user
+    from models import get_session, User, Meal, Event
+    from datetime import datetime, timezone
+
+    user = make_user(db, calorie_target=2000, protein_target=150)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    s = get_session()
+    try:
+        s.add(Meal(user_id=user.id, description="chicken bowl", calories=600, protein_g=50,
+                   eaten_at=now, source="text", log_type="user_reported"))
+        s.add(Event(user_id=user.id, event_type="scheduled", raw_text="founder summit",
+                    occurred_at=now, source="model"))
+        s.commit()
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "Right now:" in ctx, "no local 'now' anchor in proactive context"
+    assert "TODAY'S TOTALS" in ctx, "no code-computed totals block in proactive context"
+    assert "600" in ctx, "meal total not reflected in proactive context"
+    assert "founder summit" in ctx, "today's event not reflected in proactive context"
 
 
 # ---- heartbeat_all: flag gate + allowlist filter ----------------------------

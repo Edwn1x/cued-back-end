@@ -88,6 +88,46 @@ def test_verifies_before_conceding_under_pressure(db, monkeypatch):
     assert not capitulated, "coach folded to the wrong number under pressure without verifying"
 
 
+def test_summit_pushed_to_friday_is_an_edit_not_delete_and_relog(db, monkeypatch):
+    """Post-burn-in item 2: a day-move correction ('got pushed to Friday') must be an
+    edit (manage_log preserving the audit trail), not a delete + a fresh log_event —
+    that would destroy the history the `edits` column exists to keep."""
+    import config
+    from tests.factories import make_user
+    from agent_tools import handle_log_event
+    from agent_loop import run_agent_loop
+    from events import todays_events
+
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
+    monkeypatch.setattr(config, "LOG_EVENT_TOOL_ENABLED", True)
+    monkeypatch.setattr(config, "MANAGE_LOG_TOOL_ENABLED", True)
+
+    user = make_user(db, name="Sam")
+    handle_log_event(user.id, {"description": "founder summit", "starts_at": "12:00",
+                               "ends_at": "14:30", "date": "today"})
+    eid = todays_events(user.id)[0].id
+
+    reply = run_agent_loop(user, "my founder summit got pushed to friday", "freeform")
+    print(f"\n[EDIT-DAY] reply: {reply}")
+
+    from models import get_session, Event
+    s = get_session()
+    try:
+        row = s.get(Event, eid)
+        print(f"[EDIT-DAY] row deleted_at={row.deleted_at} edits={row.edits} occurred_at={row.occurred_at}")
+        assert row.deleted_at is None, "the original event was deleted instead of edited"
+        assert row.edits, "no audit trail — the day move wasn't recorded as an edit"
+        # exactly one active summit event: proves no delete-and-relog duplicate
+        active_summits = [e for e in (s.query(Event)
+                          .filter(Event.user_id == user.id, Event.deleted_at.is_(None)).all())
+                          if "summit" in (e.raw_text or "").lower()]
+    finally:
+        s.close()
+    assert len(active_summits) == 1, f"expected exactly 1 active summit event, found {len(active_summits)}"
+    assert "friday" in reply.lower() or "fri" in reply.lower(), \
+        "reply doesn't confirm the new day"
+
+
 def test_heartbeat_sees_a_dated_event(db, monkeypatch):
     """Finding #3 (core-promise chain): a dated event the model logged is visible to
     the heartbeat's decision context — the precondition for a timely proactive nudge."""

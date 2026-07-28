@@ -106,8 +106,12 @@ HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
-# Burn-in ships search ON on the proactive path; measure speak rate, then decide a budget.
-HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "true").lower() == "true"
+# Post-burn-in: OFF for burn-in, deliberately — search on a proactive tick is an
+# unbounded cost multiplier ($0.08/searching turn, Phase 3 measurement) on a speak
+# rate that hasn't been measured yet. Reactive search (WEB_SEARCH_TOOL_ENABLED) is
+# unchanged; this only gates the heartbeat's own tool set. Revisit once burn-in has
+# a measured speak rate to size a search budget against.
+HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "false").lower() == "true"
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent
