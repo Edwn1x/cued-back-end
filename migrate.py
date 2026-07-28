@@ -207,6 +207,10 @@ MIGRATIONS = [
     "ALTER TABLE meals ADD COLUMN edits JSONB",
     "ALTER TABLE workouts ADD COLUMN edits JSONB",
     "ALTER TABLE events ADD COLUMN edits JSONB",
+    # Addendum: heartbeat search-budget instrumentation (decision, not just outcome).
+    "ALTER TABLE heartbeat_ticks ADD COLUMN search_available BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE heartbeat_ticks ADD COLUMN search_used BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE heartbeat_ticks ADD COLUMN search_query TEXT",
 ]
 
 def wait_for_db(retries=10, delay=3):

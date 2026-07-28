@@ -359,6 +359,14 @@ class HeartbeatTick(Base):
     spoke = Column(Boolean, default=False)
     reason = Column(Text)              # silence reason, or "spoke"
     message = Column(Text)             # the composed message when spoke
+    # Addendum: the search DECISION, not just the outcome — was the tool offered
+    # (under budget), did the model invoke it, and what it asked. The per-day search
+    # budget derives from search_used over the user-local day (no counter to drift),
+    # and the burn-in reads these to answer "searched because needed, or because
+    # present?" two-track (searched vs unsearched cost + speak rate).
+    search_available = Column(Boolean, default=False)
+    search_used = Column(Boolean, default=False)
+    search_query = Column(Text)
 
 
 class ConsolidationRun(Base):

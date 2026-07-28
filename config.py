@@ -106,12 +106,20 @@ HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
-# Post-burn-in: OFF for burn-in, deliberately — search on a proactive tick is an
-# unbounded cost multiplier ($0.08/searching turn, Phase 3 measurement) on a speak
-# rate that hasn't been measured yet. Reactive search (WEB_SEARCH_TOOL_ENABLED) is
-# unchanged; this only gates the heartbeat's own tool set. Revisit once burn-in has
-# a measured speak rate to size a search budget against.
-HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "false").lower() == "true"
+# Addendum (post-burn-in): ON for burn-in, deliberately — proactive search is part
+# of the product claim burn-in exists to validate (a coach that can check hours/
+# availability before texting). The managed risk is search UN-BUDGETED, not search
+# itself: HEARTBEAT_SEARCH_MAX_PER_DAY below is the code-enforced cap. This flag
+# stays the kill switch — false fully disables the tool regardless of budget.
+# Reactive search (WEB_SEARCH_TOOL_ENABLED) is separate.
+HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "true").lower() == "true"
+# Searched TICKS (model actually invoked search) per user-local day — spend, not
+# availability; an offered-but-unused tool costs nothing. Enforced in code before
+# the tool is offered (guardrail class, like quiet-hours/daily-budget — never a
+# prompt rule). At/over budget the tick still runs without the tool; search
+# scarcity never suppresses a message. Count derives from HeartbeatTick.search_used
+# over timefmt.local_day_bounds (no denormalized counter to drift).
+HEARTBEAT_SEARCH_MAX_PER_DAY = int(os.getenv("HEARTBEAT_SEARCH_MAX_PER_DAY", "3"))
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent

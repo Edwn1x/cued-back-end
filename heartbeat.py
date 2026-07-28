@@ -57,14 +57,19 @@ def _naive_utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _log_tick(user_id, spoke, reason, message=None):
+def _log_tick(user_id, spoke, reason, message=None, search=None):
+    search = search or {}
     session = get_session()
     try:
-        session.add(HeartbeatTick(user_id=user_id, spoke=spoke, reason=reason, message=message))
+        session.add(HeartbeatTick(user_id=user_id, spoke=spoke, reason=reason, message=message,
+                                  search_available=search.get("available", False),
+                                  search_used=search.get("used", False),
+                                  search_query=search.get("query")))
         session.commit()
     finally:
         session.close()
-    logger.info("HEARTBEAT_TICK user=%s spoke=%s reason=%s", user_id, spoke, reason)
+    logger.info("HEARTBEAT_TICK user=%s spoke=%s reason=%s search_available=%s search_used=%s",
+                user_id, spoke, reason, search.get("available", False), search.get("used", False))
 
 
 def _local_day_start_utc(user):
@@ -114,6 +119,24 @@ def guardrail_reason(user, session) -> str | None:
     return None
 
 
+def _search_available(user, session) -> bool:
+    """Is web_search offered on this tick? Kill switch first; then the per-day
+    budget — searched ticks (the model actually invoked search, i.e. spend) in the
+    user's LOCAL day, derived from HeartbeatTick.search_used rather than a counter
+    that could drift. Guardrail class: enforced here in code, before the tool ever
+    reaches the model. At/over budget the tick still runs without the tool."""
+    if not config.HEARTBEAT_WEB_SEARCH:
+        return False
+    from timefmt import local_day_bounds
+    start, end = local_day_bounds(user)
+    searched_today = (session.query(HeartbeatTick)
+                      .filter(HeartbeatTick.user_id == user.id,
+                              HeartbeatTick.search_used.is_(True),
+                              HeartbeatTick.decided_at >= start,
+                              HeartbeatTick.decided_at < end).count())
+    return searched_today < config.HEARTBEAT_SEARCH_MAX_PER_DAY
+
+
 def _proactive_context(user, session) -> str:
     parts = [build_loop_context(user, session)]
 
@@ -146,14 +169,17 @@ def _proactive_context(user, session) -> str:
     return "\n\n".join(parts)
 
 
-def decide(user_id: int) -> tuple[bool, str]:
-    """One decision call. Returns (spoke, payload): payload is the message if spoke,
-    else the silence reason. The model calls stay_silent to stay quiet. Loads the
-    user in its own session so callers can pass just an id (no detached instance)."""
+def decide(user_id: int) -> tuple[bool, str, dict]:
+    """One decision call. Returns (spoke, payload, search): payload is the message if
+    spoke, else the silence reason; search is the search DECISION for the tick record
+    — {"available": offered-under-budget, "used": model-invoked-it, "query": first
+    query or None}. The model calls stay_silent to stay quiet. Loads the user in its
+    own session so callers can pass just an id (no detached instance)."""
     session = get_session()
     try:
         user = session.get(User, user_id)
         context = _proactive_context(user, session)
+        search = {"available": _search_available(user, session), "used": False, "query": None}
     finally:
         session.close()
 
@@ -162,7 +188,7 @@ def decide(user_id: int) -> tuple[bool, str]:
         {"type": "text", "text": HEARTBEAT_PROMPT + "\n\n" + context},
     ]
     tools = [STAY_SILENT_TOOL]
-    if config.HEARTBEAT_WEB_SEARCH:
+    if search["available"]:
         tools.append({"type": "web_search_20260209", "name": "web_search",
                       "max_uses": config.WEB_SEARCH_MAX_USES})
 
@@ -178,6 +204,15 @@ def decide(user_id: int) -> tuple[bool, str]:
         except Exception as e:
             logger.warning("HEARTBEAT_COST_TRACK_FAILED user=%s err=%s", user_id, e)
 
+        # Search invocations arrive as inline server_tool_use blocks (executed
+        # server-side), on any stop_reason — scan every response before branching.
+        for b in resp.content:
+            if (getattr(b, "type", None) in ("server_tool_use", "tool_use")
+                    and getattr(b, "name", None) == "web_search"):
+                search["used"] = True
+                if search["query"] is None:
+                    search["query"] = (getattr(b, "input", None) or {}).get("query")
+
         if getattr(resp, "stop_reason", None) == "pause_turn":
             messages.append({"role": "assistant", "content": resp.content})
             continue
@@ -185,7 +220,7 @@ def decide(user_id: int) -> tuple[bool, str]:
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
             if silent is not None:
-                return (False, (silent.input or {}).get("reason", "chose silence"))
+                return (False, (silent.input or {}).get("reason", "chose silence"), search)
             # a server tool (web_search) — feed nothing back for client tools; continue
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": [
@@ -196,9 +231,9 @@ def decide(user_id: int) -> tuple[bool, str]:
 
         text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
         if text.strip():
-            return (True, text.strip())
-        return (False, "no message composed")
-    return (False, "decision loop exhausted")
+            return (True, text.strip(), search)
+        return (False, "no message composed", search)
+    return (False, "decision loop exhausted", search)
 
 
 def heartbeat_tick(user_id: int):
@@ -217,12 +252,12 @@ def heartbeat_tick(user_id: int):
         _log_tick(user_id, False, f"guardrail:{reason}")
         return
 
-    spoke, payload = decide(user_id)
+    spoke, payload, search = decide(user_id)
     if spoke:
         send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
-        _log_tick(user_id, True, "spoke", payload)
+        _log_tick(user_id, True, "spoke", payload, search=search)
     else:
-        _log_tick(user_id, False, payload)
+        _log_tick(user_id, False, payload, search=search)
 
 
 def heartbeat_all():

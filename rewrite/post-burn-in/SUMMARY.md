@@ -12,7 +12,7 @@ founder's step.
 | 1. Migrations at boot | `migrate.py`, `Procfile` | genuine failures now raise (idempotency still swallowed); `Procfile` chains `migrate.py && app.py` so a failure blocks boot |
 | 2. Event date-move edit | `agent_tools.py`, `prompts/voice.md` | `manage_log edit` gains a `date` field; moves `occurred_at`/`ends_at` to a new local day, keeps time-of-day, audited, ordered correctly with a same-call time edit |
 | 3. Timestamp audit | `audit_timestamps.py` (new) | read-only report of events + dated schedule facts through the corrected `timefmt` boundary |
-| 4. Heartbeat burn-in prep | `config.py`, `tests/tier1/test_heartbeat.py` | `HEARTBEAT_WEB_SEARCH` now defaults off (deliberate); regression tests pin now/totals/events reach the proactive context |
+| 4. Heartbeat burn-in prep | `config.py`, `tests/tier1/test_heartbeat.py` | regression tests pin now/totals/events reach the proactive context. The original "search off for burn-in" default was REVERSED by the founder's addendum before merge — search is on, budgeted in code; see `ADDENDUM-search-budget.md` |
 
 ## Tests
 
@@ -44,9 +44,11 @@ Phase 2/4 base of $0.0072). Speak rate in the test scenarios: 0/3 (all correctly
 silent). With `HEARTBEAT_TICK_MINUTES=45` that's ~32 ticks/user/day; at steady-state
 cost, 32 × $0.0076 × 50 ≈ $12.2/day for the decision loop, or ≈ $32.5/day if every
 tick paid the cold-cache rate (it won't in a long-running process). Spoken-message
-cost on top is bounded by `HEARTBEAT_MAX_PER_DAY=5`. A three-tick sample is a
-smoke-level measurement — treat the real burn-in's observed ticks as the number to
-size budgets against before widening past the founder's allowlist.
+cost on top is bounded by `HEARTBEAT_MAX_PER_DAY=5`. Searched ticks are a separate,
+~4.6x-per-tick line item, budgeted and reported two-track — see
+`ADDENDUM-search-budget.md` for those numbers. A three-tick sample is a smoke-level
+measurement — treat the real burn-in's observed ticks as the number to size budgets
+against before widening past the founder's allowlist.
 
 ## Deploy notes (founder)
 
@@ -60,8 +62,12 @@ size budgets against before widening past the founder's allowlist.
    or by hand for schedule memory text. Read-only — I did not run this against prod
    (no prod credentials in this workspace).
 4. **Heartbeat:** still your call to flip. When you do: `HEARTBEAT_ENABLED=true`,
-   `HEARTBEAT_ALLOWLIST=<your number>`, confirm `HEARTBEAT_WEB_SEARCH` is unset or
-   `false` (it now defaults false). Watch `heartbeat_ticks` for the first day; the
+   `HEARTBEAT_ALLOWLIST=<your number>`. Per your addendum, `HEARTBEAT_WEB_SEARCH`
+   now defaults ON with a code-enforced budget (`HEARTBEAT_SEARCH_MAX_PER_DAY=3`
+   searched ticks per user-local day); leave both unset, or set
+   `HEARTBEAT_WEB_SEARCH=false` as the kill switch — see
+   `ADDENDUM-search-budget.md`, which deploys BEFORE this flag flips. Watch
+   `heartbeat_ticks` (including `search_used`/`search_query`) for the first day; the
    first real proactive message is the thing to read for voice. The tier-2 gate above
    is green (2026-07-28); still start with your own number only.
 

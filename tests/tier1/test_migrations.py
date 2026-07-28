@@ -49,7 +49,9 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
     assert {"message_sid", "user_id", "received_at"} <= pm_cols
 
     hb_cols = {c["name"] for c in insp.get_columns("heartbeat_ticks")}
-    assert {"user_id", "decided_at", "spoke", "reason", "message"} <= hb_cols
+    assert {"user_id", "decided_at", "spoke", "reason", "message",
+            # addendum: search-budget instrumentation (the search decision, not just outcome)
+            "search_available", "search_used", "search_query"} <= hb_cols
 
 
 def test_run_migrations_swallows_already_exists(db, monkeypatch):
