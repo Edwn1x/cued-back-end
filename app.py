@@ -1040,8 +1040,11 @@ def webhook():
                 user.quiet_until = None
                 session.commit()
 
-        # Log the incoming message immediately
-        log_incoming(user.id, body)
+        # Log the incoming message immediately. has_image mirrors classify_message's
+        # presence signal: the stored row must record that media arrived (the base64
+        # never persists), or the window can't distinguish "no image ever came" from
+        # "image came, detail not saved" — the tenders-confabulation gap.
+        log_incoming(user.id, body, has_image=image_url is not None)
 
         # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
         # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
