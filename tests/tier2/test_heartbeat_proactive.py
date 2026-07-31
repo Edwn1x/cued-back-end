@@ -9,6 +9,11 @@ middle stays printed-observation.
   every time.
 - NO-anchors (must stay silent): empty state, on-track quiet day, mid-conversation —
   asserted `spoke is False`, so a loosened threshold can't become a nag.
+- WARMTH anchors (Part 2): the heartbeat is a friend, not only a coach who catches slips.
+  YES (must speak): a genuine win (a real 5-in-7 training streak above goal), a grounded
+  check-in on something they mentioned (episodic life-context, flag on for the test).
+  NO / anti-bot (must stay silent): a modest on-track week with NO specific warm material
+  — the guard against generic engagement bait, the most important negative anchor here.
 - The middle (open-thread, lookup-worthy, search-by-need) stays a printed FINDING, and
   cost is recorded two-track so the summary can set a per-day search budget from a real
   speak rate. Run: pytest --run-tier2 -s.
@@ -184,6 +189,100 @@ def test_heartbeat_stays_silent_mid_conversation(db, monkeypatch):
     assert spoke is False, (
         "NO-ANCHOR FAILED: the coach proactively texted on top of a 3-minute-old inbound "
         f"— mid-conversation is reactive territory, not a heartbeat's. Message: {payload!r}")
+
+
+# ---- WARMTH & PRESENCE anchors (Part 2) -------------------------------------
+
+def _seed_workout(user_id, days_ago, wtype):
+    from models import get_session, Workout
+    when = _utcnow_naive() - timedelta(days=days_ago)
+    s = get_session()
+    try:
+        s.add(Workout(user_id=user_id, workout_type=wtype, completed=True, date=when))
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_heartbeat_speaks_on_genuine_win(db, monkeypatch):
+    """WARMTH yes-anchor (hard SPEAK): a friend marks a real win, not just a slip. A
+    genuine training streak — 5 completed sessions in the last 7 days for someone whose
+    stated goal is 4x/week — clears the goal and is worth a text. The code-computed
+    MOMENTUM block gives the model the count; it must recognize the win and speak. This
+    is the half Part 1 could not do: speak when something is GOOD. Binary, re-run 3x."""
+    import config, heartbeat
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    user = make_user(db, name="Sam",
+                     coaching_summary=("Goal is training 4x/week on a lean bulk. Has been "
+                                       "grinding hard and staying consistent lately."))
+    # 5 completed sessions across the last 7 days — above the 4x goal, a real streak
+    for d, t in ((0, "push"), (1, "pull"), (2, "legs"), (4, "upper"), (6, "push")):
+        _seed_workout(user.id, d, t)
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT warmth win-anchor] spoke={spoke} :: {payload!r}")
+    assert spoke is True, (
+        "WARMTH YES-ANCHOR FAILED: the coach stayed silent on a genuine 5-in-7 training "
+        "streak above the user's 4x goal — a friend marks a real win, it's not all "
+        f"callouts. Silence reason: {payload!r}")
+
+
+def test_heartbeat_checks_in_on_mentioned_event(db, monkeypatch):
+    """WARMTH yes-anchor (hard SPEAK): a grounded check-in on something THEY mentioned.
+    With episodic life-context available (flag on for this test — the material the
+    heartbeat USES, generation is upstream/out of scope), a note about a real upcoming
+    event the user was nervous about is exactly 'how'd X go' / 'good luck with X' territory
+    — a friend follows up. Tests the heartbeat reaching for episodic warm material."""
+    import config, heartbeat
+    from models import get_session, EpisodicDigest
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    monkeypatch.setattr(config, "EPISODIC_ENABLED", True)  # USE episodic material (present)
+    user = make_user(db, name="Sam")
+    s = get_session()
+    try:
+        s.add(EpisodicDigest(
+            user_id=user.id,
+            text="Mentioned a big founders summit pitch this Friday — nervous about it.",
+            occurred_on=_utcnow_naive() - timedelta(days=1)))
+        s.commit()
+    finally:
+        s.close()
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT warmth check-in-anchor] spoke={spoke} :: {payload!r}")
+    assert spoke is True, (
+        "WARMTH YES-ANCHOR FAILED: the coach stayed silent when it had specific, real "
+        "life-context to follow up on (a founders summit the user was nervous about) — a "
+        f"grounded check-in is what a friend does. Silence reason: {payload!r}")
+
+
+def test_heartbeat_stays_silent_no_warm_material(db, monkeypatch):
+    """ANTI-BOT anchor (hard SILENT) — the most important negative anchor in this pass.
+    Warmth is where the 'insufferable proactive bot' risk lives. A quiet, on-track day
+    with a modest, unremarkable cadence (3 workouts, no stated goal to be above/below),
+    NO episodic life-context, no event, nothing standing — there is no specific warm
+    material. A friend does NOT manufacture a 'nice, 3 workouts!' text out of nothing.
+    Must stay silent. If the warmth pass over-loosened, this is where it shows. Binary."""
+    import config, heartbeat
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    monkeypatch.setattr(config, "EPISODIC_ENABLED", True)  # available but EMPTY (no notes)
+    user = make_user(db, name="Sam",
+                     coaching_summary="Trains regularly, no specific cadence goal. Doing fine, nothing notable.")
+    for d, t in ((1, "push"), (3, "pull"), (5, "legs")):  # ordinary cadence, not a streak
+        _seed_workout(user.id, d, t)
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT anti-bot no-anchor] spoke={spoke} :: {payload!r}")
+    assert spoke is False, (
+        "ANTI-BOT ANCHOR FAILED: the coach manufactured a warm text with no specific "
+        "material behind it — a modest 3-workout week is not a win, and there was nothing "
+        f"standing. This is generic engagement bait, the failure mode. Message: {payload!r}")
 
 
 def test_heartbeat_does_not_repeat_a_sent_nudge(db, monkeypatch):
