@@ -308,7 +308,30 @@ def test_model_scheduled_event_informs_but_does_not_hard_gate(db, monkeypatch, s
 
 # ---- decision branches ------------------------------------------------------
 
-def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_stub):
+def test_decide_speaks_via_send_text_tool(db, monkeypatch, sms_capture, anthropic_stub):
+    """PRIMARY speak path: speaking is an explicit send_text tool call, not bare text.
+    Burn-in finding — with only a stay_silent tool offered, a model that HAD decided to
+    speak still reflexively called stay_silent ('actually should speak but tool forces
+    silence'), because 'emit text' fought its tool-use prior. send_text is the fix: the
+    model routes a speak decision through its own channel. This pins that path."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    anthropic_stub.reply_with(lambda kw: ToolUse("send_text", {"message": "how'd the midterm go?"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert any("midterm" in body for _phone, body in sms_capture), "send_text must send an SMS"
+    tick = _ticks(user.id)[-1]
+    assert tick.spoke is True and "midterm" in tick.message
+
+
+def test_decide_speaks_bare_text_fallback_still_sends(db, monkeypatch, sms_capture, anthropic_stub):
+    """Fallback path: if the model ends with bare text instead of calling send_text, the
+    tick must still speak (robustness — kept from before the two-tool change)."""
     import heartbeat
     from tests.factories import make_user
 
@@ -318,7 +341,7 @@ def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_st
 
     heartbeat.heartbeat_tick(user.id)
 
-    assert any("midterm" in body for _phone, body in sms_capture), "speaking tick must send an SMS"
+    assert any("midterm" in body for _phone, body in sms_capture), "bare-text fallback must send an SMS"
     tick = _ticks(user.id)[-1]
     assert tick.spoke is True and "midterm" in tick.message
 

@@ -37,6 +37,22 @@ STAY_SILENT_TOOL = {
                      "required": ["reason"]},
 }
 
+# Speaking is a tool call too, NOT bare text. Burn-in finding: with only a
+# stay_silent tool offered, a model that had DECIDED to speak still reflexively
+# called stay_silent (reason: "actually should speak — but tool forces silence"),
+# because "emit text" fought its strong prior to use an available tool. Making both
+# outcomes explicit tools removes the trap — the model picks the action, it never
+# has to route a speak decision through the silence channel. (Response-shape seam.)
+SEND_TEXT_TOOL = {
+    "name": "send_text",
+    "description": ("Call this to send ONE proactive SMS to the user right now. Pass the "
+                    "exact message to send in `message` — in your voice, nothing else, no "
+                    "preamble. Use this whenever you've decided a text is warranted."),
+    "input_schema": {"type": "object",
+                     "properties": {"message": {"type": "string"}},
+                     "required": ["message"]},
+}
+
 HEARTBEAT_PROMPT = """It's a quiet moment — a heartbeat tick, NOT a reply. The user did not just text you.
 
 Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. But silence is the default, not the goal: the job is to speak when a good coach would, and to stay quiet otherwise.
@@ -57,8 +73,10 @@ DON'T RATION YOURSELF. The limits on over-texting are enforced in CODE, not by y
 
 Accountability is the job; fun is the delivery, not a substitute for it. One text. No preamble.
 
-To STAY SILENT: call the stay_silent tool with a one-line reason.
-To SPEAK: write the single SMS to send — nothing else, in your voice."""
+Call EXACTLY ONE tool:
+- To SPEAK: call send_text with the exact SMS to send, in your voice — nothing else.
+- To STAY SILENT: call stay_silent with a one-line reason.
+If any part of your reasoning concludes a text is warranted, call send_text. NEVER call stay_silent and then say in the reason that you should have spoken — that is a contradiction; call send_text instead."""
 
 
 def _naive_utcnow():
@@ -198,8 +216,9 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
     """One decision call. Returns (spoke, payload, search): payload is the message if
     spoke, else the silence reason; search is the search DECISION for the tick record
     — {"available": offered-under-budget, "used": model-invoked-it, "query": first
-    query or None}. The model calls stay_silent to stay quiet. Loads the user in its
-    own session so callers can pass just an id (no detached instance)."""
+    query or None}. The model calls send_text to speak or stay_silent to stay quiet
+    (both outcomes are explicit tools — see SEND_TEXT_TOOL). Loads the user in its own
+    session so callers can pass just an id (no detached instance)."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -212,7 +231,7 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
         {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": HEARTBEAT_PROMPT + "\n\n" + context},
     ]
-    tools = [STAY_SILENT_TOOL]
+    tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]
     if search["available"]:
         tools.append({"type": "web_search_20260209", "name": "web_search",
                       "max_uses": config.WEB_SEARCH_MAX_USES})
@@ -242,22 +261,35 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
             messages.append({"role": "assistant", "content": resp.content})
             continue
         if getattr(resp, "stop_reason", None) == "tool_use":
+            # The two decision tools terminate the loop. send_text = speak (payload is
+            # the message); stay_silent = quiet (payload is the reason).
+            spoke_tool = next((b for b in resp.content
+                               if getattr(b, "type", None) == "tool_use" and b.name == "send_text"), None)
+            if spoke_tool is not None:
+                msg = (spoke_tool.input or {}).get("message", "").strip()
+                # send_text is terminal either way — an empty message can't be sent, so
+                # log it as silence rather than continuing (which would leave this
+                # tool_use unanswered and malform the next request).
+                return (True, msg, search) if msg else (False, "send_text empty message", search)
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
             if silent is not None:
                 return (False, (silent.input or {}).get("reason", "chose silence"), search)
             # a server tool (web_search) — feed nothing back for client tools; continue
+            _decision_names = ("send_text", "stay_silent")
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": b.id, "content": "n/a"}
-                for b in resp.content if getattr(b, "type", None) == "tool_use" and b.name != "stay_silent"
+                for b in resp.content
+                if getattr(b, "type", None) == "tool_use" and b.name not in _decision_names
             ] or "continue"})
             continue
 
-        # EVERY text block, concatenated — not just the first. With adaptive thinking +
-        # inline web_search, the model splits the nudge across several text blocks (a
-        # lead-in before the search result, the substance after); taking only the first
-        # sent a truncated fragment. Same seam as agent_loop's burn-in fix (_join_text).
+        # Fallback: the model ended with bare text instead of calling send_text (rarer
+        # now that speaking is an explicit tool, but kept for robustness). Concatenate
+        # EVERY text block, not just the first — with adaptive thinking + inline
+        # web_search the model splits the nudge across blocks (a lead-in before the
+        # search result, the substance after). Same seam as agent_loop's _join_text.
         text = _join_text(resp.content)
         if text:
             return (True, text, search)

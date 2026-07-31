@@ -40,6 +40,26 @@ Added:
   window; a hard daily cap) so it should NOT ration itself out of fear of nagging — its
   only job is the single judgment call "is THIS worth a text right now."
 
+## 2e — code+prompt: both outcomes are explicit tools (added after the live run)
+
+The live run proved 2a/2b necessary but not sufficient — the model decided to speak yet
+called `stay_silent` anyway (reason: *"actually should speak — but tool forces silence"*),
+because "speak = emit text, no tool" fought its tool-use prior when only `stay_silent`
+was offered. Fix:
+
+- **New `SEND_TEXT_TOOL`** (`{message}`) — speaking is now an explicit tool call.
+- **`decide()`** offers `[SEND_TEXT_TOOL, STAY_SILENT_TOOL]` and terminates on either:
+  `send_text` → `(True, message, search)`, `stay_silent` → `(False, reason, search)`.
+  The bare-text `_join_text` path is retained as a robustness fallback (model ends with
+  text and no tool → still speaks). web_search continuation logic unchanged; both
+  decision tools are excluded from the tool-result feedback.
+- **Prompt tool-contract** (`HEARTBEAT_PROMPT` tail): "call EXACTLY ONE tool — send_text
+  to speak, stay_silent to stay quiet; if any part of your reasoning concludes a text is
+  warranted, call send_text — never call stay_silent and protest in the reason."
+
+Verified live: yes-anchor 6/6 `send_text`, quiet states still `stay_silent`. Isolated to
+`heartbeat.py` (voice.md / build_loop_context untouched).
+
 ## 2c — tests
 
 **Tier-1** (`tests/tier1/test_heartbeat.py`, deterministic, model stubbed):
