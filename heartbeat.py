@@ -37,20 +37,46 @@ STAY_SILENT_TOOL = {
                      "required": ["reason"]},
 }
 
+# Speaking is a tool call too, NOT bare text. Burn-in finding: with only a
+# stay_silent tool offered, a model that had DECIDED to speak still reflexively
+# called stay_silent (reason: "actually should speak — but tool forces silence"),
+# because "emit text" fought its strong prior to use an available tool. Making both
+# outcomes explicit tools removes the trap — the model picks the action, it never
+# has to route a speak decision through the silence channel. (Response-shape seam.)
+SEND_TEXT_TOOL = {
+    "name": "send_text",
+    "description": ("Call this to send ONE proactive SMS to the user right now. Pass the "
+                    "exact message to send in `message` — in your voice, nothing else, no "
+                    "preamble. Use this whenever you've decided a text is warranted."),
+    "input_schema": {"type": "object",
+                     "properties": {"message": {"type": "string"}},
+                     "required": ["message"]},
+}
+
 HEARTBEAT_PROMPT = """It's a quiet moment — a heartbeat tick, NOT a reply. The user did not just text you.
 
-Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. Only speak if there's something real worth saying:
-- a warm accountability nudge (they've skipped a pattern — "you've skipped twice this week, what's going on")
-- a timely, personal follow-up on an open thread ("how'd the midterm go")
+Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. But silence is the default, not the goal: the job is to speak when a good coach would, and to stay quiet otherwise.
+
+A HEARTBEAT HAS NO NEW MESSAGE — that is what makes it proactive. Do NOT wait for something new to have happened before you speak. A STANDING CONDITION is a valid reason to text on its own: a days-long training gap, a broken pattern the user asked to be held to, an open thread still unanswered. The longer a warranted nudge goes unsent, the MORE worth sending it is, not less. "Nothing new since the last tick" is NOT a reason to stay silent — that is true on every tick by design.
+
+SPEAK when:
+- a multi-day skip or broken pattern for someone working toward consistency, or who asked to be called out / held accountable — this is the core job, an obvious yes
+- a timely, personal follow-up on a real open thread ("how'd the midterm go")
 - a relevant, well-timed check-in tied to today's events or schedule
 
-HARD RULES:
-- If you already sent this thought recently, or recently decided to stay silent on it, STAY SILENT. Read RECENT PROACTIVE MESSAGES and TICK HISTORY below — never send the same nudge twice, and never open like your last few texts.
-- Accountability is the job; fun is the delivery, not a substitute for it.
-- One text. No preamble.
+STAY SILENT when:
+- a quiet, on-track day with nothing standing and nothing new — the honest default
+- the user is mid-conversation (that's reactive territory — reply in-thread, don't proactively double-text)
+- you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts
 
-To STAY SILENT: call the stay_silent tool with a one-line reason.
-To SPEAK: write the single SMS to send — nothing else, in your voice."""
+DON'T RATION YOURSELF. The limits on over-texting are enforced in CODE, not by you: at most one unanswered proactive nudge at a time (an anti-stack window) and a hard daily cap. You cannot over-text past those. So do NOT hold back out of fear of nagging — that is already handled. Your only job is the single judgment call: is THIS worth a text right now? Answer that honestly and act on it.
+
+Accountability is the job; fun is the delivery, not a substitute for it. One text. No preamble.
+
+Call EXACTLY ONE tool:
+- To SPEAK: call send_text with the exact SMS to send, in your voice — nothing else.
+- To STAY SILENT: call stay_silent with a one-line reason.
+If any part of your reasoning concludes a text is warranted, call send_text. NEVER call stay_silent and then say in the reason that you should have spoken — that is a contradiction; call send_text instead."""
 
 
 def _naive_utcnow():
@@ -156,19 +182,32 @@ def _proactive_context(user, session) -> str:
                   .filter(Message.user_id == user.id, Message.direction == "out",
                           Message.created_at >= day_start)
                   .order_by(Message.created_at.desc()).limit(6).all())
-    if todays_out:
-        parts.append("## RECENT PROACTIVE MESSAGES (today — do NOT repeat these)\n"
-                     + "\n".join(f"- {m.body}" for m in reversed(todays_out)))
 
     ticks = (session.query(HeartbeatTick)
              .filter(HeartbeatTick.user_id == user.id)
              .order_by(HeartbeatTick.decided_at.desc())
              .limit(config.HEARTBEAT_RECENT_TICKS).all())
-    if ticks:
-        tl = "\n".join(
-            f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
-            for t in reversed(ticks))
-        parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
+
+    # Invert the empty-history signal (bias #1): a quiet slate used to render as
+    # NOTHING, and the model read that void as "no proof this isn't a duplicate →
+    # stay cautious" — it wouldn't speak because it hadn't spoken. Empty history is
+    # PERMISSION, not caution. Render it explicitly rather than omitting the blocks.
+    if not todays_out and not ticks:
+        parts.append("## PROACTIVE STATUS\n"
+                     "You have sent NO proactive messages today and have no recent tick "
+                     "decisions on file — you have NOT nudged about anything yet. The "
+                     "absence of history is PERMISSION to speak if there's a real reason, "
+                     "never a reason for caution: there is nothing here you could be "
+                     "repeating.")
+    else:
+        if todays_out:
+            parts.append("## RECENT PROACTIVE MESSAGES (today — do NOT repeat these)\n"
+                         + "\n".join(f"- {m.body}" for m in reversed(todays_out)))
+        if ticks:
+            tl = "\n".join(
+                f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
+                for t in reversed(ticks))
+            parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
 
     return "\n\n".join(parts)
 
@@ -177,8 +216,9 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
     """One decision call. Returns (spoke, payload, search): payload is the message if
     spoke, else the silence reason; search is the search DECISION for the tick record
     — {"available": offered-under-budget, "used": model-invoked-it, "query": first
-    query or None}. The model calls stay_silent to stay quiet. Loads the user in its
-    own session so callers can pass just an id (no detached instance)."""
+    query or None}. The model calls send_text to speak or stay_silent to stay quiet
+    (both outcomes are explicit tools — see SEND_TEXT_TOOL). Loads the user in its own
+    session so callers can pass just an id (no detached instance)."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -191,7 +231,7 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
         {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": HEARTBEAT_PROMPT + "\n\n" + context},
     ]
-    tools = [STAY_SILENT_TOOL]
+    tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]
     if search["available"]:
         tools.append({"type": "web_search_20260209", "name": "web_search",
                       "max_uses": config.WEB_SEARCH_MAX_USES})
@@ -221,22 +261,35 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
             messages.append({"role": "assistant", "content": resp.content})
             continue
         if getattr(resp, "stop_reason", None) == "tool_use":
+            # The two decision tools terminate the loop. send_text = speak (payload is
+            # the message); stay_silent = quiet (payload is the reason).
+            spoke_tool = next((b for b in resp.content
+                               if getattr(b, "type", None) == "tool_use" and b.name == "send_text"), None)
+            if spoke_tool is not None:
+                msg = (spoke_tool.input or {}).get("message", "").strip()
+                # send_text is terminal either way — an empty message can't be sent, so
+                # log it as silence rather than continuing (which would leave this
+                # tool_use unanswered and malform the next request).
+                return (True, msg, search) if msg else (False, "send_text empty message", search)
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
             if silent is not None:
                 return (False, (silent.input or {}).get("reason", "chose silence"), search)
             # a server tool (web_search) — feed nothing back for client tools; continue
+            _decision_names = ("send_text", "stay_silent")
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": b.id, "content": "n/a"}
-                for b in resp.content if getattr(b, "type", None) == "tool_use" and b.name != "stay_silent"
+                for b in resp.content
+                if getattr(b, "type", None) == "tool_use" and b.name not in _decision_names
             ] or "continue"})
             continue
 
-        # EVERY text block, concatenated — not just the first. With adaptive thinking +
-        # inline web_search, the model splits the nudge across several text blocks (a
-        # lead-in before the search result, the substance after); taking only the first
-        # sent a truncated fragment. Same seam as agent_loop's burn-in fix (_join_text).
+        # Fallback: the model ended with bare text instead of calling send_text (rarer
+        # now that speaking is an explicit tool, but kept for robustness). Concatenate
+        # EVERY text block, not just the first — with adaptive thinking + inline
+        # web_search the model splits the nudge across blocks (a lead-in before the
+        # search result, the substance after). Same seam as agent_loop's _join_text.
         text = _join_text(resp.content)
         if text:
             return (True, text, search)

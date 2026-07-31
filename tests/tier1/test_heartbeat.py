@@ -308,7 +308,30 @@ def test_model_scheduled_event_informs_but_does_not_hard_gate(db, monkeypatch, s
 
 # ---- decision branches ------------------------------------------------------
 
-def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_stub):
+def test_decide_speaks_via_send_text_tool(db, monkeypatch, sms_capture, anthropic_stub):
+    """PRIMARY speak path: speaking is an explicit send_text tool call, not bare text.
+    Burn-in finding — with only a stay_silent tool offered, a model that HAD decided to
+    speak still reflexively called stay_silent ('actually should speak but tool forces
+    silence'), because 'emit text' fought its tool-use prior. send_text is the fix: the
+    model routes a speak decision through its own channel. This pins that path."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    anthropic_stub.reply_with(lambda kw: ToolUse("send_text", {"message": "how'd the midterm go?"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert any("midterm" in body for _phone, body in sms_capture), "send_text must send an SMS"
+    tick = _ticks(user.id)[-1]
+    assert tick.spoke is True and "midterm" in tick.message
+
+
+def test_decide_speaks_bare_text_fallback_still_sends(db, monkeypatch, sms_capture, anthropic_stub):
+    """Fallback path: if the model ends with bare text instead of calling send_text, the
+    tick must still speak (robustness — kept from before the two-tool change)."""
     import heartbeat
     from tests.factories import make_user
 
@@ -318,7 +341,7 @@ def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_st
 
     heartbeat.heartbeat_tick(user.id)
 
-    assert any("midterm" in body for _phone, body in sms_capture), "speaking tick must send an SMS"
+    assert any("midterm" in body for _phone, body in sms_capture), "bare-text fallback must send an SMS"
     tick = _ticks(user.id)[-1]
     assert tick.spoke is True and "midterm" in tick.message
 
@@ -401,6 +424,54 @@ def test_proactive_context_carries_tick_history_and_outbound(db, monkeypatch, an
     # Addendum: HEARTBEAT_WEB_SEARCH defaults ON with a per-day budget; a fresh
     # user is under budget, so the tool must be in the set here.
     assert any(t.get("type", "").startswith("web_search") for t in captured["tools"])
+
+
+# ---- calibration (PR2): empty-history renders PERMISSION, not a void --------
+
+def test_proactive_context_empty_history_renders_permission(db, monkeypatch, anthropic_stub):
+    """Calibration bias #1: a fresh user (no outbound today, no ticks) must see an
+    explicit PROACTIVE STATUS block granting PERMISSION to speak — NOT an empty void
+    the model reads as 'no proof this isn't a duplicate → stay cautious'. Red before
+    2a: previously both blocks were simply omitted when empty, rendering nothing."""
+    import heartbeat
+    from models import get_session, User
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "PROACTIVE STATUS" in ctx, "empty history must render an explicit status block"
+    assert "PERMISSION" in ctx, "the empty-history block must grant permission, not caution"
+    # and it must NOT masquerade as history the model could fear repeating
+    assert "RECENT PROACTIVE MESSAGES" not in ctx
+    assert "TICK HISTORY" not in ctx
+
+
+def test_proactive_context_with_history_suppresses_permission_block(db, monkeypatch, anthropic_stub):
+    """The other branch: once there IS a proactive message today, the anti-repetition
+    blocks appear and the empty-case PERMISSION line must NOT — a user who was already
+    nudged is not a clean slate. Pins both branches so neither can silently vanish."""
+    import heartbeat
+    from models import get_session, User, Message
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="how's the cut going?",
+                      created_at=_utcnow_naive()))
+        s.commit()
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "RECENT PROACTIVE MESSAGES" in ctx and "how's the cut going?" in ctx
+    assert "PROACTIVE STATUS" not in ctx, "a user already nudged today is not a clean slate"
+    assert "PERMISSION" not in ctx
 
 
 # ---- addendum: web search on-by-default, budgeted in code -------------------
