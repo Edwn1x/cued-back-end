@@ -15,6 +15,13 @@ client = Client(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
 SMS_SPLIT_DELAY = 2.5  # seconds between split messages
 SMS_SEGMENT_WARN_THRESHOLD = 6  # ~900+ GSM-7 chars; log when bodies get this large
 
+# Appended to the stored inbound body when the MMS carried media. The image bytes
+# only ever exist inside the live turn's API call, so this marker is the ONE durable
+# trace that an image arrived — it's what lets a later turn honestly say "you sent a
+# pic earlier but i didn't save the detail" instead of "nothing came through".
+# voice.md's retrieval-gap honesty rule references this literal string.
+IMAGE_MARKER = "[image attached]"
+
 
 def _send_single(phone: str, body: str) -> str:
     """Send one SMS segment via Twilio and return the SID."""
@@ -101,8 +108,13 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     return last_sid
 
 
-def log_incoming(user_id: int, body: str, message_type: str = "freeform"):
-    """Log an incoming SMS to the database."""
+def log_incoming(user_id: int, body: str, message_type: str = "freeform",
+                 has_image: bool = False):
+    """Log an incoming SMS to the database. `has_image` appends IMAGE_MARKER so the
+    stored row (the only thing the conversation window ever sees) records that media
+    was attached — a captionless MMS logs the marker alone, never an empty body."""
+    if has_image:
+        body = f"{body} {IMAGE_MARKER}" if body else IMAGE_MARKER
     session = get_session()
     try:
         msg = Message(

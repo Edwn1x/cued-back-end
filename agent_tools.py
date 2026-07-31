@@ -31,10 +31,14 @@ REMEMBER_TOOL = {
         "Save, update, or invalidate a DURABLE fact about the user (preferences, "
         "goals, schedule, constraints, life context). Use it when you learn "
         "something worth remembering across future conversations — not for "
-        "transient chatter. add: a new fact. update: supersede an existing fact "
-        "(pass the new text; the old value is preserved in history). invalidate: "
-        "close a fact that's no longer true (e.g. an injury healed) — pass its "
-        "entry_id. Do NOT log meals or workouts here (separate tools)."
+        "transient chatter. A durable detail you read off an IMAGE counts the same "
+        "as one they typed (a package weight, a label's macros, food on hand not "
+        "yet eaten): save it this turn — the image is gone next turn, and a detail "
+        "you only spoke back is not saved. add: a new fact. update: supersede an "
+        "existing fact (pass the new text; the old value is preserved in history). "
+        "invalidate: close a fact that's no longer true (e.g. an injury healed, "
+        "on-hand food now eaten and logged) — pass its entry_id. Do NOT log eaten "
+        "meals or completed workouts here (separate tools)."
     ),
     "input_schema": {
         "type": "object",

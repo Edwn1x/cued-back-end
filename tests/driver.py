@@ -13,6 +13,15 @@ threads made synchronous.
 `MessageSid` is always sent so the webhook-idempotency case (replay same sid
 twice -> exactly one set of writes) is expressible. Outbound texts are captured
 via the sms._send_single patch installed in conftest.
+
+OBJECT LIFECYCLE, not just call sequence: prod refetches the User row on every
+webhook, so no state carries between turns except what's in the database. A test
+that reuses one User object across turns is testing a different system — the
+object holds the profile as of its last refresh, so a mid-test write (remember,
+targets, summaries) is invisible to the next turn and the model looks amnesiac
+when it isn't (or a real persistence bug looks fixed when it isn't). Between
+turns that involve a user-row write, refetch (`db.expire_all()` or a fresh
+`session.get(User, ...)`). Found the hard way in the tier-2 tenders replay.
 """
 
 from __future__ import annotations
