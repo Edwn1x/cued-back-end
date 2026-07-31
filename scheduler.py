@@ -7,6 +7,7 @@ from coach import generate_scheduled_message
 from sms import send_sms
 from engagement_tracker import should_send, is_question_type, increment_unanswered, get_tier
 from models import is_workout_confirmed_today
+import config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,10 @@ def _is_training_day(user) -> bool:
 
 def send_scheduled_message(user_id: int, message_type: str):
     """Generate and send a scheduled coaching message to a user."""
+    # Legacy proactive path — off during burn-in so the heartbeat owns all proactive
+    # contact. A no-op here guarantees no legacy outbound even if a stray job fires.
+    if not config.LEGACY_SCHEDULER_ENABLED:
+        return
     session = get_session()
     try:
         user = session.query(User).get(user_id)
@@ -259,6 +264,10 @@ def schedule_user(user: User):
     briefing fires at different times on different days. We schedule one job per
     unique (time, day) combination using day_of_week in the CronTrigger.
     """
+    # Legacy proactive scheduler off => register no per-user jobs. This is the single
+    # gate that covers all three callers (boot, profile update, onboarding complete).
+    if not config.LEGACY_SCHEDULER_ENABLED:
+        return
     tz_str = user.user_timezone or "America/Los_Angeles"
 
     if not user.wake_time:
@@ -393,6 +402,9 @@ def check_meal_adherence():
     Daily check: if a user has been active but hasn't logged a meal in 24+ hours, nudge them.
     After 48+ hours, slightly firmer tone.
     """
+    # Legacy proactive path — off during burn-in (heartbeat owns proactive contact).
+    if not config.LEGACY_SCHEDULER_ENABLED:
+        return
     from models import Meal, Message, active
 
     session = get_session()
@@ -443,13 +455,17 @@ def check_meal_adherence():
 
 def start_scheduler():
     """Initialize and start the scheduler."""
+    # Legacy proactive jobs (per-user touchpoints + the global adherence check) only
+    # register when explicitly re-enabled; off during burn-in so the heartbeat is the
+    # sole proactive system. schedule_all_users no-ops per user when disabled.
     schedule_all_users()
-    scheduler.add_job(
-        check_meal_adherence,
-        trigger=CronTrigger(hour=20, minute=0),
-        id="global_adherence_check",
-        replace_existing=True,
-    )
+    if config.LEGACY_SCHEDULER_ENABLED:
+        scheduler.add_job(
+            check_meal_adherence,
+            trigger=CronTrigger(hour=20, minute=0),
+            id="global_adherence_check",
+            replace_existing=True,
+        )
 
     from dining_scraper import scrape_all_halls
     scheduler.add_job(
@@ -468,7 +484,6 @@ def start_scheduler():
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell
     # the founder called out. The tick itself is cheap when silent; the decision
     # call only runs after code guardrails pass.
-    import config
     if config.HEARTBEAT_ENABLED:
         from apscheduler.triggers.interval import IntervalTrigger
         from heartbeat import heartbeat_all

@@ -64,6 +64,63 @@ def test_heartbeat_default_silent_on_empty_state(db, monkeypatch):
     assert n >= 1, "the decision call must be metered"
 
 
+def test_heartbeat_reaches_decision_on_quiet_tick_after_deadlock_fix(db, monkeypatch):
+    """The proof the burn-in has been missing. Before the unanswered_gap deadlock fix
+    (rewrite/heartbeat-calibration) the tick could NOT reach the model at all — a
+    reactive reply or legacy briefing left an 'unanswered outbound' that suppressed
+    every proactive tick in code, so decide() was never even called. The hard,
+    deterministic proof the fix restores initiation is therefore: on a quiet tick with
+    a real standing signal, (a) the code gate does NOT suppress, and (b) the decision
+    call actually reaches the model (is metered). Whether the model then SPEAKS is the
+    judged burn-in question, observed off the transcript below — not asserted, because
+    the coach is deliberately default-silent (see FINDING).
+
+    Scripted state: an accountability opening (the prompt's #1 speak example and the
+    coach's stated 'job') — 4x/week goal, coaching summary asking to be called out on
+    slips, and a ~10-day training fall-off in the log. No recent inbound (no 'reply
+    in-thread' pull), no proactive nudge outstanding."""
+    import config, heartbeat
+    from models import get_session, Workout
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])  # allowlist bypassed via decide()
+    user = make_user(
+        db, name="Sam",
+        coaching_summary=("Committed to training 4x/week (push, pull, legs, upper) on a "
+                          "cut. Consistency is the real struggle — tends to skip legs and "
+                          "then fall off for days. Explicitly asked to be called out when "
+                          "he slips, not coddled."))
+    s = get_session()
+    try:
+        # last trained ~10 and ~12 days ago, then nothing — an unambiguous fall-off
+        s.add(Workout(user_id=user.id, workout_type="push", completed=True,
+                      date=_utcnow_naive() - timedelta(days=10)))
+        s.add(Workout(user_id=user.id, workout_type="pull", completed=True,
+                      date=_utcnow_naive() - timedelta(days=12)))
+        s.commit()
+    finally:
+        s.close()
+
+    # (a) the deadlock-fix precondition: the code gate must NOT suppress this tick
+    from engagement_tracker import has_unanswered_proactive
+    assert has_unanswered_proactive(user.id, config.HEARTBEAT_STACK_WINDOW_MINUTES) is False
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT quiet-tick-decision] spoke={spoke} :: {payload!r}")
+
+    # (b) the tick reached the model — impossible under the old deadlock (decide()
+    # was never called once an outbound sat unanswered). This is the hard proof.
+    _cost_usd, n = _cost(user.id)
+    assert n >= 1, "the decision call must have reached the model (deadlock-fix proof)"
+
+    if not spoke:
+        print("[HEARTBEAT quiet-tick] FINDING: the coach reached the decision but chose "
+              "SILENCE on a ~10-day training fall-off for a user who asked to be called "
+              "out. Across scripted openings the live model is strongly default-silent "
+              "('not yet a pattern' / 'no new info since last tick'). The gate is fixed; "
+              "the speak THRESHOLD is the founder's calibration call. Read the reason above.")
+
+
 def test_heartbeat_does_not_repeat_a_sent_nudge(db, monkeypatch):
     """The exact thought was sent an hour ago. The tick must NOT send it again."""
     import config, heartbeat

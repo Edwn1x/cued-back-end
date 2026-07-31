@@ -97,6 +97,13 @@ LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() ==
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.
 CONTEXT_LOCAL_TIME_ENABLED = os.getenv("CONTEXT_LOCAL_TIME_ENABLED", "true").lower() == "true"
 
+# Legacy templated scheduler (morning briefing, pre/post-workout, evening wrap,
+# weigh-in, meal-adherence). Disabled by default so the heartbeat is the ONLY
+# proactive system during burn-in — two uncoordinated proactive systems double-
+# message and confound the speak-rate/cost data. Reversible: flip on to restore
+# the legacy jobs. Deletion is Phase 6's playbook, gated on a clean burn-in.
+LEGACY_SCHEDULER_ENABLED = os.getenv("LEGACY_SCHEDULER_ENABLED", "false").lower() == "true"
+
 # Phase 4 — heartbeat (proactive). A dumb clock, a smart decision, default silent.
 # Burn-in runs on the founder's number only (allowlist), on top of the live loop.
 HEARTBEAT_ENABLED = os.getenv("HEARTBEAT_ENABLED", "false").lower() == "true"
@@ -106,6 +113,11 @@ HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
+# Anti-STACK window (guardrail): within this many minutes of an unanswered proactive
+# nudge, don't send a second one. Clears on time-elapse (no user reply needed) — the
+# fix for the unanswered_gap deadlock. Only proactive (heartbeat) outbounds count;
+# reactive replies never gate initiation. See rewrite/heartbeat-calibration.
+HEARTBEAT_STACK_WINDOW_MINUTES = int(os.getenv("HEARTBEAT_STACK_WINDOW_MINUTES", "180"))
 # Addendum (post-burn-in): ON for burn-in, deliberately — proactive search is part
 # of the product claim burn-in exists to validate (a coach that can check hours/
 # availability before texting). The managed risk is search UN-BUDGETED, not search
