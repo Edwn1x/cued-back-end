@@ -403,6 +403,54 @@ def test_proactive_context_carries_tick_history_and_outbound(db, monkeypatch, an
     assert any(t.get("type", "").startswith("web_search") for t in captured["tools"])
 
 
+# ---- calibration (PR2): empty-history renders PERMISSION, not a void --------
+
+def test_proactive_context_empty_history_renders_permission(db, monkeypatch, anthropic_stub):
+    """Calibration bias #1: a fresh user (no outbound today, no ticks) must see an
+    explicit PROACTIVE STATUS block granting PERMISSION to speak — NOT an empty void
+    the model reads as 'no proof this isn't a duplicate → stay cautious'. Red before
+    2a: previously both blocks were simply omitted when empty, rendering nothing."""
+    import heartbeat
+    from models import get_session, User
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "PROACTIVE STATUS" in ctx, "empty history must render an explicit status block"
+    assert "PERMISSION" in ctx, "the empty-history block must grant permission, not caution"
+    # and it must NOT masquerade as history the model could fear repeating
+    assert "RECENT PROACTIVE MESSAGES" not in ctx
+    assert "TICK HISTORY" not in ctx
+
+
+def test_proactive_context_with_history_suppresses_permission_block(db, monkeypatch, anthropic_stub):
+    """The other branch: once there IS a proactive message today, the anti-repetition
+    blocks appear and the empty-case PERMISSION line must NOT — a user who was already
+    nudged is not a clean slate. Pins both branches so neither can silently vanish."""
+    import heartbeat
+    from models import get_session, User, Message
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="how's the cut going?",
+                      created_at=_utcnow_naive()))
+        s.commit()
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "RECENT PROACTIVE MESSAGES" in ctx and "how's the cut going?" in ctx
+    assert "PROACTIVE STATUS" not in ctx, "a user already nudged today is not a clean slate"
+    assert "PERMISSION" not in ctx
+
+
 # ---- addendum: web search on-by-default, budgeted in code -------------------
 
 def _has_search(tools):

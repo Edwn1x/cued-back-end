@@ -39,15 +39,23 @@ STAY_SILENT_TOOL = {
 
 HEARTBEAT_PROMPT = """It's a quiet moment — a heartbeat tick, NOT a reply. The user did not just text you.
 
-Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. Only speak if there's something real worth saying:
-- a warm accountability nudge (they've skipped a pattern — "you've skipped twice this week, what's going on")
-- a timely, personal follow-up on an open thread ("how'd the midterm go")
+Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. But silence is the default, not the goal: the job is to speak when a good coach would, and to stay quiet otherwise.
+
+A HEARTBEAT HAS NO NEW MESSAGE — that is what makes it proactive. Do NOT wait for something new to have happened before you speak. A STANDING CONDITION is a valid reason to text on its own: a days-long training gap, a broken pattern the user asked to be held to, an open thread still unanswered. The longer a warranted nudge goes unsent, the MORE worth sending it is, not less. "Nothing new since the last tick" is NOT a reason to stay silent — that is true on every tick by design.
+
+SPEAK when:
+- a multi-day skip or broken pattern for someone working toward consistency, or who asked to be called out / held accountable — this is the core job, an obvious yes
+- a timely, personal follow-up on a real open thread ("how'd the midterm go")
 - a relevant, well-timed check-in tied to today's events or schedule
 
-HARD RULES:
-- If you already sent this thought recently, or recently decided to stay silent on it, STAY SILENT. Read RECENT PROACTIVE MESSAGES and TICK HISTORY below — never send the same nudge twice, and never open like your last few texts.
-- Accountability is the job; fun is the delivery, not a substitute for it.
-- One text. No preamble.
+STAY SILENT when:
+- a quiet, on-track day with nothing standing and nothing new — the honest default
+- the user is mid-conversation (that's reactive territory — reply in-thread, don't proactively double-text)
+- you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts
+
+DON'T RATION YOURSELF. The limits on over-texting are enforced in CODE, not by you: at most one unanswered proactive nudge at a time (an anti-stack window) and a hard daily cap. You cannot over-text past those. So do NOT hold back out of fear of nagging — that is already handled. Your only job is the single judgment call: is THIS worth a text right now? Answer that honestly and act on it.
+
+Accountability is the job; fun is the delivery, not a substitute for it. One text. No preamble.
 
 To STAY SILENT: call the stay_silent tool with a one-line reason.
 To SPEAK: write the single SMS to send — nothing else, in your voice."""
@@ -156,19 +164,32 @@ def _proactive_context(user, session) -> str:
                   .filter(Message.user_id == user.id, Message.direction == "out",
                           Message.created_at >= day_start)
                   .order_by(Message.created_at.desc()).limit(6).all())
-    if todays_out:
-        parts.append("## RECENT PROACTIVE MESSAGES (today — do NOT repeat these)\n"
-                     + "\n".join(f"- {m.body}" for m in reversed(todays_out)))
 
     ticks = (session.query(HeartbeatTick)
              .filter(HeartbeatTick.user_id == user.id)
              .order_by(HeartbeatTick.decided_at.desc())
              .limit(config.HEARTBEAT_RECENT_TICKS).all())
-    if ticks:
-        tl = "\n".join(
-            f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
-            for t in reversed(ticks))
-        parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
+
+    # Invert the empty-history signal (bias #1): a quiet slate used to render as
+    # NOTHING, and the model read that void as "no proof this isn't a duplicate →
+    # stay cautious" — it wouldn't speak because it hadn't spoken. Empty history is
+    # PERMISSION, not caution. Render it explicitly rather than omitting the blocks.
+    if not todays_out and not ticks:
+        parts.append("## PROACTIVE STATUS\n"
+                     "You have sent NO proactive messages today and have no recent tick "
+                     "decisions on file — you have NOT nudged about anything yet. The "
+                     "absence of history is PERMISSION to speak if there's a real reason, "
+                     "never a reason for caution: there is nothing here you could be "
+                     "repeating.")
+    else:
+        if todays_out:
+            parts.append("## RECENT PROACTIVE MESSAGES (today — do NOT repeat these)\n"
+                         + "\n".join(f"- {m.body}" for m in reversed(todays_out)))
+        if ticks:
+            tl = "\n".join(
+                f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
+                for t in reversed(ticks))
+            parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
 
     return "\n\n".join(parts)
 

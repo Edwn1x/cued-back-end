@@ -1,14 +1,17 @@
 """
-Tier-2 (live) — heartbeat burn-in measurement. The heartbeat is judged, not
-asserted: does the coach stay silent when nothing is happening (default-silent
-discipline), speak on a real signal, and NOT re-send a nudge it already sent?
-This harness runs `decide` live over a few seeded states, prints each decision +
-reason, and records cost so the summary can set a per-day search budget from a
-real speak rate. Run: pytest --run-tier2 -s.
+Tier-2 (live) — heartbeat speak-calibration anchors. After PR2 the suite is no longer
+judgment-only: the two ENDS of the decision are pinned as HARD anchors, the ambiguous
+middle stays printed-observation.
 
-The pass/fail here is deliberately light (silence on the empty state + cost
-recorded); the speak *quality* is read off the printed transcript, per the founder's
-"prompts describe intent; transcript shows behavior."
+- YES-anchor (must speak): a multi-day training fall-off for a user who asked to be
+  called out — the product's core promise, asserted `spoke is True`. Proven RED on the
+  pre-calibration prompt (0/4); must be GREEN after 2a+2b. Binary: re-run 2-3x, pass
+  every time.
+- NO-anchors (must stay silent): empty state, on-track quiet day, mid-conversation —
+  asserted `spoke is False`, so a loosened threshold can't become a nag.
+- The middle (open-thread, lookup-worthy, search-by-need) stays a printed FINDING, and
+  cost is recorded two-track so the summary can set a per-day search budget from a real
+  speak rate. Run: pytest --run-tier2 -s.
 """
 
 from __future__ import annotations
@@ -64,32 +67,33 @@ def test_heartbeat_default_silent_on_empty_state(db, monkeypatch):
     assert n >= 1, "the decision call must be metered"
 
 
-def test_heartbeat_reaches_decision_on_quiet_tick_after_deadlock_fix(db, monkeypatch):
-    """The proof the burn-in has been missing. Before the unanswered_gap deadlock fix
-    (rewrite/heartbeat-calibration) the tick could NOT reach the model at all — a
-    reactive reply or legacy briefing left an 'unanswered outbound' that suppressed
-    every proactive tick in code, so decide() was never even called. The hard,
-    deterministic proof the fix restores initiation is therefore: on a quiet tick with
-    a real standing signal, (a) the code gate does NOT suppress, and (b) the decision
-    call actually reaches the model (is metered). Whether the model then SPEAKS is the
-    judged burn-in question, observed off the transcript below — not asserted, because
-    the coach is deliberately default-silent (see FINDING).
+def test_heartbeat_speaks_on_accountability_gap(db, monkeypatch):
+    """THE yes-anchor — the single most important test in the suite: the product's core
+    promise as a hard assertion. A multi-day training fall-off for a user who explicitly
+    asked to be held accountable is the clearest possible SPEAK moment; if the coach
+    stays silent here it has failed at its one job, deadlock-fixed or not.
 
-    Scripted state: an accountability opening (the prompt's #1 speak example and the
-    coach's stated 'job') — 4x/week goal, coaching summary asking to be called out on
-    slips, and a ~10-day training fall-off in the log. No recent inbound (no 'reply
-    in-thread' pull), no proactive nudge outstanding."""
+    This anchor was proven RED on the pre-calibration prompt (0/4 across scripted
+    openings — the model chose silence on exactly this state, reasoning 'not yet a
+    pattern' / 'no new info since last tick'). It must go GREEN after 2a+2b. Because
+    the anchor is BINARY, it must be re-run 2-3x and pass EVERY time — 2/3 means the
+    coach stays silent on a third of the clearest accountability moments, i.e. not done.
+
+    The fixture MUST encode BOTH halves that make 'must speak' definitionally true —
+    a gap alone is a judgment call (maybe they're traveling); gap + explicit standing
+    request is what makes the yes unambiguous:
+      1. a multi-day training fall-off (~10-12 days, then nothing) in the log, AND
+      2. an explicit standing 'call me out / hold me accountable' request in the summary.
+    No recent inbound (no 'reply in-thread' pull), no proactive nudge outstanding."""
     import config, heartbeat
-    from models import get_session, Workout
+    from models import get_session, User, Workout
     from tests.factories import make_user
 
     monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])  # allowlist bypassed via decide()
-    user = make_user(
-        db, name="Sam",
-        coaching_summary=("Committed to training 4x/week (push, pull, legs, upper) on a "
-                          "cut. Consistency is the real struggle — tends to skip legs and "
-                          "then fall off for days. Explicitly asked to be called out when "
-                          "he slips, not coddled."))
+    call_out = ("Committed to training 4x/week (push, pull, legs, upper) on a cut. "
+                "Consistency is the real struggle — tends to skip legs and then fall off "
+                "for days. Explicitly asked to be called out when he slips, not coddled.")
+    user = make_user(db, name="Sam", coaching_summary=call_out)
     s = get_session()
     try:
         # last trained ~10 and ~12 days ago, then nothing — an unambiguous fall-off
@@ -98,27 +102,88 @@ def test_heartbeat_reaches_decision_on_quiet_tick_after_deadlock_fix(db, monkeyp
         s.add(Workout(user_id=user.id, workout_type="pull", completed=True,
                       date=_utcnow_naive() - timedelta(days=12)))
         s.commit()
+        # verify BOTH halves are actually in the fixture, or the anchor asserts less
+        # than it appears to (half #1 = the gap reaches context; half #2 = the request)
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
     finally:
         s.close()
+    assert "called out" in call_out, "half #2 missing: no explicit accountability request"
+    assert "days" in ctx or "10" in ctx or "12" in ctx, \
+        "half #1 sanity: the training history must reach the decision context"
 
-    # (a) the deadlock-fix precondition: the code gate must NOT suppress this tick
+    # precondition: the code gate must NOT suppress this tick (deadlock-fix, PR1)
     from engagement_tracker import has_unanswered_proactive
     assert has_unanswered_proactive(user.id, config.HEARTBEAT_STACK_WINDOW_MINUTES) is False
 
     spoke, payload, _search = heartbeat.decide(user.id)
-    print(f"\n[HEARTBEAT quiet-tick-decision] spoke={spoke} :: {payload!r}")
+    print(f"\n[HEARTBEAT yes-anchor accountability-gap] spoke={spoke} :: {payload!r}")
 
-    # (b) the tick reached the model — impossible under the old deadlock (decide()
-    # was never called once an outbound sat unanswered). This is the hard proof.
     _cost_usd, n = _cost(user.id)
-    assert n >= 1, "the decision call must have reached the model (deadlock-fix proof)"
+    assert n >= 1, "the decision call must have reached the model"
+    assert spoke is True, (
+        "YES-ANCHOR FAILED: the coach stayed silent on a ~10-day training fall-off for a "
+        "user who explicitly asked to be called out — the clearest possible SPEAK moment. "
+        f"This is the product's core promise. Silence reason: {payload!r}")
 
-    if not spoke:
-        print("[HEARTBEAT quiet-tick] FINDING: the coach reached the decision but chose "
-              "SILENCE on a ~10-day training fall-off for a user who asked to be called "
-              "out. Across scripted openings the live model is strongly default-silent "
-              "('not yet a pattern' / 'no new info since last tick'). The gate is fixed; "
-              "the speak THRESHOLD is the founder's calibration call. Read the reason above.")
+
+def test_heartbeat_stays_silent_on_on_track_quiet_day(db, monkeypatch):
+    """Clear-NO anchor: calibration loosens WHEN the coach speaks, it must NOT turn the
+    heartbeat into a chatterbox. A user training on schedule with nothing standing and
+    nothing new is the honest default-silent case — trained today and yesterday, no
+    open thread, no accountability request. If this speaks, the threshold dropped too
+    far. Hard-assert silence: 'speaks when a good coach would' dies here as much as at
+    the yes-anchor."""
+    import config, heartbeat
+    from models import get_session, Workout
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    user = make_user(db, name="Sam",
+                     coaching_summary="Training consistently, on a lean bulk. Doing well.")
+    s = get_session()
+    try:
+        # on schedule: trained today and yesterday, nothing skipped, nothing standing
+        s.add(Workout(user_id=user.id, workout_type="push", completed=True,
+                      date=_utcnow_naive() - timedelta(hours=6)))
+        s.add(Workout(user_id=user.id, workout_type="pull", completed=True,
+                      date=_utcnow_naive() - timedelta(days=1)))
+        s.commit()
+    finally:
+        s.close()
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT no-anchor on-track-quiet] spoke={spoke} :: {payload!r}")
+    assert spoke is False, (
+        "NO-ANCHOR FAILED: the coach texted an on-track user with nothing standing and "
+        f"nothing new — the calibration over-loosened into nagging. Message: {payload!r}")
+
+
+def test_heartbeat_stays_silent_mid_conversation(db, monkeypatch):
+    """Clear-NO anchor: a recent inbound means an active conversation — that's REACTIVE
+    territory, the coach must reply in-thread, not proactively double-text on top of it.
+    In production the active_conversation guardrail hard-gates this in code; here we
+    call decide() directly (bypassing guardrails) to prove the PROMPT itself holds the
+    line — the loosened threshold must not make it double-text mid-exchange."""
+    import config, heartbeat
+    from models import get_session, Message
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    user = make_user(db, name="Sam")
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="in",
+                      body="just got to the gym, about to start legs",
+                      created_at=_utcnow_naive() - timedelta(minutes=3)))
+        s.commit()
+    finally:
+        s.close()
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT no-anchor mid-conversation] spoke={spoke} :: {payload!r}")
+    assert spoke is False, (
+        "NO-ANCHOR FAILED: the coach proactively texted on top of a 3-minute-old inbound "
+        f"— mid-conversation is reactive territory, not a heartbeat's. Message: {payload!r}")
 
 
 def test_heartbeat_does_not_repeat_a_sent_nudge(db, monkeypatch):
