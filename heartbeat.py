@@ -22,7 +22,7 @@ import config
 from cost_tracking import track
 from models import get_session, User, Message, HeartbeatTick
 from sms import send_sms
-from agent_loop import build_loop_context, _voice_prompt
+from agent_loop import build_loop_context, _voice_prompt, _join_text
 
 logger = logging.getLogger("cued.heartbeat")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -105,10 +105,14 @@ def guardrail_reason(user, session) -> str | None:
         age_min = (datetime.now(timezone.utc) - last_in.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60
         if age_min < config.HEARTBEAT_ACTIVE_CONVO_MINUTES:
             return "active_conversation"
-    # minimum gap after an unanswered outbound — don't pile on
-    from engagement_tracker import has_unanswered_outbound
-    if has_unanswered_outbound(user.id):
-        return "unanswered_gap"
+    # anti-STACK: don't pile a second proactive nudge on an unanswered first, but
+    # ONLY within the window and ONLY when the most-recent outbound was itself a
+    # proactive nudge. Clears on time-elapse (no user reply needed) — the fix for
+    # the unanswered_gap deadlock, where any reactive reply or legacy briefing used
+    # to mute all initiation until the user spoke. See rewrite/heartbeat-calibration.
+    from engagement_tracker import has_unanswered_proactive
+    if has_unanswered_proactive(user.id, config.HEARTBEAT_STACK_WINDOW_MINUTES):
+        return "proactive_stack"
     # FLOOR events hard-gate (deterministic): don't interrupt someone who is provably
     # mid-class. Only the high-precision regex floor gates here; a MODEL-logged event
     # ("summit 12-2:30") deliberately does NOT hard-gate — it informs the decision call
@@ -229,9 +233,13 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
             ] or "continue"})
             continue
 
-        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
-        if text.strip():
-            return (True, text.strip(), search)
+        # EVERY text block, concatenated — not just the first. With adaptive thinking +
+        # inline web_search, the model splits the nudge across several text blocks (a
+        # lead-in before the search result, the substance after); taking only the first
+        # sent a truncated fragment. Same seam as agent_loop's burn-in fix (_join_text).
+        text = _join_text(resp.content)
+        if text:
+            return (True, text, search)
         return (False, "no message composed", search)
     return (False, "decision loop exhausted", search)
 

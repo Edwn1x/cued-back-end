@@ -38,6 +38,19 @@ def _ticks(user_id):
         s.close()
 
 
+def _seed_msg(user_id, direction, minutes_ago, message_type="freeform", body="."):
+    """Seed one Message `minutes_ago` in the past (naive-UTC, prod's convention)."""
+    from models import get_session, Message
+    when = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes_ago)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user_id, direction=direction, body=body,
+                      message_type=message_type, created_at=when))
+        s.commit()
+    finally:
+        s.close()
+
+
 # ---- guardrails: each blocks in code, no model call, no SMS -----------------
 
 def test_guardrail_not_allowlisted_blocks(db, monkeypatch, sms_capture, anthropic_stub):
@@ -115,18 +128,132 @@ def test_guardrail_active_conversation_blocks(db, monkeypatch, sms_capture, anth
     assert anthropic_stub.calls == []
 
 
-def test_guardrail_unanswered_outbound_blocks(db, monkeypatch, sms_capture, anthropic_stub):
-    import heartbeat, engagement_tracker
+def test_guardrail_proactive_stack_blocks(db, monkeypatch, sms_capture, anthropic_stub):
+    """Anti-stack: a proactive (heartbeat) nudge sent recently and still unanswered
+    suppresses a SECOND proactive nudge within the window — don't pile on."""
+    import config, heartbeat
     from tests.factories import make_user
 
     user = make_user(db)
     _allow(monkeypatch, user)
-    monkeypatch.setattr(engagement_tracker, "has_unanswered_outbound", lambda _uid: True)
+    # an unanswered heartbeat outbound 10 min ago, well inside the stack window
+    _seed_msg(user.id, "out", minutes_ago=10, message_type="heartbeat")
 
     heartbeat.heartbeat_tick(user.id)
 
-    assert _ticks(user.id)[-1].reason == "guardrail:unanswered_gap"
-    assert anthropic_stub.calls == []
+    assert _ticks(user.id)[-1].reason == "guardrail:proactive_stack"
+    assert anthropic_stub.calls == [], "anti-stack must block BEFORE any model call"
+    assert sms_capture == []
+
+
+def test_gap_clears_after_window_without_user_reply(db, monkeypatch, sms_capture, anthropic_stub):
+    """Deadlock regression + reachable clear condition: a single unanswered proactive
+    nudge, once the stack window has elapsed, must NOT suppress the next tick — even
+    though the user never replied. The gap clears on time, not only on user input."""
+    import config, heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    window = config.HEARTBEAT_STACK_WINDOW_MINUTES
+    # unanswered heartbeat outbound sent JUST beyond the window; no inbound ever
+    _seed_msg(user.id, "out", minutes_ago=window + 10, message_type="heartbeat")
+    anthropic_stub.reply_with(lambda kw: ToolUse("stay_silent", {"reason": "nothing new"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert anthropic_stub.calls, "elapsed-window gap must let the tick reach the model"
+    reason = _ticks(user.id)[-1].reason
+    assert reason != "guardrail:proactive_stack"
+    assert not reason.startswith("guardrail:"), reason
+
+
+def test_reactive_reply_does_not_wedge_heartbeat(db, monkeypatch, sms_capture, anthropic_stub):
+    """The core deadlock: the coach's own REACTIVE reply left an 'unanswered
+    outbound' that muted all proactive initiation. A reactive reply (non-heartbeat
+    type), even recent and unanswered, must not suppress the heartbeat."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    # user texted 40 min ago (past active-convo window), coach replied 39 min ago;
+    # that reply is the most recent outbound and is unanswered — old gate deadlocked here
+    _seed_msg(user.id, "in", minutes_ago=40)
+    _seed_msg(user.id, "out", minutes_ago=39, message_type="freeform")
+    anthropic_stub.reply_with(lambda kw: ToolUse("stay_silent", {"reason": "quiet"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert anthropic_stub.calls, "a reactive reply must not wedge the heartbeat silent"
+    assert not (_ticks(user.id)[-1].reason or "").startswith("guardrail:")
+
+
+def test_legacy_briefing_does_not_wedge_heartbeat(db, monkeypatch, sms_capture, anthropic_stub):
+    """Item 1 point 4 / spec test 3: a legacy morning_briefing outbound (unanswered)
+    must not by itself suppress the heartbeat — it isn't a proactive-stack candidate."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    _seed_msg(user.id, "out", minutes_ago=40, message_type="morning_briefing")
+    anthropic_stub.reply_with(lambda kw: ToolUse("stay_silent", {"reason": "quiet"}))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert anthropic_stub.calls, "a legacy briefing must not wedge the heartbeat silent"
+    assert not (_ticks(user.id)[-1].reason or "").startswith("guardrail:")
+
+
+# ---- unit: has_unanswered_proactive (the anti-stack gate) --------------------
+
+def test_has_unanswered_proactive_true_within_window(db):
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type="heartbeat")
+    assert has_unanswered_proactive(user.id, 180) is True
+
+
+def test_has_unanswered_proactive_false_past_window(db):
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=200, message_type="heartbeat")
+    assert has_unanswered_proactive(user.id, 180) is False
+
+
+def test_has_unanswered_proactive_false_when_answered(db):
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type="heartbeat")
+    _seed_msg(user.id, "in", minutes_ago=5)  # user replied after the nudge
+    assert has_unanswered_proactive(user.id, 180) is False
+
+
+def test_has_unanswered_proactive_false_for_reactive_outbound(db):
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type="freeform")  # not proactive
+    assert has_unanswered_proactive(user.id, 180) is False
+
+
+def test_has_unanswered_proactive_false_when_no_outbound(db):
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    assert has_unanswered_proactive(user.id, 180) is False
 
 
 # ---- floor events hard-gate; model events inform (deterministic guardrails) --
@@ -194,6 +321,31 @@ def test_decide_speaks_sends_and_logs(db, monkeypatch, sms_capture, anthropic_st
     assert any("midterm" in body for _phone, body in sms_capture), "speaking tick must send an SMS"
     tick = _ticks(user.id)[-1]
     assert tick.spoke is True and "midterm" in tick.message
+
+
+def test_decide_sends_all_text_blocks_not_just_first(db, monkeypatch, sms_capture, anthropic_stub):
+    """Seam regression (same as agent_loop's _join_text burn-in fix): with adaptive
+    thinking + inline web_search the model splits the nudge across several text blocks
+    — a lead-in, then the tool result, then the substance. The tick must send EVERY
+    text block concatenated, not just the first (which dropped the actual message)."""
+    import heartbeat
+    from tests._fake_anthropic import MultiText
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    anthropic_stub.reply_with(lambda kw: MultiText(
+        "checked the RSF hours: ",
+        ("web_search_tool_result", ""),
+        "open till 1am, you've still got time to hit legs tonight"))
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert len(sms_capture) == 1
+    _phone, body = sms_capture[0]
+    assert body == "checked the RSF hours: open till 1am, you've still got time to hit legs tonight"
+    tick = _ticks(user.id)[-1]
+    assert tick.spoke is True and "hit legs tonight" in tick.message
 
 
 def test_decide_stay_silent_tool_logs_reason_no_send(db, monkeypatch, sms_capture, anthropic_stub):

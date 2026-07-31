@@ -65,6 +65,52 @@ def has_unanswered_outbound(user_id: int) -> bool:
         session.close()
 
 
+# message_types that count as PROACTIVE (coach-initiated) for anti-stack. The
+# heartbeat is the only proactive system during burn-in; legacy briefings are
+# deliberately excluded so a legacy outbound can never wedge the heartbeat silent
+# (Item 1 point 4). Reactive replies (freeform/meal/workout/…) are never here.
+PROACTIVE_MESSAGE_TYPES = {"heartbeat"}
+
+
+def has_unanswered_proactive(user_id: int, window_minutes: int) -> bool:
+    """Anti-STACK gate for the heartbeat: return True only when the MOST RECENT
+    outbound is a proactive nudge that is (a) still unanswered and (b) within
+    `window_minutes` of now — i.e. sending again would stack a second unanswered
+    proactive message on top of a fresh first.
+
+    Distinct from `has_unanswered_outbound` (the legacy scheduler's type-blind,
+    stay-mute-until-spoken-to gate). Here the clear condition is TIME-ELAPSE: past
+    the window a fresh opening is allowed with no user reply required — that is the
+    fix for the unanswered_gap deadlock. A reactive reply or a legacy briefing as
+    the most-recent outbound never blocks (they aren't PROACTIVE_MESSAGE_TYPES), so
+    the coach answering the user can't mute its own initiation."""
+    session = get_session()
+    try:
+        last_out = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if not last_out or last_out.message_type not in PROACTIVE_MESSAGE_TYPES:
+            return False
+        # answered? any inbound after this proactive outbound clears the stack
+        reply = (
+            session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "in",
+                    Message.created_at > last_out.created_at)
+            .first()
+        )
+        if reply:
+            return False
+        # within the anti-stack window? (naive-UTC column; mirror heartbeat's convention)
+        age_min = ((datetime.now(timezone.utc)
+                    - last_out.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60)
+        return age_min < window_minutes
+    finally:
+        session.close()
+
+
 # Which touchpoints are allowed per tier
 TIER_TOUCHPOINTS = {
     "FULL":    {"morning_briefing", "breakfast", "meal_suggestion", "pre_workout",
