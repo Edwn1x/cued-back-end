@@ -474,6 +474,63 @@ def test_proactive_context_with_history_suppresses_permission_block(db, monkeypa
     assert "PERMISSION" not in ctx
 
 
+# ---- warmth (Part 2): code-computed win/momentum signal ---------------------
+
+def _seed_workout(user_id, days_ago, wtype="push", completed=True):
+    from models import get_session, Workout
+    when = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_ago)
+    s = get_session()
+    try:
+        s.add(Workout(user_id=user_id, workout_type=wtype, completed=completed, date=when))
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_proactive_context_surfaces_momentum_win(db, monkeypatch, anthropic_stub):
+    """Warmth material the model can't compute itself: a code-counted '7-day completed
+    workouts' figure (the playbook's precompute-what-you-ask-for — date arithmetic is
+    code's job). 5 sessions in the last 7 days must surface as a MOMENTUM block with the
+    count, so the model has a genuine win to reach for. Red before 2a (no such block)."""
+    import heartbeat
+    from models import get_session, User
+    from tests.factories import make_user
+
+    user = make_user(db, name="Sam")
+    for d, t in ((0, "push"), (1, "pull"), (2, "legs"), (4, "upper"), (6, "push")):
+        _seed_workout(user.id, d, t)
+
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "MOMENTUM" in ctx, "a real 7-day training streak must surface as warm material"
+    assert "5" in ctx, "the code-computed 7-day workout count must be present"
+
+
+def test_proactive_context_no_momentum_when_no_recent_training(db, monkeypatch, anthropic_stub):
+    """Clean-absent case (spec tier-1 #1): a user with NO recent completed training gets
+    NO momentum block — no crash, no placeholder, no participation-trophy substrate. An
+    OLD workout (10 days ago) is outside the 7-day window and must not count."""
+    import heartbeat
+    from models import get_session, User
+    from tests.factories import make_user
+
+    user = make_user(db, name="Sam")
+    _seed_workout(user.id, 10, "push")            # outside the 7-day window
+    _seed_workout(user.id, 2, "pull", completed=False)  # not completed — not a win
+
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "MOMENTUM" not in ctx, "no recent completed training must not fabricate momentum"
+
+
 # ---- addendum: web search on-by-default, budgeted in code -------------------
 
 def _has_search(tools):
