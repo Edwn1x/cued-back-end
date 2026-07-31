@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 import config
 from cost_tracking import track
-from models import get_session, User, Message, HeartbeatTick
+from models import get_session, User, Message, HeartbeatTick, Workout, active
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
 
@@ -55,17 +55,23 @@ SEND_TEXT_TOOL = {
 
 HEARTBEAT_PROMPT = """It's a quiet moment — a heartbeat tick, NOT a reply. The user did not just text you.
 
-Decide: would a genuinely good coach text right now, or stay silent? DEFAULT SILENT — a good coach mostly says nothing. But silence is the default, not the goal: the job is to speak when a good coach would, and to stay quiet otherwise.
+Decide: would a genuinely good friend-who-coaches text right now, or stay silent? DEFAULT SILENT — mostly you say nothing. But silence is the default, not the goal, and the question is NOT only "is something wrong?" — it's "would a real friend reach out here?" A friend calls out a slip AND marks a win, checks in on your week, passes along something that's actually relevant to you. You're a presence they're glad to hear from, not a tracker that only pings on failures.
 
-A HEARTBEAT HAS NO NEW MESSAGE — that is what makes it proactive. Do NOT wait for something new to have happened before you speak. A STANDING CONDITION is a valid reason to text on its own: a days-long training gap, a broken pattern the user asked to be held to, an open thread still unanswered. The longer a warranted nudge goes unsent, the MORE worth sending it is, not less. "Nothing new since the last tick" is NOT a reason to stay silent — that is true on every tick by design.
+A HEARTBEAT HAS NO NEW MESSAGE — that is what makes it proactive. Do NOT wait for something new to have happened before you speak. A STANDING CONDITION is a valid reason to text on its own: a days-long training gap, a broken pattern the user asked to be held to, an open thread still unanswered, a win worth marking. The longer a warranted nudge goes unsent, the MORE worth sending it is, not less. "Nothing new since the last tick" is NOT a reason to stay silent — that is true on every tick by design.
 
-SPEAK when:
-- a multi-day skip or broken pattern for someone working toward consistency, or who asked to be called out / held accountable — this is the core job, an obvious yes
-- a timely, personal follow-up on a real open thread ("how'd the midterm go")
-- a relevant, well-timed check-in tied to today's events or schedule
+SPEAK when — accountability (the core wedge, non-negotiable):
+- a multi-day skip or broken pattern for someone working toward consistency, or who asked to be called out / held accountable — an obvious yes
+
+SPEAK when — warmth & presence (a friend, not a nag):
+- a GENUINE win worth marking — a real, specific streak or goal hit (see MOMENTUM when present): "5 sessions this week, that's the consistency that actually sticks." Real progress, never participation-trophy praise.
+- a RELEVANT bit of their world — something tied to their known goals, schedule, or interests that a friend would actually pass along. Grounded in what you remember about them.
+- a TIMELY check-in — following up on something THEY mentioned (an event, a hard week, a stated intention): "how'd the summit go." Only where X is real and known.
+- LEVITY or ease on a hard day — when the context shows a rough stretch, a friend lightens or backs off, doesn't pile on.
+
+THE BAR FOR WARMTH IS HIGHER, NOT LOWER. A warranted accountability nudge is almost never unwelcome; generic warmth is exactly how proactive bots become insufferable ("hope you're having a great day!", "fun fact: bananas are berries"). So reach for a warm text ONLY when there is specific, real material about THIS person to make it land — their win, their event, their week, grounded in memory. If all you have is a generic pleasantry with nothing specific behind it, STAY SILENT. "How'd the summit go" (grounded in a known event) speaks; "hope your day's going well" (grounded in nothing) does not.
 
 STAY SILENT when:
-- a quiet, on-track day with nothing standing and nothing new — the honest default
+- a quiet, on-track day with nothing standing, no notable win, and no specific warm material — the honest default (a modest, unremarkable few workouts is NOT a win to text about)
 - the user is mid-conversation (that's reactive territory — reply in-thread, don't proactively double-text)
 - you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts
 
@@ -167,8 +173,32 @@ def _search_available(user, session) -> bool:
     return searched_today < config.HEARTBEAT_SEARCH_MAX_PER_DAY
 
 
+def _recent_win_signal(user, session) -> str | None:
+    """WARMTH material (Part 2), code-computed. Completed workouts in the last 7 days —
+    the model can't be trusted to count this (date arithmetic; the playbook's 'the model
+    quotes, code computes'), and RECENT WORKOUTS lists rows without a window total. This
+    is the raw fact for a 'genuine win worth marking' text; the model judges whether the
+    run is actually notable (a strong week) or thin (not a win — maybe an accountability
+    signal instead). Neutral facts only — no 'great job', or code would be praising for
+    the model. Returns None when there's nothing recent (clean-absent, no placeholder)."""
+    cutoff = _naive_utcnow() - timedelta(days=7)
+    done = (active(session, Workout, user_id=user.id)
+            .filter(Workout.completed.is_(True), Workout.date >= cutoff)
+            .order_by(Workout.date).all())
+    if not done:
+        return None
+    types = ", ".join(w.workout_type or "workout" for w in done)
+    return (f"## MOMENTUM (last 7 days — code-computed; a genuinely strong run may be worth "
+            f"marking, a thin or falling-off one is NOT a win)\n"
+            f"Completed {len(done)} workout(s) in the last 7 days: {types}.")
+
+
 def _proactive_context(user, session) -> str:
     parts = [build_loop_context(user, session)]
+
+    win = _recent_win_signal(user, session)
+    if win:
+        parts.append(win)
 
     last_out = (session.query(Message)
                 .filter(Message.user_id == user.id, Message.direction == "out")
