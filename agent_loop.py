@@ -33,6 +33,9 @@ client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 _VOICE_PATH = os.path.join(os.path.dirname(__file__), "prompts", "voice.md")
 _voice_cache: str | None = None
 
+_MEAL_ESTIMATION_PATH = os.path.join(os.path.dirname(__file__), "prompts", "meal_estimation.md")
+_meal_estimation_cache: str | None = None
+
 
 def _voice_prompt() -> str:
     global _voice_cache
@@ -40,6 +43,14 @@ def _voice_prompt() -> str:
         with open(_VOICE_PATH, "r", encoding="utf-8") as f:
             _voice_cache = f.read()
     return _voice_cache
+
+
+def _meal_estimation_prompt() -> str:
+    global _meal_estimation_cache
+    if _meal_estimation_cache is None:
+        with open(_MEAL_ESTIMATION_PATH, "r", encoding="utf-8") as f:
+            _meal_estimation_cache = f.read()
+    return _meal_estimation_cache
 
 
 def _known_gaps(user) -> list[str]:
@@ -242,13 +253,26 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         session.close()
 
     voice = _voice_prompt()
+
+    # Macro-accuracy Phase A: portion/label estimation guidance rides ONLY on turns
+    # where the model can actually see an image — a separate block, never a voice.md
+    # edit (voice.md is the heartbeat's shared cached prefix), appended after the
+    # cache breakpoint so the voice prefix cache is unaffected.
+    estimation = None
+    if image_data and config.READ_IMAGE_ENABLED and config.MEAL_ESTIMATION_PROMPT_ENABLED:
+        estimation = _meal_estimation_prompt()
+
     if config.PROMPT_CACHING_ENABLED:
         system = [
             {"type": "text", "text": voice, "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": context},
         ]
+        if estimation:
+            system.append({"type": "text", "text": estimation})
     else:
         system = f"{voice}\n\n{context}"
+        if estimation:
+            system += f"\n\n{estimation}"
 
     if image_data and config.READ_IMAGE_ENABLED:
         # The model sees the image and routes it in-call (food/calendar/whiteboard/

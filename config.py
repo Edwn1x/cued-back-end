@@ -86,6 +86,11 @@ WEB_SEARCH_MAX_USES = 3
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
 READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase A — portion sizing via in-frame reference objects + reading
+# visible labels. A SEPARATE system block injected only on reactive image turns:
+# voice.md is the heartbeat's shared cached prefix and stays untouched (see
+# rewrite/macro-accuracy/INVESTIGATION.md §1.3).
+MEAL_ESTIMATION_PROMPT_ENABLED = os.getenv("MEAL_ESTIMATION_PROMPT_ENABLED", "false").lower() == "true"
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way
