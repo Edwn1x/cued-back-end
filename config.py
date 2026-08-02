@@ -100,6 +100,13 @@ MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lowe
 # scraped dining menu (estimation direction), not eyeballed. get_dining_menu stays the
 # recommendation direction.
 DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase D — usda_food_lookup tool: per-100g reference macros for
+# identifiable-but-generic foods (USDA FoodData Central; free data.gov key). Empty key
+# means the tool answers "not configured" and the coach estimates normally — fails safe
+# even if the flag is on. ~1.0s measured latency (see rewrite/macro-accuracy §4).
+USDA_LOOKUP_TOOL_ENABLED = os.getenv("USDA_LOOKUP_TOOL_ENABLED", "false").lower() == "true"
+USDA_API_KEY = os.getenv("USDA_API_KEY", "")
+USDA_TIMEOUT_S = 5
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way

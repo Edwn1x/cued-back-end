@@ -713,6 +713,61 @@ def handle_match_dining_item(user_id: int, tool_input: dict, *, message_id=None)
     return "ok: menu matches:\n" + "\n".join(lines)
 
 
+USDA_FOOD_LOOKUP_TOOL = {
+    "name": "usda_food_lookup",
+    "description": (
+        "Look up reference macros (per 100g, USDA FoodData Central) for an "
+        "identifiable but GENERIC food — plain chicken breast, white rice, oatmeal, "
+        "an apple — when there's no label, no history match, and it's not dining-hall "
+        "food. Scale the per-100g numbers by your portion estimate (reference "
+        "objects). NOT for branded or restaurant items — those aren't in this "
+        "database. If it returns nothing or errors, just estimate normally. Cite "
+        "USDA as your basis only when you used a returned entry."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "the generic food, e.g. 'grilled chicken breast'"},
+        },
+        "required": ["query"],
+    },
+}
+
+
+def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only external lookup. Every failure branch is a clean 'estimate
+    normally' answer — the lookup adds information or gets out of the way."""
+    from usda import search_usda, UsdaUnavailable
+
+    query = (tool_input.get("query") or "").strip()
+    if not query:
+        return "error: query required"
+
+    import config as _config
+    if not _config.USDA_API_KEY:
+        return "usda lookup not configured — estimate normally"
+
+    try:
+        results = search_usda(query)
+    except UsdaUnavailable as e:
+        logger.warning("USDA_LOOKUP_UNAVAILABLE user=%s q=%r reason=%s", user_id, query, e)
+        return f"usda lookup unavailable ({e}) — estimate normally"
+
+    if not results:
+        return f"no usda match for '{query}' — estimate normally"
+
+    lines = []
+    for r in results:
+        macros = [f"{r['calories']}cal" if r["calories"] is not None else "?cal"]
+        for field, label in (("protein_g", "protein"), ("carbs_g", "carbs"), ("fat_g", "fat")):
+            if r[field] is not None:
+                macros.append(f"{r[field]}g {label}")
+        lines.append(f"{r['description']} ({r['data_type']}, per 100g): {'/'.join(macros)}")
+    return ("ok: usda entries (per 100g — scale by the portion you estimated):\n"
+            + "\n".join(lines))
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
 _HANDLERS = {
     "remember": handle_remember,
@@ -723,6 +778,7 @@ _HANDLERS = {
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
     "match_dining_item": handle_match_dining_item,
+    "usda_food_lookup": handle_usda_food_lookup,
 }
 
 

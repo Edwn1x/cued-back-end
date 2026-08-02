@@ -171,3 +171,45 @@ public (`normalize_tokens`/`jaccard`) rather than cross-importing privates. New
 read-only tool `match_dining_item` behind `DINING_MATCH_TOOL_ENABLED`; the existing
 `get_dining_menu` recommendation tool is untouched. Both fallthrough branches (no
 data today / no match) return clean tool answers.
+
+---
+
+## §4 Phase D — USDA FoodData Central, verified against the live API (2026-08-01)
+
+Per playbook §III this was checked against the CURRENT docs (fdc.nal.usda.gov/api-guide)
+**and a live call**, not training data.
+
+### 4.1 Verified facts
+
+- **Auth:** data.gov API key as `api_key` query param. `DEMO_KEY` exists (30 req/IP/hr,
+  50/day); a free production key defaults to **1,000 req/hr per IP**. Over-limit → HTTP
+  429 + 1-hour block; `X-RateLimit-*` headers advertised (absent on the DEMO_KEY
+  response we made — don't depend on them).
+- **Endpoint:** `GET https://api.nal.usda.gov/fdc/v1/foods/search` with `query`,
+  `dataType` (comma list works on GET), `pageSize`.
+- **Response shape (live-verified):** `foods[]` each with `description`, `dataType`,
+  relevance `score`, and `foodNutrients[]` of `{nutrientId, nutrientName, value,
+  unitName}`. For Foundation / SR Legacy / Survey (FNDDS), values are **per 100 g**.
+  Macro nutrient IDs: protein **1003**, fat **1004**, carbs **1005**, energy **1008**
+  (KCAL — filter by id + unit; kJ variants exist under other ids).
+- **Measured latency: ~1.0 s** for a search from this machine. Real but acceptable for
+  an SMS turn (turns already span seconds); it argues for the Phase E rule — climb to
+  USDA only when the internal rungs came up empty — and for a hard client timeout.
+- **Match quality:** "grilled chicken breast" returned sensibly ranked FNDDS entries
+  (sauce/skin variants, scores ~650–700). The fuzzy-match problem is real but the
+  `score` ordering was sane on the probe; top-3 candidates + model judgment (the same
+  shape as Phase C) is adequate — no finding that blocks building.
+
+### 4.2 Design consequences
+
+- **Per-100g basis pairs with Phase A**: the tool reports per-100g macros; the model
+  scales by its portion estimate (reference objects). No serving math in code — code
+  can't see the plate.
+- **dataType filter:** Foundation + SR Legacy + Survey (FNDDS). Branded is excluded —
+  the branded long tail is Phase E's web-search rung; including it floods generic
+  queries with label noise.
+- **Failure envelope:** missing key / timeout (5 s) / 429 / any HTTP error → a clean
+  "estimate normally" tool answer + loud log, never an exception into the loop; the
+  meal always logs. Every call metered (latency + result count) via the logger.
+- **Key config:** `USDA_API_KEY` env var, empty by default → tool answers
+  "not configured" fallthrough (fails safe even if the flag is on without a key).

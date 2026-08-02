@@ -312,6 +312,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.DINING_MATCH_TOOL_ENABLED:
         from agent_tools import MATCH_DINING_ITEM_TOOL
         tools.append(MATCH_DINING_ITEM_TOOL)
+    if config.USDA_LOOKUP_TOOL_ENABLED:
+        from agent_tools import USDA_FOOD_LOOKUP_TOOL
+        tools.append(USDA_FOOD_LOOKUP_TOOL)
     if config.WEB_SEARCH_TOOL_ENABLED:
         # Server-side tool: Anthropic runs the search inline and returns results as
         # content blocks; no client handler. Output/query hygiene are prompt rules
