@@ -604,6 +604,60 @@ def handle_get_dining_menu(user_id: int, tool_input: dict, *, message_id=None) -
     return f"ok: {hall} menu today:\n" + "\n".join(lines)
 
 
+MATCH_MEAL_HISTORY_TOOL = {
+    "name": "match_meal_history",
+    "description": (
+        "Check whether the user has logged this meal (or something like it) before, "
+        "BEFORE estimating a meal that plausibly repeats — a repeat meal has a "
+        "personal ground truth (their portions, their prep) that beats a generic "
+        "estimate. A confident match: lean on their usual numbers and tell them "
+        "you're doing so ('using your usual for this'). An ambiguous match or a "
+        "different portion: ask one short question or estimate fresh — never "
+        "silently assume the prior fits. Never claim history this tool didn't return."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string",
+                            "description": "the meal as the user described it / as you'd log it"},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def handle_match_meal_history(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: surface the user's own repeat-meal groups (median macros, count,
+    recency). No match is a real answer — the model falls through to estimating."""
+    from meal_history import match_meal_history
+
+    query = (tool_input.get("description") or "").strip()
+    if not query:
+        return "error: description required"
+
+    matches = match_meal_history(user_id, query)
+    if not matches:
+        return f"no history match for '{query}' — estimate fresh"
+
+    now = _naive_utcnow()
+    lines = []
+    for m in matches:
+        days = max(0, (now - m["last_eaten_at"]).days) if m["last_eaten_at"] else None
+        when = "today" if days == 0 else (f"{days}d ago" if days is not None else "unknown")
+        macros = []
+        if m["calories"] is not None:
+            macros.append(f"~{m['calories']}cal")
+        if m["protein_g"] is not None:
+            macros.append(f"{m['protein_g']}g protein")
+        if m["carbs_g"] is not None:
+            macros.append(f"{m['carbs_g']}g carbs")
+        if m["fat_g"] is not None:
+            macros.append(f"{m['fat_g']}g fat")
+        macro_txt = ", usually " + "/".join(macros) if macros else ", no macros recorded"
+        lines.append(f"'{m['description']}' — logged {m['count']}x, last {when}{macro_txt}")
+    return "ok: their history for this:\n" + "\n".join(lines)
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
 _HANDLERS = {
     "remember": handle_remember,
@@ -612,6 +666,7 @@ _HANDLERS = {
     "log_meal": handle_log_meal,
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
+    "match_meal_history": handle_match_meal_history,
 }
 
 

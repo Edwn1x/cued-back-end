@@ -80,3 +80,53 @@ scopes this work to the meal-estimation path of the loop; legacy stays untouched
   the model read correctly on the funded run. Phase A adds fixtures in the same style.
   **Tier-2 cannot run in this workspace (no funded key — known constraint); cases are
   written and recorded NOT RUN in the summary.**
+
+---
+
+## §2 Phase B — the meal table's queryability for history matching
+
+### 2.1 What a user's history looks like
+
+`Meal` rows (`models.py:206`): free-text `description` ("chicken burrito bowl from
+chipotle"; post-Phase-A photos add portions — "chicken breast ~6oz, rice ~2 cups"),
+nullable int macros, `eaten_at` naive-UTC, soft-delete via `deleted_at` (every reader
+MUST go through `models.active()` — the chokepoint), `log_type`, `edits` audit. There
+is **no normalized food-name column and no exact-string repeatability** — the same
+meal arrives phrased differently turn to turn ("chicken and rice", "chicken + rice
+bowl", "chicken breast ~6oz, white rice ~2 cups"). Exact-string matching would miss
+nearly all repeats → fuzzy matching is required, and the too-loose direction is the
+dangerous one (spec: wrong prior silently applied).
+
+### 2.2 Match mechanism decision
+
+Candidates: Postgres `pg_trgm` similarity (needs a prod extension enable — a
+migration risk for marginal gain), Postgres FTS (stemming tuned for prose, opaque
+thresholds), or **Python-side token matching over the user's own rows**. A single
+user's history is tiny (hundreds of rows at most), so fetching their recent active
+meals and scoring in Python is O(small), deterministic, dependency-free, and
+unit-testable — that's the choice.
+
+Mechanism: normalize each description to a content-token set (lowercase; drop
+quantities/numbers, unit words (oz/cup/g/tbsp/serving/…), portion tildes, stopwords
+(and/with/of/…); light plural fold) and score **Jaccard overlap**, threshold 0.6.
+Calibration against the spec's guard cases:
+- "chicken and rice" vs "chicken and **quinoa**" → {chicken,rice} ∩ {chicken,quinoa}
+  = 1/3 → **rejected** (the too-loose failure the spec names).
+- "chicken and rice bowl" vs "chicken and rice" → 2/3 → matched.
+- "chicken breast ~6oz, white rice ~2 cups" vs "chicken breast with rice" → 3/4 →
+  matched (portion annotations normalize away; Phase A's portioned descriptions
+  don't defeat matching).
+
+Aggregation: matched rows group by normalized token set; each group reports repeat
+count, last-eaten time, and **median** macros over macro-bearing rows (robust to a
+one-off mislog). Cross-user isolation is structural (query filters `user_id`).
+
+### 2.3 How the estimation path consults it
+
+A read-only tool (`match_meal_history`, pattern of `get_dining_menu`), flag-gated,
+wired into the loop's tool set. The model calls it when a meal plausibly repeats;
+the no-match branch returns a clean "no history match — estimate fresh" (a tool
+answer for BOTH branches — the #18 ergonomics lesson). Full escalation routing
+(when to prefer history over dining/USDA/web) is Phase E; Phase B's routing surface
+is the tool description only. The tool result carries data + the honesty hook
+("say 'using your usual' only when you actually use it").

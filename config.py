@@ -91,6 +91,11 @@ READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
 # voice.md is the heartbeat's shared cached prefix and stays untouched (see
 # rewrite/macro-accuracy/INVESTIGATION.md §1.3).
 MEAL_ESTIMATION_PROMPT_ENABLED = os.getenv("MEAL_ESTIMATION_PROMPT_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase B — match_meal_history tool: a repeat meal uses the user's OWN
+# logged macros (their portions, their prep) as the prior instead of a generic guess.
+# Deterministic matcher in meal_history.py; the model judges fit and says "using your
+# usual" only when true.
+MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lower() == "true"
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way
