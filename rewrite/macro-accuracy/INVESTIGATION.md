@@ -130,3 +130,44 @@ answer for BOTH branches — the #18 ergonomics lesson). Full escalation routing
 (when to prefer history over dining/USDA/web) is Phase E; Phase B's routing surface
 is the tool description only. The tool result carries data + the honesty hook
 ("say 'using your usual' only when you actually use it").
+
+---
+
+## §3 Phase C — dining data storage, freshness, and the matching gap
+
+### 3.1 What's stored and how it's queried today
+
+`DiningMenuItem` (`models.py:257`): per `scraped_date` (YYYY-MM-DD, America/LA) ×
+hall × meal_period rows with `item_name`, full macros (cal/protein/carbs/fat/fiber),
+`serving_size`, allergens, dietary tags. The scraper (`dining_scraper.scrape_all_halls`)
+refreshes daily; halls genuinely return 0 items when closed (summer/holidays) — the
+spec's stale/absent case is real and the existing `get_dining_menu` handler already
+answers it with an error string.
+
+The only query surface is `get_dining_menu` (hall required → up to 80 items, cal +
+protein only): shaped for "what should I eat at crossroads", i.e. recommendation.
+For estimation the direction is inverted — the model has a *description* ("halal
+chicken bowl at crossroads") and needs the matching item's macros. Reading an
+80-item dump to find one item is token-heavy, drops carbs/fat/serving size, and
+requires guessing the meal period.
+
+### 3.2 Matching mechanism
+
+Menu item names are verbose ("Roasted Garlic Halal Chicken Rice Bowl") while users
+compress ("halal chicken bowl") — the containment direction is asymmetric, so plain
+Jaccard under-scores true matches. Score = **containment of the query's content
+tokens in the item's** (|q∩i|/|q|, same normalization as Phase B), floor 0.6,
+Jaccard as tie-break; return top 3 as *candidates* — the model (or the user) picks,
+so recall matters more than a single hard verdict, and the too-loose risk is
+bounded by the tool returning names alongside macros (a wrong candidate is visible,
+not silently applied). Hall and meal-period are optional filters (hall names
+canonicalize via the scraper's `_canonical_hall`).
+
+### 3.3 Placement
+
+Matcher `match_dining_items(...)` lives in `dining_scraper.py` (the menu-data
+domain), reusing Phase B's normalization — `meal_history._normalize/_jaccard` become
+public (`normalize_tokens`/`jaccard`) rather than cross-importing privates. New
+read-only tool `match_dining_item` behind `DINING_MATCH_TOOL_ENABLED`; the existing
+`get_dining_menu` recommendation tool is untouched. Both fallthrough branches (no
+data today / no match) return clean tool answers.

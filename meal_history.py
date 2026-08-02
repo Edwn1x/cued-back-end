@@ -40,9 +40,10 @@ HISTORY_ROW_CAP = 400
 MAX_MATCHES = 3
 
 
-def _normalize(description: str) -> frozenset[str]:
+def normalize_tokens(description: str) -> frozenset[str]:
     """Free text -> content-token set. Numbers, units, and stopwords drop out;
-    a light plural fold ('tenders'/'tender') is applied to both sides equally."""
+    a light plural fold ('tenders'/'tender') is applied to both sides equally.
+    Public: Phase C matches dining-menu item names with the same normalization."""
     tokens = _TOKEN_RE.findall((description or "").lower())
     out = set()
     for t in tokens:
@@ -54,7 +55,7 @@ def _normalize(description: str) -> frozenset[str]:
     return frozenset(out)
 
 
-def _jaccard(a: frozenset, b: frozenset) -> float:
+def jaccard(a: frozenset, b: frozenset) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
@@ -76,7 +77,7 @@ def match_meal_history(user_id: int, description: str, *, days: int = HISTORY_DA
     confident match — the caller falls through to the next estimation rung, never
     to a guess.
     """
-    query = _normalize(description)
+    query = normalize_tokens(description)
     if not query:
         return []
 
@@ -90,8 +91,8 @@ def match_meal_history(user_id: int, description: str, *, days: int = HISTORY_DA
                 .limit(HISTORY_ROW_CAP).all())
         groups: dict[frozenset, dict] = {}
         for m in rows:
-            tokens = _normalize(m.description or "")
-            score = _jaccard(query, tokens)
+            tokens = normalize_tokens(m.description or "")
+            score = jaccard(query, tokens)
             if score < threshold:
                 continue
             g = groups.get(tokens)

@@ -96,6 +96,10 @@ MEAL_ESTIMATION_PROMPT_ENABLED = os.getenv("MEAL_ESTIMATION_PROMPT_ENABLED", "fa
 # Deterministic matcher in meal_history.py; the model judges fit and says "using your
 # usual" only when true.
 MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase C — match_dining_item tool: campus food is LOOKED UP in the
+# scraped dining menu (estimation direction), not eyeballed. get_dining_menu stays the
+# recommendation direction.
+DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lower() == "true"
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way

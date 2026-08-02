@@ -468,3 +468,53 @@ def build_dining_block(user, user_message: str, recent_context: str = "") -> str
     if not items:
         return ""
     return f"\n\n## TODAY'S DINING HALL MENU (real Berkeley data — use exact numbers)\n{format_menu_for_coach(items)}"
+
+# ── Macro-accuracy Phase C: estimation-direction lookup ──────────────────────
+# get_dining_menu answers "what should I eat at X" (recommendation); this answers
+# "what IS the thing they just ate" (estimation). Menu names are verbose, user
+# phrasing is compressed ("halal chicken bowl" for "Roasted Garlic Halal Chicken
+# Rice Bowl"), so the score is containment of the query's content tokens in the
+# item's — Jaccard would under-score true matches (INVESTIGATION §3.2).
+
+DINING_MATCH_THRESHOLD = 0.6
+DINING_MAX_MATCHES = 3
+
+
+def match_dining_items(description: str, hall: str = None, meal_period: str = None):
+    """Top menu-item candidates for a meal description from TODAY's scraped rows.
+
+    Returns (matches, had_data): had_data=False means nothing was scraped for today
+    under the given filters (hall closed / scraper gap) — a different fallthrough
+    than "data present, nothing matched". Never raises on empty data."""
+    from meal_history import normalize_tokens, jaccard
+
+    query = normalize_tokens(description)
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+    session = get_session()
+    try:
+        q = session.query(DiningMenuItem).filter(DiningMenuItem.scraped_date == today)
+        if hall:
+            q = q.filter(DiningMenuItem.hall == _canonical_hall(hall))
+        if meal_period:
+            q = q.filter(DiningMenuItem.meal_period == meal_period.strip().lower())
+        items = q.all()
+    finally:
+        session.close()
+
+    if not items:
+        return [], False
+    if not query:
+        return [], True
+
+    scored = []
+    for it in items:
+        tokens = normalize_tokens(it.item_name or "")
+        if not tokens:
+            continue
+        containment = len(query & tokens) / len(query)
+        if containment < DINING_MATCH_THRESHOLD:
+            continue
+        scored.append((containment, jaccard(query, tokens), it))
+    scored.sort(key=lambda t: (-t[0], -t[1]))
+    return [it for _c, _j, it in scored[:DINING_MAX_MATCHES]], True

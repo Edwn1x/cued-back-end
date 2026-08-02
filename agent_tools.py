@@ -658,6 +658,61 @@ def handle_match_meal_history(user_id: int, tool_input: dict, *, message_id=None
     return "ok: their history for this:\n" + "\n".join(lines)
 
 
+MATCH_DINING_ITEM_TOOL = {
+    "name": "match_dining_item",
+    "description": (
+        "Look up a meal in today's UC Berkeley dining-hall menu when it's plausibly "
+        "dining-hall food (they name a hall, or context implies campus dining). "
+        "Campus food gets looked up, not estimated: a match returns the menu item's "
+        "real macros + serving size — log from those, scaled by how much they ate. "
+        "No match or no menu data → just estimate normally. Say the menu is your "
+        "source only when this tool returned the item you used."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string",
+                            "description": "the food as the user described it, e.g. 'halal chicken bowl'"},
+            "hall": {"type": "string", "enum": ["crossroads", "foothill", "clark_kerr", "cafe3"]},
+            "meal_period": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "brunch"]},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def handle_match_dining_item(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: today's menu candidates for a described meal. Both empty branches
+    (no data scraped / nothing matched) are clean fallthrough answers."""
+    from dining_scraper import match_dining_items
+
+    query = (tool_input.get("description") or "").strip()
+    if not query:
+        return "error: description required"
+
+    matches, had_data = match_dining_items(
+        query, hall=tool_input.get("hall"), meal_period=tool_input.get("meal_period"))
+    if not had_data:
+        return ("no menu data for today (hall may be closed or not scraped yet) — "
+                "estimate normally")
+    if not matches:
+        return f"no menu match for '{query}' — estimate normally"
+
+    lines = []
+    for it in matches:
+        macros = [f"{it.calories or '?'}cal"]
+        if it.protein_g is not None:
+            macros.append(f"{round(it.protein_g)}g protein")
+        if it.carbs_g is not None:
+            macros.append(f"{round(it.carbs_g)}g carbs")
+        if it.fat_g is not None:
+            macros.append(f"{round(it.fat_g)}g fat")
+        serving = f", per {it.serving_size}" if it.serving_size else ""
+        lines.append(f"{it.item_name} ({it.hall} {it.meal_period}): "
+                     f"{'/'.join(macros)}{serving}")
+    return "ok: menu matches:\n" + "\n".join(lines)
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
 _HANDLERS = {
     "remember": handle_remember,
@@ -667,6 +722,7 @@ _HANDLERS = {
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
+    "match_dining_item": handle_match_dining_item,
 }
 
 
