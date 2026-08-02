@@ -483,9 +483,15 @@ DINING_MAX_MATCHES = 3
 def match_dining_items(description: str, hall: str = None, meal_period: str = None):
     """Top menu-item candidates for a meal description from TODAY's scraped rows.
 
+    Hall is a HARD filter (halls serve different menus — a cross-hall row is wrong
+    data). meal_period is only a RANKING preference: the model guesses the period
+    from time-of-day, and a wrong guess must not hide the item or — worse — read as
+    "hall closed" (live run 1: dinner-time guess vs lunch-scraped row returned
+    had_data=False and the coach fell back to eyeballing).
+
     Returns (matches, had_data): had_data=False means nothing was scraped for today
-    under the given filters (hall closed / scraper gap) — a different fallthrough
-    than "data present, nothing matched". Never raises on empty data."""
+    for this hall (closed / scraper gap) — a different fallthrough than "data
+    present, nothing matched". Never raises on empty data."""
     from meal_history import normalize_tokens, jaccard
 
     query = normalize_tokens(description)
@@ -496,8 +502,6 @@ def match_dining_items(description: str, hall: str = None, meal_period: str = No
         q = session.query(DiningMenuItem).filter(DiningMenuItem.scraped_date == today)
         if hall:
             q = q.filter(DiningMenuItem.hall == _canonical_hall(hall))
-        if meal_period:
-            q = q.filter(DiningMenuItem.meal_period == meal_period.strip().lower())
         items = q.all()
     finally:
         session.close()
@@ -507,6 +511,7 @@ def match_dining_items(description: str, hall: str = None, meal_period: str = No
     if not query:
         return [], True
 
+    period = (meal_period or "").strip().lower()
     scored = []
     for it in items:
         tokens = normalize_tokens(it.item_name or "")
@@ -515,6 +520,7 @@ def match_dining_items(description: str, hall: str = None, meal_period: str = No
         containment = len(query & tokens) / len(query)
         if containment < DINING_MATCH_THRESHOLD:
             continue
-        scored.append((containment, jaccard(query, tokens), it))
-    scored.sort(key=lambda t: (-t[0], -t[1]))
-    return [it for _c, _j, it in scored[:DINING_MAX_MATCHES]], True
+        period_pref = 1 if (period and it.meal_period == period) else 0
+        scored.append((containment, period_pref, jaccard(query, tokens), it))
+    scored.sort(key=lambda t: (-t[0], -t[1], -t[2]))
+    return [it for _c, _p, _j, it in scored[:DINING_MAX_MATCHES]], True

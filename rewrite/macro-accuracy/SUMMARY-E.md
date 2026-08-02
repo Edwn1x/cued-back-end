@@ -50,3 +50,11 @@ These five are live-model behavior anchors — per the binary-anchor rule, 4/5 i
 done; tune the routing prompt until 5/5. The likeliest first failure is
 over-eagerness (calling USDA on the label case) — if seen, sharpen ladder rule 1
 ("a clear label needs no database") rather than adding code gates.
+
+## Live run (2026-08-01): 5/5 PASSED, first run
+
+Label → rung 0, dispatches=[log_meal] only, "straight off the label". Oatmeal →
+usda_food_lookup then log, USDA cited, dining not consulted. Campus bowl →
+match_dining_item, exact 736/47 logged. Shared pasta bake → one portion question,
+nothing logged. Plate photo → portioned ~estimate with uncertainty communicated.
+The predicted over-eagerness failure never appeared.

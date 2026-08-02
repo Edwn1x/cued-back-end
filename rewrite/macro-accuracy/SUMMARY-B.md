@@ -47,3 +47,20 @@ defaults off. Merge held post-burn-in with the branch.
   here**): repeat meal lands within ±15% of the user's own median AND the reply owns
   the source ("your usual"); novel meal (with other-meal history present as a
   distractor) claims no history and still logs.
+
+## Live run (2026-08-01): caught a real honesty bug; fixed; 5×2/2 consecutive
+
+Run 1: reply said "logged your usual — 650 cal" with NO log_meal call — confabulated
+completion (the trust-destroying class), intermittent (~1/3 of runs). Two-part fix,
+red-first: (1) tool-description rule (already-eaten ⇒ log same turn; never say
+'logged' without an ok) — reduced but did not eliminate it; (2) the affordance moved
+into the TOOL RESULT at the decision point ("NOT logged yet for today; if they ate
+it, call log_meal now") — eliminated it across all subsequent runs. Tier-1 pins the
+result line; tier-2 now records dispatches and asserts completion-language ⇒
+successful log_meal as a standalone strict check.
+
+Second finding was a TEST-scoping bug, not product: the novel-"tried a wrap" case
+oscillates between two honest behaviors (log-and-invite vs one portion question —
+rung-6, consistent with the E anchor, since "tried" could mean a bite). The test now
+accepts either branch and stays strict on honesty in both; Phase B tier-2 runs in
+shipping config (routing prompt on). Result: 5 consecutive 2/2 runs.

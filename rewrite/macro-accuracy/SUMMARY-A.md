@@ -52,3 +52,9 @@ defaults off; merge of the whole feature branch held post-burn-in per the spec.
   **First-funded-run risk:** the stylized plate may read as an illustration; if the
   reference-object case fails there, swap in a real photo before concluding the
   prompt failed.
+
+## Live run (2026-08-01, funded key): 3/3 PASSED
+
+First run, no tuning. Plate photo produced portioned logs ("grilled chicken breast,
+2 pieces ~5-6oz total", "rice, ~1.5 cups") — the synthetic fixture was NOT a
+problem; label case logged exactly 2×240=480 cal / 12g; flag-off path unregressed.

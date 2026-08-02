@@ -143,6 +143,12 @@ def test_tool_handler_formats_match_and_fallthrough(db):
     out = dispatch_tool("match_meal_history", {"description": "chicken and rice"}, user.id)
     assert out.startswith("ok:"), out
     assert "650" in out and "45" in out
+    # The result itself must carry the not-yet-logged affordance at the decision
+    # point: live runs showed the model intermittently replying "logged it" after
+    # only the history read (confabulated completion, ~1/3 of runs) — the
+    # description-level rule alone didn't hold.
+    assert "not logged" in out.lower() and "log_meal" in out, \
+        "match result must state nothing is logged yet and point at log_meal"
 
     out = dispatch_tool("match_meal_history", {"description": "tofu scramble"}, user.id)
     assert "no history match" in out, "no-match branch must be a clean tool answer too"

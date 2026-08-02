@@ -67,7 +67,10 @@ def test_absent_or_stale_data_falls_through_cleanly(db):
     assert matches == [] and had_data is False, "stale scraped_date leaked into today"
 
 
-def test_hall_and_period_filters(db):
+def test_hall_filters_hard_period_prefers(db):
+    """Hall is a HARD filter (halls have different menus — cross-hall macros are
+    wrong data). meal_period is only a RANKING preference: the model guesses the
+    period from time-of-day and a wrong guess must not hide the item."""
     from dining_scraper import match_dining_items
 
     _add_item(db, "Halal Chicken Rice Bowl", hall="crossroads", meal_period="lunch")
@@ -77,12 +80,29 @@ def test_hall_and_period_filters(db):
     matches, _ = match_dining_items("halal chicken bowl", hall="foothill")
     assert len(matches) == 1 and matches[0].calories == 800
 
+    # period preference: both rows match; the named period ranks first
     matches, _ = match_dining_items("halal chicken bowl", meal_period="lunch")
-    assert len(matches) == 1 and matches[0].calories == 720
+    assert len(matches) == 2 and matches[0].calories == 720
 
     # hall aliases canonicalize ("Clark Kerr Campus" style inputs)
     matches, _ = match_dining_items("halal chicken bowl", hall="Foothill")
     assert len(matches) == 1 and matches[0].calories == 800
+
+
+def test_wrong_period_guess_does_not_mask_data(db):
+    """Live run 1 bug: at dinner time the model passed meal_period='dinner' for an
+    item scraped under 'lunch'; the period-as-filter design returned had_data=False
+    ('hall closed') and the coach fell back to a guess. The period must never turn
+    real data into a no-data answer."""
+    from dining_scraper import match_dining_items
+
+    _add_item(db, "Roasted Garlic Halal Chicken Rice Bowl", meal_period="lunch")
+
+    matches, had_data = match_dining_items("halal chicken bowl", hall="crossroads",
+                                           meal_period="dinner")
+    assert had_data is True
+    assert matches and matches[0].calories == 720, \
+        "wrong period guess hid a real menu match"
 
 
 def test_ranking_prefers_fuller_match_among_distractors(db):

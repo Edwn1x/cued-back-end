@@ -53,3 +53,13 @@ Match quality probe was sane (ranked FNDDS variants) — no blocking finding.
   just network+DEMO_KEY); full-loop weighed-food case ("200g plain grilled chicken
   breast" → 260–420 cal / 50–75 g), with the caveat printed in-test that the band
   corroborates rather than proves USDA use.
+
+## Live run (2026-08-01): FAILED first, fixed, then PASSED
+
+The GET query-string form 400s at the gateway when "Survey (FNDDS)" rides the URL
+(nginx/WAF chokes on the encoded parens — intermittently: the investigation probe
+had passed). Fix (red-first): POST with a JSON body — dataType as a real array, only
+api_key on the URL; measured 605 ms. Post-fix: contract case returned parsed FNDDS
+entries; full-loop case logged 200g chicken at USDA-scaled numbers ("USDA basis").
+Late-session reruns hit DEMO_KEY's 30/hr ceiling (tool degraded cleanly, loop case
+still green) — confirming judgment call 3: provision a real key before prod.

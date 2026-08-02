@@ -611,9 +611,13 @@ MATCH_MEAL_HISTORY_TOOL = {
         "BEFORE estimating a meal that plausibly repeats — a repeat meal has a "
         "personal ground truth (their portions, their prep) that beats a generic "
         "estimate. A confident match: lean on their usual numbers and tell them "
-        "you're doing so ('using your usual for this'). An ambiguous match or a "
+        "you're doing so ('using your usual for this'). If they say they ALREADY ate "
+        "it, call log_meal in this same turn — checking history is a step toward "
+        "logging, never a reason to stop and ask permission. An ambiguous match or a "
         "different portion: ask one short question or estimate fresh — never "
-        "silently assume the prior fits. Never claim history this tool didn't return."
+        "silently assume the prior fits. Never claim history this tool didn't "
+        "return, and never say 'logged' unless log_meal returned ok this turn — "
+        "the tool call is the action."
     ),
     "input_schema": {
         "type": "object",
@@ -655,7 +659,11 @@ def handle_match_meal_history(user_id: int, tool_input: dict, *, message_id=None
             macros.append(f"{m['fat_g']}g fat")
         macro_txt = ", usually " + "/".join(macros) if macros else ", no macros recorded"
         lines.append(f"'{m['description']}' — logged {m['count']}x, last {when}{macro_txt}")
-    return "ok: their history for this:\n" + "\n".join(lines)
+    # The affordance rides the RESULT, at the decision point: live runs showed the
+    # model intermittently saying "logged it" after only this read (the history line
+    # reads like a completed log). The description-level rule alone didn't hold.
+    return ("ok: their history for this — NOT logged yet for today; if they ate it, "
+            "call log_meal now with these numbers:\n" + "\n".join(lines))
 
 
 MATCH_DINING_ITEM_TOOL = {

@@ -25,7 +25,7 @@ logger = logging.getLogger("cued.usda")
 
 SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 # Branded is deliberately excluded: the branded/restaurant long tail is the web rung.
-DATA_TYPES = "Foundation,SR Legacy,Survey (FNDDS)"
+DATA_TYPES = ["Foundation", "SR Legacy", "Survey (FNDDS)"]
 MAX_RESULTS = 3
 
 # nutrientId -> our field. Energy 1008 only (KCAL); kJ variants ride other ids.
@@ -62,10 +62,13 @@ def search_usda(query: str, page_size: int = 5) -> list[dict]:
 
     t0 = time.time()
     try:
-        resp = requests.get(SEARCH_URL, params={
-            "api_key": config.USDA_API_KEY, "query": query,
-            "dataType": DATA_TYPES, "pageSize": page_size,
-        }, timeout=config.USDA_TIMEOUT_S)
+        # POST with a JSON body: the GET form 400s at the gateway when
+        # "Survey (FNDDS)" rides the URL (parens trip the WAF — live finding),
+        # and dataType is a real array here instead of an encoding gamble.
+        resp = requests.post(SEARCH_URL, params={"api_key": config.USDA_API_KEY},
+                             json={"query": query, "dataType": DATA_TYPES,
+                                   "pageSize": page_size},
+                             timeout=config.USDA_TIMEOUT_S)
         if resp.status_code == 429:
             raise UsdaUnavailable("rate limited (429)")
         resp.raise_for_status()

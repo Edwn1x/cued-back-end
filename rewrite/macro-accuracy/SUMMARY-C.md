@@ -47,3 +47,13 @@ defaults off. Merge held post-burn-in with the branch.
   here**): "just had the halal chicken bowl at crossroads" logs within tight bands
   of the seeded menu truth (736 cal / 47g protein) — numbers a generic guess
   wouldn't land on.
+
+## Live run (2026-08-01): FAILED first, fixed, then PASSED
+
+First run exposed a real matcher bug: at dinner time the model passed
+meal_period="dinner" for a lunch-scraped row; period-as-hard-filter returned
+had_data=False ("hall closed") and the coach fell back to eyeballing (750/40 vs
+menu truth 736/47). Fix (red-first, tier-1 pinned): meal_period demoted to a
+RANKING preference; hall stays a hard filter; had_data now means "any rows today
+for this hall". Post-fix live: exact menu macros logged, source owned ("off the
+crossroads menu").

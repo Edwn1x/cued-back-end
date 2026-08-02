@@ -61,22 +61,28 @@ def _with_key(monkeypatch, key="test-key"):
 
 
 def test_search_parses_per_100g_macros_by_nutrient_id(monkeypatch):
+    """POST with a JSON body — the GET query-string form 400s at the gateway when
+    'Survey (FNDDS)' rides the URL (live run 1 finding; parens trip the WAF)."""
     import usda
 
     calls = {}
 
-    def fake_get(url, params=None, timeout=None):
-        calls["url"], calls["params"], calls["timeout"] = url, params, timeout
+    def fake_post(url, params=None, json=None, timeout=None):
+        calls["url"], calls["params"] = url, params
+        calls["json"], calls["timeout"] = json, timeout
         return _FakeResp(_usda_payload())
 
     _with_key(monkeypatch)
-    monkeypatch.setattr(usda.requests, "get", fake_get)
+    monkeypatch.setattr(usda.requests, "post", fake_post)
     results = usda.search_usda("grilled chicken breast")
 
     assert calls["url"].startswith("https://api.nal.usda.gov/fdc/v1/foods/search")
-    assert calls["params"]["query"] == "grilled chicken breast"
-    assert "Branded" not in calls["params"]["dataType"], \
-        "branded long tail is the web rung, not USDA's"
+    assert calls["params"] == {"api_key": "test-key"}, \
+        "only the key rides the URL; everything else goes in the JSON body"
+    assert calls["json"]["query"] == "grilled chicken breast"
+    assert isinstance(calls["json"]["dataType"], list) and \
+        "Branded" not in calls["json"]["dataType"], \
+        "dataType is a real JSON array; branded long tail is the web rung"
     assert calls["timeout"] is not None, "an SMS-path HTTP call must carry a timeout"
 
     assert len(results) == 2
@@ -93,7 +99,7 @@ def test_no_match_and_handler_fallthrough(db, monkeypatch):
     from tests.factories import make_user
 
     _with_key(monkeypatch)
-    monkeypatch.setattr(usda.requests, "get",
+    monkeypatch.setattr(usda.requests, "post",
                         lambda *a, **k: _FakeResp({"totalHits": 0, "foods": []}))
     user = make_user(db)
     out = dispatch_tool("usda_food_lookup", {"query": "unicorn stew"}, user.id)
@@ -106,7 +112,7 @@ def test_match_formats_per_100g_for_the_model(db, monkeypatch):
     from tests.factories import make_user
 
     _with_key(monkeypatch)
-    monkeypatch.setattr(usda.requests, "get", lambda *a, **k: _FakeResp(_usda_payload()))
+    monkeypatch.setattr(usda.requests, "post", lambda *a, **k: _FakeResp(_usda_payload()))
     user = make_user(db)
     out = dispatch_tool("usda_food_lookup", {"query": "grilled chicken breast"}, user.id)
     assert out.startswith("ok:")
@@ -123,7 +129,7 @@ def test_timeout_degrades_never_raises(db, monkeypatch):
         raise requests.Timeout("read timeout")
 
     _with_key(monkeypatch)
-    monkeypatch.setattr(usda.requests, "get", boom)
+    monkeypatch.setattr(usda.requests, "post", boom)
     user = make_user(db)
     out = dispatch_tool("usda_food_lookup", {"query": "grilled chicken"}, user.id)
     assert "unavailable" in out and "estimate normally" in out
@@ -135,7 +141,7 @@ def test_rate_limit_429_degrades_gracefully(db, monkeypatch):
     from tests.factories import make_user
 
     _with_key(monkeypatch)
-    monkeypatch.setattr(usda.requests, "get", lambda *a, **k: _FakeResp(status=429))
+    monkeypatch.setattr(usda.requests, "post", lambda *a, **k: _FakeResp(status=429))
     user = make_user(db)
     out = dispatch_tool("usda_food_lookup", {"query": "grilled chicken"}, user.id)
     assert "unavailable" in out and "estimate normally" in out
@@ -150,7 +156,7 @@ def test_missing_key_means_no_http_call_at_all(db, monkeypatch):
         raise AssertionError("HTTP attempted without an API key")
 
     _with_key(monkeypatch, key="")
-    monkeypatch.setattr(usda.requests, "get", forbidden)
+    monkeypatch.setattr(usda.requests, "post", forbidden)
     user = make_user(db)
     out = dispatch_tool("usda_food_lookup", {"query": "grilled chicken"}, user.id)
     assert "not configured" in out and "estimate normally" in out
