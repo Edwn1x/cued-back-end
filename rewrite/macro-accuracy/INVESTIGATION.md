@@ -213,3 +213,37 @@ Per playbook §III this was checked against the CURRENT docs (fdc.nal.usda.gov/a
   meal always logs. Every call metered (latency + result count) via the logger.
 - **Key config:** `USDA_API_KEY` env var, empty by default → tool answers
   "not configured" fallthrough (fails safe even if the flag is on without a key).
+
+---
+
+## §5 Phase E — routing surface, web rung, and prompt-cache layout
+
+### 5.1 Preconditions confirmed
+
+- **web_search is already a reactive rung**: `agent_loop.py` appends the server-side
+  `web_search_20260209` tool under `WEB_SEARCH_TOOL_ENABLED` (max 3 uses), with query
+  hygiene/verify rules in `voice.md`. Nothing to build — the routing prompt names it
+  as the branded/restaurant long-tail rung, skeptically.
+- **Heartbeat isolation undisturbed**: the heartbeat builds its own `system` from
+  `voice.md` + `HEARTBEAT_PROMPT`; nothing in this phase touches either. The routing
+  block ships like Phase A's — a separate file injected only by `run_agent_loop`.
+
+### 5.2 Where the routing prompt can live (and cache)
+
+Unlike Phase A's portion block (image turns only), routing applies to EVERY meal
+turn, and meals arrive mostly as text — and there is deliberately no pre-classifier
+to detect "meal turn" in code. So the block must ride all reactive turns when
+enabled. Cost containment comes from the cache: the block is STABLE text, so it is
+injected between the voice prefix and the volatile context with its own
+`cache_control` breakpoint — the cached prefix becomes [voice, routing] (the
+heartbeat's separate [voice]-prefix cache entry is unaffected; caching allows up to
+4 breakpoints). Phase A's image-only block stays appended after the volatile
+context, uncached. With caching disabled the string form concatenates in the same
+order.
+
+### 5.3 Tool availability vs the ladder
+
+Any rung's tool can be flag-disabled or fail; the routing prompt says "skip a rung
+whose tool isn't available this turn" and every handler already returns clean
+"estimate normally" fallthroughs — the ladder degrades rung by rung, and a meal
+always logs (except when the deliberate last rung — asking — is the right move).

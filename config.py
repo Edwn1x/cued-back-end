@@ -107,6 +107,11 @@ DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lowe
 USDA_LOOKUP_TOOL_ENABLED = os.getenv("USDA_LOOKUP_TOOL_ENABLED", "false").lower() == "true"
 USDA_API_KEY = os.getenv("USDA_API_KEY", "")
 USDA_TIMEOUT_S = 5
+# Macro-accuracy Phase E — the escalation-routing prompt (label → history → dining →
+# USDA → web → ask, by type-of-uncertainty; confidence is communication, not control).
+# Rides EVERY reactive turn as a second CACHED stable system block (meals are mostly
+# text; no pre-classifier exists on purpose). Heartbeat surface untouched.
+MEAL_ROUTING_PROMPT_ENABLED = os.getenv("MEAL_ROUTING_PROMPT_ENABLED", "false").lower() == "true"
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way

@@ -36,6 +36,9 @@ _voice_cache: str | None = None
 _MEAL_ESTIMATION_PATH = os.path.join(os.path.dirname(__file__), "prompts", "meal_estimation.md")
 _meal_estimation_cache: str | None = None
 
+_MEAL_ROUTING_PATH = os.path.join(os.path.dirname(__file__), "prompts", "meal_routing.md")
+_meal_routing_cache: str | None = None
+
 
 def _voice_prompt() -> str:
     global _voice_cache
@@ -51,6 +54,14 @@ def _meal_estimation_prompt() -> str:
         with open(_MEAL_ESTIMATION_PATH, "r", encoding="utf-8") as f:
             _meal_estimation_cache = f.read()
     return _meal_estimation_cache
+
+
+def _meal_routing_prompt() -> str:
+    global _meal_routing_cache
+    if _meal_routing_cache is None:
+        with open(_MEAL_ROUTING_PATH, "r", encoding="utf-8") as f:
+            _meal_routing_cache = f.read()
+    return _meal_routing_cache
 
 
 def _known_gaps(user) -> list[str]:
@@ -262,15 +273,22 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if image_data and config.READ_IMAGE_ENABLED and config.MEAL_ESTIMATION_PROMPT_ENABLED:
         estimation = _meal_estimation_prompt()
 
+    # Phase E routing (label → history → dining → USDA → web → ask) rides EVERY
+    # reactive turn: meals arrive mostly as text and there's no pre-classifier. It's
+    # stable text, so it extends the CACHED prefix — [voice, routing] — keeping the
+    # per-turn cost at cache-read rates. Heartbeat composes its own system; unaffected.
+    routing = _meal_routing_prompt() if config.MEAL_ROUTING_PROMPT_ENABLED else None
+
     if config.PROMPT_CACHING_ENABLED:
-        system = [
-            {"type": "text", "text": voice, "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": context},
-        ]
+        system = [{"type": "text", "text": voice, "cache_control": {"type": "ephemeral"}}]
+        if routing:
+            system.append({"type": "text", "text": routing,
+                           "cache_control": {"type": "ephemeral"}})
+        system.append({"type": "text", "text": context})
         if estimation:
             system.append({"type": "text", "text": estimation})
     else:
-        system = f"{voice}\n\n{context}"
+        system = f"{voice}\n\n{routing}\n\n{context}" if routing else f"{voice}\n\n{context}"
         if estimation:
             system += f"\n\n{estimation}"
 
