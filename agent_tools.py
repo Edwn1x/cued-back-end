@@ -604,6 +604,178 @@ def handle_get_dining_menu(user_id: int, tool_input: dict, *, message_id=None) -
     return f"ok: {hall} menu today:\n" + "\n".join(lines)
 
 
+MATCH_MEAL_HISTORY_TOOL = {
+    "name": "match_meal_history",
+    "description": (
+        "Check whether the user has logged this meal (or something like it) before, "
+        "BEFORE estimating a meal that plausibly repeats — a repeat meal has a "
+        "personal ground truth (their portions, their prep) that beats a generic "
+        "estimate. A confident match: lean on their usual numbers and tell them "
+        "you're doing so ('using your usual for this'). If they say they ALREADY ate "
+        "it, call log_meal in this same turn — checking history is a step toward "
+        "logging, never a reason to stop and ask permission. An ambiguous match or a "
+        "different portion: ask one short question or estimate fresh — never "
+        "silently assume the prior fits. Never claim history this tool didn't "
+        "return, and never say 'logged' unless log_meal returned ok this turn — "
+        "the tool call is the action."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string",
+                            "description": "the meal as the user described it / as you'd log it"},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def handle_match_meal_history(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: surface the user's own repeat-meal groups (median macros, count,
+    recency). No match is a real answer — the model falls through to estimating."""
+    from meal_history import match_meal_history
+
+    query = (tool_input.get("description") or "").strip()
+    if not query:
+        return "error: description required"
+
+    matches = match_meal_history(user_id, query)
+    if not matches:
+        return f"no history match for '{query}' — estimate fresh"
+
+    now = _naive_utcnow()
+    lines = []
+    for m in matches:
+        days = max(0, (now - m["last_eaten_at"]).days) if m["last_eaten_at"] else None
+        when = "today" if days == 0 else (f"{days}d ago" if days is not None else "unknown")
+        macros = []
+        if m["calories"] is not None:
+            macros.append(f"~{m['calories']}cal")
+        if m["protein_g"] is not None:
+            macros.append(f"{m['protein_g']}g protein")
+        if m["carbs_g"] is not None:
+            macros.append(f"{m['carbs_g']}g carbs")
+        if m["fat_g"] is not None:
+            macros.append(f"{m['fat_g']}g fat")
+        macro_txt = ", usually " + "/".join(macros) if macros else ", no macros recorded"
+        lines.append(f"'{m['description']}' — logged {m['count']}x, last {when}{macro_txt}")
+    # The affordance rides the RESULT, at the decision point: live runs showed the
+    # model intermittently saying "logged it" after only this read (the history line
+    # reads like a completed log). The description-level rule alone didn't hold.
+    return ("ok: their history for this — NOT logged yet for today; if they ate it, "
+            "call log_meal now with these numbers:\n" + "\n".join(lines))
+
+
+MATCH_DINING_ITEM_TOOL = {
+    "name": "match_dining_item",
+    "description": (
+        "Look up a meal in today's UC Berkeley dining-hall menu when it's plausibly "
+        "dining-hall food (they name a hall, or context implies campus dining). "
+        "Campus food gets looked up, not estimated: a match returns the menu item's "
+        "real macros + serving size — log from those, scaled by how much they ate. "
+        "No match or no menu data → just estimate normally. Say the menu is your "
+        "source only when this tool returned the item you used."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string",
+                            "description": "the food as the user described it, e.g. 'halal chicken bowl'"},
+            "hall": {"type": "string", "enum": ["crossroads", "foothill", "clark_kerr", "cafe3"]},
+            "meal_period": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "brunch"]},
+        },
+        "required": ["description"],
+    },
+}
+
+
+def handle_match_dining_item(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: today's menu candidates for a described meal. Both empty branches
+    (no data scraped / nothing matched) are clean fallthrough answers."""
+    from dining_scraper import match_dining_items
+
+    query = (tool_input.get("description") or "").strip()
+    if not query:
+        return "error: description required"
+
+    matches, had_data = match_dining_items(
+        query, hall=tool_input.get("hall"), meal_period=tool_input.get("meal_period"))
+    if not had_data:
+        return ("no menu data for today (hall may be closed or not scraped yet) — "
+                "estimate normally")
+    if not matches:
+        return f"no menu match for '{query}' — estimate normally"
+
+    lines = []
+    for it in matches:
+        macros = [f"{it.calories or '?'}cal"]
+        if it.protein_g is not None:
+            macros.append(f"{round(it.protein_g)}g protein")
+        if it.carbs_g is not None:
+            macros.append(f"{round(it.carbs_g)}g carbs")
+        if it.fat_g is not None:
+            macros.append(f"{round(it.fat_g)}g fat")
+        serving = f", per {it.serving_size}" if it.serving_size else ""
+        lines.append(f"{it.item_name} ({it.hall} {it.meal_period}): "
+                     f"{'/'.join(macros)}{serving}")
+    return "ok: menu matches:\n" + "\n".join(lines)
+
+
+USDA_FOOD_LOOKUP_TOOL = {
+    "name": "usda_food_lookup",
+    "description": (
+        "Look up reference macros (per 100g, USDA FoodData Central) for an "
+        "identifiable but GENERIC food — plain chicken breast, white rice, oatmeal, "
+        "an apple — when there's no label, no history match, and it's not dining-hall "
+        "food. Scale the per-100g numbers by your portion estimate (reference "
+        "objects). NOT for branded or restaurant items — those aren't in this "
+        "database. If it returns nothing or errors, just estimate normally. Cite "
+        "USDA as your basis only when you used a returned entry."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "the generic food, e.g. 'grilled chicken breast'"},
+        },
+        "required": ["query"],
+    },
+}
+
+
+def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only external lookup. Every failure branch is a clean 'estimate
+    normally' answer — the lookup adds information or gets out of the way."""
+    from usda import search_usda, UsdaUnavailable
+
+    query = (tool_input.get("query") or "").strip()
+    if not query:
+        return "error: query required"
+
+    import config as _config
+    if not _config.USDA_API_KEY:
+        return "usda lookup not configured — estimate normally"
+
+    try:
+        results = search_usda(query)
+    except UsdaUnavailable as e:
+        logger.warning("USDA_LOOKUP_UNAVAILABLE user=%s q=%r reason=%s", user_id, query, e)
+        return f"usda lookup unavailable ({e}) — estimate normally"
+
+    if not results:
+        return f"no usda match for '{query}' — estimate normally"
+
+    lines = []
+    for r in results:
+        macros = [f"{r['calories']}cal" if r["calories"] is not None else "?cal"]
+        for field, label in (("protein_g", "protein"), ("carbs_g", "carbs"), ("fat_g", "fat")):
+            if r[field] is not None:
+                macros.append(f"{r[field]}g {label}")
+        lines.append(f"{r['description']} ({r['data_type']}, per 100g): {'/'.join(macros)}")
+    return ("ok: usda entries (per 100g — scale by the portion you estimated):\n"
+            + "\n".join(lines))
+
+
 # name -> handler. The loop consults this after checking the tool is enabled.
 _HANDLERS = {
     "remember": handle_remember,
@@ -612,6 +784,9 @@ _HANDLERS = {
     "log_meal": handle_log_meal,
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
+    "match_meal_history": handle_match_meal_history,
+    "match_dining_item": handle_match_dining_item,
+    "usda_food_lookup": handle_usda_food_lookup,
 }
 
 

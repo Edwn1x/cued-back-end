@@ -86,6 +86,32 @@ WEB_SEARCH_MAX_USES = 3
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
 READ_IMAGE_ENABLED = os.getenv("READ_IMAGE_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase A — portion sizing via in-frame reference objects + reading
+# visible labels. A SEPARATE system block injected only on reactive image turns:
+# voice.md is the heartbeat's shared cached prefix and stays untouched (see
+# rewrite/macro-accuracy/INVESTIGATION.md §1.3).
+MEAL_ESTIMATION_PROMPT_ENABLED = os.getenv("MEAL_ESTIMATION_PROMPT_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase B — match_meal_history tool: a repeat meal uses the user's OWN
+# logged macros (their portions, their prep) as the prior instead of a generic guess.
+# Deterministic matcher in meal_history.py; the model judges fit and says "using your
+# usual" only when true.
+MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase C — match_dining_item tool: campus food is LOOKED UP in the
+# scraped dining menu (estimation direction), not eyeballed. get_dining_menu stays the
+# recommendation direction.
+DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lower() == "true"
+# Macro-accuracy Phase D — usda_food_lookup tool: per-100g reference macros for
+# identifiable-but-generic foods (USDA FoodData Central; free data.gov key). Empty key
+# means the tool answers "not configured" and the coach estimates normally — fails safe
+# even if the flag is on. ~1.0s measured latency (see rewrite/macro-accuracy §4).
+USDA_LOOKUP_TOOL_ENABLED = os.getenv("USDA_LOOKUP_TOOL_ENABLED", "false").lower() == "true"
+USDA_API_KEY = os.getenv("USDA_API_KEY", "")
+USDA_TIMEOUT_S = 5
+# Macro-accuracy Phase E — the escalation-routing prompt (label → history → dining →
+# USDA → web → ask, by type-of-uncertainty; confidence is communication, not control).
+# Rides EVERY reactive turn as a second CACHED stable system block (meals are mostly
+# text; no pre-classifier exists on purpose). Heartbeat surface untouched.
+MEAL_ROUTING_PROMPT_ENABLED = os.getenv("MEAL_ROUTING_PROMPT_ENABLED", "false").lower() == "true"
 # log_event: the agent's write path for DATED, day-scoped calendar items (a
 # calendar screenshot, "lab till 2 today"). These are Events — dated, auto-expiring,
 # local-day windowed — NOT semantic memory facts. Without this the model had no way
