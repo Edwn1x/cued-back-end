@@ -37,8 +37,10 @@ REMEMBER_TOOL = {
         "you only spoke back is not saved. add: a new fact. update: supersede an "
         "existing fact (pass the new text; the old value is preserved in history). "
         "invalidate: close a fact that's no longer true (e.g. an injury healed, "
-        "on-hand food now eaten and logged) — pass its entry_id. Do NOT log eaten "
-        "meals or completed workouts here (separate tools)."
+        "on-hand food now eaten and logged) — pass its entry_id. Write fact text "
+        "with resolved absolute dates — 'tomorrow' → the actual date — because the "
+        "fact will be read on later days when relative words mislead. Do NOT log "
+        "eaten meals or completed workouts here (separate tools)."
     ),
     "input_schema": {
         "type": "object",
@@ -77,6 +79,10 @@ def handle_remember(user_id: int, tool_input: dict, *, message_id=None) -> str:
                 return f"error: unknown category {category!r}"
             if not text:
                 return "error: no text provided"
+            # De-deixis floor: a memory fact is timeless text — a bare "tomorrow"
+            # in it gets re-resolved against NOW every future read. Pin the date.
+            from timefmt import resolve_deixis
+            text = resolve_deixis(text, user)
             new_profile, stats = apply_facts(profile, [{
                 "action": action, "category": category, "text": text,
                 "replaces_text": tool_input.get("replaces_text"),
@@ -385,6 +391,20 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
         desc = it["description"].strip()
         starts = _parse_local_dt(tz_str, it.get("date"), it.get("starts_at"))
         ends = _parse_local_dt(tz_str, it.get("date"), it.get("ends_at"))
+        if starts is None and ends is None:
+            # Date-only item ("exam friday", no time): an all-day event on the
+            # RESOLVED day. Without this, Event.occurred_at defaults to now and
+            # the date is silently lost — "friday" lands today, and the lifecycle
+            # readers would then render it as already passed.
+            try:
+                tz = ZoneInfo(tz_str)
+            except Exception:
+                tz = ZoneInfo("America/Los_Angeles")
+            d = _resolve_local_date(tz, it.get("date"))
+            starts = (datetime(d.year, d.month, d.day, tzinfo=tz)
+                      .astimezone(timezone.utc).replace(tzinfo=None))
+            ends = (datetime(d.year, d.month, d.day, 23, 59, tzinfo=tz)
+                    .astimezone(timezone.utc).replace(tzinfo=None))
         eid = record_event(user_id, "scheduled", ends_at=ends, source="model",
                            raw_text=desc, occurred_at=starts)
         logged.append((eid, desc, it.get("starts_at")))
