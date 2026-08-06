@@ -47,9 +47,12 @@ Full suite: **240 passed, 2 pre-existing skips, no new xfails.**
 Tier-2 (`tests/tier2/test_heartbeat_truncation_live.py`, spec case 6): one real
 decide against a PR-#22-sized context (events in all three lifecycle blocks,
 momentum, memory, conversation), asserting the decision terminates without
-`stop=max_tokens`. **NOT RUN** — no funded key in this workspace's .env; run with
-`pytest tests/tier2/test_heartbeat_truncation_live.py --run-tier2 -s` where one
-exists.
+`stop=max_tokens`. **RUN 2026-08-06 with the funded key: 3/3 GREEN** — every run
+completed via `send_text` (`stop=tool_use`, no truncation) and composed a real
+pre-event check-in off the seeded interview ("interview's basically here — keep
+today light… get to bed on time"). One fixture fix from the runs: profile memory
+must be seeded through `apply_facts` (the real writer), not hand-built dicts —
+`render_categories` requires the full entry schema (the harness-fidelity lesson).
 
 ## Deploy note (from the spec's definition of done)
 

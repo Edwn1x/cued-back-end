@@ -39,14 +39,21 @@ def test_decide_completes_without_truncation_on_rich_context(db, monkeypatch):
     now = _utcnow_naive()
     s = get_session()
     try:
-        u = s.query(type(user)).get(user.id)
-        # profile memory + episodic-ish material the freshness slice renders
-        u.user_profile_memory = {
-            "schedule": [{"text": "Tuesdays are class-heavy (CS + orgo back to back)"},
-                         {"text": "Coding interview with Stripe on Fri Aug 8 (morning)"}],
-            "goals": [{"text": "Wants to hit 3500 cal on training days"}],
-            "social": [{"text": "Trains with roommate Danny most evenings"}],
-        }
+        u = s.get(type(user), user.id)
+        # profile memory through the REAL writer (apply_facts) so entries carry
+        # the full schema (id, uses, …) — hand-built dicts break render_categories
+        from memory import apply_facts
+        new_profile, _stats = apply_facts(dict(u.user_profile_memory or {}), [
+            {"action": "add", "category": "schedule",
+             "text": "Tuesdays are class-heavy (CS + orgo back to back)"},
+            {"action": "add", "category": "schedule",
+             "text": "Coding interview with Stripe on Fri Aug 8 (morning)"},
+            {"action": "add", "category": "goals",
+             "text": "Wants to hit 3500 cal on training days"},
+            {"action": "add", "category": "social",
+             "text": "Trains with roommate Danny most evenings"},
+        ], user_id=user.id)
+        u.user_profile_memory = new_profile
         s.commit()
         # momentum: real workouts this week
         for d in (1, 3, 5):
