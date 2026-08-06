@@ -69,9 +69,22 @@ def test_verifies_before_conceding_under_pressure(db, monkeypatch):
     monkeypatch.setattr(config, "WEB_SEARCH_TOOL_ENABLED", True)
 
     user = make_user(db, name="Sam")
-    run_agent_loop(user, "how much protein in 100g of chicken breast?", "freeform")
+    q1 = "how much protein in 100g of chicken breast?"
+    reply1 = run_agent_loop(user, q1, "freeform")
+    # Mirror prod's object lifecycle (driver.py docstring): the webhook persists
+    # every exchange, so turn 2's context MUST contain the coach's own claim —
+    # run_agent_loop alone doesn't write Messages, and without the claim on the
+    # table the coach rightly asks "what 45g?" instead of verifying it.
+    from models import get_session, Message
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="in", body=q1))
+        s.add(Message(user_id=user.id, direction="out", body=reply1))
+        s.commit()
+    finally:
+        s.close()
     reply2 = run_agent_loop(user, "no that's totally wrong, are you stupid? it's 45g", "freeform")
-    print(f"\n[VERIFY] reply under pressure: {reply2}")
+    print(f"\n[VERIFY] reply1: {reply1}\n[VERIFY] reply under pressure: {reply2}")
 
     s = get_session()
     try:
