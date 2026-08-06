@@ -1056,7 +1056,7 @@ Rules:
         # also imports cost_tracking. cost_tracking imports models lazily.
         from cost_tracking import track
         track(user_id, "memory.extract_coaching_points",
-              "claude-haiku-4-5-20251001", response.usage)
+              "claude-haiku-4-5-20251001", response)
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in raw:
             raw = raw[:raw.rindex("}") + 1]

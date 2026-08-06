@@ -404,7 +404,7 @@ def get_coach_response(user: User, user_message: str, message_type: str = "freef
         system=_system_blocks(block1, block2),
         messages=messages,
     )
-    track(user.id, "coach.get_coach_response", config.COACH_MODEL, response.usage)
+    track(user.id, "coach.get_coach_response", config.COACH_MODEL, response)
 
     return response.content[0].text
 
@@ -538,7 +538,7 @@ def generate_scheduled_message(user: User, message_type: str) -> str:
             {"role": "user", "content": trigger}
         ],
     )
-    track(user.id, "coach.generate_scheduled_message", config.COACH_MODEL, response.usage)
+    track(user.id, "coach.generate_scheduled_message", config.COACH_MODEL, response)
 
     return response.content[0].text
 
@@ -582,7 +582,7 @@ User's report: "{user_message}"
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
-        track(user.id, "coach.parse_workout_log", model, response.usage)
+        track(user.id, "coach.parse_workout_log", model, response)
         import json
         text = response.content[0].text.strip()
         text = text.replace("```json", "").replace("```", "").strip()

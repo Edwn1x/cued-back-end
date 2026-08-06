@@ -400,7 +400,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         resp = client.messages.create(**kwargs)
 
         try:
-            track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp.usage)
+            track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp)
         except Exception as e:  # cost telemetry must never break the reply
             logger.warning("AGENT_LOOP_COST_TRACK_FAILED user=%s err=%s", user.id, e)
 

@@ -95,7 +95,7 @@ APOLOGY LIMIT:
         messages=[{"role": "user", "content": instruction}],
     )
     track(getattr(user, "id", None), "personality.write_response",
-          config.COACH_MODEL, response.usage)
+          config.COACH_MODEL, response)
 
     return response.content[0].text
 
@@ -189,6 +189,6 @@ Recent conversation:
         messages=[{"role": "user", "content": user_message}],
     )
     track(getattr(user, "id", None), "personality.handle_casual_message",
-          config.COACH_MODEL, response.usage)
+          config.COACH_MODEL, response)
 
     return response.content[0].text

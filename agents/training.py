@@ -307,7 +307,7 @@ LIVE WORKOUT REPORTING RULES (when user is texting between sets):
         system=system_arg,
         messages=[{"role": "user", "content": user_content}],
     )
-    track(user.id, "training.handle", config.COACH_MODEL, response.usage)
+    track(user.id, "training.handle", config.COACH_MODEL, response)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:
