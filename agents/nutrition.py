@@ -259,7 +259,7 @@ filtered to the user's allergens. This is your source of truth for dining-hall q
         messages=[{"role": "user", "content": user_content}],
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
     )
-    track(user.id, "nutrition.handle", config.COACH_MODEL, response.usage)
+    track(user.id, "nutrition.handle", config.COACH_MODEL, response)
 
     text = ""
     for block in response.content:
@@ -444,6 +444,7 @@ Return ONLY valid JSON:
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
+    track(user.id, "nutrition.handle_food_photo", config.COACH_MODEL, response)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:
@@ -556,6 +557,7 @@ Return ONLY valid JSON:
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    track(user.id, "nutrition.handle_photo_refinement", config.COACH_MODEL, response)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:
@@ -688,6 +690,7 @@ Rules:
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
+    track(user.id, "nutrition.handle_receipt_photo", config.COACH_MODEL, response)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:

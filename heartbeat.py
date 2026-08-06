@@ -100,8 +100,11 @@ def _log_tick(user_id, spoke, reason, message=None, search=None):
         session.commit()
     finally:
         session.close()
-    logger.info("HEARTBEAT_TICK user=%s spoke=%s reason=%s search_available=%s search_used=%s",
-                user_id, spoke, reason, search.get("available", False), search.get("used", False))
+    # stop= is the decide call's final stop_reason (None = no model call, e.g. a
+    # guardrail tick) — it distinguishes a truncated tick from chosen silence.
+    logger.info("HEARTBEAT_TICK user=%s spoke=%s reason=%s stop=%s search_available=%s search_used=%s",
+                user_id, spoke, reason, search.get("stop"),
+                search.get("available", False), search.get("used", False))
 
 
 def _local_day_start_utc(user):
@@ -268,15 +271,20 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
 
     messages = [{"role": "user", "content": "[heartbeat tick — decide: speak or stay silent]"}]
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
+        # Dedicated ceiling, NOT MAX_RESPONSE_TOKENS: thinking + tool JSON + the
+        # composed message all bill against this one budget (Aug 6 truncation).
         resp = client.messages.create(
-            model=config.AGENT_LOOP_MODEL, max_tokens=config.MAX_RESPONSE_TOKENS,
+            model=config.AGENT_LOOP_MODEL, max_tokens=config.HEARTBEAT_DECIDE_MAX_TOKENS,
             thinking={"type": "adaptive"}, output_config={"effort": "low"},
             system=system, messages=messages, tools=tools,
         )
         try:
-            track(user_id, "heartbeat.decide", config.AGENT_LOOP_MODEL, resp.usage)
+            track(user_id, "heartbeat.decide", config.AGENT_LOOP_MODEL, resp)
         except Exception as e:
             logger.warning("HEARTBEAT_COST_TRACK_FAILED user=%s err=%s", user_id, e)
+
+        stop = getattr(resp, "stop_reason", None)
+        search["stop"] = stop  # surfaces in the HEARTBEAT_TICK log line
 
         # Search invocations arrive as inline server_tool_use blocks (executed
         # server-side), on any stop_reason — scan every response before branching.
@@ -287,10 +295,10 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
                 if search["query"] is None:
                     search["query"] = (getattr(b, "input", None) or {}).get("query")
 
-        if getattr(resp, "stop_reason", None) == "pause_turn":
+        if stop == "pause_turn":
             messages.append({"role": "assistant", "content": resp.content})
             continue
-        if getattr(resp, "stop_reason", None) == "tool_use":
+        if stop == "tool_use":
             # The two decision tools terminate the loop. send_text = speak (payload is
             # the message); stay_silent = quiet (payload is the reason).
             spoke_tool = next((b for b in resp.content
@@ -315,6 +323,21 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
             ] or "continue"})
             continue
 
+        # Truncation is its OWN outcome, checked BEFORE the bare-text fallback: a
+        # max_tokens stop means the decision was cut off mid-generation — usually
+        # zero text (thinking ate the budget), sometimes a partial compose. Neither
+        # is chosen silence, and a partial must never reach the phone (a mid-sentence
+        # SMS is the "glitchy connection" class). Log it by name so it can't hide as
+        # a silent tick again; degrade to a labeled silent tick, don't raise.
+        if stop == "max_tokens":
+            block_types = [getattr(b, "type", None) for b in resp.content]
+            logger.warning(
+                "HEARTBEAT_TRUNCATED user=%s stop=max_tokens blocks=%s max_tokens=%d "
+                "— decide cut off mid-generation; NOT chosen silence, nothing sent",
+                user_id, block_types, config.HEARTBEAT_DECIDE_MAX_TOKENS)
+            return (False, "truncated:max_tokens (decide hit the output cap "
+                           "mid-generation — not chosen silence)", search)
+
         # Fallback: the model ended with bare text instead of calling send_text (rarer
         # now that speaking is an explicit tool, but kept for robustness). Concatenate
         # EVERY text block, not just the first — with adaptive thinking + inline
@@ -323,6 +346,11 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
         text = _join_text(resp.content)
         if text:
             return (True, text, search)
+        # A clean terminal stop with neither a decision tool nor text is an anomaly
+        # — log the response shape by name (the signal whose absence let the
+        # truncation bug hide) before recording the silent tick.
+        logger.warning("HEARTBEAT_NO_OUTPUT user=%s stop=%s blocks=%s",
+                       user_id, stop, [getattr(b, "type", None) for b in resp.content])
         return (False, "no message composed", search)
     return (False, "decision loop exhausted", search)
 

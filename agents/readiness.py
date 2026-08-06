@@ -175,7 +175,7 @@ Rules:
         system=system_arg,
         messages=[{"role": "user", "content": user_message}],
     )
-    track(user.id, "readiness.handle", config.COACH_MODEL, response.usage)
+    track(user.id, "readiness.handle", config.COACH_MODEL, response)
 
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     if "}" in text:

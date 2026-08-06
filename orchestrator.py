@@ -74,7 +74,7 @@ Examples:
             messages=[{"role": "user", "content": prompt}],
         )
         track(None, "orchestrator.classify_message",
-              "claude-haiku-4-5-20251001", response.usage)
+              "claude-haiku-4-5-20251001", response)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]

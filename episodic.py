@@ -122,7 +122,7 @@ def _run_digest(user_id: int, transcript: str, *, tz_name: str = None) -> str:
         messages=[{"role": "user", "content": transcript}],
     )
     try:
-        track(user_id, "episodic.digest", config.EPISODIC_MODEL, resp.usage)
+        track(user_id, "episodic.digest", config.EPISODIC_MODEL, resp)
     except Exception as e:
         logger.warning("EPISODIC_COST_TRACK_FAILED user=%s err=%s", user_id, e)
     return next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")

@@ -102,33 +102,50 @@ def record_usage(user_id, site: str, model_str: str, usage) -> None:
         logger.error("record_usage failed (site=%s): %s", site, e)
 
 
-def log_tokens(user_id, site: str, model_str: str, usage) -> None:
+def _usage_and_stop(usage_or_response):
+    """Accept either a Message response (has .usage) or a bare usage object.
+    Call sites pass the full response so stop_reason rides along; the bare-usage
+    form stays accepted for back-compat (older call shapes, test fixtures)."""
+    if hasattr(usage_or_response, "usage"):
+        return usage_or_response.usage, getattr(usage_or_response, "stop_reason", None)
+    return usage_or_response, None
+
+
+def log_tokens(user_id, site: str, model_str: str, usage, *, stop=None) -> None:
     """
-    Live-tail log line for tracking cache hits in real time. Pair with
-    record_usage() (which is the durable record) at every call site.
-    Cheap structured log — grep prod logs for `TOKENS site=X cache_read=N`
-    to see caching working without hitting the DB.
+    Live-tail log line for tracking cache hits AND response-shape health in real
+    time. Pair with record_usage() (which is the durable record) at every call
+    site. Cheap structured log — grep prod logs for `TOKENS site=X cache_read=N`
+    to see caching working, or `TOKENS .* stop=max_tokens` to catch truncation
+    on ANY surface (the recurring output-shape-vs-ceiling class: a call whose
+    logging doesn't capture stop_reason can truncate invisibly).
     """
     if usage is None:
         return
     try:
         logger.info(
-            "TOKENS user=%s site=%s model=%s input=%d output=%d cache_create=%d cache_read=%d",
+            "TOKENS user=%s site=%s model=%s input=%d output=%d cache_create=%d cache_read=%d stop=%s",
             user_id, site, model_str,
             getattr(usage, "input_tokens", 0) or 0,
             getattr(usage, "output_tokens", 0) or 0,
             getattr(usage, "cache_creation_input_tokens", 0) or 0,
             getattr(usage, "cache_read_input_tokens", 0) or 0,
+            stop,
         )
     except Exception:
         pass
 
 
-def track(user_id, site: str, model_str: str, usage) -> None:
+def track(user_id, site: str, model_str: str, usage_or_response) -> None:
     """
     Convenience: emit the TOKENS log AND persist the row in one call.
     Use this at every messages.create() site — one line of instrumentation
     instead of two. Both halves are best-effort.
+
+    Pass the full RESPONSE (not response.usage) so the TOKENS line carries
+    stop_reason — the universal truncation/refusal observability. A bare usage
+    object still works (stop logs as None).
     """
-    log_tokens(user_id, site, model_str, usage)
+    usage, stop = _usage_and_stop(usage_or_response)
+    log_tokens(user_id, site, model_str, usage, stop=stop)
     record_usage(user_id, site, model_str, usage)

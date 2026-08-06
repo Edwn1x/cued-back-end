@@ -138,6 +138,13 @@ HEARTBEAT_TICK_MINUTES = int(os.getenv("HEARTBEAT_TICK_MINUTES", "45"))     # du
 HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 0-10 min offset — kills the :00/:30 tell
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
+# Decide-call output ceiling — SEPARATE from MAX_RESPONSE_TOKENS (400 = SMS reply
+# length). One decide turn spends adaptive-thinking tokens + the send_text/
+# stay_silent tool JSON (message included) + any inline-search reasoning against a
+# single output budget; at 400 a long-reasoning tick truncated mid-decision and
+# logged as "no message composed" (Aug 6 prod). Same lesson, same sizing as
+# AGENT_LOOP_MAX_TOKENS — output is cheap relative to a silently dropped tick.
+HEARTBEAT_DECIDE_MAX_TOKENS = int(os.getenv("HEARTBEAT_DECIDE_MAX_TOKENS", "2000"))
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
 # Anti-STACK window (guardrail): within this many minutes of an unanswered proactive
 # nudge, don't send a second one. Clears on time-elapse (no user reply needed) — the

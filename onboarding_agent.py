@@ -401,7 +401,7 @@ Activity level — always extract something if the user described their daily mo
         )
         track_usage(getattr(user, "id", None),
                     "onboarding.extract_data_from_message",
-                    "claude-haiku-4-5-20251001", response.usage)
+                    "claude-haiku-4-5-20251001", response)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]
@@ -501,7 +501,7 @@ def _generate(system_prompt: str, instruction: str) -> str:
         system=system_prompt,
         messages=[{"role": "user", "content": instruction}],
     )
-    track_usage(None, "onboarding.generate", COACH_MODEL, response.usage)
+    track_usage(None, "onboarding.generate", COACH_MODEL, response)
     return response.content[0].text
 
 
