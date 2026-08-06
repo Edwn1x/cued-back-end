@@ -225,8 +225,17 @@ def extract_and_store_memory(user_id: int, user_message: str, coach_response: st
             return
         existing_profile = dict(user.user_profile_memory or {})
         user_name = user.name
+        user_tz = user.user_timezone
     finally:
         session.close()
+
+    from zoneinfo import ZoneInfo
+    try:
+        _tz = ZoneInfo(user_tz or "America/Los_Angeles")
+    except Exception:
+        _tz = ZoneInfo("America/Los_Angeles")
+    _local = datetime.now(_tz)
+    now_line = f"Now: {_local:%A}, {_local:%b} {_local.day}, {_local.year} (user's local time)."
 
     existing_block = _render_existing_profile_for_prompt(existing_profile)
 
@@ -267,8 +276,11 @@ Action semantics:
   - update: the user revealed an updated version of an existing durable fact (e.g. gym changed, school year advanced, training partner name changed). `replaces_text` MUST exactly match the existing fact text — if you're not sure of the exact text, use `add` instead.
   - skip: nothing meaningful was revealed, or the candidate is already present even if reworded. Use this liberally — empty output is fine.
 
+{now_line}
+
 Rules:
   - Each fact is one concise sentence written as a statement about the user.
+  - Resolve relative dates in fact text to absolute dates against Now above ("tomorrow" → the actual date). Never store bare "today"/"tomorrow"/"this afternoon" — the fact is read on later days, when those words resolve to the wrong day.
   - Do NOT emit temporary states ("is tired today") unless they're a recurring pattern.
   - Do NOT emit anything the coach said unless the user confirmed it.
   - Do NOT emit body metrics or dietary identity (see exclusion list above).
@@ -317,6 +329,15 @@ User: "yeah sounds good"
             if not user:
                 return
 
+            # De-deixis floor (memory-freshness Fix 2): this extractor runs post-turn
+            # with no tools, so a time-bound fact it catches can only become memory
+            # text — pin any relative day-words to their resolved dates before the
+            # text goes durable. (The live "interview this afternoon" entries came
+            # from exactly this path.)
+            from timefmt import resolve_deixis
+            for f in facts:
+                if f.get("text"):
+                    f["text"] = resolve_deixis(f["text"], user)
             current_profile = dict(user.user_profile_memory or {})
             new_profile, stats = apply_facts(current_profile, facts, user_id=user_id)
             user.user_profile_memory = new_profile

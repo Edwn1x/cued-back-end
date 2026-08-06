@@ -31,7 +31,7 @@ DIGEST_PROMPT = """You are keeping a coach's private notebook. Read this quiet-e
 
 Do NOT record: fitness/nutrition coaching decisions or progress (that's tracked elsewhere), obvious logistics, or anything already stated as a permanent fact. If nothing personal or non-obvious happened, reply with exactly: NONE
 
-Write only the note (no preamble, no date — it's stamped automatically). If you write one, it should read like a friend's memory, e.g. "Big orgo midterm tomorrow morning — was stressed about it." """
+Write only the note (no preamble). Write ABSOLUTE dates, never bare "today"/"tomorrow"/"this afternoon" — this note will be read days later, when those words would resolve to the wrong day. If you write one, it should read like a friend's memory, e.g. "Big orgo midterm Fri morning (Aug 7) — was stressed about it." """
 
 
 def recent_episodic(user_id: int, days: int = None):
@@ -76,12 +76,12 @@ def digest_user(user_id: int) -> dict:
         transcript = "\n".join(
             f"{'Coach' if m.direction == 'out' else user.name}: {m.body}" for m in msgs)
         new_watermark = msgs[-1].id
-        uid, uname = user.id, user.name
+        uid, uname, tz_name = user.id, user.name, user.user_timezone
     finally:
         session.close()
 
     # Model pass OUTSIDE the lock (network); re-lock to persist + advance watermark.
-    note = _run_digest(uid, transcript)
+    note = _run_digest(uid, transcript, tz_name=tz_name)
 
     session = get_session()
     try:
@@ -92,7 +92,10 @@ def digest_user(user_id: int) -> dict:
         user.last_episodic_message_id = new_watermark
         wrote = False
         if note and note.strip().upper() != "NONE":
-            session.add(EpisodicDigest(user_id=uid, text=note.strip()))
+            # Deterministic de-deixis floor: any relative day-word the writer let
+            # through gets its resolved date pinned before the text becomes durable.
+            from timefmt import resolve_deixis
+            session.add(EpisodicDigest(user_id=uid, text=resolve_deixis(note.strip(), user)))
             wrote = True
         session.commit()
         if wrote:
@@ -102,11 +105,20 @@ def digest_user(user_id: int) -> dict:
         session.close()
 
 
-def _run_digest(user_id: int, transcript: str) -> str:
+def _run_digest(user_id: int, transcript: str, *, tz_name: str = None) -> str:
+    # Date anchor: without it the writer literally CANNOT resolve "tomorrow", so its
+    # only options were bare deixis or silence.
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(tz_name or "America/Los_Angeles")
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    local = datetime.now(tz)
+    anchor = f"\n\nNow: {local:%A}, {local:%b} {local.day}, {local.year} (user's local time)."
     resp = client.messages.create(
         model=config.EPISODIC_MODEL,
         max_tokens=120,
-        system=DIGEST_PROMPT,
+        system=DIGEST_PROMPT + anchor,
         messages=[{"role": "user", "content": transcript}],
     )
     try:

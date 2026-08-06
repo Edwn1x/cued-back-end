@@ -85,7 +85,7 @@ def build_loop_context(user, session) -> str:
 
     # Render every timestamp in the user's LOCAL zone (burn-in fix) — the model has no
     # local clock to reason "tomorrow/later" against otherwise, and bare UTC is 7h ahead.
-    from timefmt import render_time, render_date, now_anchor, local_day_bounds
+    from timefmt import render_time, render_date, now_anchor, local_day_bounds, to_local
     _local = config.CONTEXT_LOCAL_TIME_ENABLED
 
     def _t(dt, *, relative=True):
@@ -111,7 +111,19 @@ def build_loop_context(user, session) -> str:
     if (user.food_context or "").strip():
         parts.append(f"Food context: {user.food_context.strip()}")
 
-    # 3. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
+    # 3. Events, lifecycle-aware (memory-freshness Fix 1). Upcoming vs passed is a
+    # FACT computed from the row's datetimes — the model must never infer it from a
+    # timeless string (that's how a Jul 31 interview resurfaced Aug 3 as upcoming).
+    from events import upcoming_events, recently_passed_events, event_end
+    _now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def _is_all_day(e):
+        if not e.occurred_at or not e.ends_at:
+            return False
+        s_l, e_l = to_local(e.occurred_at, user), to_local(e.ends_at, user)
+        return (s_l.hour, s_l.minute) == (0, 0) and (e_l.hour, e_l.minute) == (23, 59)
+
+    # 3a. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
     # model-logged dated schedule items (log_event) — the latter carry a description
     # in raw_text + a start/end window, so a timely check-in can reference them.
     evs = todays_events(user.id)
@@ -119,7 +131,9 @@ def build_loop_context(user, session) -> str:
         def _fmt_event(e):
             if e.source == "model":
                 label = (e.raw_text or e.event_type or "").strip()
-                if e.occurred_at:
+                if _is_all_day(e):
+                    span = " (all day)"
+                elif e.occurred_at:
                     span = f" {_t(e.occurred_at, relative=False)}" + (
                         f"–{_t(e.ends_at, relative=False)}" if e.ends_at else "")
                 elif e.ends_at:
@@ -131,9 +145,39 @@ def build_loop_context(user, session) -> str:
                 span = f" until {_t(e.ends_at, relative=False)}" if e.ends_at else ""
             # [id N] so the model can reference/correct/delete an event via manage_log,
             # the same way it can for meals and workouts.
-            return f"[id {e.id}] {label}{span}"
+            line = f"[id {e.id}] {label}{span}"
+            # A same-day 2:15pm event at 6pm must not read like one at 9pm.
+            if e.source == "model" and e.occurred_at and event_end(e) < _now_utc:
+                line += (" — PASSED (already happened; never treat as upcoming, "
+                         "at most one natural follow-up)")
+            return line
         ev_txt = "; ".join(_fmt_event(e) for e in evs)
         parts.append(f"## TODAY'S EVENTS\n{ev_txt}")
+
+    # 3b. Forward visibility — the reader gap: an event for Friday used to be
+    # invisible until Friday, so "interview tomorrow, get some sleep" was impossible.
+    ups = upcoming_events(user.id)
+    if ups:
+        def _fmt_upcoming(e):
+            label = (e.raw_text or e.event_type or "").strip()
+            when = _d(e.occurred_at)
+            if not _is_all_day(e):
+                when += f" {_t(e.occurred_at, relative=False)}"
+            return f"[id {e.id}] {label} — {when}"
+        parts.append("## UPCOMING EVENTS (next 7 days — logged ahead of time; you may "
+                     "reference or prep them)\n"
+                     + "\n".join(_fmt_upcoming(e) for e in ups))
+
+    # 3c. Bounded follow-up window (48h), then the event retires. Once-ness comes
+    # from the anti-repetition machinery (tick history / RECENT PROACTIVE), and
+    # manage_log delete is the explicit retire path — no stored lifecycle state.
+    passed = recently_passed_events(user.id)
+    if passed:
+        parts.append("## RECENTLY PASSED (happened, not followed up on yet — at most "
+                     "ONE natural \"how'd it go\", then let it go; NEVER mention as "
+                     "still upcoming)\n"
+                     + "\n".join(f"[id {e.id}] {(e.raw_text or e.event_type or '').strip()}"
+                                 f" — {_d(e.occurred_at)}" for e in passed))
 
     # 4. Split pointer WITH provenance — the model hedges on inferred days.
     p = get_split_pointer(user.id)

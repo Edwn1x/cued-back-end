@@ -13,6 +13,7 @@ it (and get it 7 hours wrong).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -94,6 +95,51 @@ def render_date(dt: datetime, user) -> str:
     """User-local calendar date, e.g. 'Mon Jul 21'. For day-granular rows (workouts)."""
     local = to_local(dt, user)
     return f"{local:%a %b} {local.day}"
+
+
+# Day-level relative terms only — precision over recall, the same bias as the
+# events.py regex floor. Week-level terms ("this weekend/week") are deliberately
+# excluded v1: a wrong annotation is worse than a missing one. `(?!['’]s)` keeps
+# possessives ("today's workout") unannotated.
+_DEIXIS_RE = re.compile(
+    r"\b(?:"
+    r"(?P<tom>tomorrow(?:\s+(?:morning|afternoon|evening|night))?)"
+    r"|(?P<yest>yesterday(?:\s+(?:morning|afternoon|evening))?|last\s+night)"
+    r"|(?P<today>today|tonight|this\s+(?:morning|afternoon|evening))"
+    r")\b(?!['’]s)",
+    re.IGNORECASE,
+)
+
+
+def resolve_deixis(text: str, user, *, now: datetime = None) -> str:
+    """Annotate day-level relative-time words with the resolved absolute date in the
+    user's local zone: 'midterm tomorrow' → 'midterm tomorrow (Fri Aug 7)'.
+
+    This is the deterministic floor under every durable-text writer (episodic digest,
+    remember tool, legacy extraction, safety snippets): stored text carrying a bare
+    'today' gets re-resolved by the model against NOW, not the note's date — a real
+    past event resurfaces as current. Annotation, not replacement, so meaning
+    survives a rare mis-resolve; idempotent (a term already followed by '(' is
+    skipped), so writers can safely re-apply it."""
+    if not text:
+        return text
+    tz = resolve_tz(user)
+    ref = _as_aware_utc(now) if now else datetime.now(timezone.utc)
+    local_today = ref.astimezone(tz).date()
+
+    def _annotate(m):
+        phrase = m.group(0)
+        if text[m.end():].lstrip().startswith("("):
+            return phrase
+        if m.group("tom"):
+            d = local_today + timedelta(days=1)
+        elif m.group("yest"):
+            d = local_today - timedelta(days=1)
+        else:
+            d = local_today
+        return f"{phrase} ({d:%a %b} {d.day})"
+
+    return _DEIXIS_RE.sub(_annotate, text)
 
 
 def now_anchor(user, *, now: datetime = None) -> str:

@@ -186,6 +186,75 @@ def todays_events(user_id: int, event_type: str = None) -> list:
         session.close()
 
 
+def event_end(ev) -> datetime:
+    """Effective end of an event, naive UTC: ends_at, else occurred_at + the same
+    default duration in_class uses. Lifecycle state (upcoming/passed) is COMPUTED
+    from this + now — never stored, so it can't drift from the datetimes."""
+    if ev.ends_at:
+        return ev.ends_at
+    return ev.occurred_at + timedelta(minutes=IN_CLASS_DEFAULT_MINUTES)
+
+
+def _now_naive_utc(now=None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    if now.tzinfo is not None:
+        return now.astimezone(timezone.utc).replace(tzinfo=None)
+    return now
+
+
+def upcoming_events(user_id: int, days: int = 7, *, now=None) -> list:
+    """Model-logged events after the user's local end-of-today, within `days` local
+    days ahead — the forward reader todays_events never had (an event for Friday
+    was invisible until Friday). Today's own events stay in todays_events."""
+    from models import active
+    from timefmt import local_day_bounds
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return []
+        _start, end_today = local_day_bounds(user, now=now)
+        horizon = end_today + timedelta(days=days)
+        return (active(session, Event, user_id=user_id)
+                .filter(Event.source == "model",
+                        Event.occurred_at >= end_today,
+                        Event.occurred_at < horizon)
+                .order_by(Event.occurred_at).all())
+    finally:
+        session.close()
+
+
+def recently_passed_events(user_id: int, hours: int = 48, *, now=None) -> list:
+    """Model-logged events whose effective end is in [now − hours, now) AND before
+    the user's local start of today (today's passed events render in TODAY'S EVENTS
+    with a PASSED mark instead). This is the bounded follow-up window: inside it a
+    passed event is "how'd it go" material; past it the event retires — a passed
+    event must NEVER read as upcoming again."""
+    from models import active
+    from timefmt import local_day_bounds
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return []
+        start_today, _end = local_day_bounds(user, now=now)
+        now_utc = _now_naive_utc(now)
+        window_start = now_utc - timedelta(hours=hours)
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source == "model",
+                        # effective end >= window_start bounds occurred_at below
+                        # by window_start - the default duration; a day of margin.
+                        Event.occurred_at >= window_start - timedelta(days=1),
+                        Event.occurred_at < start_today)
+                .order_by(Event.occurred_at).all())
+        return [ev for ev in rows
+                if window_start <= event_end(ev) < now_utc
+                and event_end(ev) < start_today]
+    finally:
+        session.close()
+
+
 def in_class_now(user_id: int) -> bool:
     """True if there's a regex-FLOOR in_class event today whose end is still in the
     future. This is a deterministic hard gate (high-precision regex source only): a

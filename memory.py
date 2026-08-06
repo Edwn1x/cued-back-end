@@ -925,9 +925,13 @@ def apply_safety_signals_task(user_id: int, user_message: str):
                 )
 
         if signals["constraints"]:
+            # De-deixis floor: these snippets are the user's literal phrasing
+            # ("currently experiencing... today") stored as durable safety text —
+            # pin any relative day-words to dates before they go immortal.
+            from timefmt import resolve_deixis
             facts = [
                 {"action": "add", "category": "constraints",
-                 "text": snippet, "replaces_text": None,
+                 "text": resolve_deixis(snippet, user), "replaces_text": None,
                  "safety_critical": True}
                 for snippet in signals["constraints"]
             ]
