@@ -32,6 +32,17 @@ COACHING_POINTS_CHAR_LIMIT = 1000  # delivered_coaching_points cap
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"
 
+# heartbeat-stale-thread Fixes 2+3 — category crowding. food_on_hand is transient
+# INVENTORY: entries older than this many days are invalidated into history on the
+# next write pass / nightly consolidation (0 = TTL off). Grocery bought Aug 6 is
+# irrelevant by Aug 20; it must never live in the immortal constraints bucket.
+FOOD_ON_HAND_TTL_DAYS = int(os.getenv("FOOD_ON_HAND_TTL_DAYS", "14"))
+# Superseded safety states ("currently ill" after "fully recovered") close via the
+# trigger-audited validity mechanism instead of coexisting immortally and crowding
+# the category cap (the live cause of grocery/food evictions). Ship-on + instrumented
+# (every closure logs at WARNING); the flag is the rollback lever.
+MEMORY_SAFETY_SUPERSESSION_ENABLED = os.getenv("MEMORY_SAFETY_SUPERSESSION_ENABLED", "true").lower() == "true"
+
 # Phase C1/C1.5 — prompt caching + cost telemetry.
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
 MODEL_PRICING = {
