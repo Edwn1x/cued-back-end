@@ -72,8 +72,8 @@ THE BAR FOR WARMTH IS HIGHER, NOT LOWER. A warranted accountability nudge is alm
 
 STAY SILENT when:
 - a quiet, on-track day with nothing standing, no notable win, and no specific warm material — the honest default (a modest, unremarkable few workouts is NOT a win to text about)
-- the user is mid-conversation (that's reactive territory — reply in-thread, don't proactively double-text)
-- you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts
+- the user is mid-conversation — THEIR last message is minutes old (reactive territory: reply in-thread, don't proactively double-text). Judge this ONLY by TIME SINCE THEIR LAST MESSAGE below, never by where the transcript ends: a tick only reaches you at all when their last text is over half an hour old. A question YOU asked that has sat unanswered for HOURS is not a live exchange — it is an open thread, which is SPEAK material (nudge it, or say the next real thing), and "waiting on their reply" copied forward from TICK HISTORY does not become truer with time.
+- you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts. But re-VERIFY a held-over reason against the timestamps below before reusing it: a reason like "mid-conversation" or "waiting on reply" expires as hours pass.
 
 DON'T RATION YOURSELF. The limits on over-texting are enforced in CODE, not by you: at most one unanswered proactive nudge at a time (an anti-stack window) and a hard daily cap. You cannot over-text past those. So do NOT hold back out of fear of nagging — that is already handled. Your only job is the single judgment call: is THIS worth a text right now? Answer that honestly and act on it.
 
@@ -209,6 +209,19 @@ def _proactive_context(user, session) -> str:
     if last_out and last_out.created_at:
         hrs = (datetime.now(timezone.utc) - last_out.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
         parts.append(f"## TIME SINCE YOUR LAST MESSAGE\n~{hrs:.1f} hours")
+
+    # The inbound age, code-computed — the model can't date the transcript's last
+    # user message, so without this it reads a history that ends on the coach's own
+    # question as a live exchange and re-cites "waiting on reply" from tick history
+    # for hours (the unanswered-gap deadlock, reappeared at the model layer; the
+    # HEARTBEAT_ACTIVE_CONVO_MINUTES code gate only blocks the genuinely-fresh case).
+    last_in = (session.query(Message)
+               .filter(Message.user_id == user.id, Message.direction == "in")
+               .order_by(Message.created_at.desc()).first())
+    if last_in and last_in.created_at:
+        hrs_in = (datetime.now(timezone.utc) - last_in.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        parts.append(f"## TIME SINCE THEIR LAST MESSAGE\n~{hrs_in:.1f} hours — judge "
+                     "'mid-conversation' by THIS number, not by where the transcript ends.")
 
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)

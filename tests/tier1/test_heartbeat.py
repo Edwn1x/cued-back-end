@@ -474,6 +474,49 @@ def test_proactive_context_with_history_suppresses_permission_block(db, monkeypa
     assert "PERMISSION" not in ctx
 
 
+# ---- inbound age: the mid-conversation judgment needs THEIR timestamp -------
+
+def test_proactive_context_carries_inbound_age(db, monkeypatch, anthropic_stub):
+    """The model can't date the transcript's last user message; without a code-computed
+    inbound age it reads a history ending on the coach's own question as a live exchange
+    and re-cites 'waiting on reply' for hours (the model-layer unanswered-gap deadlock,
+    seen live Aug 6-7: five straight 'mid conversation' silent ticks with the last
+    inbound 1-4 hours old). The context must state how old THEIR last message is."""
+    import heartbeat
+    from models import get_session, User, Message
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="in", body="what should i cook tonight?",
+                      created_at=_utcnow_naive() - timedelta(hours=5)))
+        s.commit()
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "TIME SINCE THEIR LAST MESSAGE" in ctx
+    assert "~5.0 hours" in ctx, "the inbound age must be code-computed, not left to the model"
+
+
+def test_proactive_context_no_inbound_age_when_no_inbound(db, monkeypatch, anthropic_stub):
+    """Clean-absent: a user who has never texted gets no inbound-age block (no
+    placeholder for the model to reason about)."""
+    import heartbeat
+    from models import get_session, User
+    from tests.factories import make_user
+
+    user = make_user(db)
+    s = get_session()
+    try:
+        ctx = heartbeat._proactive_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+
+    assert "TIME SINCE THEIR LAST MESSAGE" not in ctx
+
+
 # ---- warmth (Part 2): code-computed win/momentum signal ---------------------
 
 def _seed_workout(user_id, days_ago, wtype="push", completed=True):
