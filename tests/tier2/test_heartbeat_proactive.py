@@ -131,6 +131,67 @@ def test_heartbeat_speaks_on_accountability_gap(db, monkeypatch):
         f"This is the product's core promise. Silence reason: {payload!r}")
 
 
+def test_heartbeat_speaks_past_stale_open_thread(db, monkeypatch):
+    """YES-anchor for the MODEL-LAYER unanswered-gap deadlock (seen live Aug 6-7): the
+    coach reactively asked a question hours ago, the user never answered, and the tick
+    history is full of 'waiting on his reply - mid conversation' silent decisions. Five
+    straight prod ticks over 3 hours re-cited that reason with the last inbound 1-4
+    hours old — the code gate was fixed in PR1 (time-elapse clears the anti-stack), but
+    the model rebuilt the same deadlock from the transcript's shape + its own tick echo.
+
+    Fixture = the unambiguous accountability state (multi-day fall-off + explicit
+    call-me-out, both halves — same as the core yes-anchor) PLUS the deadlock dressing:
+    a reactive coach question 6h unanswered as the most recent outbound, last inbound
+    7h ago, and two seeded silent ticks echoing 'waiting on reply'. The dressing must
+    NOT mute the anchor: a question that has sat unanswered for hours is an open
+    thread (speak material), not a live conversation. Binary — re-run 3x, pass every
+    time; the failure mode is precisely the model copying the seeded tick reason."""
+    import config, heartbeat
+    from models import get_session, Message, HeartbeatTick, Workout
+    from tests.factories import make_user
+
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    call_out = ("Committed to training 4x/week (push, pull, legs, upper) on a cut. "
+                "Consistency is the real struggle — tends to skip legs and then fall off "
+                "for days. Explicitly asked to be called out when he slips, not coddled.")
+    user = make_user(db, name="Sam", coaching_summary=call_out)
+    s = get_session()
+    try:
+        s.add(Workout(user_id=user.id, workout_type="push", completed=True,
+                      date=_utcnow_naive() - timedelta(days=10)))
+        s.add(Workout(user_id=user.id, workout_type="pull", completed=True,
+                      date=_utcnow_naive() - timedelta(days=12)))
+        # the stale exchange: they texted 7h ago, the coach asked a (reactive) question
+        # 6h ago, silence since — an open thread, NOT a live conversation
+        s.add(Message(user_id=user.id, direction="in",
+                      body="not sure what to cook tonight",
+                      created_at=_utcnow_naive() - timedelta(hours=7)))
+        s.add(Message(user_id=user.id, direction="out", message_type="freeform",
+                      body="what've you got in the fridge? i'll pick the highest-protein option",
+                      created_at=_utcnow_naive() - timedelta(hours=6)))
+        # the echo: prior ticks already talked themselves into 'waiting on reply'
+        for hrs in (3, 1):
+            s.add(HeartbeatTick(user_id=user.id, spoke=False,
+                                reason="just asked what he's cooking, waiting on his reply - mid conversation",
+                                decided_at=_utcnow_naive() - timedelta(hours=hrs)))
+        s.commit()
+    finally:
+        s.close()
+
+    # preconditions: no CODE gate suppresses this tick — the reactive question is not
+    # a proactive nudge (anti-stack) and the inbound is far past the convo pre-gate
+    from engagement_tracker import has_unanswered_proactive
+    assert has_unanswered_proactive(user.id, config.HEARTBEAT_STACK_WINDOW_MINUTES) is False
+
+    spoke, payload, _search = heartbeat.decide(user.id)
+    print(f"\n[HEARTBEAT yes-anchor stale-open-thread] spoke={spoke} :: {payload!r}")
+    assert spoke is True, (
+        "YES-ANCHOR FAILED (model-layer deadlock): the coach stayed silent on a ~10-day "
+        "fall-off for a call-me-out user because its own 6-hour-old unanswered question "
+        "read as 'mid-conversation' — the unanswered-gap deadlock rebuilt at the model "
+        f"layer. Silence reason: {payload!r}")
+
+
 def test_heartbeat_stays_silent_on_on_track_quiet_day(db, monkeypatch):
     """Clear-NO anchor: calibration loosens WHEN the coach speaks, it must NOT turn the
     heartbeat into a chatterbox. A user training on schedule with nothing standing and

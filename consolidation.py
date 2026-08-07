@@ -6,7 +6,11 @@ the whole design is guardrails against silent cross-night drift:
 
   - copy-on-write: the candidate is a deepcopy; live memory is never mutated
     mid-computation, and is only written if the run passes every check.
-  - active safety entries are UNTOUCHED (never closed/merged/deduped).
+  - active safety entries are UNTOUCHED (never closed/merged/deduped) — with ONE
+    audited exception: supersede_resolved_safety may close a stale safety state
+    that a newer same-topic resolution entry supersedes ("fully recovered" closes
+    "currently experiencing…"), each closure trigger-recorded and WARNING-logged.
+    The dropped-safety invariant accepts exactly those ids and nothing else.
   - bounded delta: a run that would remove more than a configured fraction of valid
     entries ABORTS — nothing is written, an alert is logged.
   - full JSON diff + a one-line HUMAN-READABLE per-user summary + the pre-run
@@ -28,6 +32,7 @@ import config
 from models import get_session, User, ConsolidationRun
 from memory import (
     HISTORY_KEY, CATEGORIES, invalidate_entry,
+    expire_stale_entries, supersede_resolved_safety,
     _find_duplicate, _find_supersession_target, _tokenize, _jaccard,
 )
 
@@ -66,6 +71,22 @@ def _short(text: str, n: int = 40) -> str:
 
 
 # ─── structural passes (pure; mutate the candidate, record human-readable ops) ──
+
+def _expire_ttl(candidate: dict, ops: list, now: datetime) -> None:
+    """TTL-aged categories (food_on_hand): close entries past their shelf life —
+    covers write-quiet users the apply_facts sweep never reaches."""
+    for cat, e in expire_stale_entries(candidate, now=now):
+        ops.append(("closed", f"{_short(e.get('text'))}, ttl-expired"))
+
+
+def _supersede_safety(candidate: dict, ops: list, allowed_safety_closures: set) -> None:
+    """Superseded safety states close via the trigger-audited mechanism; the ids
+    closed here are the ONLY safety removals the invariant below will accept."""
+    for cat, e, resolver in supersede_resolved_safety(candidate):
+        allowed_safety_closures.add(e["id"])
+        ops.append(("superseded",
+                    f"{_short(e.get('text'))} (safety, resolved by: {_short(resolver.get('text'))})"))
+
 
 def _close_stale(candidate: dict, ops: list, now: datetime) -> None:
     """Close (invalidate) non-safety entries that are old AND never referenced."""
@@ -169,6 +190,9 @@ def consolidate_user(user_id: int) -> dict:
         valid_before = _valid_count(candidate)
 
         ops: list = []
+        allowed_safety_closures: set = set()
+        _expire_ttl(candidate, ops, now)
+        _supersede_safety(candidate, ops, allowed_safety_closures)
         _close_stale(candidate, ops, now)
         _merge_near_dupes(candidate, ops)
         _collapse_contradictions(candidate, ops)
@@ -200,10 +224,13 @@ def consolidate_user(user_id: int) -> dict:
             return {"status": "aborted", "removed": removed, "valid_before": valid_before,
                     "run_id": run.id}
 
-        # Safety invariant (belt + suspenders): assert no safety entry was removed.
+        # Safety invariant (belt + suspenders): the ONLY safety entries allowed to
+        # leave the live set are the trigger-audited supersession closures tracked
+        # above — anything else is a dropped safety entry and aborts the run.
         before_safety = {e["id"] for _c, e in _valid_entries(original) if e.get("safety")}
         after_safety = {e["id"] for _c, e in _valid_entries(candidate) if e.get("safety")}
-        assert before_safety <= after_safety, "consolidation dropped a safety entry"
+        assert before_safety - after_safety <= allowed_safety_closures, \
+            "consolidation dropped a safety entry outside the audited supersession path"
 
         summary = _build_summary(ops)
         run = ConsolidationRun(

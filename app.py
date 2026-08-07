@@ -248,6 +248,7 @@ Categories (use exactly one of these per fact):
   - communication_preferences— how they want to be coached (blunt callouts, gentle reminders, long explanations, terse replies)
   - schedule                 — recurring time constraints (Tuesdays class-heavy, gym closes 10pm, travels monthly for work)
   - goals                    — durable goals/motivations (lean for summer, train for hike, look good for wedding)
+  - food_on_hand             — groceries / food at home not yet eaten ("did a TJ's run, got eggs and ground beef"). Transient inventory: it auto-expires as it's eaten. NEVER put on-hand food in constraints, and it is never safety_critical.
 
 DO NOT emit facts for these (they have typed columns; storage handles them elsewhere):
   - weight, height, body fat percentage
@@ -265,7 +266,7 @@ Coach said: "{coach_response}"
 For each new or changed fact, emit a JSON object:
   {{
     "action": "add" | "update" | "skip",
-    "category": "<one of the six above>",
+    "category": "<one of the categories above>",
     "text": "<concise statement about the user, present tense>",
     "replaces_text": "<EXACT existing fact text being superseded, byte-for-byte; null if action != update>",
     "safety_critical": <true if this is an injury / medical / doctor's order / hard physical limit; false otherwise>
@@ -285,6 +286,7 @@ Rules:
   - Do NOT emit anything the coach said unless the user confirmed it.
   - Do NOT emit body metrics or dietary identity (see exclusion list above).
   - Doctor's orders / injuries / medical limits MUST have safety_critical=true.
+  - When the user says an injury/illness is OVER, emit the recovered state as its own fact (safety_critical=true, e.g. "shoulder fully recovered") — storage closes the superseded active states it replaces.
   - If nothing meaningful was revealed, return: {{"facts": []}}
 
 Return ONLY valid JSON:

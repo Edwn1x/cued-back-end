@@ -60,6 +60,11 @@ CATEGORIES = (
     "communication_preferences",
     "schedule",
     "goals",
+    # heartbeat-stale-thread Fix 2: transient food INVENTORY (groceries/on-hand,
+    # not yet eaten). Non-immortal by design — never safety, TTL-aged (see
+    # expire_stale_entries) — so a grocery haul can't crowd the safety bucket or
+    # evict durable facts. Routed here by the remember tool + extraction prompt.
+    "food_on_hand",
 )
 
 # Validity windows: an invalidated entry is MOVED out of its category list into
@@ -138,7 +143,7 @@ def render_dietary_line(user) -> str:
 #     lands here behind the USER_PROFILE_MEMORY_ENABLED flag.
 CATEGORY_INJECTION_MAP = {
     "nutrition": {
-        "categories": ("identity", "training_preferences", "goals"),
+        "categories": ("identity", "training_preferences", "goals", "food_on_hand"),
         "include_body_line": False,
         "include_dietary_line": True,
         "include_food_context": True,
@@ -528,6 +533,10 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
     profile = dict(profile) if profile else {}
     profile = _ensure_categories(profile)
 
+    # TTL sweep FIRST: a stale grocery entry must not dedup-suppress (or be
+    # supersession-matched against) the fresh haul arriving in this same write.
+    expire_stale_entries(profile, user_id=user_id)
+
     stats = {"added": 0, "updated": 0, "skipped": 0,
              "deduped": 0, "mismatched": 0, "invalid": 0}
 
@@ -613,6 +622,10 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
 
         entries.append(_new_entry(text, safety=is_safety))
         stats["added"] += 1
+
+    # Fix 3: a recovery fact added above closes the same-topic transient states it
+    # supersedes, in the same write — before caps, so the freed room is real.
+    supersede_resolved_safety(profile, user_id=user_id)
 
     _enforce_caps(profile, user_id=user_id)
     return profile, stats
@@ -715,6 +728,139 @@ def invalidate_entry(profile, entry_id, *, by, trigger=None, at=None) -> bool:
                 )
             return True
     return False
+
+
+# ─── heartbeat-stale-thread Fix 2: TTL aging for transient categories ─────────
+
+def _category_ttl_days(category: str) -> int:
+    """TTL in days for a category, 0 = no TTL. Only food_on_hand ages today;
+    config-driven so the knob is a deploy variable, not a code change."""
+    return config.FOOD_ON_HAND_TTL_DAYS if category == "food_on_hand" else 0
+
+
+def _entry_age_days(entry: dict, now: datetime) -> float:
+    ts = entry.get("ts")
+    if not ts:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(ts)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return 0.0
+    return (now - parsed).total_seconds() / 86400.0
+
+
+def expire_stale_entries(profile, *, user_id=None, now=None) -> list:
+    """Invalidate (into __history__ — auditable, never a silent delete) entries past
+    their category's TTL. Freshness discipline for transient inventory: grocery
+    bought Aug 6 is irrelevant by Aug 20 and must age OUT of every prompt, not live
+    forever. Safety entries are always skipped, whatever category they sit in.
+    Returns the closed (category, entry) pairs so consolidation can report them in
+    the human-readable summary. Runs on every apply_facts write and nightly."""
+    now = now or datetime.now(timezone.utc)
+    closed = []
+    for cat in [c for c in (profile or {}).keys() if c != HISTORY_KEY]:
+        ttl = _category_ttl_days(cat)
+        if not ttl:
+            continue
+        for e in list(profile.get(cat) or []):
+            if e.get("safety"):
+                continue
+            age = _entry_age_days(e, now)
+            if age > ttl and invalidate_entry(profile, e["id"], by="expired:ttl"):
+                logger.info("MEMORY_TTL_EXPIRE user_id=%s category=%s age_days=%d text=%r",
+                            user_id, cat, int(age), e.get("text"))
+                closed.append((cat, e))
+    return closed
+
+
+# ─── heartbeat-stale-thread Fix 3: superseded safety states close ─────────────
+#
+# Live evidence: 13 immortal constraints entries, one GI-illness arc, "fully
+# recovered" coexisting with five "currently experiencing…" — 1,428 chars squatting
+# eviction-immune against a 400-char soft cap, which is WHY real food data was
+# being evicted. A resolution-phrased safety entry closes older same-topic
+# transient states through the trigger-guarded invalidate (WARNING-logged, never
+# silent). Deterministic and precision-first, in the A5 regex-floor style: every
+# condition below must hold, and allergies are categorically excluded — a durable
+# fact ("bad knee - doctor said no squats") is NEVER machine-closed.
+
+_SAFETY_RESOLUTION_RE = re.compile(
+    r"\b(recovered|resolved|healed|cleared\s+up|back\s+to\s+normal|"
+    r"all\s+better|feeling\s+better|no\s+longer|subsided|gone\s+away)\b", re.I)
+_SAFETY_TRANSIENT_RE = re.compile(
+    r"\b(currently|recently|still|holding\s+off|for\s+now|at\s+the\s+moment|"
+    r"this\s+week|experiencing|active(?:ly)?)\b", re.I)
+_ALLERGY_RE = re.compile(r"allerg|intoleran", re.I)
+
+# Body-system topic buckets: a resolution only closes states about the SAME
+# system. Word-boundary anchored where the token is short/ambiguous.
+_SAFETY_TOPIC_RES = {
+    name: re.compile(pat, re.I) for name, pat in {
+        "gi": (r"\bgut\b|stomach|gastro|digest|bowel|nause|vomit|diarrh|constipat|"
+               r"bloat|\bgas\b|appetite|parasit|cyclospora|giardia|food\s+poisoning|\bgi\b"),
+        "shoulder": r"shoulder|rotator",
+        "knee": r"\bknees?\b",
+        "back": r"\bback\b|spine|lumbar",
+        "hip": r"\bhips?\b",
+        "wrist": r"\bwrists?\b",
+        "ankle": r"\bankles?\b",
+        "elbow": r"\belbows?\b",
+        "neck": r"\bneck\b",
+        "hamstring": r"hamstring",
+        "illness": r"\bflu\b|fever|covid|migraine|headache",
+    }.items()
+}
+
+
+def _safety_topics(text: str) -> set:
+    t = text or ""
+    return {name for name, pat in _SAFETY_TOPIC_RES.items() if pat.search(t)}
+
+
+def supersede_resolved_safety(profile, *, user_id=None) -> list:
+    """Close safety entries superseded by a newer, same-topic resolution entry.
+    Closure conditions (ALL required): the entry is strictly older than the
+    resolver; it is transient-phrased or itself an older resolution; the two share
+    a body-system topic; it carries no allergy vocabulary. Trigger records the
+    resolver (`resolved_by:<id>:<text>`), and invalidate_entry's Phase-1 guard
+    WARNING-logs every closure. Returns closed (category, entry, resolver) triples
+    for consolidation's human-readable summary. Flag: MEMORY_SAFETY_SUPERSESSION_ENABLED."""
+    if not config.MEMORY_SAFETY_SUPERSESSION_ENABLED:
+        return []
+    closed = []
+    for cat in [c for c in (profile or {}).keys() if c != HISTORY_KEY]:
+        entries = [e for e in (profile.get(cat) or []) if e.get("safety")]
+        # A resolver need NOT be safety-flagged: the model emits "fully recovered"
+        # with safety_critical either way (live-gate finding, run 3/3) — the
+        # precision comes from the closure conditions, not the resolver's flag.
+        # Closure TARGETS stay safety-only; non-safety staleness ages via the
+        # existing eviction/stale passes.
+        resolutions = [e for e in (profile.get(cat) or [])
+                       if _SAFETY_RESOLUTION_RE.search(e.get("text", ""))]
+        if not resolutions:
+            continue
+        for e in entries:
+            text = e.get("text", "")
+            if _ALLERGY_RE.search(text):
+                continue
+            if not (_SAFETY_TRANSIENT_RE.search(text)
+                    or _SAFETY_RESOLUTION_RE.search(text)):
+                continue
+            topics = _safety_topics(text)
+            resolvers = [r for r in resolutions
+                         if r["id"] != e["id"]
+                         and (r.get("ts") or "") > (e.get("ts") or "")
+                         and topics & _safety_topics(r.get("text", ""))]
+            if not resolvers:
+                continue
+            resolver = max(resolvers, key=lambda r: r.get("ts") or "")
+            trigger = f"resolved_by:{resolver['id']}:{resolver.get('text', '')[:60]}"
+            if invalidate_entry(profile, e["id"], by="superseded_by_resolution",
+                                trigger=trigger):
+                closed.append((cat, e, resolver))
+    return closed
 
 
 # ─── A5: deterministic safety pre-pass ───────────────────────────────────────

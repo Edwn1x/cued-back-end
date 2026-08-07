@@ -145,8 +145,13 @@ def test_retrieval_gap_admitted_never_blamed_on_delivery(db, monkeypatch):
     # And it owns the gap / asks for the number instead of bluffing a weight. The
     # phrasings all say "no saved detail on MY side" (first run: "not seeing a
     # weight saved from that pic on my end — what did the package say?").
-    assert any(p in low for p in ("didn't save", "don't have", "not saved", "didn't log",
-                                  "didn't catch", "didn't note", "didn't write",
-                                  "not seeing", "don't see", "no weight saved",
-                                  "isn't saved", "nothing saved")), \
+    # Admission phrasing varies ("don't have" / "don't actually have" / "never
+    # saved") — match the negation + verb with slack for adverbs, not exact
+    # substrings, or correct honesty fails on an adverb (seen live: "i don't
+    # actually have the weight saved").
+    import re as _re
+    _admission = _re.compile(
+        r"(?:didn'?t|don'?t|never|not|isn'?t|nothing|no)\s+(?:\w+\s+){0,2}"
+        r"(?:saved?|have|log(?:ged)?|catch|caught|note[d]?|wrote|write|see(?:ing)?|weight saved)")
+    assert _admission.search(low), \
         f"coach neither admitted the gap nor asked for the detail: {reply!r}"
