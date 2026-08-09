@@ -108,7 +108,58 @@ def plate_meal(path):
     img.save(path)
 
 
+def breakfast_scene(path):
+    """Vision-thoroughness Fix 1 scene, mirroring the Aug 8 live incident: plated
+    scrambled eggs PLUS clearly visible unopened food (jam jar, egg-white carton,
+    bread bag). Packaging is text-labeled so identification is deterministic; the
+    test judges whether the model sweeps the frame, not whether it can OCR art."""
+    img = Image.new("RGB", (1100, 700), "#8a6a4f")  # wood table
+    d = ImageDraw.Draw(img)
+
+    # plate of scrambled eggs, left — the eaten item
+    d.ellipse([60, 140, 560, 640], fill="#f5f5f2", outline="#d9d9d4", width=6)
+    d.ellipse([105, 185, 515, 595], outline="#e4e4de", width=4)
+    for ex, ey, w, h in [(180, 300, 130, 90), (280, 360, 150, 100), (220, 430, 120, 80),
+                         (340, 280, 110, 85), (360, 440, 100, 70)]:
+        d.ellipse([ex, ey, ex + w, ey + h], fill="#f2c94c", outline="#dba62f", width=3)
+        d.ellipse([ex + 18, ey + 14, ex + w - 24, ey + h - 22], fill="#f7dd7f")
+    fork_x = 585
+    d.rounded_rectangle([fork_x, 260, fork_x + 22, 560], radius=10,
+                        fill="#c9c9cf", outline="#a8a8b0", width=2)
+    for i in range(4):
+        x0 = fork_x - 4 + i * 8
+        d.rounded_rectangle([x0, 210, x0 + 5, 275], radius=2, fill="#c9c9cf")
+
+    # jam jar, top right — visible, not eaten
+    d.rounded_rectangle([680, 110, 810, 300], radius=18, fill="#a03040",
+                        outline="#701f2c", width=3)
+    d.rectangle([672, 84, 818, 118], fill="#c8b070", outline="#9a854e", width=3)  # lid
+    d.rectangle([692, 165, 798, 250], fill="#f4efe2", outline="#d8d0ba", width=2)
+    d.text((745, 185), "STRAWBERRY", font=_font_bold(15), fill="#7a2230", anchor="mm")
+    d.text((745, 215), "JAM", font=_font_bold(20), fill="#7a2230", anchor="mm")
+
+    # egg-white carton, mid right — visible, not eaten
+    d.polygon([(850, 150), (1040, 150), (1060, 200), (830, 200)], fill="#e8e8ee")
+    d.rectangle([830, 200, 1060, 430], fill="#f4f4f8", outline="#c9c9d4", width=3)
+    d.text((945, 250), "100% LIQUID", font=_font_bold(20), fill="#3a3a56", anchor="mm")
+    d.text((945, 290), "EGG WHITES", font=_font_bold(26), fill="#3a3a56", anchor="mm")
+    d.ellipse([895, 330, 995, 410], fill="#fdfdfd", outline="#d0d0dc", width=2)
+
+    # bread bag, bottom right — visible, not eaten
+    d.rounded_rectangle([660, 460, 1050, 650], radius=40, fill="#d8a85f",
+                        outline="#b3853f", width=4)
+    for bx in range(690, 1020, 55):
+        d.arc([bx, 455, bx + 60, 505], start=200, end=340, fill="#b3853f", width=3)
+    d.rectangle([760, 520, 960, 610], fill="#f7f1df", outline="#cbbf9b", width=2)
+    d.text((860, 545), "WHOLE WHEAT", font=_font_bold(19), fill="#6b4a1c", anchor="mm")
+    d.text((860, 580), "BREAD", font=_font_bold(24), fill="#6b4a1c", anchor="mm")
+    d.ellipse([1020, 540, 1056, 576], fill="#e6e6ea", outline="#b9b9c2", width=3)  # twist tie
+
+    img.save(path)
+
+
 if __name__ == "__main__":
     nutrition_label(os.path.join(HERE, "nutrition_label.png"))
     plate_meal(os.path.join(HERE, "plate_meal.png"))
-    print("wrote nutrition_label.png, plate_meal.png")
+    breakfast_scene(os.path.join(HERE, "breakfast_scene.png"))
+    print("wrote nutrition_label.png, plate_meal.png, breakfast_scene.png")
