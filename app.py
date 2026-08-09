@@ -112,11 +112,19 @@ If nothing can be extracted, return all null."""
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=250,
+            # 1000: all 14 fields populated + fences + a free-text food_context is
+            # ~300-400 tokens; the old 250 cap truncated live (Aug 7-8 stop= lines).
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "extract_and_store_decisions",
                     "claude-haiku-4-5-20251001", response)
+        # Gate on stop_reason BEFORE parsing: a truncated blob that happens to
+        # parse would store fields cut mid-output. Discard; next exchange re-extracts.
+        if response.stop_reason == "max_tokens":
+            logger.warning("BG_JOB_TRUNCATED site=extract_and_store_decisions user=%s "
+                           "max_tokens=%d — discarding, nothing stored", user_id, 1000)
+            return
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]
@@ -309,11 +317,19 @@ User: "yeah sounds good"
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            # 1500: a dense turn legitimately emits 6-8 facts (~600+ tokens with
+            # fences); the old 600 cap sat inside that range.
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "extract_and_store_memory",
                     "claude-haiku-4-5-20251001", response)
+        # Gate on stop_reason BEFORE parsing: a cut fact list that still parses
+        # would write durable memory from an incomplete output. Discard.
+        if response.stop_reason == "max_tokens":
+            logger.warning("BG_JOB_TRUNCATED site=extract_and_store_memory user=%s "
+                           "max_tokens=%d — discarding, nothing stored", user_id, 1500)
+            return
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in raw:
             raw = raw[:raw.rindex("}") + 1]
@@ -471,11 +487,21 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=600,
+            # 1500: the prompt's own ask (≤400 words structured) is ~550-700 tokens
+            # WITH headers — the old 600 cap sat INSIDE the asked-for range. The
+            # 400-word instruction stays the real length governor.
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "maybe_update_coaching_summary",
                     "claude-sonnet-4-6", response)
+        # A partial summary is worse than last cycle's intact one — and advancing
+        # the watermark over half-folded messages loses them permanently. Keep
+        # both untouched; the next cycle refolds the same cohort (self-healing).
+        if response.stop_reason == "max_tokens":
+            logger.warning("BG_JOB_TRUNCATED site=maybe_update_coaching_summary user=%s "
+                           "max_tokens=%d — keeping prior summary and watermark", user_id, 1500)
+            return
         summary = response.content[0].text.strip()
 
         session = get_session()

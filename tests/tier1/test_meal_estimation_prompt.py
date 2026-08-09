@@ -66,6 +66,30 @@ def test_estimation_block_present_on_image_turn(db, monkeypatch, anthropic_stub)
         "estimation block must sit after the cache breakpoint, uncached"
 
 
+def test_estimation_block_includes_whole_frame_sweep(db, monkeypatch, anthropic_stub):
+    """Vision-thoroughness fix (Aug 8 live incident: eggs logged, jam/egg whites/
+    bread silently ignored): the estimation block must instruct a first-pass sweep
+    of the WHOLE frame — eaten → log_meal, other visible food → food_on_hand —
+    not just portion accuracy for the plated dish. Keys on the stable phrase
+    'whole frame' (same contract as _MARKER: reword prompt and test together)."""
+    from tests.factories import make_user
+    from agent_loop import run_agent_loop
+
+    _enable(monkeypatch)
+    captured = _capture_system(anthropic_stub)
+    user = make_user(db)
+    run_agent_loop(user, "breakfast", "freeform", image_data=_IMG)
+
+    system = captured["system"]
+    est_blocks = [b for b in system[1:] if _MARKER in b["text"]]
+    assert est_blocks, "estimation block missing — composition broke, not this claim"
+    joined = "\n".join(b["text"] for b in est_blocks)
+    assert "whole frame" in joined, \
+        "estimation block has no first-pass scene-sweep guidance"
+    assert "food_on_hand" in joined, \
+        "sweep guidance must route seen-but-not-eaten to food_on_hand by name"
+
+
 def test_estimation_block_absent_when_flag_off(db, monkeypatch, anthropic_stub):
     from tests.factories import make_user
     from agent_loop import run_agent_loop
