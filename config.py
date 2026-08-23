@@ -14,6 +14,11 @@ elif _raw_db_url.startswith("postgresql://"):
     _raw_db_url = _raw_db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 DATABASE_URL = _raw_db_url
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
+# Admin console auth (Tier 0). When set, every /admin* route requires HTTP Basic
+# auth with this password (any username). When EMPTY the console stays open —
+# deliberate non-breaking rollout so a deploy without the var can't lock the
+# founder out; the /admin/system page shows a red banner until it's set.
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html")
 
 # CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"

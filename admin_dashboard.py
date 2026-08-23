@@ -170,6 +170,17 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <span class="icon">◈</span> Retention
   </button>
 
+  <div class="nav-section">Debug</div>
+  <a class="nav-item" href="/admin/system" style="text-decoration:none">
+    <span class="icon">⚙</span> System Health
+  </a>
+  <a class="nav-item" href="/admin/heartbeat" style="text-decoration:none">
+    <span class="icon">♥</span> Heartbeat
+  </a>
+  <a class="nav-item" href="/admin/consolidation" style="text-decoration:none">
+    <span class="icon">◫</span> Memory Jobs
+  </a>
+
   <div class="sidebar-footer">
     Last refreshed<br>{{ now }}
   </div>

@@ -3,7 +3,7 @@ import re
 import logging
 import threading
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -15,6 +15,7 @@ from scheduler import start_scheduler, schedule_user
 import config
 from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
+from admin_system import admin_system_bp
 from engagement_tracker import reset_unanswered
 from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
@@ -30,6 +31,32 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = config.FLASK_SECRET_KEY
 CORS(app, origins=config.ALLOWED_ORIGINS)
+# Introspection-driven debug console (/admin/system, /admin/heartbeat,
+# /admin/consolidation, /admin/data/<table>, /admin/user/<id>/debug).
+app.register_blueprint(admin_system_bp)
+
+
+@app.before_request
+def _admin_auth_gate():
+    """HTTP Basic auth on everything under /admin (dashboard + debug blueprint +
+    the write endpoints). Empty ADMIN_PASSWORD = gate off — non-breaking rollout;
+    the system page banners until the var is set."""
+    if not request.path.startswith("/admin"):
+        return None
+    if not config.ADMIN_PASSWORD:
+        return None
+    import secrets as _secrets
+    auth = request.authorization
+    if auth and auth.type == "basic" and _secrets.compare_digest(
+            auth.password or "", config.ADMIN_PASSWORD):
+        return None
+    return Response("Authentication required", 401,
+                    {"WWW-Authenticate": 'Basic realm="cued admin"'})
+
+
+if not config.ADMIN_PASSWORD:
+    logger.warning("ADMIN_PASSWORD not set — /admin console is UNAUTHENTICATED "
+                   "(including write actions). Set the env var to enable auth.")
 
 # ProxyFix: Railway runs behind a TCP proxy. Without this, request.remote_addr
 # resolves to Railway's edge IP, so Flask-Limiter would rate-limit ALL users
@@ -2299,7 +2326,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <h1>{{ user.name }}</h1>
       <div class="meta">{{ user.phone }} &nbsp;·&nbsp; ID {{ user.id }} &nbsp;·&nbsp; Signed up {{ signed_up }}</div>
     </div>
-    <span class="status-badge">{{ onboarding_label }}</span>
+    <div style="display:flex;align-items:center;gap:12px">
+      <a href="/admin/user/{{ user.id }}/debug" style="font-size:12px">Debug view →</a>
+      <span class="status-badge">{{ onboarding_label }}</span>
+    </div>
   </div>
   <div class="tabs">
     <div class="tab active" onclick="showTab('overview')">Overview</div>
