@@ -25,8 +25,16 @@ PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html"
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 
 # Coach settings
-COACH_MODEL = "claude-sonnet-4-6"
-MAX_RESPONSE_TOKENS = 400  # keep SMS responses concise
+# All reasoning surfaces run on Opus 4.8 — the most capable production-tier
+# model. Same request surface as Sonnet 5 (rejects temperature/top_p/top_k and
+# manual budget_tokens; adaptive thinking supported). Env-overridable as the
+# rollback lever, matching the flag culture elsewhere in this file.
+COACH_MODEL = os.getenv("COACH_MODEL", "claude-opus-4-8")
+# SMS conciseness is PROMPT-governed; this cap is truncation insurance, sized
+# for richer outputs (macro breakdowns, multi-part replies, future features) —
+# a hit cap means a reply cut mid-sentence, which is strictly worse than a long
+# one. Env-overridable like the other ceilings.
+MAX_RESPONSE_TOKENS = int(os.getenv("MAX_RESPONSE_TOKENS", "1000"))
 CONVERSATION_HISTORY_LIMIT = 50  # last N messages to include in prompt context
 
 # Phase A memory architecture — see plans/cued-memory-architecture-joyful-ullman.md
@@ -51,6 +59,7 @@ MEMORY_SAFETY_SUPERSESSION_ENABLED = os.getenv("MEMORY_SAFETY_SUPERSESSION_ENABL
 # Phase C1/C1.5 — prompt caching + cost telemetry.
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
 MODEL_PRICING = {
+    "opus":   {"input": 5.00, "output": 25.00},
     "sonnet": {"input": 3.00, "output": 15.00},
     "haiku":  {"input": 1.00, "output": 5.00},
 }
@@ -71,18 +80,22 @@ WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 1
 WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() == "true"
 
 # Phase 2 — single agent loop (inbound). Separate model key from the legacy
-# COACH_MODEL (which stays on claude-sonnet-4-6 until Phase 6): the loop runs on
-# current-gen Sonnet 5, which REJECTS temperature/top_p/top_k and manual
-# budget_tokens with a 400. Loop passes no sampling params; adaptive thinking +
-# low effort held constant (see rewrite/phase-2/INVESTIGATION.md §5).
-AGENT_LOOP_MODEL = "claude-sonnet-5"
+# COACH_MODEL (kept separate until Phase 6 unifies the surfaces): the loop runs
+# on Opus 4.8, which REJECTS temperature/top_p/top_k and manual budget_tokens
+# with a 400. Loop passes no sampling params; adaptive thinking + low effort
+# held constant (see rewrite/phase-2/INVESTIGATION.md §5). Env-overridable as
+# the rollback lever.
+AGENT_LOOP_MODEL = os.getenv("AGENT_LOOP_MODEL", "claude-opus-4-8")
 SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lower() == "true"
-# The loop's output ceiling is SEPARATE from MAX_RESPONSE_TOKENS (400 = SMS reply
-# length, used by legacy). A loop turn must fit adaptive-thinking tokens + one or more
-# tool-call JSONs + the reply, all of which count against output on Sonnet 5 — 400
+# The loop's output ceiling is SEPARATE from MAX_RESPONSE_TOKENS (the SMS reply
+# governor, used by legacy). A loop turn must fit adaptive-thinking tokens + one or
+# more tool-call JSONs + the reply, all of which count against output — a tight cap
 # truncates a multi-item turn (e.g. a calendar screenshot → several log_event calls),
-# giving stop_reason=max_tokens with no text. Output is cheap relative to that failure.
-AGENT_LOOP_MAX_TOKENS = int(os.getenv("AGENT_LOOP_MAX_TOKENS", "2000"))
+# giving stop_reason=max_tokens with no text. Output is cheap relative to that
+# failure, and max_tokens is a CEILING, not spend — only generated tokens bill.
+# 8000 leaves room for future tools/features with heavier tool-JSON + reasoning
+# turns while staying under the ~16k non-streaming SDK-timeout zone.
+AGENT_LOOP_MAX_TOKENS = int(os.getenv("AGENT_LOOP_MAX_TOKENS", "8000"))
 
 # Phase 3 tools — each behind its own flag, added one at a time.
 # Bound the tool loop (unbounded agent loops = runaway bills). 8 comfortably fits the
@@ -154,13 +167,14 @@ HEARTBEAT_TICK_MINUTES = int(os.getenv("HEARTBEAT_TICK_MINUTES", "45"))     # du
 HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 0-10 min offset — kills the :00/:30 tell
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
-# Decide-call output ceiling — SEPARATE from MAX_RESPONSE_TOKENS (400 = SMS reply
-# length). One decide turn spends adaptive-thinking tokens + the send_text/
+# Decide-call output ceiling — SEPARATE from MAX_RESPONSE_TOKENS (the SMS reply
+# governor). One decide turn spends adaptive-thinking tokens + the send_text/
 # stay_silent tool JSON (message included) + any inline-search reasoning against a
 # single output budget; at 400 a long-reasoning tick truncated mid-decision and
 # logged as "no message composed" (Aug 6 prod). Same lesson, same sizing as
-# AGENT_LOOP_MAX_TOKENS — output is cheap relative to a silently dropped tick.
-HEARTBEAT_DECIDE_MAX_TOKENS = int(os.getenv("HEARTBEAT_DECIDE_MAX_TOKENS", "2000"))
+# AGENT_LOOP_MAX_TOKENS — output is cheap relative to a silently dropped tick,
+# and the ceiling only bills what's actually generated.
+HEARTBEAT_DECIDE_MAX_TOKENS = int(os.getenv("HEARTBEAT_DECIDE_MAX_TOKENS", "8000"))
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
 # Anti-STACK window (guardrail): within this many minutes of an unanswered proactive
 # nudge, don't send a second one. Clears on time-elapse (no user reply needed) — the

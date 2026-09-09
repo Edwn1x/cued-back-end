@@ -1,15 +1,15 @@
 """
 Phase 2 — the single agent loop (inbound only).
 
-One Sonnet call per inbound, one voice, full context. Replaces
+One model call per inbound, one voice, full context. Replaces
 classifier→specialists→merge behind SINGLE_AGENT_LOOP_ENABLED; the webhook falls
 back to the legacy pipeline (orchestrator.route_message) on any exception.
 
 Context is UNIFIED — all memory categories rendered (not the per-agent slice), so
 a fact told in one domain is available in another (fixes failure 1). Safety
 constraints stay universal via render_categories(include_safety_universal=True).
-Model: claude-sonnet-5 (config.AGENT_LOOP_MODEL), no sampling params, adaptive
-thinking + low effort held constant (Sonnet 5 rejects temperature/budget_tokens;
+Model: claude-opus-4-8 (config.AGENT_LOOP_MODEL), no sampling params, adaptive
+thinking + low effort held constant (Opus 4.8 rejects temperature/budget_tokens;
 switching thinking modes would break the messages cache — see INVESTIGATION §5).
 """
 

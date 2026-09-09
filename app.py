@@ -139,9 +139,10 @@ If nothing can be extracted, return all null."""
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            # 1000: all 14 fields populated + fences + a free-text food_context is
+            # 2000: all 14 fields populated + fences + a free-text food_context is
             # ~300-400 tokens; the old 250 cap truncated live (Aug 7-8 stop= lines).
-            max_tokens=1000,
+            # Doubled headroom — truncation here discards the whole extraction.
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "extract_and_store_decisions",
@@ -150,7 +151,7 @@ If nothing can be extracted, return all null."""
         # parse would store fields cut mid-output. Discard; next exchange re-extracts.
         if response.stop_reason == "max_tokens":
             logger.warning("BG_JOB_TRUNCATED site=extract_and_store_decisions user=%s "
-                           "max_tokens=%d — discarding, nothing stored", user_id, 1000)
+                           "max_tokens=%d — discarding, nothing stored", user_id, 2000)
             return
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
@@ -344,9 +345,10 @@ User: "yeah sounds good"
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            # 1500: a dense turn legitimately emits 6-8 facts (~600+ tokens with
-            # fences); the old 600 cap sat inside that range.
-            max_tokens=1500,
+            # 3000: a dense turn legitimately emits 6-8 facts (~600+ tokens with
+            # fences); the old 600 cap sat inside that range. Doubled headroom —
+            # truncation here discards the whole fact list.
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "extract_and_store_memory",
@@ -355,7 +357,7 @@ User: "yeah sounds good"
         # would write durable memory from an incomplete output. Discard.
         if response.stop_reason == "max_tokens":
             logger.warning("BG_JOB_TRUNCATED site=extract_and_store_memory user=%s "
-                           "max_tokens=%d — discarding, nothing stored", user_id, 1500)
+                           "max_tokens=%d — discarding, nothing stored", user_id, 3000)
             return
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in raw:
@@ -513,21 +515,22 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
-            # 1500: the prompt's own ask (≤400 words structured) is ~550-700 tokens
+            model=config.COACH_MODEL,
+            # 3000: the prompt's own ask (≤400 words structured) is ~550-700 tokens
             # WITH headers — the old 600 cap sat INSIDE the asked-for range. The
-            # 400-word instruction stays the real length governor.
-            max_tokens=1500,
+            # 400-word instruction stays the real length governor; doubled for the
+            # Opus tokenizer (~30% more tokens for the same text) + headroom.
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "maybe_update_coaching_summary",
-                    "claude-sonnet-4-6", response)
+                    config.COACH_MODEL, response)
         # A partial summary is worse than last cycle's intact one — and advancing
         # the watermark over half-folded messages loses them permanently. Keep
         # both untouched; the next cycle refolds the same cohort (self-healing).
         if response.stop_reason == "max_tokens":
             logger.warning("BG_JOB_TRUNCATED site=maybe_update_coaching_summary user=%s "
-                           "max_tokens=%d — keeping prior summary and watermark", user_id, 1500)
+                           "max_tokens=%d — keeping prior summary and watermark", user_id, 3000)
             return
         summary = response.content[0].text.strip()
 

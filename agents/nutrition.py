@@ -686,7 +686,9 @@ Rules:
 
     response = client.messages.create(
         model=config.COACH_MODEL,
-        max_tokens=600,
+        # 1500: a long receipt → itemized read + meal suggestions + coaching note;
+        # 600 could cut the suggestions mid-list.
+        max_tokens=1500,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
