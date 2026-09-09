@@ -117,7 +117,10 @@ def _run_digest(user_id: int, transcript: str, *, tz_name: str = None) -> str:
     anchor = f"\n\nNow: {local:%A}, {local:%b} {local.day}, {local.year} (user's local time)."
     resp = client.messages.create(
         model=config.EPISODIC_MODEL,
-        max_tokens=120,
+        # 400: the digest is prompt-governed terse prose; the old 120 cap could
+        # cut a rich multi-thread day mid-sentence (this site's stop= is NOT
+        # gated — a truncated digest would be stored as-is).
+        max_tokens=400,
         system=DIGEST_PROMPT + anchor,
         messages=[{"role": "user", "content": transcript}],
     )

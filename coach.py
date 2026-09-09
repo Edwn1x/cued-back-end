@@ -579,7 +579,9 @@ User's report: "{user_message}"
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=300,
+            # 1000: a full-session dump can list many exercises; 300 fit ~8-10
+            # entries of JSON before cutting mid-array.
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         track(user.id, "coach.parse_workout_log", model, response)

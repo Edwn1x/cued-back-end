@@ -396,7 +396,10 @@ Activity level — always extract something if the user described their daily mo
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            # 1000: same sizing class as extract_and_store_decisions — a fully
+            # populated field set + fences needs real headroom; truncation
+            # discards the extraction.
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(getattr(user, "id", None),

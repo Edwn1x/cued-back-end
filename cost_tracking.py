@@ -27,6 +27,8 @@ def _model_key(model_str: str) -> str | None:
     if not model_str:
         return None
     s = model_str.lower()
+    if "opus" in s:
+        return "opus"
     if "sonnet" in s:
         return "sonnet"
     if "haiku" in s:
@@ -73,7 +75,7 @@ def record_usage(user_id, site: str, model_str: str, usage) -> None:
             "coach.get_coach_response"). Becomes the per-site breakdown key
             in the Finances dashboard, so use a consistent vocabulary.
       model_str: the model id passed to messages.create (e.g.
-                 "claude-sonnet-4-6"). We classify into "sonnet"/"haiku".
+                 "claude-opus-4-8"). We classify into "opus"/"sonnet"/"haiku".
       usage: response.usage from the SDK. None-safe.
     """
     try:

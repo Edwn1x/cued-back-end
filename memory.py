@@ -1195,7 +1195,9 @@ Rules:
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+            # 600: tags are terse (<100 chars each) but a dense coaching turn can
+            # emit several; headroom so the list never cuts mid-array.
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
         # Defer import to avoid circular: memory.py is imported by app.py which
