@@ -336,17 +336,35 @@ def test_asking_for_the_list_sends_the_big_ask_in_the_friend_voice(db, anthropic
     assert "react to the specific thing they said" in ins
 
 
-def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_stub, sms_capture):
-    import onboarding_agent
+def _seed_conversation(user_id, coach_replies: int, inbound_texts: int):
+    """A conversation: the hook, `coach_replies` onboarding replies, and `inbound_texts`
+    user texts (bursty users send several per turn)."""
     from models import get_session, Message
-    user = _new_signup(db, onboarding_step=2)
     s = get_session()
     try:
-        for i in range(onboarding_agent.BIG_ASK_AFTER_TURNS - 1):
-            s.add(Message(user_id=user.id, direction="in", body=f"msg {i}", message_type="freeform"))
+        s.add(Message(user_id=user_id, direction="out", body="hey how's your day going?", message_type="onboarding"))
+        for i in range(coach_replies):
+            s.add(Message(user_id=user_id, direction="out", body=f"reply {i}", message_type="onboarding"))
+        for i in range(inbound_texts):
+            s.add(Message(user_id=user_id, direction="in", body=f"text {i}", message_type="freeform"))
         s.commit()
     finally:
         s.close()
+
+
+def test_turns_are_coach_replies_not_inbound_texts(db):
+    """Live bug (2026-09-11): the founder sent 6 texts across 2 exchanges and the big
+    ask fired on exchange two. A burst of texts is ONE turn; count coach replies."""
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    _seed_conversation(user.id, coach_replies=1, inbound_texts=6)
+    assert onboarding_agent._coach_turns(user.id) == 1  # hook excluded
+
+
+def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_stub, sms_capture):
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    _seed_conversation(user.id, coach_replies=onboarding_agent.BIG_ASK_AFTER_TURNS, inbound_texts=6)
     seen = {}
     def _handler(kwargs):
         if "haiku" in kwargs.get("model", ""):
@@ -355,11 +373,16 @@ def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_
         return "ok real talk"
     anthropic_stub.reply_with(_handler)
 
-    onboarding_agent.handle_onboarding_reply(user, "haha yeah")  # this inbound is logged by the webhook normally; count it
+    onboarding_agent.handle_onboarding_reply(user, "haha yeah")
 
-    # turns counted from the messages table (5 seeded; the webhook logs the 6th in prod)
-    ins = seen["instruction"]
-    assert ("drop the basics in ONE text" in ins) == (onboarding_agent._inbound_turns(user.id) >= onboarding_agent.BIG_ASK_AFTER_TURNS)
+    assert "drop the basics in ONE text" in seen["instruction"]
+
+    # one reply fewer → still the friend
+    sms_capture.clear(); seen.clear()
+    user2 = _new_signup(db, onboarding_step=2)
+    _seed_conversation(user2.id, coach_replies=onboarding_agent.BIG_ASK_AFTER_TURNS - 1, inbound_texts=12)
+    onboarding_agent.handle_onboarding_reply(user2, "haha yeah")
+    assert "drop the basics in ONE text" not in seen["instruction"]
 
 
 def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_capture):
@@ -370,13 +393,7 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
                        workout_days="4", workout_time="17:00", current_split="none",
                        cooking_situation="dining_hall", diet="omnivore", wake_time="08:00",
                        sleep_time="00:00")  # injuries + existing_tools still unknown
-    s = get_session()
-    try:
-        for i in range(onboarding_agent.BUNDLE_AFTER_TURNS):
-            s.add(Message(user_id=user.id, direction="in", body=f"msg {i}", message_type="freeform"))
-        s.commit()
-    finally:
-        s.close()
+    _seed_conversation(user.id, coach_replies=onboarding_agent.BUNDLE_AFTER_TURNS, inbound_texts=4)
     seen = {}
     def _handler(kwargs):
         if "haiku" in kwargs.get("model", ""):
