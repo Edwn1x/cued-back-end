@@ -686,9 +686,9 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
 
 # ─── When is a list appropriate? (founder: keep the big ask + bundle for that) ──
 # Default is the friend reply. These are the exceptions, all code-decided:
-BIG_ASK_AFTER_TURNS = 6    # inbound turns with >= BIG_ASK_MIN_UNKNOWN still unknown
+BIG_ASK_AFTER_TURNS = 6    # coach replies so far, with >= BIG_ASK_MIN_UNKNOWN still unknown
 BIG_ASK_MIN_UNKNOWN = 3
-BUNDLE_AFTER_TURNS = 4     # inbound turns with <= 2 unknown → close it out in one ask
+BUNDLE_AFTER_TURNS = 4     # coach replies so far, with <= 2 unknown → close it out in one ask
 _ASKS_FOR_THE_LIST = re.compile(
     r"\b(what (do|else do|all do) (you|u) need|what (info|information|details?) (do you|do u|you|u) (need|want)"
     r"|what should i (send|tell|give) (you|u)|just (ask|tell) me (what|everything)"
@@ -698,20 +698,27 @@ _ASKS_FOR_THE_LIST = re.compile(
 )
 
 
-def _inbound_turns(user_id: int) -> int:
+def _coach_turns(user_id: int) -> int:
+    """Conversational turns so far = coach onboarding replies already sent, hook
+    excluded. NOT inbound rows: people text in bursts ("Nah I lwk got plans" /
+    "pizza in sf" / "at this Tonys place" / "apparently its really good?") and the
+    buffer folds a burst into ONE turn — counting rows fired the big ask on the
+    founder's second exchange (live, 2026-09-11 14:13 UTC)."""
     from models import get_session, Message
     session = get_session()
     try:
-        return (session.query(Message)
-                .filter(Message.user_id == user_id, Message.direction == "in").count())
+        outs = (session.query(Message)
+                .filter(Message.user_id == user_id, Message.direction == "out",
+                        Message.message_type == "onboarding").count())
+        return max(0, outs - 1)  # the hook is not a reply
     finally:
         session.close()
 
 
 def _intake_mode(incoming_message: str, missing_fields: list, turns: int) -> str:
     """'friend' (default) | 'big_ask' | 'bundle'.
-    big_ask — they asked for the list, or the conversation has run BIG_ASK_AFTER_TURNS+
-              turns with BIG_ASK_MIN_UNKNOWN+ fields still unknown (a friend would say
+    big_ask — they asked for the list, or the coach has already replied BIG_ASK_AFTER_TURNS+
+              times with BIG_ASK_MIN_UNKNOWN+ fields still unknown (a friend would say
               "alr real talk, let me just get the basics" rather than fish forever).
     bundle  — one or two fields left after BUNDLE_AFTER_TURNS+ turns (or they asked):
               close it out in one natural ask instead of stretching two more replies.
@@ -983,7 +990,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     # two-field bundle are kept for when a list is the right move — see
     # _intake_mode(): they asked for it, the conversation has run long with most
     # fields unknown, or one/two are left to close out.
-    mode = _intake_mode(incoming_message, missing_after, _inbound_turns(user_row.id))
+    mode = _intake_mode(incoming_message, missing_after, _coach_turns(user_row.id))
     if mode == "big_ask":
         text = _build_big_ask_message(user_row, incoming_message, system_prompt, missing_after)
     elif mode == "bundle":
