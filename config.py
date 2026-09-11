@@ -213,3 +213,22 @@ EPISODIC_SWEEP_MINUTES = int(os.getenv("EPISODIC_SWEEP_MINUTES", "30"))      # h
 EPISODIC_MODEL = HAIKU_MODEL                                                 # cheap digest pass
 EPISODIC_RECENT_DAYS = int(os.getenv("EPISODIC_RECENT_DAYS", "5"))          # window recent_episodic() surfaces into context
 EPISODIC_MIN_MESSAGES = int(os.getenv("EPISODIC_MIN_MESSAGES", "4"))        # don't digest a trivial 1-2 line exchange
+
+# ─── Photon / iMessage channel (PHOTON_MIGRATION_HANDOFF_v2) ──────────────────
+# Two kill switches, both default OFF so the seam ships dark and is flipped
+# deliberately (playbook §IV):
+#   IMESSAGE_CHANNEL_ENABLED    — sms.send_sms may route a user whose
+#       preferred_channel='imessage' through the sidecar. Off → everyone is SMS,
+#       whatever preferred_channel says.
+#   PHOTON_PROVISIONING_ENABLED — start_onboarding registers the new user with
+#       the Spectrum users API (the Free/Pro allowlist) and flips their
+#       preferred_channel. Off → no call; users stay SMS.
+IMESSAGE_CHANNEL_ENABLED = os.getenv("IMESSAGE_CHANNEL_ENABLED", "false").lower() == "true"
+PHOTON_PROVISIONING_ENABLED = os.getenv("PHOTON_PROVISIONING_ENABLED", "false").lower() == "true"
+SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
+INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
+SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
+SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
+SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
+SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
+PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))

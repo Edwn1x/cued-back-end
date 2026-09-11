@@ -603,6 +603,17 @@ def start_onboarding(user):
             goal = _goal_label(user.goal)
             text = hook["text"].format(name=user.name, goal_label=goal)
 
+            # Photon migration 4C: register the user with Spectrum (the shared-pool
+            # allowlist) BEFORE the first outbound so it can go blue. Flag-gated
+            # inside provision_user; any failure leaves preferred_channel='sms' and
+            # the hook still goes out over Twilio. Every entry point (signup with
+            # consent, /activate-sms, admin waitlist activation) funnels through here.
+            try:
+                import photon
+                photon.provision_user(user.id)
+            except Exception as e:  # never block onboarding on Photon
+                logger.warning(f"PHOTON_PROVISION_SKIPPED user={user.id} err={e}")
+
             send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
 
             session = get_session()

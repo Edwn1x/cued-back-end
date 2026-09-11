@@ -201,6 +201,34 @@ class Message(Base):
     user = relationship("User", back_populates="messages")
 
 
+class UnknownInbound(Base):
+    """An inbound on a channel from a handle that matches no User. Photon
+    migration: the Business-tier trigger is "first unknown-phone inbound on the
+    iMessage line" — a durable count, not a log memory. Full handle kept: it's
+    a lead. Auto-surfaced by the admin console's table browser."""
+    __tablename__ = "unknown_inbounds"
+
+    id = Column(Integer, primary_key=True)
+    handle = Column(String(200), nullable=False)       # E.164 phone or Apple-ID email
+    channel = Column(String(10), default="imessage")   # 'imessage' | 'sms'
+    body_preview = Column(String(200), default=None)
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+def record_unknown_inbound(handle: str, channel: str, body: str | None = None) -> None:
+    """Best-effort: bookkeeping must never take down the inbound route."""
+    session = get_session()
+    try:
+        session.add(UnknownInbound(handle=handle, channel=channel,
+                                   body_preview=(body or "")[:200] or None))
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        logger.warning("UNKNOWN_INBOUND_RECORD_FAILED handle=…%s err=%s", (handle or "")[-4:], e)
+    finally:
+        session.close()
+
+
 class Workout(Base):
     __tablename__ = "workouts"
 

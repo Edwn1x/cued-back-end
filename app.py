@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import logging
 import threading
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
-from models import init_db, get_session, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
+from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler, schedule_user
@@ -1052,6 +1053,230 @@ def is_goodnight_signal(body: str) -> bool:
 
 
 # ─── Twilio Webhook (incoming SMS) ──────────────────
+def _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
+                     channel="sms", provider_sid=None):
+    """The inbound pipeline, from the idempotency claim through the buffer arm.
+
+    Extracted verbatim from the Twilio webhook (Photon migration Phase 4B) so
+    the iMessage door (/internal/inbound) dispatches into the SAME code — one
+    pipeline, two transports. `user` is already resolved (each route handles the
+    unknown-sender case its own way); `from_number` is the buffer key (the
+    user's E.164 phone on both channels); `message_sid` is the idempotency key
+    (Twilio MessageSid or Photon message id); `image_url` is the has-image
+    signal, `image_data` the base64 block the model sees. Returns the TwiML
+    tuple the webhook needs; the iMessage route ignores it."""
+    # Webhook idempotency (claim-at-top): a Twilio retry of the SAME MessageSid
+    # — which a slow synchronous classify_message can trigger by blowing the
+    # ~15s webhook timeout — is deduped here before any state write, so we don't
+    # double-log the message / double-write meals. Fail-open: a missing sid or
+    # an unexpected claim error falls through and processes. The claim is
+    # RELEASED in the except handler so a crash-after-claim can be retried.
+    if not claim_message_sid(message_sid, user.id):
+        logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Clear quiet_until if it's passed or if user is texting us
+    # quiet_until is stored as naive UTC
+    if user.quiet_until:
+        from datetime import datetime as _dt, timezone as _tz_clear
+        if _dt.now(_tz_clear.utc).replace(tzinfo=None) >= user.quiet_until or body.strip():
+            user.quiet_until = None
+            session.commit()
+
+    # Log the incoming message immediately. has_image mirrors classify_message's
+    # presence signal: the stored row must record that media arrived (the base64
+    # never persists), or the window can't distinguish "no image ever came" from
+    # "image came, detail not saved" — the tenders-confabulation gap.
+    log_incoming(user.id, body, has_image=image_url is not None,
+                     channel=channel, provider_sid=provider_sid)
+
+    # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
+    # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
+    # buffer). Closes a pre-existing prod hole where goodnight messages
+    # bypassed safety extraction entirely (the daemon spawn in
+    # process_buffered_message never fired because goodnight returns
+    # before buffer_message). Safe to inline because the task is regex-
+    # only (no LLM), idempotent, and dedup-safe per its own docstring.
+    # Runs per raw message, before buffer combination — more robust
+    # than running on the combined blob.
+    apply_safety_signals_task(user.id, body)
+
+    # Fix 3 event floor: synchronous, deterministic detection of the two
+    # nudge-critical statuses (went_to_gym, in_class) — same floor pattern as
+    # the safety pre-pass, and for the same reason: the failure being fixed is
+    # "I *just* said it", so the scheduler gates must be able to read it
+    # immediately, without waiting on the buffer or an LLM. Regex only.
+    apply_event_signals_task(user.id, body)
+
+    # Reset engagement decay counter on any reply
+    reset_unanswered(user.id)
+
+    # Update mirroring style
+    maybe_update_style(user.id)
+
+    # Resolve pending clarification
+    resolve_pending_clarification(user.id, body)
+
+    # Fix 1: closing-acknowledgment suppression. Post-onboarding, when
+    # the user replies with a pure ack ("ok", "alr bet") AND the coach's
+    # most recent outbound has no open '?', end the turn silently —
+    # log_incoming + reset_unanswered already ran upstream; the safety
+    # pre-pass (Fix 5) already ran above. We just need to cancel the
+    # buffer and return empty TwiML. This breaks the wind-down loop
+    # and skips a Sonnet call.
+    if (user.onboarding_step or 0) >= 3 and should_suppress_ack(user.id, body):
+        from message_buffer import cancel_buffer
+        cancel_buffer(from_number)
+        logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}")
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Classify the message
+    message_type = classify_message(body, has_image=image_url is not None)
+
+    # Part B: workout logging mode entry trigger ("workout logging mode" / "log mode" / etc).
+    # Bypass buffer, create the in-progress Workout row, set session_state, reply terse.
+    if message_type == "workout_log_start" and config.WORKOUT_LOGGING_ENABLED \
+            and (user.onboarding_step or 0) >= 3:
+        new_workout_id = _create_in_progress_workout(user.id)
+        set_session_state(user.id, "workout_logging", workout_id=new_workout_id)
+        send_sms(
+            user.phone,
+            "📋 logging mode on. text your sets — say 'done' when you're finished.",
+            user_id=user.id,
+            message_type="workout_log_start",
+        )
+        from message_buffer import cancel_buffer as _cb_start
+        _cb_start(from_number)
+        logger.info(f"Part B: workout logging mode entered for {user.name} (workout_id={new_workout_id})")
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Part B: Gate the existing one-shot workout_log row creation and the
+    # *_state(at_gym) writes when the user is already in logging mode —
+    # otherwise we'd create a duplicate completed Workout (the in-progress
+    # row gets the set appended by the mode intercept below), AND we'd
+    # clobber workout_logging state with at_gym.
+    _pb_state = get_session_state(user.id) if config.WORKOUT_LOGGING_ENABLED else None
+    _pb_in_mode = bool(_pb_state and _pb_state.get("status") == "workout_logging")
+
+    # Track workout intent (skip in logging mode)
+    if message_type == "workout_log" and not _pb_in_mode:
+        parsed = parse_workout_log(user, body)
+        if parsed:
+            workout = Workout(
+                user_id=user.id,
+                workout_type="logged",
+                exercises=parsed.get("exercises", []),
+                user_notes=body,
+                completed=True,
+            )
+            session.add(workout)
+            session.commit()
+        confirm_workout_today(user.id)
+        set_session_state(user.id, "at_gym")
+        threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
+
+    if message_type == "workout_request" and not _pb_in_mode:
+        confirm_workout_today(user.id)
+        set_session_state(user.id, "at_gym")
+        threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
+
+    # Catch training-day confirmations that don't look like workout logs —
+    # e.g. "yeah hitting legs today" in reply to the morning briefing.
+    # Only fires if today's workout hasn't been confirmed yet.
+    if message_type == "freeform" and not is_workout_confirmed_today(user.id) and not _pb_in_mode:
+        if _is_training_day_confirmation(body):
+            confirm_workout_today(user.id)
+            set_session_state(user.id, "at_gym")
+            logger.info(f"Training day confirmed via freeform reply for {user.name}")
+            threading.Thread(
+                target=maybe_infer_training_days,
+                args=(user.id,),
+                daemon=True,
+            ).start()
+
+    # Check for goodnight signal — handle immediately, skip buffer
+    # Never trigger during onboarding — user is answering questions, not signing off
+    if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 3:
+        from datetime import datetime, timedelta, timezone as _tz_store
+        from zoneinfo import ZoneInfo
+        wake_time = user.wake_time or "07:00"
+        wake_h, wake_m = map(int, wake_time.split(":"))
+        try:
+            user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+        now_local = datetime.now(user_tz)
+        wake_today = now_local.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0)
+        if now_local < wake_today:
+            quiet_until = wake_today
+        else:
+            quiet_until = wake_today + timedelta(days=1)
+        # Store as UTC so comparisons with datetime.now(utc) are consistent
+        user.quiet_until = quiet_until.astimezone(_tz_store.utc).replace(tzinfo=None)
+        session.commit()
+        clear_session_state(user.id)
+
+        import random
+        response = random.choice([
+            "Night. Get some real sleep.",
+            "Sleep well. Talk tomorrow.",
+            "Night, rest up.",
+            "Get some rest. Hit me up in the morning.",
+        ])
+        send_sms(user.phone, response, user_id=user.id, message_type="goodnight")
+        # Cancel any pending buffer so it doesn't flush after goodnight
+        from message_buffer import cancel_buffer
+        cancel_buffer(from_number)
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Part B: workout logging mode intercept. Bypasses buffer (per plan —
+    # 20-30s buffer would combine multiple sets in 60s into one blob,
+    # breaking per-set ack). Mode = synchronous logging like goodnight.
+    # The _handle_logging_mode_message helper always returns True (never
+    # falls through to normal flow — see plan note on orphan-row bug).
+    if _pb_in_mode and _pb_state is not None:
+        _handle_logging_mode_message(user, body, _pb_state)
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Adaptive buffer based on conversation momentum
+    if (user.onboarding_step or 0) < 3:
+        # Onboarding — tight buffer, user is actively engaged
+        buffer_delay = (25, 35)
+    else:
+        # Check time since last inbound message to detect active conversation
+        from datetime import datetime, timedelta, timezone as _tz
+        last_inbound = (
+            session.query(Message)
+            .filter(Message.user_id == user.id, Message.direction == "in")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        if last_inbound and last_inbound.created_at:
+            last_msg_age = datetime.now(_tz.utc) - last_inbound.created_at.replace(tzinfo=_tz.utc)
+            if last_msg_age < timedelta(minutes=5):
+                # Active back-and-forth — respond faster
+                buffer_delay = (20, 30)
+            else:
+                # New conversation thread — full buffer to catch double-texts
+                buffer_delay = (90, 150)
+        else:
+            buffer_delay = (90, 150)
+
+    # Buffer the message — AI call and SMS response happen after the delay
+    buffer_message(
+        phone=from_number,
+        body=body,
+        user_id=user.id,
+        message_type=message_type,
+        image_url=image_data,
+        process_callback=process_buffered_message,
+        delay_override=buffer_delay,
+    )
+
+    # Return empty TwiML immediately — response comes later via the buffer
+    return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Handle incoming SMS from Twilio. Buffers messages before processing."""
@@ -1101,215 +1326,8 @@ def webhook():
                 "Visit cued.fit to get started."
             ), 200, {"Content-Type": "text/xml"}
 
-        # Webhook idempotency (claim-at-top): a Twilio retry of the SAME MessageSid
-        # — which a slow synchronous classify_message can trigger by blowing the
-        # ~15s webhook timeout — is deduped here before any state write, so we don't
-        # double-log the message / double-write meals. Fail-open: a missing sid or
-        # an unexpected claim error falls through and processes. The claim is
-        # RELEASED in the except handler so a crash-after-claim can be retried.
-        if not claim_message_sid(message_sid, user.id):
-            logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
-
-        # Clear quiet_until if it's passed or if user is texting us
-        # quiet_until is stored as naive UTC
-        if user.quiet_until:
-            from datetime import datetime as _dt, timezone as _tz_clear
-            if _dt.now(_tz_clear.utc).replace(tzinfo=None) >= user.quiet_until or body.strip():
-                user.quiet_until = None
-                session.commit()
-
-        # Log the incoming message immediately. has_image mirrors classify_message's
-        # presence signal: the stored row must record that media arrived (the base64
-        # never persists), or the window can't distinguish "no image ever came" from
-        # "image came, detail not saved" — the tenders-confabulation gap.
-        log_incoming(user.id, body, has_image=image_url is not None)
-
-        # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
-        # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
-        # buffer). Closes a pre-existing prod hole where goodnight messages
-        # bypassed safety extraction entirely (the daemon spawn in
-        # process_buffered_message never fired because goodnight returns
-        # before buffer_message). Safe to inline because the task is regex-
-        # only (no LLM), idempotent, and dedup-safe per its own docstring.
-        # Runs per raw message, before buffer combination — more robust
-        # than running on the combined blob.
-        apply_safety_signals_task(user.id, body)
-
-        # Fix 3 event floor: synchronous, deterministic detection of the two
-        # nudge-critical statuses (went_to_gym, in_class) — same floor pattern as
-        # the safety pre-pass, and for the same reason: the failure being fixed is
-        # "I *just* said it", so the scheduler gates must be able to read it
-        # immediately, without waiting on the buffer or an LLM. Regex only.
-        apply_event_signals_task(user.id, body)
-
-        # Reset engagement decay counter on any reply
-        reset_unanswered(user.id)
-
-        # Update mirroring style
-        maybe_update_style(user.id)
-
-        # Resolve pending clarification
-        resolve_pending_clarification(user.id, body)
-
-        # Fix 1: closing-acknowledgment suppression. Post-onboarding, when
-        # the user replies with a pure ack ("ok", "alr bet") AND the coach's
-        # most recent outbound has no open '?', end the turn silently —
-        # log_incoming + reset_unanswered already ran upstream; the safety
-        # pre-pass (Fix 5) already ran above. We just need to cancel the
-        # buffer and return empty TwiML. This breaks the wind-down loop
-        # and skips a Sonnet call.
-        if (user.onboarding_step or 0) >= 3 and should_suppress_ack(user.id, body):
-            from message_buffer import cancel_buffer
-            cancel_buffer(from_number)
-            logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}")
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
-
-        # Classify the message
-        message_type = classify_message(body, has_image=image_url is not None)
-
-        # Part B: workout logging mode entry trigger ("workout logging mode" / "log mode" / etc).
-        # Bypass buffer, create the in-progress Workout row, set session_state, reply terse.
-        if message_type == "workout_log_start" and config.WORKOUT_LOGGING_ENABLED \
-                and (user.onboarding_step or 0) >= 3:
-            new_workout_id = _create_in_progress_workout(user.id)
-            set_session_state(user.id, "workout_logging", workout_id=new_workout_id)
-            send_sms(
-                user.phone,
-                "📋 logging mode on. text your sets — say 'done' when you're finished.",
-                user_id=user.id,
-                message_type="workout_log_start",
-            )
-            from message_buffer import cancel_buffer as _cb_start
-            _cb_start(from_number)
-            logger.info(f"Part B: workout logging mode entered for {user.name} (workout_id={new_workout_id})")
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
-
-        # Part B: Gate the existing one-shot workout_log row creation and the
-        # *_state(at_gym) writes when the user is already in logging mode —
-        # otherwise we'd create a duplicate completed Workout (the in-progress
-        # row gets the set appended by the mode intercept below), AND we'd
-        # clobber workout_logging state with at_gym.
-        _pb_state = get_session_state(user.id) if config.WORKOUT_LOGGING_ENABLED else None
-        _pb_in_mode = bool(_pb_state and _pb_state.get("status") == "workout_logging")
-
-        # Track workout intent (skip in logging mode)
-        if message_type == "workout_log" and not _pb_in_mode:
-            parsed = parse_workout_log(user, body)
-            if parsed:
-                workout = Workout(
-                    user_id=user.id,
-                    workout_type="logged",
-                    exercises=parsed.get("exercises", []),
-                    user_notes=body,
-                    completed=True,
-                )
-                session.add(workout)
-                session.commit()
-            confirm_workout_today(user.id)
-            set_session_state(user.id, "at_gym")
-            threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
-
-        if message_type == "workout_request" and not _pb_in_mode:
-            confirm_workout_today(user.id)
-            set_session_state(user.id, "at_gym")
-            threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
-
-        # Catch training-day confirmations that don't look like workout logs —
-        # e.g. "yeah hitting legs today" in reply to the morning briefing.
-        # Only fires if today's workout hasn't been confirmed yet.
-        if message_type == "freeform" and not is_workout_confirmed_today(user.id) and not _pb_in_mode:
-            if _is_training_day_confirmation(body):
-                confirm_workout_today(user.id)
-                set_session_state(user.id, "at_gym")
-                logger.info(f"Training day confirmed via freeform reply for {user.name}")
-                threading.Thread(
-                    target=maybe_infer_training_days,
-                    args=(user.id,),
-                    daemon=True,
-                ).start()
-
-        # Check for goodnight signal — handle immediately, skip buffer
-        # Never trigger during onboarding — user is answering questions, not signing off
-        if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 3:
-            from datetime import datetime, timedelta, timezone as _tz_store
-            from zoneinfo import ZoneInfo
-            wake_time = user.wake_time or "07:00"
-            wake_h, wake_m = map(int, wake_time.split(":"))
-            try:
-                user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-            except Exception:
-                user_tz = ZoneInfo("America/Los_Angeles")
-            now_local = datetime.now(user_tz)
-            wake_today = now_local.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0)
-            if now_local < wake_today:
-                quiet_until = wake_today
-            else:
-                quiet_until = wake_today + timedelta(days=1)
-            # Store as UTC so comparisons with datetime.now(utc) are consistent
-            user.quiet_until = quiet_until.astimezone(_tz_store.utc).replace(tzinfo=None)
-            session.commit()
-            clear_session_state(user.id)
-
-            import random
-            response = random.choice([
-                "Night. Get some real sleep.",
-                "Sleep well. Talk tomorrow.",
-                "Night, rest up.",
-                "Get some rest. Hit me up in the morning.",
-            ])
-            send_sms(user.phone, response, user_id=user.id, message_type="goodnight")
-            # Cancel any pending buffer so it doesn't flush after goodnight
-            from message_buffer import cancel_buffer
-            cancel_buffer(from_number)
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
-
-        # Part B: workout logging mode intercept. Bypasses buffer (per plan —
-        # 20-30s buffer would combine multiple sets in 60s into one blob,
-        # breaking per-set ack). Mode = synchronous logging like goodnight.
-        # The _handle_logging_mode_message helper always returns True (never
-        # falls through to normal flow — see plan note on orphan-row bug).
-        if _pb_in_mode and _pb_state is not None:
-            _handle_logging_mode_message(user, body, _pb_state)
-            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
-
-        # Adaptive buffer based on conversation momentum
-        if (user.onboarding_step or 0) < 3:
-            # Onboarding — tight buffer, user is actively engaged
-            buffer_delay = (25, 35)
-        else:
-            # Check time since last inbound message to detect active conversation
-            from datetime import datetime, timedelta, timezone as _tz
-            last_inbound = (
-                session.query(Message)
-                .filter(Message.user_id == user.id, Message.direction == "in")
-                .order_by(Message.created_at.desc())
-                .first()
-            )
-            if last_inbound and last_inbound.created_at:
-                last_msg_age = datetime.now(_tz.utc) - last_inbound.created_at.replace(tzinfo=_tz.utc)
-                if last_msg_age < timedelta(minutes=5):
-                    # Active back-and-forth — respond faster
-                    buffer_delay = (20, 30)
-                else:
-                    # New conversation thread — full buffer to catch double-texts
-                    buffer_delay = (90, 150)
-            else:
-                buffer_delay = (90, 150)
-
-        # Buffer the message — AI call and SMS response happen after the delay
-        buffer_message(
-            phone=from_number,
-            body=body,
-            user_id=user.id,
-            message_type=message_type,
-            image_url=image_data,
-            process_callback=process_buffered_message,
-            delay_override=buffer_delay,
-        )
-
-        # Return empty TwiML immediately — response comes later via the buffer
-        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+        return _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
+                                channel="sms", provider_sid=message_sid)
 
     except Exception as e:
         # Twilio does NOT retry inbound-message webhooks on 5xx or read-timeout by
@@ -1327,6 +1345,92 @@ def webhook():
                      message_sid, from_number, e, exc_info=True)
         release_message_sid(message_sid)
         return get_twiml_response("Something went wrong on my end — I'll be back shortly."), 200, {"Content-Type": "text/xml"}
+    finally:
+        session.close()
+
+
+
+
+def _last4(handle: str) -> str:
+    """Log-safe handle: never a full phone/email in logs."""
+    return "…" + (handle or "")[-4:]
+
+
+@app.route("/internal/inbound", methods=["POST"])
+def internal_inbound():
+    """Sidecar → Flask (Photon migration Phase 4B). One inbound iMessage, dispatched
+    into the SAME pipeline as the Twilio webhook via _process_inbound.
+
+    Private: X-Internal-Secret required, and a missing configured secret means
+    CLOSED. Body is JSON, or multipart with a `payload` JSON field + attachment_N
+    files (see spectrum-sidecar/README.md).
+
+    Unknown phone → WARNING (last 4 only) + 200 + an unknown_inbounds row. 200,
+    not 4xx: the sidecar must not retry, and this is the Business-tier trigger
+    signal (someone texting the line who isn't a user) — a durable count, not a
+    memory."""
+    secret = config.INTERNAL_SHARED_SECRET
+    if not secret or request.headers.get("X-Internal-Secret") != secret:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    files = []
+    if (request.content_type or "").startswith("multipart/form-data"):
+        try:
+            payload = json.loads(request.form.get("payload") or "")
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad payload"}), 400
+        files = [request.files[k] for k in sorted(request.files) if k.startswith("attachment_")]
+    else:
+        payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not str(payload.get("phone") or "").strip():
+        return jsonify({"ok": False, "error": "expected {phone, text, provider_message_id, ...}"}), 400
+
+    raw_handle = str(payload.get("phone")).strip()
+    body = str(payload.get("text") or "").strip()
+    provider_message_id = str(payload.get("provider_message_id") or "")
+
+    # Same E.164 shape the Twilio webhook receives. An Apple-ID email can never
+    # match a phone-keyed User; it falls straight into the unknown path.
+    if "@" in raw_handle:
+        handle = raw_handle
+    else:
+        try:
+            handle = _normalize_phone(raw_handle)
+        except ValueError:
+            return jsonify({"ok": False, "error": "bad phone"}), 400
+
+    # First image attachment → the same base64 image block the MMS path builds.
+    image_name, image_data = None, None
+    for f in files:
+        image_name = image_name or f.filename or "attachment"
+        mime = (f.mimetype or "").lower()
+        if image_data is None and mime.startswith("image/"):
+            import base64
+            image_data = {"type": "image", "source": {"type": "base64", "media_type": mime,
+                          "data": base64.b64encode(f.read()).decode("utf-8")}}
+
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.phone == handle).first()
+        if not user:
+            logger.warning("IMESSAGE_UNKNOWN_INBOUND from=%s chars=%d attachments=%d",
+                           _last4(handle), len(body), len(files))
+            record_unknown_inbound(handle, "imessage", body)
+            return jsonify({"ok": True, "known": False}), 200
+        if not body and not files:
+            return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200
+        logger.info("Incoming iMessage from %s: %s", _last4(handle), body[:120])
+        _process_inbound(session, user, handle, body, provider_message_id, image_name, image_data,
+                         channel="imessage", provider_sid=provider_message_id)
+        return jsonify({"ok": True, "known": True}), 200
+    except Exception as e:
+        # Unlike Twilio, the sidecar DOES retry 5xx (3 attempts). Release the claim
+        # so the retry reprocesses instead of deduping against a pass that never
+        # finished. Observable as INTERNAL_INBOUND_DROPPED either way.
+        logger.error("INTERNAL_INBOUND_DROPPED id=%s from=%s err=%s",
+                     provider_message_id, _last4(handle), e, exc_info=True)
+        release_message_sid(provider_message_id)
+        return jsonify({"ok": False, "error": "internal"}), 500
     finally:
         session.close()
 

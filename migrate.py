@@ -223,6 +223,15 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failed_over BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failover_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS photon_user_id VARCHAR(64)",
+    # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
+    """CREATE TABLE IF NOT EXISTS unknown_inbounds (
+        id SERIAL PRIMARY KEY,
+        handle VARCHAR(200) NOT NULL,
+        channel VARCHAR(10) DEFAULT 'imessage',
+        body_preview VARCHAR(200),
+        received_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_unknown_inbounds_received ON unknown_inbounds (received_at)",
 ]
 
 def wait_for_db(retries=10, delay=3):
