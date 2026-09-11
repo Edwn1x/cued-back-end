@@ -10,9 +10,13 @@ Tracks which data points have been collected, not step numbers. Each exchange:
 2. Store what was found
 3. Reply as the friend (prompts/identity.md): engage the specific thing they said;
    if — and only if — what they said gives a natural reason, weave in ONE
-   question that would teach us one of the still-unknown fields. Never a list.
-   The eight-question "big ask" is gone (founder, 2026-09-11): the intake isn't
-   a form, it's stuff you learn by caring about their actual day.
+   question that would teach us one of the still-unknown fields. Never a list
+   BY DEFAULT — the intake isn't a form, it's stuff you learn by caring about
+   their actual day (founder, 2026-09-11). The big ask ("drop me the basics in
+   one text") and the two-field bundle are KEPT for when they're appropriate
+   (founder, same day): the user asks for the list, or the conversation has run
+   long with most fields still unknown, or one/two fields are left to close out.
+   See _intake_mode().
 4. If all collected → calculate targets, present summary, confirm
 
 The coach knows experience, goal, and obstacle from signup, which shapes HOW it
@@ -24,6 +28,7 @@ import os
 import json
 import logging
 import random
+import re
 import threading
 from datetime import datetime, timezone
 
@@ -679,6 +684,81 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
     return _generate(system_prompt, instruction, user_id=user.id)
 
 
+# ─── When is a list appropriate? (founder: keep the big ask + bundle for that) ──
+# Default is the friend reply. These are the exceptions, all code-decided:
+BIG_ASK_AFTER_TURNS = 6    # inbound turns with >= BIG_ASK_MIN_UNKNOWN still unknown
+BIG_ASK_MIN_UNKNOWN = 3
+BUNDLE_AFTER_TURNS = 4     # inbound turns with <= 2 unknown → close it out in one ask
+_ASKS_FOR_THE_LIST = re.compile(
+    r"\b(what (do|else do|all do) (you|u) need|what (info|information|details?) (do you|do u|you|u) (need|want)"
+    r"|what should i (send|tell|give) (you|u)|just (ask|tell) me (what|everything)"
+    r"|(send|give) me the (list|questions)|what else (do you|do u|you|u) (need|want)"
+    r"|ask me (the|your) questions|hit me with (the|your) questions|what('s| is) the (list|form))\b",
+    re.IGNORECASE,
+)
+
+
+def _inbound_turns(user_id: int) -> int:
+    from models import get_session, Message
+    session = get_session()
+    try:
+        return (session.query(Message)
+                .filter(Message.user_id == user_id, Message.direction == "in").count())
+    finally:
+        session.close()
+
+
+def _intake_mode(incoming_message: str, missing_fields: list, turns: int) -> str:
+    """'friend' (default) | 'big_ask' | 'bundle'.
+    big_ask — they asked for the list, or the conversation has run BIG_ASK_AFTER_TURNS+
+              turns with BIG_ASK_MIN_UNKNOWN+ fields still unknown (a friend would say
+              "alr real talk, let me just get the basics" rather than fish forever).
+    bundle  — one or two fields left after BUNDLE_AFTER_TURNS+ turns (or they asked):
+              close it out in one natural ask instead of stretching two more replies.
+    Anything else is the friend reply."""
+    n = len(missing_fields)
+    if n == 0:
+        return "friend"  # nothing to ask for — never a list
+    asked = bool(_ASKS_FOR_THE_LIST.search(incoming_message or ""))
+    if n <= 2 and n > 0 and (asked or turns >= BUNDLE_AFTER_TURNS):
+        return "bundle"
+    if asked or (turns >= BIG_ASK_AFTER_TURNS and n >= BIG_ASK_MIN_UNKNOWN):
+        return "big_ask"
+    return "friend"
+
+
+def _build_big_ask_message(user, incoming_message: str, system_prompt: str, missing_fields: list) -> str:
+    """The one-text ask for everything still unknown — used only when _intake_mode
+    says it's appropriate (they asked for it, or the conversation has run long).
+    Same friend voice: react to what they said first, then one natural ask."""
+    fields_hint = ", ".join(f[1].split(" — ")[0] for f in missing_fields)
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"STEP 1 (required): react to the specific thing they said, like a friend. If they "
+        f"asked what you need, that's your cue — no apology, no preamble.\n\n"
+        f"STEP 2: ask them to drop the basics in ONE text: {fields_hint}. Frame it the way "
+        f"a friend would — 'alr real talk, just send me the basics in one go' — and name what "
+        f"to cover in plain words, not a numbered list. 3-4 sentences max. No greeting. "
+        f"This is the ONE time a list of things is okay; make it feel like one ask."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
+def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, system_prompt: str) -> str:
+    """Close out the last one or two unknowns in a single natural ask — used only
+    when _intake_mode says so (late in the conversation, or they asked)."""
+    gap_descriptions = [f[1].split(" — ")[0] for f in missing_fields[:2]]
+    gaps_str = " and ".join(gap_descriptions)
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"STEP 1: react to what they said like a friend (answer any question fully).\n"
+        f"STEP 2: you're basically done getting to know them — ask about {gaps_str} in one "
+        f"short, natural line ('last thing' energy), both in one breath if there are two. "
+        f"Not a form. 1-2 sentences. No greeting."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
 def start_onboarding(user):
     """
     Entry point — called from app.py after signup.
@@ -898,11 +978,21 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         return False
 
-    # ── Still getting to know them — the friend reply (one woven question max) ──
-    text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after)
+    # ── Still getting to know them ──────────────────────────────────────────
+    # Friend reply by default (one woven question max). The big ask and the
+    # two-field bundle are kept for when a list is the right move — see
+    # _intake_mode(): they asked for it, the conversation has run long with most
+    # fields unknown, or one/two are left to close out.
+    mode = _intake_mode(incoming_message, missing_after, _inbound_turns(user_row.id))
+    if mode == "big_ask":
+        text = _build_big_ask_message(user_row, incoming_message, system_prompt, missing_after)
+    elif mode == "bundle":
+        text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
+    else:
+        text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after)
     send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
     remaining_names = [f[0] for f in missing_after]
-    logger.info(f"Onboarding friend reply to {user_row.name} — still unknown: {remaining_names}")
+    logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}")
     return False
 
 

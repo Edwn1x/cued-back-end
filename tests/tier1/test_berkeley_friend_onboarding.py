@@ -15,6 +15,9 @@ Berkeley-friend identity + conversational intake + web search on every surface
    field" anymore) so a bare "5" maps to what was actually asked.
 5. The summary is presented the first time nothing is unknown; a stray "ok" in
    the message that filled the last field can no longer complete onboarding.
+6. The big ask and the two-field bundle are KEPT for when a list is appropriate
+   (founder): they ask for it, the conversation has run long with most fields
+   unknown, or one/two fields are left to close out. Code-decided (_intake_mode).
 """
 
 from __future__ import annotations
@@ -80,10 +83,9 @@ def test_onboarding_prompt_lists_unknowns_and_forbids_the_list(db):
     import re as _re
     assert _re.search(r"It's \w+day, \w{3} \d{1,2}, 20\d\d, \d{1,2}:\d\d[ap]m in Berkeley", sp), \
         "the day line must carry the YEAR — without it the model searches 'Fall 2024'"
-    # the intake block is gone for good
+    # the intake block is not in the DEFAULT prompt (the big ask exists, but only
+    # when _intake_mode says a list is appropriate)
     assert "drop me everything" not in sp.lower() and "in one text" not in sp.lower()
-    assert not hasattr(onboarding_agent, "_build_big_ask_message")
-    assert not hasattr(onboarding_agent, "_bundle_gap_questions")
 
 
 # ── 2. the first reply is a friend reply, not a big ask ──────────────────────
@@ -288,3 +290,103 @@ def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthrop
     assert onboarding_agent.handle_onboarding_reply(db.get(User, user.id), "yeah sounds good") is True
     db.expire_all()
     assert db.get(User, user.id).onboarding_step == 3
+
+
+# ── 6. the list is kept for when it's appropriate ────────────────────────────
+
+def test_intake_mode_rules():
+    from onboarding_agent import _intake_mode, BIG_ASK_AFTER_TURNS, BUNDLE_AFTER_TURNS
+    many = [("a", "x"), ("b", "y"), ("c", "z"), ("d", "w")]
+    two = many[:2]
+    # default: friend
+    assert _intake_mode("ugh 70 quiz at 4", many, turns=1) == "friend"
+    assert _intake_mode("cool", two, turns=1) == "friend"
+    # they ask for the list → big ask (or bundle if only 1-2 left)
+    for msg in ("what do you need from me", "just tell me what you need", "what info do you need",
+                "send me the questions", "what should i send you", "what else do u need"):
+        assert _intake_mode(msg, many, turns=1) == "big_ask", msg
+        assert _intake_mode(msg, two, turns=1) == "bundle", msg
+    # long conversation, most fields still unknown → big ask
+    assert _intake_mode("yeah", many, turns=BIG_ASK_AFTER_TURNS) == "big_ask"
+    assert _intake_mode("yeah", many, turns=BIG_ASK_AFTER_TURNS - 1) == "friend"
+    # one or two left after a real conversation → bundle
+    assert _intake_mode("yeah", two, turns=BUNDLE_AFTER_TURNS) == "bundle"
+    assert _intake_mode("yeah", two, turns=BUNDLE_AFTER_TURNS - 1) == "friend"
+    # nothing unknown never picks a list
+    assert _intake_mode("what do you need", [], turns=9) == "friend"
+
+
+def test_asking_for_the_list_sends_the_big_ask_in_the_friend_voice(db, anthropic_stub, sms_capture):
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+
+    def _handler(kwargs):
+        if "haiku" in kwargs.get("model", ""):
+            return "{}"
+        seen["instruction"] = kwargs["messages"][0]["content"]
+        return "alr real talk, just send me the basics in one go - height, weight, what your days look like, food situation, sleep."
+    anthropic_stub.reply_with(_handler)
+
+    onboarding_agent.handle_onboarding_reply(user, "lol just tell me what you need")
+
+    assert len(sms_capture) == 1
+    ins = seen["instruction"]
+    assert "drop the basics in ONE text" in ins and "height and weight" in ins
+    assert "react to the specific thing they said" in ins
+
+
+def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_stub, sms_capture):
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2)
+    s = get_session()
+    try:
+        for i in range(onboarding_agent.BIG_ASK_AFTER_TURNS - 1):
+            s.add(Message(user_id=user.id, direction="in", body=f"msg {i}", message_type="freeform"))
+        s.commit()
+    finally:
+        s.close()
+    seen = {}
+    def _handler(kwargs):
+        if "haiku" in kwargs.get("model", ""):
+            return "{}"
+        seen["instruction"] = kwargs["messages"][0]["content"]
+        return "ok real talk"
+    anthropic_stub.reply_with(_handler)
+
+    onboarding_agent.handle_onboarding_reply(user, "haha yeah")  # this inbound is logged by the webhook normally; count it
+
+    # turns counted from the messages table (5 seeded; the webhook logs the 6th in prod)
+    ins = seen["instruction"]
+    assert ("drop the basics in ONE text" in ins) == (onboarding_agent._inbound_turns(user.id) >= onboarding_agent.BIG_ASK_AFTER_TURNS)
+
+
+def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_capture):
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=10, weight_lbs=170,
+                       occupation="student", activity_level="active", avg_steps=8000,
+                       workout_days="4", workout_time="17:00", current_split="none",
+                       cooking_situation="dining_hall", diet="omnivore", wake_time="08:00",
+                       sleep_time="00:00")  # injuries + existing_tools still unknown
+    s = get_session()
+    try:
+        for i in range(onboarding_agent.BUNDLE_AFTER_TURNS):
+            s.add(Message(user_id=user.id, direction="in", body=f"msg {i}", message_type="freeform"))
+        s.commit()
+    finally:
+        s.close()
+    seen = {}
+    def _handler(kwargs):
+        if "haiku" in kwargs.get("model", ""):
+            return "{}"
+        seen["instruction"] = kwargs["messages"][0]["content"]
+        return "last thing - anything banged up, and you tracking on any apps?"
+    anthropic_stub.reply_with(_handler)
+
+    onboarding_agent.handle_onboarding_reply(user, "yeah that's about it")
+
+    ins = seen["instruction"]
+    assert "last thing" in ins and "any injuries" in ins and "fitness apps" in ins
+    assert "ONE text" not in ins

@@ -104,3 +104,15 @@ hand review: PASS with a note. Searched GBC's menu and named real items, but bob
 2. Added the local day/time line, the year (the model was searching "fall 2024"), the "also, …?" tell, a course-number/campus-place always-search rule, and Berkeley as the tool's user_location.
 3. Pre-search narration ("I'll search for context…") and a third-person reasoning fragment leaked into replies — the onboarding call ran with thinking OFF. Turned adaptive thinking on (effort medium; the coach loop stays low) and added "never announce a search".
 4. At low effort the model still wrote "Wait - that's two questions. Let me fix that:" INTO the reply; my own "before you send, re-read it" rule was inviting the visible edit. Replaced with "decide the one question before you write, one paragraph". Clean 8/8 after that.
+
+---
+
+## the kept exception: they ask for the list → big ask
+
+**user:** lol ok just tell me what you need from me and i'll send it
+
+**coach:** ha, i love that energy. alr real talk, just send me the basics in one text - height and weight, what you do all day (student? on your feet or at a desk?), how active you are outside the gym plus your daily steps if you know em, how many days a week you can train and what time you like to go, whether you've already got a routine you follow, and your food setup (dining hall, cooking, eating out) with any restrictions or allergies. throw in any injuries, when you usually wake up and crash, and any apps or watches you track with. dump it all in one go and i'll take it from there.
+
+mechanical: ✓ one message · ✓ big_ask mode · ✓ not a numbered list
+
+hand review: PASS. Reacts first ("i love that energy"), then one natural ask in the friend voice, no numbering. It's long because all 12 fields are unknown at turn 1 — that's what the founder's case asks for; when the big ask fires after a real conversation it only lists what's left. This path is code-gated (they asked, or 6+ turns with 3+ unknown); the default first reply is still the friend reply above.

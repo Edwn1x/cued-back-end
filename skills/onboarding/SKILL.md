@@ -67,12 +67,13 @@ Log which template each user receives. After 50+ users, analyze:
 
 ---
 
-## Phase 2: Get to know them (there is no "big ask")
+## Phase 2: Get to know them (the big ask is the exception, not the opener)
 
 > Rewritten 2026-09-11 (founder). The eight-question "drop me everything in one text"
-> message is gone. The bar for every onboarding reply is: **would a friend at Berkeley
-> send this?** A friend doesn't acknowledge your quiz and pivot to their agenda — a
-> friend is interested in the quiz. See `prompts/identity.md`.
+> message is no longer the default. The bar for every onboarding reply is: **would a
+> friend at Berkeley send this?** A friend doesn't acknowledge your quiz and pivot to
+> their agenda — a friend is interested in the quiz. See `prompts/identity.md`. The big
+> ask and the two-field bundle are KEPT for when a list is the right move (below).
 
 Once the user has replied to the hook, they're in conversation mode. From here the
 coach is a friend at Berkeley who happens to know training and food cold. Every reply:
@@ -86,6 +87,15 @@ coach is a friend at Berkeley who happens to know training and food cold. Every 
    list.
 3. **At most one question per message.** Never "a few things I need." Never a numbered
    or comma-separated set of things to answer.
+
+**When a list IS appropriate** (code-decided in `onboarding_agent._intake_mode`):
+- They ask for it — "what do you need from me", "just tell me what to send" → the big
+  ask, in the friend voice: react first, then "alr real talk, just send me the basics
+  in one go".
+- The conversation has run 6+ turns with 3+ fields still unknown → the big ask. A
+  friend stops fishing at some point and just asks.
+- One or two fields left after 4+ turns → the bundle: "last thing — anything banged
+  up, and you tracking on any apps?" Close it out, don't stretch two more replies.
 
 Mechanically: the system prompt carries a STILL UNKNOWN list (the fields still null,
 phrased as things a friend would come to know); the model decides when a reason has
@@ -247,7 +257,7 @@ anything I'm missing or got wrong? if we're good I'll check in with you around y
 
 ### Never make the collection feel like a form
 - ❌ "Please provide your: 1) Height 2) Weight 3) Age 4) Goals 5) Experience..."
-- ❌ "drop me everything in one text — height, weight, what your days look like..." (the old big ask — also a form, just a friendlier one)
+- ❌ "drop me everything in one text — height, weight, what your days look like..." as the OPENER (it's a form, just a friendlier one). It's fine when they asked for it or the conversation has run long — see "When a list IS appropriate".
 - ✅ "eat something real before it, not just coffee — you got food at the house or is it dining hall today"
 
 ### Never ask a question without a reason

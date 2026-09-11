@@ -121,3 +121,35 @@ def test_berkeley_friend_first_replies(db, driver, monkeypatch, caplog):
     print(f"\n[EVAL] wrote {OUT}")
 
     assert not failures, "\n".join(failures)
+
+
+def test_asking_for_the_list_gets_the_big_ask_in_the_friend_voice(db, driver, monkeypatch, caplog):
+    """The kept exception: when they ask what you need, the big ask is the right move.
+    It should still react to them first and read as a friend, not a form."""
+    import config, onboarding_agent
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "WEB_SEARCH_TOOL_ENABLED", True)
+    monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
+    monkeypatch.setattr(onboarding_agent, "_now_local",
+                        lambda tz: datetime(2026, 9, 11, 14, 30, tzinfo=ZoneInfo("America/Los_Angeles")))
+    user = _fresh_signup(db)
+    inbound = "lol ok just tell me what you need from me and i'll send it"
+    with caplog.at_level(logging.INFO):
+        replies = driver.send(user, inbound)
+    reply = "\n".join(replies)
+    modes = [r.getMessage() for r in caplog.records if "ONBOARDING_REPLY mode=" in r.getMessage()]
+    print(f"\n[big ask] user: {inbound}\n[big ask] coach: {reply}\n[big ask] {modes}")
+
+    with open(OUT, "a", encoding="utf-8") as f:
+        f.write("\n---\n\n## the kept exception: they ask for the list → big ask\n\n")
+        f.write(f"**user:** {inbound}\n\n**coach:** {reply}\n\n")
+        f.write("mechanical: " + ("✓" if len(replies) == 1 else "✗") + " one message · "
+                + ("✓" if "mode=big_ask" in " ".join(modes) else "✗") + " big_ask mode · "
+                + ("✓" if not re.search(r"^\s*\d+[.)]", reply, re.M) else "✗") + " not a numbered list\n\n")
+        f.write("hand review: _pending_\n")
+
+    assert len(replies) == 1
+    assert any("mode=big_ask" in m for m in modes), modes
+    assert not re.search(r"^\s*\d+[.)]", reply, re.M), "numbered list — that's a form"
+    low = reply.lower()
+    assert any(k in low for k in ("height", "weight", "sleep", "food", "gym", "train", "eat")), reply
