@@ -211,6 +211,10 @@ MIGRATIONS = [
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_available BOOLEAN DEFAULT FALSE",
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_used BOOLEAN DEFAULT FALSE",
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_query TEXT",
+    # users.activity_level is a free-text phrase from the onboarding extractor; prod
+    # was widened to VARCHAR(500) by hand, models.py now declares 500 — this makes
+    # any DB created before that match. Widening is idempotent + non-destructive.
+    "ALTER TABLE users ALTER COLUMN activity_level TYPE VARCHAR(500)",
     # Photon migration Phase 2: channel routing + delivery outcome. DEFAULTs backfill
     # every existing row as sms/sent so the keystone (increment_unanswered) never sees
     # an ambiguous NULL on legacy rows. Index name matches SQLAlchemy's index=True

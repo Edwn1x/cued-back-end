@@ -279,8 +279,8 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
     ]
     tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]
     if search["available"]:
-        tools.append({"type": "web_search_20260209", "name": "web_search",
-                      "max_uses": config.WEB_SEARCH_MAX_USES})
+        from agent_tools import WEB_SEARCH_TOOL
+        tools.append(WEB_SEARCH_TOOL)
 
     messages = [{"role": "user", "content": "[heartbeat tick — decide: speak or stay silent]"}]
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):

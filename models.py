@@ -28,7 +28,10 @@ class User(Base):
     prior_coaching = Column(String(5))  # yes, no
     equipment = Column(String(100))  # full_gym, home_gym, bodyweight
     injuries = Column(Text)  # injuries or physical limitations
-    activity_level = Column(String(20))  # sedentary, lightly_active, active, very_active
+    # The onboarding extractor stores a plain-English phrase ("active — 8-10k steps,
+    # basketball"), not an enum; prod was widened to 500 by hand long ago. Declared
+    # here to match (a fresh DB at 20 chars fails the very first onboarding write).
+    activity_level = Column(String(500))
     diet = Column(String(100))  # omnivore, vegetarian, vegan, etc.
     restrictions = Column(Text)  # allergies, dislikes
     cooking_situation = Column(String(20))  # cook_myself, dining_hall, mostly_eat_out, mix

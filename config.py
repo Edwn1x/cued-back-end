@@ -110,7 +110,10 @@ GET_DINING_MENU_TOOL_ENABLED = os.getenv("GET_DINING_MENU_TOOL_ENABLED", "false"
 # web_search is Anthropic's SERVER-SIDE tool (web_search_20260209 on Sonnet 5) — runs
 # inline, no client handler. Adds per-search billing on top of tokens.
 WEB_SEARCH_TOOL_ENABLED = os.getenv("WEB_SEARCH_TOOL_ENABLED", "false").lower() == "true"
-WEB_SEARCH_MAX_USES = 3
+# Cap per REPLY (founder, 2026-09-11): a friend checks one thing, maybe two — a
+# search-every-turn coach feels slow (each search adds seconds). The WEB_SEARCH_QUERY
+# log line (agent_tools.log_web_search_queries) is how we see what it reaches for.
+WEB_SEARCH_MAX_USES = 2
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).

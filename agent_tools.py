@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm.attributes import flag_modified
 
+import config
+
 from models import (get_session, User, Workout, Meal, Event, DiningMenuItem, active,
                     recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
@@ -802,6 +804,44 @@ def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) 
 
 
 # name -> handler. The loop consults this after checking the tool is enabled.
+# ─── web_search (Anthropic SERVER-SIDE tool — no client handler) ─────────────
+# Registered here with the other tools so every surface (coach loop, heartbeat,
+# onboarding) offers the identical definition. Anthropic runs the search inline and
+# returns results as content blocks; output/query hygiene are prompt rules in
+# prompts/identity.md (one detail in your own words, no links, no user PII).
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20260209",
+    "name": "web_search",
+    "max_uses": config.WEB_SEARCH_MAX_USES,
+    # The beta is Berkeley: localize results (RSF hours, GBC, a 70 midterm thread)
+    # without the model having to type "berkeley" into every query.
+    "user_location": {"type": "approximate", "city": "Berkeley", "region": "California",
+                      "country": "US", "timezone": "America/Los_Angeles"},
+}
+
+
+def web_search_queries(content) -> list[str]:
+    """The search queries the model issued in one response: every server_tool_use
+    (or tool_use) block named web_search, in order. Empty when it didn't search."""
+    out = []
+    for b in content or []:
+        if (getattr(b, "type", None) in ("server_tool_use", "tool_use")
+                and getattr(b, "name", None) == "web_search"):
+            q = (getattr(b, "input", None) or {}).get("query")
+            if q:
+                out.append(q)
+    return out
+
+
+def log_web_search_queries(user_id, content, site: str) -> list[str]:
+    """Log each web_search query with the user id (WEB_SEARCH_QUERY) so we can see
+    what the coach reaches for, and how often. Returns the queries."""
+    queries = web_search_queries(content)
+    for q in queries:
+        logger.info("WEB_SEARCH_QUERY user=%s site=%s query=%r", user_id, site, q)
+    return queries
+
+
 _HANDLERS = {
     "remember": handle_remember,
     "log_workout": handle_log_workout,
