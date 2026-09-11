@@ -15,7 +15,19 @@ What decays is questions and check-in frequency.
 
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
+
 from models import get_session, User, Message
+
+
+def _landed():
+    """Filter: outbound rows that actually reached the user. A `failed` row is
+    invisible to every silence gate in this module — the keystone's rule
+    (increment_unanswered) applied to the gates that decide whether the coach
+    stays quiet. Without it a sidecar outage mutes the coach for every
+    iMessage user. NULL (legacy) counts as landed; only an explicit 'failed'
+    is excluded."""
+    return or_(Message.delivery_status.is_(None), Message.delivery_status != "failed")
 
 
 def has_unanswered_outbound(user_id: int) -> bool:
@@ -41,6 +53,7 @@ def has_unanswered_outbound(user_id: int) -> bool:
                 Message.user_id == user_id,
                 Message.direction == "out",
                 Message.created_at >= today_start,
+                _landed(),
             )
             .order_by(Message.created_at.desc())
             .first()
@@ -88,7 +101,7 @@ def has_unanswered_proactive(user_id: int, window_minutes: int) -> bool:
     try:
         last_out = (
             session.query(Message)
-            .filter(Message.user_id == user_id, Message.direction == "out")
+            .filter(Message.user_id == user_id, Message.direction == "out", _landed())
             .order_by(Message.created_at.desc())
             .first()
         )

@@ -1075,6 +1075,17 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
+    # Photon migration: breaker reset. An iMessage arriving FROM this user is
+    # proof the pipe works for them — clear channel_failed_over so the next
+    # outbound goes blue again. No timers, no polling; the user's own message
+    # is the health check. A Twilio inbound proves nothing about iMessage and
+    # never clears it. preferred_channel (the ask) is untouched.
+    if channel == "imessage" and user.channel_failed_over:
+        user.channel_failed_over = False
+        user.channel_failover_at = None
+        session.commit()
+        logger.info("IMESSAGE_BREAKER_RESET user_id=%s — inbound iMessage proves the pipe", user.id)
+
     # Clear quiet_until if it's passed or if user is texting us
     # quiet_until is stored as naive UTC
     if user.quiet_until:
