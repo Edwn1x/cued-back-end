@@ -721,3 +721,24 @@ def test_log_workout_tool_never_guesses_split_day():
     from agent_tools import LOG_WORKOUT_TOOL
     d = LOG_WORKOUT_TOOL["description"]
     assert "NEVER guess it" in d and "date" in LOG_WORKOUT_TOOL["input_schema"]["properties"]
+
+
+def test_coach_context_carries_the_profile_link(db):
+    """Live: "send me that link again to my profile" → "i don't have a profile link" —
+    the kickoff that sent it had rolled to the edge of the 50-message window. The URL is
+    deterministic (base + phone); it belongs in context, not in memory."""
+    import config
+    from agent_loop import build_loop_context, _voice_prompt
+    from models import get_session
+    user = make_user(db, name="Nau", phone="+12094205037")
+    s = get_session()
+    try:
+        ctx = build_loop_context(user, s)
+    finally:
+        s.close()
+    from profile_page import profile_url
+    assert "## THEIR PROFILE PAGE" in ctx
+    assert profile_url(user) in ctx                      # the token link (PR #34)
+    assert "?phone=" not in ctx, "the phone number must never appear in the URL"
+    assert "Never say you don't have it" in ctx
+    assert "THEIR PROFILE PAGE (in context)" in " ".join(_voice_prompt().split())

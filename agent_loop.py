@@ -282,6 +282,22 @@ def build_loop_context(user, session) -> str:
             ". If one matters to this reply, you may ask at most ONE follow-up."
         )
 
+    # 9. Their profile page — a fact the code knows, so the coach never has to
+    # "remember" it. Live 2026-09-11: "can you send me that link again to my
+    # profile" → "i don't have a profile link to send you tbh" — the kickoff that
+    # sent it had rolled to the edge of the history window. This is the ONE link
+    # the coach may always send.
+    if getattr(user, "phone", None):
+        # profile_page.profile_url(user) is the single link builder (PR #34: a signed
+        # token, the phone number never in the URL) — the same one the kickoff sends.
+        from profile_page import profile_url as _profile_url
+        _link = _profile_url(user)
+        parts.append("## THEIR PROFILE PAGE\n"
+                     f"{_link}\n"
+                     "This is their own profile/settings page. When they ask for their profile, "
+                     "their link, or want to double-check what you have on them, send this URL "
+                     "(the one link you may always send). Never say you don't have it.")
+
     if _local:
         parts.append(f"## NOW\n{now_anchor(user)}")
     else:
