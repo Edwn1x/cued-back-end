@@ -15,7 +15,7 @@
  * `delivery_status='failed'` row (the keystone) happen there, never hidden here.
  */
 
-import { Spectrum, text, type Message, type Space } from "spectrum-ts";
+import { Emoji, Spectrum, reaction, reply, text, type Message, type Space } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
 // ─── small helpers ───────────────────────────────────────────────────────────
@@ -41,8 +41,14 @@ export type Deps = {
   secret: string;
   /** Is the Spectrum stream currently up? Gates /health and /send. */
   connected: () => boolean;
-  /** Open (or reuse) the DM with `phone` and send one text. Throws on failure. */
-  send: (phone: string, body: string) => Promise<{ provider_message_id: string | null }>;
+  /** Open (or reuse) the DM with `phone` and send one text — as a threaded iMessage
+   *  reply to `replyTo` (a Photon message id we stored on the inbound row) when given.
+   *  Throws on failure, including an unknown `replyTo`. */
+  send: (phone: string, body: string, replyTo?: string) => Promise<{ provider_message_id: string | null }>;
+  /** Tapback / emoji reaction on the message `messageId` in the DM with `phone`.
+   *  `emoji` is a tapback key (love|like|dislike|laugh|emphasize|question) or a raw
+   *  emoji. Throws on failure, including an unknown message id. */
+  react: (phone: string, messageId: string, emoji: string) => Promise<{ provider_message_id: string | null }>;
   /** Native "share name and photo" card into the DM with `phone`. Throws on failure. */
   shareContactCard: (phone: string) => Promise<void>;
   /** iMessage typing indicator in the DM with `phone`: "start" shows the bubble,
@@ -52,6 +58,15 @@ export type Deps = {
 
 export type TypingState = "start" | "stop";
 const isTypingState = (v: unknown): v is TypingState => v === "start" || v === "stop";
+
+/** The six iMessage tapbacks by name; anything else is sent as a raw emoji reaction. */
+export const TAPBACKS: Record<string, string> = {
+  love: Emoji.love, like: Emoji.like, dislike: Emoji.dislike,
+  laugh: Emoji.laugh, emphasize: Emoji.emphasize, question: Emoji.question,
+};
+export function resolveEmoji(v: string): string {
+  return TAPBACKS[v.trim().toLowerCase()] ?? v.trim();
+}
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -80,15 +95,38 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
     if (req.method === "POST" && pathname === "/send") {
       const body = await readJson(req);
       if (!body || !isNonEmptyString(body.phone) || !isNonEmptyString(body.text)) {
-        return json(400, { ok: false, error: "expected JSON {phone, text}" });
+        return json(400, { ok: false, error: "expected JSON {phone, text, reply_to?}" });
+      }
+      if (body.reply_to !== undefined && body.reply_to !== null && !isNonEmptyString(body.reply_to)) {
+        return json(400, { ok: false, error: "reply_to must be a message id string" });
       }
       if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
       try {
-        const { provider_message_id } = await deps.send(body.phone, body.text);
-        log("info", "send ok", { to: last4(body.phone), provider_message_id, chars: body.text.length });
+        const replyTo = isNonEmptyString(body.reply_to) ? body.reply_to : undefined;
+        const { provider_message_id } = await deps.send(body.phone, body.text, replyTo);
+        log("info", "send ok", { to: last4(body.phone), provider_message_id, chars: body.text.length, ...(replyTo ? { reply_to: replyTo } : {}) });
         return json(200, { ok: true, provider_message_id });
       } catch (err) {
         log("error", "send failed", { to: last4(body.phone), error: String(err) });
+        return json(502, { ok: false, error: String(err) });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/react") {
+      // A tapback on one of the user's messages. The coach decides WHEN (prompt rules
+      // + tools on the Flask side); this route only knows HOW. Target = the Photon
+      // message id Flask stored on the inbound row; resolved via space.getMessage.
+      const body = await readJson(req);
+      if (!body || !isNonEmptyString(body.phone) || !isNonEmptyString(body.message_id) || !isNonEmptyString(body.emoji)) {
+        return json(400, { ok: false, error: "expected JSON {phone, message_id, emoji}" });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        const { provider_message_id } = await deps.react(body.phone, body.message_id, body.emoji);
+        log("info", "react ok", { to: last4(body.phone), on: body.message_id, emoji: resolveEmoji(body.emoji), provider_message_id });
+        return json(200, { ok: true, provider_message_id });
+      } catch (err) {
+        log("error", "react failed", { to: last4(body.phone), on: body.message_id, error: String(err) });
         return json(502, { ok: false, error: String(err) });
       }
     }
@@ -283,14 +321,29 @@ async function main() {
   const deps: Deps = {
     secret,
     connected: () => current !== null,
-    send: async (phone, body) => {
+    send: async (phone, body, replyTo) => {
       const app = current;
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
-      const sent = await dm.send(text(body));
+      let content = text(body);
+      if (replyTo) {
+        const target = await dm.getMessage(replyTo);
+        if (!target) throw new Error(`reply_to message not found: ${replyTo}`);
+        content = reply(content, target);
+      }
+      const sent = await dm.send(content);
       // iMessage clears the typing bubble when a message lands; this is the belt
       // to that suspenders — never let a stale "typing…" outlive the reply.
       await dm.stopTyping().catch(() => undefined);
+      return { provider_message_id: (Array.isArray(sent) ? sent[0]?.id : sent?.id) ?? null };
+    },
+    react: async (phone, messageId, emoji) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      const target = await dm.getMessage(messageId);
+      if (!target) throw new Error(`message not found: ${messageId}`);
+      const sent = await dm.send(reaction(resolveEmoji(emoji), target));
       return { provider_message_id: sent?.id ?? null };
     },
     typing: async (phone, state) => {

@@ -11,6 +11,7 @@ import {
   createHandler,
   forwardInbound,
   last4,
+  resolveEmoji,
   type Deps,
 } from "./index.ts";
 
@@ -21,9 +22,13 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
   return {
     secret: SECRET,
     connected: () => true,
-    send: async (phone, body) => {
-      calls.push(["send", phone, body]);
+    send: async (phone, body, replyTo) => {
+      calls.push(replyTo ? ["send", phone, body, replyTo] : ["send", phone, body]);
       return { provider_message_id: "photon-msg-1" };
+    },
+    react: async (phone, messageId, emoji) => {
+      calls.push(["react", phone, messageId, emoji]);
+      return { provider_message_id: "photon-react-1" };
     },
     shareContactCard: async (phone) => {
       calls.push(["contact", phone]);
@@ -49,7 +54,7 @@ function req(path: string, init: RequestInit & { secret?: string | null } = {}) 
 describe("auth", () => {
   test("every route 401s without the shared secret", async () => {
     const h = createHandler(deps());
-    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"]] as const) {
+    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"]] as const) {
       const res = await h(req(p, { method: m, secret: null, body: m === "POST" ? "{}" : undefined }));
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
@@ -194,6 +199,57 @@ describe("POST /typing", () => {
     const res = await createHandler(bad)(req("/typing", { method: "POST", body: JSON.stringify({ phone: "+1" }) }));
     expect(res.status).toBe(502);
     expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+  });
+});
+
+// ─── POST /react + threaded /send ────────────────────────────────────────────
+
+describe("POST /react", () => {
+  test("tapback by name on a stored message id", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/react", { method: "POST", body: JSON.stringify({ phone: "+12094205037", message_id: "spc-msg-abc", emoji: "laugh" }) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, provider_message_id: "photon-react-1" });
+    expect(d.calls).toEqual([["react", "+12094205037", "spc-msg-abc", "laugh"]]);
+  });
+
+  test("tapback names resolve to the six iMessage tapbacks; anything else is a raw emoji", () => {
+    expect(resolveEmoji("love")).toBe("❤️");
+    expect(resolveEmoji("LIKE ")).toBe("👍");
+    expect(resolveEmoji("laugh")).toBe("😂");
+    expect(resolveEmoji("emphasize")).toBe("‼️");
+    expect(resolveEmoji("question")).toBe("❓");
+    expect(resolveEmoji("dislike")).toBe("👎");
+    expect(resolveEmoji("🔥")).toBe("🔥");
+  });
+
+  test("400 on missing fields; 503 down; 502 when the message id is unknown", async () => {
+    const d = deps();
+    for (const body of ["{}", JSON.stringify({ phone: "+1", emoji: "like" }), JSON.stringify({ phone: "+1", message_id: "x" })]) {
+      expect((await createHandler(d)(req("/react", { method: "POST", body }))).status).toBe(400);
+    }
+    expect(d.calls).toEqual([]);
+    expect((await createHandler(deps({ connected: () => false }))(req("/react", { method: "POST", body: JSON.stringify({ phone: "+1", message_id: "x", emoji: "like" }) }))).status).toBe(503);
+    const bad = deps({ react: async () => { throw new Error("message not found: x"); } });
+    const res = await createHandler(bad)(req("/react", { method: "POST", body: JSON.stringify({ phone: "+1", message_id: "x", emoji: "like" }) }));
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /send reply_to", () => {
+  test("threads the text onto the given message id", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/send", { method: "POST", body: JSON.stringify({ phone: "+12094205037", text: "yeah 4 days is plenty", reply_to: "spc-msg-days" }) }));
+    expect(res.status).toBe(200);
+    expect(d.calls).toEqual([["send", "+12094205037", "yeah 4 days is plenty", "spc-msg-days"]]);
+  });
+
+  test("no reply_to → plain send, unchanged; a non-string reply_to is 400", async () => {
+    const d = deps();
+    await createHandler(d)(req("/send", { method: "POST", body: JSON.stringify({ phone: "+1", text: "hi", reply_to: null }) }));
+    expect(d.calls).toEqual([["send", "+1", "hi"]]);
+    const res = await createHandler(d)(req("/send", { method: "POST", body: JSON.stringify({ phone: "+1", text: "hi", reply_to: 42 }) }));
+    expect(res.status).toBe(400);
   });
 });
 
