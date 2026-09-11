@@ -592,6 +592,10 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         if not user:
             return
 
+        # "Cued is typing…" — the buffer (reading) is over; generation starts now.
+        from typing_indicator import typing_start, typing_stop
+        typing_start(user.id)
+
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             handle_onboarding_reply(user, combined_body)
@@ -688,6 +692,11 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
     except Exception as e:
         logger.error(f"Error processing buffered message for user {user_id}: {e}", exc_info=True)
+        try:
+            from typing_indicator import typing_stop as _typing_stop
+            _typing_stop(user_id)  # no reply is coming — don't leave the bubble up
+        except Exception:  # noqa: BLE001
+            pass
         try:
             user = session.query(User).filter(User.id == user_id).first()
             if user:

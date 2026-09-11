@@ -369,7 +369,9 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
 
 
 def heartbeat_tick(user_id: int):
-    """One tick for one user: guardrails -> decision -> log (+ send if speaking)."""
+    """One tick for one user: guardrails -> decision -> log (+ send if speaking).
+    Typing bubble before decide() is flag-gated OFF (TYPING_INDICATOR_HEARTBEAT):
+    decide may choose silence, and dots followed by nothing reads as a glitch."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -384,11 +386,17 @@ def heartbeat_tick(user_id: int):
         _log_tick(user_id, False, f"guardrail:{reason}")
         return
 
+    if config.TYPING_INDICATOR_HEARTBEAT:
+        from typing_indicator import typing_start
+        typing_start(user_id)  # a friend texting first: dots, then the message
     spoke, payload, search = decide(user_id)
     if spoke:
         send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
         _log_tick(user_id, True, "spoke", payload, search=search)
     else:
+        if config.TYPING_INDICATOR_HEARTBEAT:
+            from typing_indicator import typing_stop
+            typing_stop(user_id)  # chose silence — never leave dots with no message
         _log_tick(user_id, False, payload, search=search)
 
 

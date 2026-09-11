@@ -157,6 +157,13 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
                          channel="imessage", provider_sid=sid, delivery_status="sent")
             return sid
         except Exception as e:  # noqa: BLE001 — every failure class fails over
+            # The bubble was up for an iMessage reply that isn't coming — clear it
+            # before the green one goes out (best-effort; the DM may be unreachable).
+            try:
+                from typing_indicator import typing_stop
+                typing_stop(user_id)
+            except Exception:  # noqa: BLE001
+                pass
             logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
                          user_id, message_type, e)
             _log_message(user_id, im_body, message_type,

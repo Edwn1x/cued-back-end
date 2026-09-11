@@ -45,7 +45,13 @@ export type Deps = {
   send: (phone: string, body: string) => Promise<{ provider_message_id: string | null }>;
   /** Native "share name and photo" card into the DM with `phone`. Throws on failure. */
   shareContactCard: (phone: string) => Promise<void>;
+  /** iMessage typing indicator in the DM with `phone`: "start" shows the bubble,
+   *  "stop" clears it. Best-effort by contract (the SDK no-ops where unsupported). */
+  typing: (phone: string, state: TypingState) => Promise<void>;
 };
+
+export type TypingState = "start" | "stop";
+const isTypingState = (v: unknown): v is TypingState => v === "start" || v === "stop";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -83,6 +89,27 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
         return json(200, { ok: true, provider_message_id });
       } catch (err) {
         log("error", "send failed", { to: last4(body.phone), error: String(err) });
+        return json(502, { ok: false, error: String(err) });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/typing") {
+      // Flask fires "start" the moment it begins generating a reply for an iMessage
+      // user (after the read-buffer, not during it — a friend reads, then types) and
+      // "stop" on any path where no iMessage reply will follow (error, SMS failover).
+      // The bubble also clears itself when /send lands. Default state is "start".
+      const body = await readJson(req);
+      const state = body?.state ?? "start";
+      if (!body || !isNonEmptyString(body.phone) || !isTypingState(state)) {
+        return json(400, { ok: false, error: 'expected JSON {phone, state?: "start"|"stop"}' });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        await deps.typing(body.phone, state);
+        log("info", "typing", { to: last4(body.phone), state });
+        return json(200, { ok: true, state });
+      } catch (err) {
+        log("warn", "typing failed", { to: last4(body.phone), state, error: String(err) });
         return json(502, { ok: false, error: String(err) });
       }
     }
@@ -261,7 +288,17 @@ async function main() {
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
       const sent = await dm.send(text(body));
+      // iMessage clears the typing bubble when a message lands; this is the belt
+      // to that suspenders — never let a stale "typing…" outlive the reply.
+      await dm.stopTyping().catch(() => undefined);
       return { provider_message_id: sent?.id ?? null };
+    },
+    typing: async (phone, state) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      if (state === "start") await dm.startTyping();
+      else await dm.stopTyping();
     },
     shareContactCard: async (phone) => {
       const app = current;
