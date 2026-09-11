@@ -783,6 +783,11 @@ _ACK_TOKENS = frozenset({
 _ACK_PHRASES = frozenset({
     "got it", "sounds good", "will do", "ok cool", "ok bet",
     "thank you", "appreciate it", "ok thanks", "alr thanks",
+    # Resigned agreement is still agreement (live 2026-09-11: a standalone "Ig" went
+    # to the model, which re-delivered its previous pep talk; the founder: "how much
+    # warmer can i get bruh"). On iMessage these get the 👍 path. Hesitation that
+    # may need an answer ("idk", "we'll see", "hmm") is deliberately NOT here.
+    "ig", "i guess", "i guess so", "ig so", "sure ig", "yeah ig", "ok ig", "alr ig",
 })
 
 
