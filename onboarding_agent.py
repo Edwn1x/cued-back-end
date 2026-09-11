@@ -4,26 +4,37 @@ Onboarding Agent — Cued
 Dynamic data collection through conversation. Adapts tone based on
 experience level and biggest obstacle from signup.
 
-Instead of tracking step numbers, tracks which data points have been
-collected. Each exchange:
-1. Parse user's message for any data points
+Tracks which data points have been collected, not step numbers. Each exchange:
+1. Parse user's message for any data points (Haiku extractor, given the coach's
+   previous message for context)
 2. Store what was found
-3. If fields still missing → ask about the next one
+3. Reply as the friend (prompts/identity.md): engage the specific thing they said;
+   if — and only if — what they said gives a natural reason, weave in ONE
+   question that would teach us one of the still-unknown fields. Never a list
+   BY DEFAULT — the intake isn't a form, it's stuff you learn by caring about
+   their actual day (founder, 2026-09-11). The big ask ("drop me the basics in
+   one text") and the two-field bundle are KEPT for when they're appropriate
+   (founder, same day): the user asks for the list, or the conversation has run
+   long with most fields still unknown, or one/two fields are left to close out.
+   See _intake_mode().
 4. If all collected → calculate targets, present summary, confirm
 
-The coach knows experience, goal, and obstacle from signup, which
-shapes HOW it asks questions (tone, depth of explanation).
+The coach knows experience, goal, and obstacle from signup, which shapes HOW it
+talks (tone, depth of explanation). It can search the web mid-reply (a class, a
+campus place, a restaurant) — capped per reply, every query logged.
 """
 
 import os
 import json
 import logging
 import random
+import re
 import threading
 from datetime import datetime, timezone
 
 from anthropic import Anthropic
-from config import ANTHROPIC_API_KEY, COACH_MODEL, MAX_RESPONSE_TOKENS, PROFILE_BASE_URL
+import config
+from config import ANTHROPIC_API_KEY, COACH_MODEL, PROFILE_BASE_URL
 from sms import send_sms
 from macro_calculator import calculate_targets
 from cost_tracking import track as track_usage
@@ -228,9 +239,28 @@ def _get_experience_context(user) -> str:
         )
 
 
+def _still_unknown(user) -> list[tuple[str, str]]:
+    """(field, how a friend would come to know it) for every field still null —
+    phrased as the THING, not a question, so the model asks for a reason."""
+    return _get_missing_fields(user)
+
+
+def _now_local(tz_str: str | None) -> datetime:
+    """Wall clock in the user's timezone (one seam so evals can pin the hour —
+    a 4am run otherwise makes every reply about the hour)."""
+    from zoneinfo import ZoneInfo
+    try:
+        return datetime.now(ZoneInfo(tz_str or "America/Los_Angeles"))
+    except Exception:  # bad tz string on the row — never block onboarding on it
+        return datetime.now(ZoneInfo("America/Los_Angeles"))
+
+
 def _build_system_prompt(user) -> str:
-    """Build the system prompt for onboarding exchanges."""
-    personality = load_skill("personality")
+    """Build the system prompt for onboarding exchanges: the shared identity,
+    the safety rules, what we know, what's still unknown, and how this first
+    conversation works (no intake block — one woven question at most)."""
+    from agent_loop import identity_prompt
+    identity = identity_prompt()
     safety = load_skill("safety")
     experience_context = _get_experience_context(user)
 
@@ -244,8 +274,12 @@ def _build_system_prompt(user) -> str:
         f"Equipment: {user.equipment}" if user.equipment else None,
         f"Height: {user.height_ft}'{user.height_in}\"" if user.height_ft else None,
         f"Weight: {user.weight_lbs} lbs" if user.weight_lbs else None,
+        f"Occupation: {user.occupation}" if user.occupation else None,
+        f"Activity: {user.activity_level}" if user.activity_level else None,
+        f"Avg steps: {user.avg_steps}" if user.avg_steps else None,
         f"Workout days: {user.workout_days}" if user.workout_days else None,
         f"Workout time: {user.workout_time}" if user.workout_time else None,
+        f"Current split: {user.current_split}" if user.current_split else None,
         f"Diet: {user.diet}" if user.diet else None,
         f"Cooking: {user.cooking_situation}" if user.cooking_situation else None,
         f"Injuries: {user.injuries}" if user.injuries else None,
@@ -255,7 +289,17 @@ def _build_system_prompt(user) -> str:
     ]
     profile = "\n".join(p for p in profile_parts if p)
 
-    return f"""{personality}
+    now_local = _now_local(user.user_timezone)
+    now_line = (now_local.strftime("%A, %b %-d, %Y, %-I:%M%p")
+                .replace("AM", "am").replace("PM", "pm"))
+
+    unknown = _still_unknown(user)
+    if unknown:
+        unknown_block = "\n".join(f"- {desc}" for _f, desc in unknown)
+    else:
+        unknown_block = "- nothing — you have what you need"
+
+    return f"""{identity}
 
 ---
 
@@ -263,26 +307,69 @@ def _build_system_prompt(user) -> str:
 
 ---
 
+## RIGHT NOW
+It's {now_line} in Berkeley. A friend knows what day it is — never guess the day or
+the time of day; read it here.
+
 ## EXPERIENCE CALIBRATION
 {experience_context}
 
-## USER PROFILE (what we know so far)
+## WHAT YOU KNOW ABOUT THEM (from signup + what they've told you)
 {profile}
 
-## ONBOARDING RULES
-- You are collecting information to build this user's coaching plan.
-- CRITICAL: Never advance until you have fully responded to the user's most recent message. If they asked a question, answer it completely first.
-- If the user asks a question instead of answering yours, answer their question FIRST — fully and directly — then circle back.
-- If the user provides multiple data points in one message, acknowledge all of them.
-- Keep messages short — 2-3 sentences max.
-- Never mention database fields, system internals, or "your profile."
-- Never say "great question" or "that's a good point" — just answer and move on.
-- Reference their goal and obstacle naturally when relevant — don't re-explain them.
-- Do not use --- separators during onboarding.
+## STILL UNKNOWN (things you'd learn by caring about their day — never by listing them)
+{unknown_block}
+
+## HOW THIS FIRST CONVERSATION WORKS
+- You just met. You're getting to know a new friend, and along the way you'll end up
+  knowing the things above. The intake isn't a form; it's stuff you learn by caring
+  about their actual day.
+- Every reply engages the specific thing they just said FIRST — the class, the place,
+  the food, the feeling. Have a take on it. Be curious about it.
+- Then, ONLY if what they said gives you a natural reason, ask about ONE thing from
+  STILL UNKNOWN — the way a friend asks it, for a reason. "you got food at the house or
+  is it dining hall today" is the food question; "you gonna hit the gym after or is
+  today a wash" gets training days and time. If there's no natural reason, don't force
+  one — just be the friend. The next message will give you one.
+- At most ONE question per message — one question mark, or none. Never a list of
+  questions. Never "a few things I need from you." Never a numbered or comma-separated
+  set of things to answer. "also, …?" after a question is the tell: delete it.
+- If they NAMED something specific — a class, a campus place, a restaurant, an event —
+  look it up (web_search) before you reply and use ONE detail from what you find, in
+  your own words, no links. A course number ("70", "cs70", "61b", "data 8") or a campus
+  place is ALWAYS a search — where that class is in the semester right now (this
+  semester's schedule, not memory) is the detail. That one detail is what makes you
+  sound like you're there.
+- If they ask you something, answer it first, fully, then be a friend about the rest.
+- If they hand you several things at once, react to them like a person would — don't
+  read a checklist back.
+- Never mention fields, profiles, forms, plans you're "building," or what you "need."
+- 1–3 short sentences. No `---` separators. No greeting — you already said hey.
+- Decide on your ONE question (or none) BEFORE you start writing, then write the reply
+  once, as a single paragraph. Never draft-then-revise inside the message, never show an
+  edit, never add a second paragraph.
 """
 
 
-def _extract_data_from_message(user_message: str, user, last_asked_field: str = None) -> dict:
+def _last_coach_message(user_id: int) -> str | None:
+    """The coach's most recent outbound text — what the user is replying to. With
+    the woven-question intake there is no 'last asked field' to hand the extractor,
+    so it reads the actual question instead (a bare '5' means workout days only
+    if that's what was just asked)."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        row = (session.query(Message)
+               .filter(Message.user_id == user_id, Message.direction == "out")
+               .order_by(Message.created_at.desc(), Message.id.desc())
+               .first())
+        return row.body if row else None
+    finally:
+        session.close()
+
+
+def _extract_data_from_message(user_message: str, user, last_asked_field: str = None,
+                               last_coach_message: str = None) -> dict:
     """
     Use a lightweight AI call to extract any data points from the user's message.
     Returns a dict of field names to values.
@@ -294,7 +381,16 @@ def _extract_data_from_message(user_message: str, user, last_asked_field: str = 
     missing_list = ", ".join(f[0] for f in missing)
 
     context_hint = ""
-    if last_asked_field:
+    if last_coach_message:
+        context_hint = f"""IMPORTANT CONTEXT: The coach's previous message (what the user is replying to) was:
+\"{last_coach_message.strip()[:600]}\"
+If that message asked about something, the user's reply is MOST LIKELY answering it — map a
+bare number or a bare yes/no to whatever was just asked (\"5\" after \"how many days can you
+train\" is workout_days=\"5\", not height). If it didn't ask anything, only extract what the
+user clearly volunteered.
+
+"""
+    elif last_asked_field:
         context_hint = f"""IMPORTANT CONTEXT: The coach just asked the user about: {last_asked_field}
 The user's response is MOST LIKELY answering that question. Prioritize mapping their answer to that field unless the message clearly refers to something else.
 
@@ -492,20 +588,55 @@ def _store_extracted_data(user_id: int, data: dict):
         session.close()
 
 
-def _generate(system_prompt: str, instruction: str) -> str:
-    # Onboarding Sonnet call. Not cached at the prompt level today — each
-    # caller passes a different system_prompt built from the user's current
-    # onboarding state, so block1 stability isn't guaranteed. Instrument
-    # only so cost lands in the dashboard; revisit caching if onboarding
-    # cost becomes meaningful in the Sonnet vs Haiku split.
-    response = client.messages.create(
-        model=COACH_MODEL,
-        max_tokens=MAX_RESPONSE_TOKENS,
-        system=system_prompt,
-        messages=[{"role": "user", "content": instruction}],
-    )
-    track_usage(None, "onboarding.generate", COACH_MODEL, response)
-    return response.content[0].text
+def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
+    """One onboarding reply. The model may search the web mid-reply (server-side
+    tool, capped per reply by WEB_SEARCH_MAX_USES) when something specific came up
+    — a class, a campus place, a restaurant. pause_turn (the server tool hit its
+    iteration limit) is resumed by re-sending the content; every query is logged
+    with the user id (WEB_SEARCH_QUERY); ALL text blocks are joined (search splits
+    the reply across several). Not cached at the prompt level: each caller's
+    system prompt carries the user's current onboarding state."""
+    from agent_loop import _join_text
+    from agent_tools import log_web_search_queries
+
+    tools = None
+    if config.WEB_SEARCH_TOOL_ENABLED:
+        from agent_tools import WEB_SEARCH_TOOL
+        tools = [WEB_SEARCH_TOOL]
+
+    messages = [{"role": "user", "content": instruction}]
+    last_text = ""
+    for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
+        # Adaptive thinking at low effort, like the coach loop: with thinking OFF,
+        # Opus 4.8 writes its reasoning into the visible reply ("So Nau's up early
+        # (or hasn't slept).") and narrates searches. The ceiling is the loop's
+        # (thinking + search + reply share it), not the SMS reply cap.
+        # Effort MEDIUM (the coach loop runs low): at low the model emits a second
+        # question and then corrects itself IN the visible reply ("Wait - that's
+        # two questions. Let me fix it:"). Onboarding is one conversation per user;
+        # the extra thinking is cheap and the first impression is the product.
+        kwargs = dict(model=COACH_MODEL, max_tokens=config.AGENT_LOOP_MAX_TOKENS,
+                      thinking={"type": "adaptive"}, output_config={"effort": "medium"},
+                      system=system_prompt, messages=messages)
+        if tools:
+            kwargs["tools"] = tools
+        response = client.messages.create(**kwargs)
+        track_usage(user_id, "onboarding.generate", COACH_MODEL, response)
+        log_web_search_queries(user_id, response.content, "onboarding.generate")
+
+        stop = getattr(response, "stop_reason", None)
+        if stop == "pause_turn":
+            messages.append({"role": "assistant", "content": response.content})
+            continue
+        text = _join_text(response.content)
+        if text:
+            last_text = text
+        if stop == "max_tokens":
+            logger.warning("ONBOARDING_TRUNCATED user=%s stop=max_tokens max_tokens=%d",
+                           user_id, config.AGENT_LOOP_MAX_TOKENS)
+        return last_text
+    logger.warning("ONBOARDING_MAX_ITERS user=%s — returning best-effort reply", user_id)
+    return last_text
 
 
 def _build_confirmation_summary(user) -> str:
@@ -532,63 +663,100 @@ def _build_confirmation_summary(user) -> str:
     )
 
 
-def _build_big_ask_message(user, system_prompt: str) -> str:
-    """
-    Generate the single 'dump everything' message sent after the hook reply.
-    Asks for all remaining fields conversationally in one message.
-    """
-    nutrition_only = _is_nutrition_only(user)
-    if nutrition_only:
-        fields_hint = (
-            "what they do (student, job, etc.), how active they are day-to-day and avg steps, "
-            "their food situation (cook, dining hall, eat out, or mix), any dietary restrictions, "
-            "when they wake up and go to bed, and any fitness apps or devices they use"
-        )
-    else:
-        fields_hint = (
-            "what they do (student, job, etc.), how active they are day-to-day and avg steps, "
-            "how many days/week they want to train and at what time, "
-            "whether they already have a workout routine or need one built, "
-            "their food situation (cook, dining hall, eat out, or mix), any dietary restrictions, "
-            "any injuries or physical limitations, when they wake up and go to bed, "
-            "and any fitness apps or devices they use"
-        )
-
-    # Fix 4: make acknowledgment a REQUIRED step, not optional. Drop the
-    # false "You've got their height and weight" premise — this handler
-    # fires before height/weight is collected.
+def _build_friend_reply(user, incoming_message: str, system_prompt: str,
+                        missing_fields: list) -> str:
+    """The onboarding reply: engage the specific thing they said; if there's a
+    natural reason, weave in ONE question from STILL UNKNOWN. This replaces both
+    the eight-question big ask and the two-field gap bundling — a friend never
+    sends either."""
+    unknown = ", ".join(f[1].split(" — ")[0] for f in missing_fields) or "nothing"
     instruction = (
-        f"STEP 1 (required): React to what {user.name} just said. If they named you, "
-        f"confirm it warmly and naturally (e.g. 'CJ it is' / 'love it — CJ it is'). "
-        f"If they asked or proposed something else, respond to it briefly first. "
-        f"If they only answered the previous question without adding anything, a "
-        f"quick acknowledgment of their answer is enough. NEVER skip straight to "
-        f"the ask without responding to them.\n\n"
-        f"STEP 2: Ask them to drop everything in one text: {fields_hint}\n\n"
-        f"Frame it naturally — 'alr real talk — need a few more things'. "
-        f"3-4 sentences max. Make it feel like one natural ask, not a checklist. "
-        f"Do NOT greet them again."
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"Reply as the friend. React to the specific thing they said — have a take, be "
+        f"curious about it. If they named a class (a course number always counts), a campus "
+        f"place, a restaurant, or an event, search it first and use one detail from this "
+        f"semester. If (and only if) what they said gives "
+        f"you a natural reason, work in ONE question that would tell you one of these you "
+        f"still don't know: {unknown}. If there's no natural reason, don't force one. One "
+        f"message, one paragraph, no greeting, ONE question at most — pick it before you "
+        f"write. Never a second paragraph, never a visible edit."
     )
-    return _generate(system_prompt, instruction)
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
+# ─── When is a list appropriate? (founder: keep the big ask + bundle for that) ──
+# Default is the friend reply. These are the exceptions, all code-decided:
+BIG_ASK_AFTER_TURNS = 6    # inbound turns with >= BIG_ASK_MIN_UNKNOWN still unknown
+BIG_ASK_MIN_UNKNOWN = 3
+BUNDLE_AFTER_TURNS = 4     # inbound turns with <= 2 unknown → close it out in one ask
+_ASKS_FOR_THE_LIST = re.compile(
+    r"\b(what (do|else do|all do) (you|u) need|what (info|information|details?) (do you|do u|you|u) (need|want)"
+    r"|what should i (send|tell|give) (you|u)|just (ask|tell) me (what|everything)"
+    r"|(send|give) me the (list|questions)|what else (do you|do u|you|u) (need|want)"
+    r"|ask me (the|your) questions|hit me with (the|your) questions|what('s| is) the (list|form))\b",
+    re.IGNORECASE,
+)
+
+
+def _inbound_turns(user_id: int) -> int:
+    from models import get_session, Message
+    session = get_session()
+    try:
+        return (session.query(Message)
+                .filter(Message.user_id == user_id, Message.direction == "in").count())
+    finally:
+        session.close()
+
+
+def _intake_mode(incoming_message: str, missing_fields: list, turns: int) -> str:
+    """'friend' (default) | 'big_ask' | 'bundle'.
+    big_ask — they asked for the list, or the conversation has run BIG_ASK_AFTER_TURNS+
+              turns with BIG_ASK_MIN_UNKNOWN+ fields still unknown (a friend would say
+              "alr real talk, let me just get the basics" rather than fish forever).
+    bundle  — one or two fields left after BUNDLE_AFTER_TURNS+ turns (or they asked):
+              close it out in one natural ask instead of stretching two more replies.
+    Anything else is the friend reply."""
+    n = len(missing_fields)
+    if n == 0:
+        return "friend"  # nothing to ask for — never a list
+    asked = bool(_ASKS_FOR_THE_LIST.search(incoming_message or ""))
+    if n <= 2 and n > 0 and (asked or turns >= BUNDLE_AFTER_TURNS):
+        return "bundle"
+    if asked or (turns >= BIG_ASK_AFTER_TURNS and n >= BIG_ASK_MIN_UNKNOWN):
+        return "big_ask"
+    return "friend"
+
+
+def _build_big_ask_message(user, incoming_message: str, system_prompt: str, missing_fields: list) -> str:
+    """The one-text ask for everything still unknown — used only when _intake_mode
+    says it's appropriate (they asked for it, or the conversation has run long).
+    Same friend voice: react to what they said first, then one natural ask."""
+    fields_hint = ", ".join(f[1].split(" — ")[0] for f in missing_fields)
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"STEP 1 (required): react to the specific thing they said, like a friend. If they "
+        f"asked what you need, that's your cue — no apology, no preamble.\n\n"
+        f"STEP 2: ask them to drop the basics in ONE text: {fields_hint}. Frame it the way "
+        f"a friend would — 'alr real talk, just send me the basics in one go' — and name what "
+        f"to cover in plain words, not a numbered list. 3-4 sentences max. No greeting. "
+        f"This is the ONE time a list of things is okay; make it feel like one ask."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
 
 
 def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, system_prompt: str) -> str:
-    """
-    Generate a follow-up that asks about up to 2 remaining fields after the big ask dump.
-    """
-    gap_descriptions = [f[1] for f in missing_fields[:2]]
+    """Close out the last one or two unknowns in a single natural ask — used only
+    when _intake_mode says so (late in the conversation, or they asked)."""
+    gap_descriptions = [f[1].split(" — ")[0] for f in missing_fields[:2]]
     gaps_str = " and ".join(gap_descriptions)
-
     instruction = (
-        f"Do NOT greet the user — you already said hello.\n\n"
-        f"The user just sent their info dump: \"{incoming_message}\"\n\n"
-        f"You still need: {gaps_str}\n\n"
-        f"STEP 1: If they said something that deserves a direct response (question, comment), handle it first.\n"
-        f"STEP 2: Ask about the missing info naturally — bundle both into one short message if there are two. "
-        f"Don't make it feel like a form. 1-2 sentences max.\n"
-        f"One message. Keep it natural."
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"STEP 1: react to what they said like a friend (answer any question fully).\n"
+        f"STEP 2: you're basically done getting to know them — ask about {gaps_str} in one "
+        f"short, natural line ('last thing' energy), both in one breath if there are two. "
+        f"Not a form. 1-2 sentences. No greeting."
     )
-    return _generate(system_prompt, instruction)
+    return _generate(system_prompt, instruction, user_id=user.id)
 
 
 def start_onboarding(user):
@@ -673,10 +841,11 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     Called from webhook on every message while onboarding_step < 3.
 
     Flow:
-      step 1 — hook sent. First reply triggers: record first_reply_at, extract data,
-               send big ask for all remaining fields, advance to step 2.
-      step 2 — collecting. Extract from dump, follow up on gaps (max 2 bundled),
-               present confirmation when all fields filled.
+      step 1 — hook sent. First reply: record first_reply_at, extract data, reply as
+               the friend (one woven question at most), advance to step 2.
+      step 2 — getting to know them. Extract from every message; reply as the friend;
+               when nothing is still unknown, present the summary; on "sound right?"
+               confirmation, complete.
       step 3 — complete (set by _complete_onboarding).
 
     Returns True if onboarding is now complete.
@@ -718,10 +887,12 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         finally:
             session.close()
 
-    # Always try to extract data from whatever they sent
-    missing_before = _get_missing_fields(user_row)
-    last_asked = missing_before[0][0] if missing_before else None
-    extracted = _extract_data_from_message(incoming_message, user_row, last_asked_field=last_asked)
+    # Always try to extract data from whatever they sent. The coach's previous
+    # message (not a "last asked field" — the question is woven, not scheduled)
+    # tells the extractor what a bare number or yes/no is answering.
+    prev_coach = _last_coach_message(user_row.id)
+    extracted = _extract_data_from_message(incoming_message, user_row,
+                                           last_coach_message=prev_coach)
     non_null = {k: v for k, v in extracted.items() if v is not None}
     if non_null:
         _store_extracted_data(user_row.id, extracted)
@@ -734,10 +905,8 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     missing_after = _get_missing_fields(user_row)
     system_prompt = _build_system_prompt(user_row)
 
-    # ── Step 1 reply: send big ask ──────────────────────────────────────────
-    if (user_row.onboarding_step or 0) == 1 and len(missing_after) >= 3:
-        text = _build_big_ask_message(user_row, system_prompt)
-        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+    # ── First reply to the hook: they're in conversation mode now → step 2 ──
+    if (user_row.onboarding_step or 0) == 1:
         session = get_session()
         try:
             u = session.get(UserModel, user.id)
@@ -746,11 +915,27 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                 session.commit()
         finally:
             session.close()
-        logger.info(f"Big ask sent to {user_row.name} ({len(missing_after)} fields remaining)")
-        return False
 
-    # ── All fields collected — confirmation flow ────────────────────────────
+    # ── Nothing still unknown — summary / confirmation flow ─────────────────
+    # Whether the summary has been shown is read off the conversation (the coach's
+    # previous message ends in "sound right?"), not a flag: the first time the
+    # last field lands we PRESENT the summary; only a reply TO the summary can
+    # confirm it. (Previously "ok so i'm 5'10" could complete onboarding unseen.)
     if not missing_after:
+        summary_shown = bool(prev_coach) and "sound right" in prev_coach.lower()
+        if not summary_shown:
+            summary = _build_confirmation_summary(user_row)
+            instruction = (
+                f"You've got everything you need. {user_row.name} just said: \"{incoming_message}\"\n\n"
+                f"STEP 1: React to what they said like a friend would (answer any question fully).\n"
+                f"STEP 2: Present this summary and ask if it sounds right:\n\n{summary}\n\n"
+                f"Keep it tight. One message. End with 'sound right?'"
+            )
+            text = _generate(system_prompt, instruction, user_id=user_row.id)
+            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+            logger.info(f"Onboarding confirmation presented to {user_row.name}")
+            return False
+
         confirmation_keywords = [
             "yeah", "yes", "yep", "sounds good", "looks good", "correct",
             "that's right", "perfect", "ok", "sure", "let's go", "lets go",
@@ -774,7 +959,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                 f"STEP 3: Present this summary:\n\n{summary}\n\n"
                 f"Keep it tight. One message. End with 'sound right?' or similar."
             )
-            text = _generate(system_prompt, instruction)
+            text = _generate(system_prompt, instruction, user_id=user_row.id)
             send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
             return _complete_onboarding(user_row, incoming_message)
 
@@ -782,40 +967,32 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             return _complete_onboarding(user_row, incoming_message)
 
         # Not confirmed — user wants to adjust
-        instruction = (
-            f"Do NOT greet the user — you already said hello earlier.\n\n"
-            f"The user was shown their plan summary but didn't confirm. They said: \"{incoming_message}\"\n\n"
-            f"Address their concern or adjustment. Then re-present the updated summary and ask for confirmation. "
-            f"One message, brief."
-        )
-        text = _generate(system_prompt, instruction)
-        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-        return False
-
-    # ── Confirmation not yet reached — present it ───────────────────────────
-    if len(missing_after) == 0:
         summary = _build_confirmation_summary(user_row)
         instruction = (
-            f"You've collected everything you need. The user just said: \"{incoming_message}\"\n\n"
-            f"STEP 1: If they asked a question or said something worth responding to, address it first.\n"
-            f"STEP 2: Present this summary and ask if it sounds right:\n\n{summary}\n\n"
-            f"Keep it tight. Ask 'sound right?' at the end."
+            f"Do NOT greet the user — you already said hello earlier.\n\n"
+            f"You showed them this summary:\n\n{summary}\n\nThey replied: \"{incoming_message}\"\n\n"
+            f"Address their concern or adjustment like a friend. Then re-present the updated "
+            f"summary and end with 'sound right?'. One message, brief."
         )
-        text = _generate(system_prompt, instruction)
+        text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-        logger.info(f"Onboarding confirmation presented to {user_row.name}")
         return False
 
-    # ── Still missing fields — gap follow-up (max 2 bundled) ───────────────
-    if len(missing_after) <= 2:
+    # ── Still getting to know them ──────────────────────────────────────────
+    # Friend reply by default (one woven question max). The big ask and the
+    # two-field bundle are kept for when a list is the right move — see
+    # _intake_mode(): they asked for it, the conversation has run long with most
+    # fields unknown, or one/two are left to close out.
+    mode = _intake_mode(incoming_message, missing_after, _inbound_turns(user_row.id))
+    if mode == "big_ask":
+        text = _build_big_ask_message(user_row, incoming_message, system_prompt, missing_after)
+    elif mode == "bundle":
         text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
     else:
-        # More than 2 still missing after the big ask dump — bundle the top 2
-        text = _bundle_gap_questions(missing_after[:2], user_row, incoming_message, system_prompt)
-
+        text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after)
     send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
     remaining_names = [f[0] for f in missing_after]
-    logger.info(f"Onboarding gap follow-up for {user_row.name} — still missing: {remaining_names}")
+    logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}")
     return False
 
 
@@ -903,7 +1080,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
             f"4. Feels like the starting gun — they now have a coach\n"
             f"No explanations. No feature previews. Just confidence."
         )
-        text = _generate(system_prompt, instruction)
+        text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
 
     finally:

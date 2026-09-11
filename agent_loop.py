@@ -30,7 +30,9 @@ from split_pointer import get_split_pointer
 logger = logging.getLogger("cued.agent_loop")
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
+_IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "prompts", "identity.md")
 _VOICE_PATH = os.path.join(os.path.dirname(__file__), "prompts", "voice.md")
+_identity_cache: str | None = None
 _voice_cache: str | None = None
 
 _MEAL_ESTIMATION_PATH = os.path.join(os.path.dirname(__file__), "prompts", "meal_estimation.md")
@@ -40,11 +42,24 @@ _MEAL_ROUTING_PATH = os.path.join(os.path.dirname(__file__), "prompts", "meal_ro
 _meal_routing_cache: str | None = None
 
 
+def identity_prompt() -> str:
+    """prompts/identity.md — the ONE identity (a friend at Berkeley who knows
+    training and food cold). Loaded first on every surface: coach loop, heartbeat
+    (via _voice_prompt) and onboarding (directly — it never gets the tool rules)."""
+    global _identity_cache
+    if _identity_cache is None:
+        with open(_IDENTITY_PATH, "r", encoding="utf-8") as f:
+            _identity_cache = f.read()
+    return _identity_cache
+
+
 def _voice_prompt() -> str:
+    """identity.md + voice.md as ONE stable, cacheable prefix. The heartbeat
+    composes its system from this same string, so both surfaces stay one person."""
     global _voice_cache
     if _voice_cache is None:
         with open(_VOICE_PATH, "r", encoding="utf-8") as f:
-            _voice_cache = f.read()
+            _voice_cache = identity_prompt() + "\n\n---\n\n" + f.read()
     return _voice_cache
 
 
@@ -379,10 +394,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         tools.append(USDA_FOOD_LOOKUP_TOOL)
     if config.WEB_SEARCH_TOOL_ENABLED:
         # Server-side tool: Anthropic runs the search inline and returns results as
-        # content blocks; no client handler. Output/query hygiene are prompt rules
-        # in voice.md (speak findings naturally, no links; no user PII in queries).
-        tools.append({"type": "web_search_20260209", "name": "web_search",
-                      "max_uses": config.WEB_SEARCH_MAX_USES})
+        # content blocks; no client handler. When-to-search + output/query hygiene
+        # are prompt rules in identity.md / voice.md. One shared definition for
+        # every surface lives in agent_tools (cap = WEB_SEARCH_MAX_USES per reply).
+        from agent_tools import WEB_SEARCH_TOOL
+        tools.append(WEB_SEARCH_TOOL)
 
     messages = [{"role": "user", "content": user_content}]
     last_text = ""
@@ -406,6 +422,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
 
         stop = getattr(resp, "stop_reason", None)
         block_types = [getattr(b, "type", None) for b in resp.content]
+
+        # Every search the model issued this call, logged with the user id
+        # (WEB_SEARCH_QUERY) — the line that shows what the coach reaches for.
+        from agent_tools import log_web_search_queries
+        log_web_search_queries(user.id, resp.content, "agent_loop.run")
 
         # Server-side tool (web_search) hit its iteration limit — re-send to resume.
         if stop == "pause_turn":

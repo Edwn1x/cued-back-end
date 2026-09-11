@@ -67,22 +67,51 @@ Log which template each user receives. After 50+ users, analyze:
 
 ---
 
-## Phase 2: Collect
+## Phase 2: Get to know them (the big ask is the exception, not the opener)
 
-Once the user has replied to the hook (even one message), they're in conversation mode. Now you collect.
+> Rewritten 2026-09-11 (founder). The eight-question "drop me everything in one text"
+> message is no longer the default. The bar for every onboarding reply is: **would a
+> friend at Berkeley send this?** A friend doesn't acknowledge your quiz and pivot to
+> their agenda — a friend is interested in the quiz. See `prompts/identity.md`. The big
+> ask and the two-field bundle are KEPT for when a list is the right move (below).
 
-**The Big Ask:**
+Once the user has replied to the hook, they're in conversation mode. From here the
+coach is a friend at Berkeley who happens to know training and food cold. Every reply:
 
-This is a single message that asks for everything at once. The framing is critical — it should feel like "let's get this out of the way real quick" not "please fill out this questionnaire."
+1. **Engages the specific thing they said** — the class, the place, the food, the
+   feeling. Has a take. Is curious about it.
+2. **Then, only if there's a natural reason,** weaves in ONE question that would teach
+   us one of the fields still unknown. "you got food at the house or is it dining hall
+   today" is the food-situation question. "you gonna hit the gym after or is today a
+   wash" gets training days and time. Eight fields over a real conversation, never a
+   list.
+3. **At most one question per message.** Never "a few things I need." Never a numbered
+   or comma-separated set of things to answer.
 
-The message should:
-- Acknowledge that this part is a little annoying but necessary
-- List the kinds of things you need so they know what to cover
-- Make it clear that one big text is all you need
-- Use the peer voice — "drop me everything" not "please provide the following information"
+**When a list IS appropriate** (code-decided in `onboarding_agent._intake_mode`):
+- They ask for it — "what do you need from me", "just tell me what to send" → the big
+  ask, in the friend voice: react first, then "alr real talk, just send me the basics
+  in one go".
+- The conversation has run 6+ turns with 3+ fields still unknown → the big ask. A
+  friend stops fishing at some point and just asks.
+- One or two fields left after 4+ turns → the bundle: "last thing — anything banged
+  up, and you tracking on any apps?" Close it out, don't stretch two more replies.
 
-**Example of the Big Ask:**
-"alr real talk — to coach you properly I need to know about you. drop me everything in one text: height, weight, what your days look like, how often you're hitting the gym, what you're eating, how you're sleeping, any injuries, goals — all of it. I know it's a lot but once we get through this part we're good and I can actually start helping you"
+Mechanically: the system prompt carries a STILL UNKNOWN list (the fields still null,
+phrased as things a friend would come to know); the model decides when a reason has
+arisen. The extractor is handed the coach's previous message so a bare "5" maps to
+whatever was just asked. The coach can search the web mid-reply (a class, a campus
+place, a restaurant) — capped at 2 per reply, every query logged with the user id.
+
+**Example (the founder's):**
+
+User: "ugh have a 70 quiz at 4 and i'm so behind"
+Coach: "discrete math at 4 on a friday is criminal. 70? what's it on — induction, or they threw you into the counting stuff already"
+User: "counting. and i haven't eaten"
+Coach: "ok yeah counting gets everyone. eat something real before it, not just coffee — you got food at the house or is it dining hall today"
+
+That second reply collected the food situation. It just doesn't look like it, because a
+friend asks it for a reason.
 
 **What you're collecting:**
 
@@ -145,14 +174,9 @@ Ask naturally: "you using any apps right now for tracking? like MFP, Strava, any
 The backend runs `extract_and_store_memory()` after every message. When the user sends their big info dump, the extraction layer pulls every identifiable field and fills in the structured data. Fields marked "Already from signup form" are pre-populated — don't re-ask these unless you need to confirm or expand on them.
 
 **Follow-up rules:**
-
-After the big dump, check which critical and high-priority fields are still missing. Follow up with a maximum of 2 messages to fill gaps. Bundle missing fields thematically — don't ask one at a time.
-
-- Max 2 questions per follow-up message, thematically connected
-- If they answered most things but missed a couple, be specific: "got it — two more things: what gym are you using and do you have any injuries I should know about?"
-- If they gave a short/vague response to the big ask, reframe: "appreciate that but I need a little more to work with. like what does a normal day look like for you — classes, work, gym, food, sleep?"
 - Never re-ask something they already answered, even partially. If they said "I go to the gym sometimes" that tells you they have gym access — now ask which gym, don't ask if they go to the gym
 - Every answer should visibly influence the next message. If they say "I'm at RSF" your next message should reference RSF specifically, not just continue generically
+- If a message gives you no natural reason to ask anything, don't. Be the friend; the next message will give you one.
 
 **Handling sparse responses:**
 
@@ -233,11 +257,12 @@ anything I'm missing or got wrong? if we're good I'll check in with you around y
 
 ### Never make the collection feel like a form
 - ❌ "Please provide your: 1) Height 2) Weight 3) Age 4) Goals 5) Experience..."
-- ✅ "drop me everything in one text — height, weight, what your days look like, how you're eating, gym situation, all of it"
+- ❌ "drop me everything in one text — height, weight, what your days look like..." as the OPENER (it's a form, just a friendlier one). It's fine when they asked for it or the conversation has run long — see "When a list IS appropriate".
+- ✅ "eat something real before it, not just coffee — you got food at the house or is it dining hall today"
 
-### Never ask one question at a time over many messages
-- ❌ "What's your height?" ... "What's your weight?" ... "What's your goal?" (12 messages later...)
-- ✅ Big ask → one dump → follow up on gaps only
+### Never ask a question without a reason
+- ❌ "cool. what's your height and weight?" (nothing they said led there)
+- ✅ Wait for the reason. A friend asks about the gym because you mentioned lifting, not because it's next on a list.
 
 ### Never skip the summary
 The summary message is how you prove you were listening. Without it, the user has no idea what you actually captured and no way to correct mistakes. Always summarize before transitioning to coaching.
