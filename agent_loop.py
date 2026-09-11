@@ -288,14 +288,10 @@ def build_loop_context(user, session) -> str:
     # sent it had rolled to the edge of the history window. This is the ONE link
     # the coach may always send.
     if getattr(user, "phone", None):
-        # PR #34 (user-profile-page) makes profile_page.profile_url(user) the single
-        # builder (token-keyed; the phone leaves the URL). Use it when present; until
-        # it merges, the phone-keyed form is what the kickoff sends today.
-        try:
-            from profile_page import profile_url as _profile_url
-            _link = _profile_url(user)
-        except ImportError:
-            _link = f"{config.PROFILE_BASE_URL}?phone={user.phone.replace('+', '')}"
+        # profile_page.profile_url(user) is the single link builder (PR #34: a signed
+        # token, the phone number never in the URL) — the same one the kickoff sends.
+        from profile_page import profile_url as _profile_url
+        _link = _profile_url(user)
         parts.append("## THEIR PROFILE PAGE\n"
                      f"{_link}\n"
                      "This is their own profile/settings page. When they ask for their profile, "

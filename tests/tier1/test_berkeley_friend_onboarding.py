@@ -736,11 +736,9 @@ def test_coach_context_carries_the_profile_link(db):
         ctx = build_loop_context(user, s)
     finally:
         s.close()
+    from profile_page import profile_url
     assert "## THEIR PROFILE PAGE" in ctx
-    try:  # PR #34's single builder, once merged
-        from profile_page import profile_url
-        assert profile_url(user) in ctx
-    except ImportError:
-        assert f"{config.PROFILE_BASE_URL}?phone=12094205037" in ctx
+    assert profile_url(user) in ctx                      # the token link (PR #34)
+    assert "?phone=" not in ctx, "the phone number must never appear in the URL"
     assert "Never say you don't have it" in ctx
     assert "THEIR PROFILE PAGE (in context)" in " ".join(_voice_prompt().split())
