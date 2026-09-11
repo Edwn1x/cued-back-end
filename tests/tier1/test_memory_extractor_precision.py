@@ -113,3 +113,24 @@ def test_store_drops_rejected_facts_and_keeps_the_rest(db, anthropic_stub, caplo
     assert _texts(prof, "identity") == ["CS major at UC Berkeley"]
     assert _texts(prof, "training_preferences") == ["responds well to accountability partners"]
     assert any("MEMORY_SANITIZE" in r.getMessage() and "rejected=2" in r.getMessage() for r in caplog.records)
+
+
+def test_sanitizer_keeps_short_facts_that_state_something_and_never_drops_safety():
+    """Founder: "what if the three words is something like 'likes to run'?" Kept — and
+    so are two-word stating facts and ANY safety fact, however terse."""
+    from memory import sanitize_facts
+    keep = [
+        {"action": "add", "category": "training_preferences", "text": "likes to run"},
+        {"action": "add", "category": "training_preferences", "text": "hates cardio"},
+        {"action": "add", "category": "identity", "text": "uses Strava"},
+        {"action": "add", "category": "constraints", "text": "bad knee", "safety_critical": True},
+    ]
+    kept, rejected = sanitize_facts(keep)
+    assert rejected == 0 and [f["text"] for f in kept] == ["likes to run", "hates cardio", "uses Strava", "bad knee"]
+    drop = [
+        {"action": "add", "category": "constraints", "text": "messed up"},
+        {"action": "add", "category": "communication_preferences", "text": "so tired"},
+        {"action": "add", "category": "goals", "text": "abs"},
+    ]
+    kept, rejected = sanitize_facts(drop)
+    assert kept == [] and rejected == 3
