@@ -14,9 +14,10 @@ import config
 from skill_loader import load_skill
 from tone_analyzer import get_tone_instruction
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.personality")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def _personality_skills_block() -> str:

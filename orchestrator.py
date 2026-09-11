@@ -15,9 +15,10 @@ import threading
 import anthropic
 import config
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.orchestrator")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def classify_message(user_message: str, recent_context: str = "") -> dict:

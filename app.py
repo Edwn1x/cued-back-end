@@ -25,6 +25,7 @@ from events import apply_event_signals_task
 from agent_loop import run_agent_loop
 from cost_tracking import track as track_usage
 from profile_page import profile_url, verify_profile_token, build_profile_payload
+from llm_client import make_client
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -94,7 +95,7 @@ def extract_and_store_decisions(user_id: int, user_message: str, coach_response:
     import anthropic
     import json
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = make_client()
 
     prompt = f"""Analyze this SMS coaching exchange and extract any CONFIRMED settings, decisions, or profile data that should be stored permanently.
 
@@ -254,7 +255,7 @@ def extract_memory_facts(user_id: int, user_message: str, coach_response: str):
     import anthropic
     import json
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = make_client()
 
     session = get_session()
     try:
@@ -514,7 +515,7 @@ def maybe_update_coaching_summary(user_id: int):
     finally:
         session.close()
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = make_client()
 
     prompt = f"""You are maintaining a rolling summary of an SMS coaching relationship. Your job is to FOLD new conversation into the existing summary — not rebuild it from scratch. Keep useful past context, integrate the new material, drop anything stale.
 
@@ -591,6 +592,13 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             return
+        # Release the connection NOW. Everything below is the model turn (seconds to a
+        # minute; a hung call, minutes) and it must not run inside an open transaction:
+        # on 2026-09-11 a connection left "idle in transaction" through a turn held a
+        # users lock that a deploy's ALTER TABLE queued behind — and every users read
+        # queued behind the ALTER. `user` stays usable detached (columns are loaded; the
+        # turn reads by user.id through its own short sessions).
+        session.close()
 
         # "Cued is typing…" — the buffer (reading) is over; generation starts now.
         from typing_indicator import typing_start, typing_stop
@@ -707,13 +715,18 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         except Exception:  # noqa: BLE001
             pass
         try:
-            user = session.query(User).filter(User.id == user_id).first()
-            if user:
-                send_sms(user.phone, "Something went wrong on my end — I'll be back shortly.", user_id=user.id)
+            s2 = get_session()  # the outer session is already closed by design
+            try:
+                u = s2.query(User).filter(User.id == user_id).first()
+                phone = u.phone if u else None
+            finally:
+                s2.close()
+            if phone:
+                send_sms(phone, "Something went wrong on my end — I'll be back shortly.", user_id=user_id)
         except Exception:
             pass
     finally:
-        session.close()
+        session.close()  # no-op when already closed
 
 
 # ─── Goodnight Detection ─────────────────────────────

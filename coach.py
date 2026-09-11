@@ -10,8 +10,9 @@ from models import is_workout_confirmed_today
 from tone_analyzer import get_tone_instruction
 from memory import build_memory_block
 from cost_tracking import track
+from llm_client import make_client
 
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 # Keep the old template as fallback
 SYSTEM_PROMPT_TEMPLATE = Path("prompts/system_prompt.txt").read_text()

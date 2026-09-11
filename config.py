@@ -19,6 +19,12 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
 # deliberate non-breaking rollout so a deploy without the var can't lock the
 # founder out; the /admin/system page shows a red banner until it's set.
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+# Every Anthropic client (llm_client.make_client) is bounded. Incident 2026-09-11: with
+# the SDK default (10 min × 2 retries) one hung call held a DB transaction that blocked a
+# deploy's ALTER TABLE and, behind it, every users-table read. 120s covers a search turn
+# (~30–60s) with room; one retry keeps the worst case under ~5 minutes.
+ANTHROPIC_TIMEOUT_S = float(os.getenv("ANTHROPIC_TIMEOUT_S", "120"))
+ANTHROPIC_MAX_RETRIES = int(os.getenv("ANTHROPIC_MAX_RETRIES", "1"))
 PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html")
 # Signs the per-user profile link (see profile_page.py). Falls back to
 # FLASK_SECRET_KEY so a deploy without the var still mints valid links; set a

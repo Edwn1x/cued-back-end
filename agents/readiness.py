@@ -15,9 +15,10 @@ from skill_loader import load_skill
 from models import is_workout_confirmed_today
 from memory import build_memory_block
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.readiness")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def _build_readiness_context(user: User) -> str:

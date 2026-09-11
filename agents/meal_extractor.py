@@ -27,9 +27,10 @@ import anthropic
 import config
 from models import get_session, User, Meal, ensure_todays_totals, get_active_meal, set_active_meal, clear_active_meal, active
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.meal_extractor")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def _build_prompt(user_message: str, coach_response: str, recent_coach_messages: str, active_meal_desc: str | None) -> str:

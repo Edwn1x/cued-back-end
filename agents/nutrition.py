@@ -16,9 +16,10 @@ from models import get_session, User, Message
 from skill_loader import load_skill
 from memory import build_memory_block
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.nutrition")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def _build_nutrition_context(user: User) -> str:

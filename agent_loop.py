@@ -26,9 +26,10 @@ from memory import render_categories, CATEGORIES, render_body_line, render_dieta
 from models import get_session, User, Message, Workout, Meal, active
 from events import todays_events
 from split_pointer import get_split_pointer
+from llm_client import make_client
 
 logger = logging.getLogger("cued.agent_loop")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 _IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "prompts", "identity.md")
 _VOICE_PATH = os.path.join(os.path.dirname(__file__), "prompts", "voice.md")

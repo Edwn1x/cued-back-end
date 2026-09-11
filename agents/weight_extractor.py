@@ -14,9 +14,10 @@ import anthropic
 import config
 from models import get_session, User, WeightLog
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.weight_extractor")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 
 def extract_and_log_weight(user_id: int, user_message: str, coach_response: str):
