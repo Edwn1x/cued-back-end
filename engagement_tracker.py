@@ -156,7 +156,13 @@ def is_question_type(message_type: str) -> bool:
 
 
 def increment_unanswered(user_id: int):
-    """Increment unanswered_count if no reply came in since the last outbound message."""
+    """Increment unanswered_count if no reply came in since the last outbound message.
+
+    KEYSTONE (Photon migration, Phase 2 item 4): if that last outbound is known to
+    have NOT landed (`delivery_status == 'failed'`), it is not a strike. Silence
+    after a message the user never received says nothing about the user. Without
+    this exemption a relay outage decays the engagement tier for people who never
+    left. Only an explicit 'failed' is exempt; NULL/legacy rows count as sent."""
     session = get_session()
     try:
         user = session.query(User).get(user_id)
@@ -172,6 +178,8 @@ def increment_unanswered(user_id: int):
         )
         if not last_out:
             return
+        if last_out.delivery_status == "failed":
+            return  # keystone: we know it didn't land — not the user's silence
 
         # Check if any inbound reply came after it
         reply = (

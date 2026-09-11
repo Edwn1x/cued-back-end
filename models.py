@@ -122,6 +122,14 @@ class User(Base):
     coaching_branch = Column(String(30), default=None) # "training_nutrition" or "nutrition_only"
     seen_exercise_demos = Column(JSON, default=None)   # {"bench_press": true, ...}
 
+    # Photon migration Phase 2 — outbound channel routing (read by sms._send_via_channel
+    # in Phase 4A). preferred_channel is the ask; channel_failed_over is the code-owned
+    # circuit breaker that drops a user back to SMS after a Photon send throws.
+    preferred_channel = Column(String(10), default="sms")      # 'sms' | 'imessage'
+    channel_failed_over = Column(Boolean, default=False)
+    channel_failover_at = Column(DateTime, default=None)
+    photon_user_id = Column(String(64), default=None)          # id returned by the Spectrum users API (Phase 4C)
+
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
     meals = relationship("Meal", back_populates="user", order_by="Meal.eaten_at.desc()")
@@ -182,6 +190,13 @@ class Message(Base):
     body = Column(Text, nullable=False)
     message_type = Column(String(30))  # morning, breakfast, lunch, dinner, workout, post_workout, evening, freeform
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Photon migration Phase 2 — which pipe carried this row and whether it landed.
+    # delivery_status='failed' is what the keystone reads (engagement_tracker.
+    # increment_unanswered): a message we KNOW didn't land is never an unanswered
+    # strike, so a relay outage can't masquerade as user churn.
+    channel = Column(String(10), default="sms")            # 'sms' | 'imessage'
+    provider_sid = Column(String(80), index=True)          # Twilio SID or Photon message id
+    delivery_status = Column(String(12), default="sent")   # 'sent' | 'failed' | 'delivered'
 
     user = relationship("User", back_populates="messages")
 

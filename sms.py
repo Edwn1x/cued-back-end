@@ -33,11 +33,18 @@ def _send_single(phone: str, body: str) -> str:
     return message.sid
 
 
-def _log_message(user_id: int, body: str, message_type: str):
-    """Log an outbound message to the database."""
+def _log_message(user_id: int, body: str, message_type: str,
+                 channel: str = "sms", provider_sid: str | None = None,
+                 delivery_status: str = "sent"):
+    """Log an outbound message to the database, stamped with which pipe carried it
+    and whether it landed. `delivery_status='failed'` rows are what the keystone
+    (engagement_tracker.increment_unanswered) reads — write them, never skip them."""
     session = get_session()
     try:
-        session.add(Message(user_id=user_id, direction="out", body=body, message_type=message_type))
+        session.add(Message(
+            user_id=user_id, direction="out", body=body, message_type=message_type,
+            channel=channel, provider_sid=provider_sid, delivery_status=delivery_status,
+        ))
         session.commit()
     finally:
         session.close()
@@ -103,7 +110,8 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
             time.sleep(SMS_SPLIT_DELAY)
         last_sid = _send_single(phone, part)
         if user_id:
-            _log_message(user_id, part, message_type)
+            _log_message(user_id, part, message_type,
+                         channel="sms", provider_sid=last_sid, delivery_status="sent")
 
     return last_sid
 

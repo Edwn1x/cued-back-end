@@ -211,6 +211,18 @@ MIGRATIONS = [
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_available BOOLEAN DEFAULT FALSE",
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_used BOOLEAN DEFAULT FALSE",
     "ALTER TABLE heartbeat_ticks ADD COLUMN search_query TEXT",
+    # Photon migration Phase 2: channel routing + delivery outcome. DEFAULTs backfill
+    # every existing row as sms/sent so the keystone (increment_unanswered) never sees
+    # an ambiguous NULL on legacy rows. Index name matches SQLAlchemy's index=True
+    # convention so create_all and migrate agree on a fresh DB.
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS channel VARCHAR(10) DEFAULT 'sms'",
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS provider_sid VARCHAR(80)",
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(12) DEFAULT 'sent'",
+    "CREATE INDEX IF NOT EXISTS ix_messages_provider_sid ON messages (provider_sid)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_channel VARCHAR(10) DEFAULT 'sms'",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failed_over BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failover_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS photon_user_id VARCHAR(64)",
 ]
 
 def wait_for_db(retries=10, delay=3):
