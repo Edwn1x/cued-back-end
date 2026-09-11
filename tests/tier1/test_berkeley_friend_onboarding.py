@@ -448,3 +448,15 @@ def test_store_is_inert_after_onboarding(db):
     onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mostly_eat_out"})
     db.expire_all()
     assert db.get(User, user.id).cooking_situation == "cook_myself"
+
+
+def test_store_accepts_year_and_meal_plan_status(db):
+    """Live: "I'm a junior so I don't got the dining hall pass" — two Berkeley facts the
+    User model already has columns for; the extractor now has keys for them."""
+    import onboarding_agent
+    from models import User
+    user = _new_signup(db, onboarding_step=2)
+    onboarding_agent._store_extracted_data(user.id, {"year": "junior", "meal_plan_status": "no_meal_plan"})
+    db.expire_all()
+    u = db.get(User, user.id)
+    assert (u.year, u.meal_plan_status) == ("junior", "no_meal_plan")

@@ -432,8 +432,16 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "existing_tools": "comma separated app/device names" or "none" or null,
   "tools_decision": "integrate" or "acknowledged" or "none" or null,
   "avg_steps": integer (daily step count) or null,
-  "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null
+  "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null,
+  "year": "freshman" or "sophomore" or "junior" or "senior" or "grad" or "transfer" or null,
+  "meal_plan_status": "on_meal_plan" or "no_meal_plan" or null
 }}
+
+year / meal_plan_status rules (Berkeley context — bonus facts, only when clearly stated):
+- "I'm a junior" → year="junior"; "first year" / "freshman" → "freshman"; "grad student" → "grad"
+- "I don't have a meal plan" / "no dining hall pass" / "not on the meal plan" → meal_plan_status="no_meal_plan"
+- "I'm on the meal plan" / "I have swipes" / "dining hall pass" → meal_plan_status="on_meal_plan"
+- Eating AT a dining hall once says nothing about meal_plan_status → null
 
 tools_decision rules:
 - "none" → user has no tools (existing_tools="none")
@@ -545,7 +553,7 @@ def _store_extracted_data(user_id: int, data: dict):
         for key in ("height_ft", "height_in", "weight_lbs", "occupation", "diet",
                     "cooking_situation", "injuries", "wake_time", "wake_time_alt",
                     "wake_days_alt", "sleep_time", "existing_tools", "tools_decision",
-                    "activity_level", "current_split"):
+                    "activity_level", "current_split", "year", "meal_plan_status"):
             if key in data and data.get(key) is not None:
                 val = data[key]
                 if key == "weight_lbs" and not val:
