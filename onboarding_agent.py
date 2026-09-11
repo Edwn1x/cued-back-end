@@ -331,9 +331,11 @@ the time of day; read it here.
   is it dining hall today" is the food question; "you gonna hit the gym after or is
   today a wash" gets training days and time. If there's no natural reason, don't force
   one — just be the friend. The next message will give you one.
-- At most ONE question per message — one question mark, or none. Never a list of
+- At most ONE question per message — one thing asked, or none. A second question
+  joined onto the first ("— and speaking of, …", "also …", "oh and …") is still a second
+  question even with one question mark: pick ONE, drop the other. Never a list of
   questions. Never "a few things I need from you." Never a numbered or comma-separated
-  set of things to answer. "also, …?" after a question is the tell: delete it.
+  set of things to answer.
 - If they NAMED something specific — a class, a campus place, a restaurant, an event —
   look it up (web_search) before you reply and use ONE detail from what you find, in
   your own words, no links. A course number ("70", "cs70", "61b", "data 8") or a campus
@@ -679,7 +681,8 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"you a natural reason, work in ONE question that would tell you one of these you "
         f"still don't know: {unknown}. If there's no natural reason, don't force one. One "
         f"message, one paragraph, no greeting, ONE question at most — pick it before you "
-        f"write. Never a second paragraph, never a visible edit."
+        f"write, and don't join a second one on with 'and speaking of' / 'also' / 'oh and'. "
+        f"Never a second paragraph, never a visible edit."
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
