@@ -215,6 +215,15 @@ MIGRATIONS = [
     # was widened to VARCHAR(500) by hand, models.py now declares 500 — this makes
     # any DB created before that match. Widening is idempotent + non-destructive.
     "ALTER TABLE users ALTER COLUMN activity_level TYPE VARCHAR(500)",
+    # Same drift, found live 2026-09-11 (user 27's workout_time was a 44-char phrase that
+    # prod accepted and the model would not): align every free-text-ish onboarding column
+    # to prod's actual width. Widening only — idempotent, non-destructive.
+    "ALTER TABLE users ALTER COLUMN workout_time TYPE VARCHAR(50)",
+    "ALTER TABLE users ALTER COLUMN confirmed_workout_time TYPE VARCHAR(500)",
+    "ALTER TABLE users ALTER COLUMN confirmed_training_split TYPE VARCHAR(500)",
+    "ALTER TABLE users ALTER COLUMN wake_time TYPE VARCHAR(500)",
+    "ALTER TABLE users ALTER COLUMN sleep_time TYPE VARCHAR(500)",
+    "ALTER TABLE users ALTER COLUMN cooking_situation TYPE VARCHAR(500)",
     # Photon migration Phase 2: channel routing + delivery outcome. DEFAULTs backfill
     # every existing row as sms/sent so the keystone (increment_unanswered) never sees
     # an ambiguous NULL on legacy rows. Index name matches SQLAlchemy's index=True

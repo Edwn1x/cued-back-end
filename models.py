@@ -34,17 +34,17 @@ class User(Base):
     activity_level = Column(String(500))
     diet = Column(String(100))  # omnivore, vegetarian, vegan, etc.
     restrictions = Column(Text)  # allergies, dislikes
-    cooking_situation = Column(String(20))  # cook_myself, dining_hall, mostly_eat_out, mix
+    cooking_situation = Column(String(500))  # cook_myself, dining_hall, mostly_eat_out, mix (prod width 500)
     meals_per_day = Column(String(5))  # 1-2, 3, 4+
     schedule = Column(Text)  # workout days/times, class schedule
     schedule_details = Column(Text)  # freeform: classes, work, commitments
-    wake_time = Column(String(10), default=None)  # HH:MM format — primary wake time
+    wake_time = Column(String(500), default=None)  # HH:MM, or a phrase from the extractor (prod width 500)
     wake_time_alt = Column(String(10), default=None)  # HH:MM — secondary wake time (e.g. 12:00 on off days)
     wake_days_alt = Column(String(50), default=None)  # comma-separated days that use wake_time_alt (e.g. "mon,wed,fri")
-    sleep_time = Column(String(10), default=None)  # target bedtime
+    sleep_time = Column(String(500), default=None)  # HH:MM, or a phrase (prod width 500)
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
-    workout_time = Column(String(10), default=None)
+    workout_time = Column(String(50), default=None)  # HH:MM or "afternoon, varies 14:00-16:00…" (prod width 50)
     workout_days = Column(String(100))  # comma-separated: mon,tue,wed,etc.
     height_ft = Column(Integer)
     height_in = Column(Integer)
@@ -60,8 +60,8 @@ class User(Base):
     protein_target = Column(Integer, default=None)  # computed daily protein target (grams)
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     confirmed_goal_priority = Column(String(50), default=None)  # "cutting" or "building" — set once user confirms
-    confirmed_training_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", etc.
-    confirmed_workout_time = Column(String(10), default=None)  # user-confirmed workout time, separate from default
+    confirmed_training_split = Column(String(500), default=None)  # "ppl", "upper_lower", … (prod width 500)
+    confirmed_workout_time = Column(String(500), default=None)  # copied from workout_time at completion (prod width 500)
     confirmed_training_days = Column(String(100), default=None)  # user-confirmed days, e.g. "mon,tue,thu,fri,sat"
     pending_clarification_topic = Column(String(50), default=None)  # topic of unanswered onboarding question
     pending_clarification_answer = Column(Text, default=None)  # user's answer once received
