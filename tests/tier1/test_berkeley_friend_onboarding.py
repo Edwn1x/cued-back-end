@@ -35,6 +35,11 @@ INTAKE = dict(height_ft=None, weight_lbs=None, occupation=None, activity_level=N
               sleep_time=None, existing_tools=None)
 
 
+def _is_extract(kwargs) -> bool:
+    """The field extractor call (any model) vs the reply call."""
+    return "Extract any fitness coaching profile data" in str(kwargs["messages"][0]["content"])
+
+
 def _new_signup(db, **over):
     """A user right after the hook: signup fields only, onboarding_step=1."""
     kw = dict(INTAKE, name="Nau", age=20, goal="muscle_building", experience="beginner",
@@ -98,7 +103,7 @@ def test_first_reply_is_one_friend_message_and_advances_to_step_2(db, anthropic_
 
     def _handler(kwargs):
         # the extractor (Haiku) returns nothing; the generate call is the reply
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["system"] = kwargs["system"]
         seen["instruction"] = kwargs["messages"][0]["content"]
@@ -234,7 +239,7 @@ def test_extractor_is_given_the_previous_coach_message(db, anthropic_stub, sms_c
     prompts = []
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             prompts.append(kwargs["messages"][0]["content"])
             return '{"workout_days": "5"}'
         return "5 days is a real commitment. rsf or the dorm gym"
@@ -265,7 +270,7 @@ def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthrop
     gen_instructions = []
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return '{"injuries": "none"}'
         gen_instructions.append(kwargs["messages"][0]["content"])
         return "alr here's what i'm working with ... sound right?"
@@ -282,7 +287,7 @@ def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthrop
     # now a confirmation TO the summary completes
     sms_capture.clear()
     def _handler2(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         return "locked in. you'll hear from me at 8"
     anthropic_stub.reply_with(_handler2)
@@ -322,7 +327,7 @@ def test_asking_for_the_list_sends_the_big_ask_in_the_friend_voice(db, anthropic
     seen = {}
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "alr real talk, just send me the basics in one go - height, weight, what your days look like, food situation, sleep."
@@ -367,7 +372,7 @@ def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_
     _seed_conversation(user.id, coach_replies=onboarding_agent.BIG_ASK_AFTER_TURNS, inbound_texts=6)
     seen = {}
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "ok real talk"
@@ -396,7 +401,7 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
     _seed_conversation(user.id, coach_replies=onboarding_agent.BUNDLE_AFTER_TURNS, inbound_texts=4)
     seen = {}
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "last thing - anything banged up, and you tracking on any apps?"
@@ -407,3 +412,39 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
     ins = seen["instruction"]
     assert "last thing" in ins and "any injuries" in ins and "fitness apps" in ins
     assert "ONE text" not in ins
+
+
+# ── 7. extraction: anecdotes aren't facts; latest clear statement wins ────────
+
+def test_extractor_uses_sonnet_and_states_the_anecdote_rule(db, anthropic_stub):
+    import config, onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+    anthropic_stub.reply_with(lambda kw: seen.update(model=kw.get("model"), prompt=kw["messages"][0]["content"]) or "{}")
+    onboarding_agent._extract_data_from_message("we got malatang after", user)
+    assert seen["model"] == config.ONBOARDING_EXTRACTOR_MODEL == "claude-sonnet-5"
+    assert "AN ANECDOTE IS NOT A FACT" in seen["prompt"]
+    assert "never fill diet=\"omnivore\" unless" in seen["prompt"]
+
+
+def test_store_latest_clear_statement_wins_during_onboarding(db):
+    """Live bug: an early over-inference (mostly_eat_out) was made permanent by
+    first-write-wins; the explicit 'I mostly cook' 30s later was dropped."""
+    import onboarding_agent
+    from models import User
+    user = _new_signup(db, onboarding_step=2)
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mostly_eat_out"})
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mix", "diet": None})
+    db.expire_all()
+    u = db.get(User, user.id)
+    assert u.cooking_situation == "mix"
+    assert u.diet is None  # a null never clears a value, never invents one
+
+
+def test_store_is_inert_after_onboarding(db):
+    import onboarding_agent
+    from models import User
+    user = make_user(db, onboarding_step=3, cooking_situation="cook_myself")
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mostly_eat_out"})
+    db.expire_all()
+    assert db.get(User, user.id).cooking_situation == "cook_myself"

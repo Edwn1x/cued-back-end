@@ -405,7 +405,9 @@ For example:
 
 """
 
-    prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated.
+    prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated ABOUT THEMSELVES AS A PATTERN.
+
+AN ANECDOTE IS NOT A FACT. "we got malatang after", "went for pizza in sf", "had crossroads for lunch" say NOTHING about cooking_situation or diet — they are one meal, not how the person eats. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none. When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
 
 User said: "{user_message}"
 
@@ -493,7 +495,7 @@ Activity level — always extract something if the user described their daily mo
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=config.ONBOARDING_EXTRACTOR_MODEL,
             # 1000: same sizing class as extract_and_store_decisions — a fully
             # populated field set + fences needs real headroom; truncation
             # discards the extraction.
@@ -502,7 +504,7 @@ Activity level — always extract something if the user described their daily mo
         )
         track_usage(getattr(user, "id", None),
                     "onboarding.extract_data_from_message",
-                    "claude-haiku-4-5-20251001", response)
+                    config.ONBOARDING_EXTRACTOR_MODEL, response)
         text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         if "}" in text:
             text = text[:text.rindex("}") + 1]
@@ -513,7 +515,15 @@ Activity level — always extract something if the user described their daily mo
 
 
 def _store_extracted_data(user_id: int, data: dict):
-    """Write extracted fields to the user record."""
+    """Write extracted fields to the user record.
+
+    During onboarding the LATEST clear statement wins: a new non-null value
+    overwrites an earlier one. Live bug (2026-09-11, user 27): an early
+    over-inference (cooking_situation=mostly_eat_out from an anecdote) was made
+    permanent by first-write-wins, and the user's explicit "I mostly cook" 30s
+    later was silently dropped. The summary/confirmation step is the final check.
+    Once onboarding is complete (step >= 3) nothing here runs — coaching-time
+    corrections go through the coach's tools."""
     from models import get_session, User
 
     session = get_session()
@@ -521,71 +531,41 @@ def _store_extracted_data(user_id: int, data: dict):
         user = session.get(User, user_id)
         if not user:
             return
+        if (user.onboarding_step or 0) >= 3:
+            return
 
         changed = False
 
-        if data.get("height_ft") and not user.height_ft:
-            user.height_ft = data["height_ft"]
-            changed = True
-        if data.get("height_in") is not None and user.height_in is None:
-            user.height_in = data["height_in"]
-            changed = True
-        if data.get("weight_lbs") and not user.weight_lbs:
-            user.weight_lbs = data["weight_lbs"]
-            changed = True
-        if data.get("occupation") and not user.occupation:
-            user.occupation = data["occupation"]
-            changed = True
-        if data.get("workout_days") and not user.workout_days:
-            user.workout_days = str(data["workout_days"])
-            changed = True
-        if data.get("workout_time") and not user.workout_time:
+        def _set(attr, value):
+            nonlocal changed
+            if value is not None and getattr(user, attr) != value:
+                setattr(user, attr, value)
+                changed = True
+
+        for key in ("height_ft", "height_in", "weight_lbs", "occupation", "diet",
+                    "cooking_situation", "injuries", "wake_time", "wake_time_alt",
+                    "wake_days_alt", "sleep_time", "existing_tools", "tools_decision",
+                    "activity_level", "current_split"):
+            if key in data and data.get(key) is not None:
+                val = data[key]
+                if key == "weight_lbs" and not val:
+                    continue
+                _set(key, val)
+        if data.get("workout_days"):
+            _set("workout_days", str(data["workout_days"]))
+        if data.get("workout_time"):
             wt = data["workout_time"]
             time_map = {"morning": "08:00", "afternoon": "14:00", "evening": "18:00"}
             if isinstance(wt, str) and wt.lower() in time_map:
                 wt = time_map[wt.lower()]
-            user.workout_time = wt
-            changed = True
-        if data.get("diet") and not user.diet:
-            user.diet = data["diet"]
-            changed = True
-        if data.get("cooking_situation") and not user.cooking_situation:
-            user.cooking_situation = data["cooking_situation"]
-            changed = True
-        if data.get("injuries") is not None and user.injuries is None:
-            user.injuries = data["injuries"]
-            changed = True
-        if data.get("wake_time") and not user.wake_time:
-            user.wake_time = data["wake_time"]
-            changed = True
-        if data.get("wake_time_alt") and not user.wake_time_alt:
-            user.wake_time_alt = data["wake_time_alt"]
-            changed = True
-        if data.get("wake_days_alt") and not user.wake_days_alt:
-            user.wake_days_alt = data["wake_days_alt"]
-            changed = True
-        if data.get("sleep_time") and not user.sleep_time:
-            user.sleep_time = data["sleep_time"]
-            changed = True
-        if data.get("existing_tools") is not None and user.existing_tools is None:
-            user.existing_tools = data["existing_tools"]
-            changed = True
-        if data.get("tools_decision") is not None and not user.tools_decision:
-            user.tools_decision = data["tools_decision"]
-            changed = True
-        if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
-            user.activity_level = data["activity_level"]
-            changed = True
-        if data.get("avg_steps") is not None and user.avg_steps is None:
-            user.avg_steps = int(data["avg_steps"])
-            changed = True
-        if data.get("current_split") is not None and user.current_split is None:
-            user.current_split = data["current_split"]
-            changed = True
+            _set("workout_time", wt)
+        if data.get("avg_steps") is not None:
+            _set("avg_steps", int(data["avg_steps"]))
 
         if changed:
             session.commit()
-            logger.info(f"Stored onboarding data for {user.name}: {data}")
+            logger.info(f"Stored onboarding data for {user.name}: "
+                        f"{ {k: v for k, v in data.items() if v is not None} }")
     finally:
         session.close()
 
