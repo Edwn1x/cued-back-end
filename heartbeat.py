@@ -203,8 +203,9 @@ def _proactive_context(user, session) -> str:
     if win:
         parts.append(win)
 
+    from engagement_tracker import _not_reaction
     last_out = (session.query(Message)
-                .filter(Message.user_id == user.id, Message.direction == "out")
+                .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction())
                 .order_by(Message.created_at.desc()).first())
     if last_out and last_out.created_at:
         hrs = (datetime.now(timezone.utc) - last_out.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
@@ -226,7 +227,7 @@ def _proactive_context(user, session) -> str:
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)
                   .filter(Message.user_id == user.id, Message.direction == "out",
-                          Message.created_at >= day_start)
+                          Message.created_at >= day_start, _not_reaction())
                   .order_by(Message.created_at.desc()).limit(6).all())
 
     ticks = (session.query(HeartbeatTick)

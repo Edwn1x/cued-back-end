@@ -73,13 +73,17 @@ def _resolve_channel(user_id) -> str:
     return "sms"
 
 
-def _send_imessage(phone: str, body: str) -> str:
-    """POST {phone, text} to the sidecar's /send. Returns the Photon message id.
-    Raises on non-2xx, on ok=false, or on any transport error — the caller
-    writes the `failed` row and fails over."""
+def _send_imessage(phone: str, body: str, reply_to: str = None) -> str:
+    """POST {phone, text[, reply_to]} to the sidecar's /send. `reply_to` is the
+    Photon id of one of THEIR messages → a threaded iMessage reply quoting it.
+    Returns the Photon message id. Raises on non-2xx, on ok=false, or on any
+    transport error — the caller writes the `failed` row and fails over."""
+    payload = {"phone": phone, "text": body}
+    if reply_to:
+        payload["reply_to"] = reply_to
     resp = requests.post(
         config.SIDECAR_URL.rstrip("/") + "/send",
-        json={"phone": phone, "text": body},
+        json=payload,
         headers={"X-Internal-Secret": config.INTERNAL_SHARED_SECRET},
         timeout=config.SIDECAR_TIMEOUT_S,
     )
@@ -132,7 +136,53 @@ def split_message(body: str) -> list[str]:
     return parts if parts else [body]
 
 
-def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform"):
+TAPBACKS = {"love": "❤️", "like": "👍", "dislike": "👎", "laugh": "😂", "emphasize": "‼️", "question": "❓"}
+
+
+def react_to_message(user_id: int, provider_sid: str, emoji: str) -> bool:
+    """Tapback on one of the user's iMessages (by the Photon id stored on its row).
+    Logs its own outbound row with message_type="reaction" so the history window
+    sees it and the coach doesn't re-ack — and so every silence gate can EXCLUDE
+    it (engagement_tracker._not_reaction). A failed reaction is logged and is
+    neither a strike nor a channel failure (a stale message id ≠ a dead pipe):
+    the breaker is NOT tripped. Returns True on success."""
+    if not user_id or not provider_sid or not emoji:
+        return False
+    if _resolve_channel(user_id) != "imessage":
+        return False
+    session = get_session()
+    try:
+        row = session.query(User.phone).filter(User.id == user_id).first()
+    finally:
+        session.close()
+    if not row:
+        return False
+    shown = TAPBACKS.get(emoji.strip().lower(), emoji.strip())
+    body = f"[reacted {shown} to their message]"
+    try:
+        resp = requests.post(
+            config.SIDECAR_URL.rstrip("/") + "/react",
+            json={"phone": row[0], "message_id": provider_sid, "emoji": emoji},
+            headers={"X-Internal-Secret": config.INTERNAL_SHARED_SECRET},
+            timeout=config.SIDECAR_TIMEOUT_S,
+        )
+        data = resp.json() if resp.status_code < 300 else {}
+        if resp.status_code >= 300 or not data.get("ok"):
+            raise RuntimeError(f"sidecar /react {resp.status_code}: {resp.text[:200]}")
+        _log_message(user_id, body, "reaction",
+                     channel="imessage", provider_sid=data.get("provider_message_id"), delivery_status="sent")
+        logger.info("REACTION_SENT user_id=%s emoji=%s on=%s", user_id, shown, provider_sid)
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REACTION_FAILED user_id=%s emoji=%s on=%s err=%s — not a strike, breaker untouched",
+                       user_id, shown, provider_sid, e)
+        _log_message(user_id, body, "reaction",
+                     channel="imessage", provider_sid=None, delivery_status="failed")
+        return False
+
+
+def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform",
+             reply_to_sid: str = None):
     """Send an SMS, splitting longer messages into sequential texts with a delay.
 
     Body is normalized to GSM-7 here (before split + dispatch) so the carrier
@@ -152,7 +202,10 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     if _resolve_channel(user_id) == "imessage":
         im_body = _imessage_body(body)
         try:
-            sid = _send_imessage(phone, im_body)
+            # Threaded only when the coach asked; the 2-arg form is preserved so
+            # every existing caller (and test double) of _send_imessage still works.
+            sid = (_send_imessage(phone, im_body, reply_to_sid) if reply_to_sid
+                   else _send_imessage(phone, im_body))
             _log_message(user_id, im_body, message_type,
                          channel="imessage", provider_sid=sid, delivery_status="sent")
             return sid

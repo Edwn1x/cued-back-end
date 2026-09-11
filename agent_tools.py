@@ -12,6 +12,7 @@ retired.
 from __future__ import annotations
 
 import logging
+import re
 
 from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -20,7 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 import config
 
-from models import (get_session, User, Workout, Meal, Event, DiningMenuItem, active,
+from models import (Message, get_session, User, Workout, Meal, Event, DiningMenuItem, active,
                     recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
@@ -828,6 +829,189 @@ def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) 
 
 
 # name -> handler. The loop consults this after checking the tool is enabled.
+# ─── iMessage tapbacks + threaded replies (offered only on the iMessage channel) ─
+# The WHEN is prompt (voice.md "Reactions and threaded replies"); this is the HOW.
+# Message refs: the RECENT CONVERSATION block tags each of THEIR iMessages with
+# [m<id>]; the tools take that ref and code maps it to the stored Photon id.
+REACT_TOOL = {
+    "name": "react_to_message",
+    "description": (
+        "Put an iMessage tapback on ONE of the user's messages, by its [m…] ref from "
+        "RECENT CONVERSATION. emoji: love | like | dislike | laugh | emphasize | question, "
+        "or a single raw emoji. A reaction REPLACES the text when the only honest reply is "
+        "an acknowledgment (then end your turn with NO text). It never replaces an action "
+        "(log the workout AND react) and never answers a question (that's a text). At most "
+        "one per user turn, on the message that earned it. It never counts against the user."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message_ref": {"type": "string", "description": "the [m…] ref of THEIR message, e.g. m3350"},
+            "emoji": {"type": "string", "description": "love|like|dislike|laugh|emphasize|question, or one raw emoji"},
+        },
+        "required": ["message_ref", "emoji"],
+    },
+}
+
+THREAD_REPLY_TOOL = {
+    "name": "reply_in_thread",
+    "description": (
+        "Send THIS turn's text as a threaded iMessage reply quoting ONE of the user's "
+        "messages (by [m…] ref). Use only when a plain reply would be ambiguous: a burst "
+        "with two or more topics and you're answering one of them, or you're answering "
+        "something from earlier than their latest message. Never on the latest message when "
+        "it's the only topic; never for a coaching call-out. Call it, then write the text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message_ref": {"type": "string", "description": "the [m…] ref of THEIR message to quote"},
+        },
+        "required": ["message_ref"],
+    },
+}
+
+# The model cannot emit an empty message; this is how it says "the tapback was the
+# reply". Code swallows it (and the natural-language variants a model drifts to).
+REACTION_ONLY_SENTINEL = "[silent]"
+_REACTION_ONLY_META = re.compile(
+    r"^\W*(\[?silent\]?|no text( needed| required)?|turn ended[^.]*|nothing (else|more) to (add|say)|"
+    r"\(?reaction only\)?|—|-)\W*$", re.IGNORECASE)
+
+
+def is_reaction_only_text(text: str, reacted: bool) -> bool:
+    """True when a turn that already reacted produced only the sentinel or a meta note
+    in place of a real reply — i.e. nothing should be sent."""
+    if not reacted:
+        return False
+    t = (text or "").strip()
+    return t == "" or t == REACTION_ONLY_SENTINEL or bool(_REACTION_ONLY_META.match(t))
+
+
+# A tool call written INTO the visible text ("react_to_message 👍") — a documented
+# Opus failure mode at low effort. Never send it; execute what it meant.
+_TOOL_CALL_IN_TEXT = re.compile(r"^\W*(react_to_message|reply_in_thread)\b[\s:(\[\"']*(.*?)[\s)\]\"']*$",
+                                re.IGNORECASE | re.DOTALL)
+
+
+def leaked_tool_call(text: str):
+    """('react_to_message', '👍') / ('react_to_message', 'like') / ('reply_in_thread', 'm12')
+    when the whole text is a tool invocation the model wrote as prose; else None."""
+    m = _TOOL_CALL_IN_TEXT.match((text or "").strip())
+    if not m:
+        return None
+    arg = re.sub(r"^(message_ref|emoji)\s*[=:]\s*", "", m.group(2).strip().split("\n")[0]).strip(" ,")
+    # "m3350 like" / "like m3350" → keep the emoji-ish token for react
+    if m.group(1).lower() == "react_to_message":
+        toks = [re.sub(r"^(message_ref|emoji)\s*[=:]\s*", "", t.strip(" ,")) for t in arg.split() if t.strip(" ,")]
+        emo = next((t for t in reversed(toks) if not re.match(r"^m?\d+$", t)), toks[-1] if toks else "like")
+        return ("react_to_message", emo)
+    return ("reply_in_thread", arg)
+
+
+_EMOJI_ONLY = re.compile(r"^[\s\u200d\ufe0f\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\u2B55\u203C\u2049\u2764]+$")
+
+
+def is_single_emoji_text(text: str) -> bool:
+    """A text that is nothing but one emoji (a ❤️ sent as a message). On iMessage that
+    is a tapback that lost its way — code turns it into one."""
+    t = (text or "").strip()
+    return 0 < len(t) <= 4 and bool(_EMOJI_ONLY.match(t))
+
+
+def latest_inbound_imessage_sid(user_id: int):
+    """The Photon id of their latest iMessage — None if that message is a question
+    (a converted ❤️/leaked tool call must not tapback a question either)."""
+    session = get_session()
+    try:
+        row = (session.query(Message.provider_sid, Message.body)
+               .filter(Message.user_id == user_id, Message.direction == "in",
+                       Message.channel == "imessage", Message.provider_sid.isnot(None))
+               .order_by(Message.id.desc()).first())
+        if not row or is_question_message(row[1]):
+            return None
+        return row[0]
+    finally:
+        session.close()
+
+
+# Per-turn state: one turn per user at a time (the inbound buffer serializes them).
+_TURN_STATE: dict = {}
+
+
+def begin_turn(user_id: int) -> None:
+    _TURN_STATE[user_id] = {"reacted": False, "reply_to": None}
+
+
+def pop_turn_state(user_id: int) -> dict:
+    return _TURN_STATE.pop(user_id, {"reacted": False, "reply_to": None})
+
+
+def peek_turn_state(user_id: int) -> dict:
+    return _TURN_STATE.get(user_id, {"reacted": False, "reply_to": None})
+
+
+def _resolve_message_ref(user_id: int, ref: str, *, with_body: bool = False):
+    """[m3350] / m3350 / 3350 → (Message id, provider_sid[, body]) for one of THEIR iMessages."""
+    import re as _re
+    m = _re.search(r"(\d+)", ref or "")
+    if not m:
+        return (None, None, None) if with_body else (None, None)
+    mid = int(m.group(1))
+    session = get_session()
+    try:
+        row = (session.query(Message.id, Message.provider_sid, Message.body)
+               .filter(Message.id == mid, Message.user_id == user_id,
+                       Message.direction == "in", Message.channel == "imessage")
+               .first())
+    finally:
+        session.close()
+    if not (row and row[1]):
+        return (None, None, None) if with_body else (None, None)
+    return (row[0], row[1], row[2]) if with_body else (row[0], row[1])
+
+
+def is_question_message(body: str) -> bool:
+    """Founder's rule 3, made mechanical: a message that asks something never gets a
+    tapback — it gets an answer. A '?' anywhere is enough (rhetorical counts: the
+    live eval laugh-reacted to 'why does everyone think c104 means data science?')."""
+    return "?" in (body or "")
+
+
+def handle_react_to_message(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from sms import react_to_message, TAPBACKS
+    ref = (tool_input.get("message_ref") or "").strip()
+    emoji = (tool_input.get("emoji") or "").strip()
+    if not emoji:
+        return "error: emoji required (love|like|dislike|laugh|emphasize|question or one emoji)"
+    if emoji.lower() not in TAPBACKS and len(emoji) > 4:
+        return "error: emoji must be a tapback name or a single emoji"
+    st = peek_turn_state(user_id)
+    if st.get("reacted"):
+        return "error: already reacted this turn — at most one reaction per user turn"
+    mid, sid, body = _resolve_message_ref(user_id, ref, with_body=True)
+    if not sid:
+        return f"error: no iMessage of theirs matches ref {ref!r} — use an [m…] ref from RECENT CONVERSATION"
+    if is_question_message(body):
+        return f"error: m{mid} is a question — questions get an answer in text, never a tapback (rule 3)"
+    ok = react_to_message(user_id, sid, emoji)
+    if ok:
+        _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})["reacted"] = True
+        return (f"ok: reacted {TAPBACKS.get(emoji.lower(), emoji)} on m{mid}. If the reaction IS the whole "
+                f"reply, respond with exactly {REACTION_ONLY_SENTINEL} and nothing else — never a note like "
+                f"'no text needed'. Otherwise write the text.")
+    return f"error: reaction on m{mid} failed (logged; not a strike) — reply with text instead"
+
+
+def handle_reply_in_thread(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    ref = (tool_input.get("message_ref") or "").strip()
+    mid, sid = _resolve_message_ref(user_id, ref)
+    if not sid:
+        return f"error: no iMessage of theirs matches ref {ref!r}"
+    _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})["reply_to"] = sid
+    return f"ok: this turn's text will be sent as a threaded reply to m{mid}. Now write the text."
+
+
 # ─── web_search (Anthropic SERVER-SIDE tool — no client handler) ─────────────
 # Registered here with the other tools so every surface (coach loop, heartbeat,
 # onboarding) offers the identical definition. Anthropic runs the search inline and
@@ -867,6 +1051,8 @@ def log_web_search_queries(user_id, content, site: str) -> list[str]:
 
 
 _HANDLERS = {
+    "react_to_message": handle_react_to_message,
+    "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
