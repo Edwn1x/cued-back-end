@@ -34,8 +34,9 @@ from datetime import datetime, timezone
 
 from anthropic import Anthropic
 import config
-from config import ANTHROPIC_API_KEY, COACH_MODEL, PROFILE_BASE_URL
+from config import ANTHROPIC_API_KEY, COACH_MODEL
 from sms import send_sms
+from profile_page import profile_url
 from macro_calculator import calculate_targets
 from cost_tracking import track as track_usage
 
@@ -1127,17 +1128,16 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         except Exception as e:
             logger.error(f"Scheduling failed for {user_row.name}: {e}")
 
-        phone_digits = user_row.phone.replace("+", "")
-        profile_url = f"{PROFILE_BASE_URL}?phone={phone_digits}"
+        profile_link = profile_url(user_row)
         system_prompt = _build_system_prompt(user_row)
         instruction = (
             f"The user just confirmed their plan. Onboarding is complete.\n"
             f"Targets: {targets['calories']} cal, {targets['protein']}g protein daily.\n"
-            f"Profile link: {profile_url}\n\n"
+            f"Profile link: {profile_link}\n\n"
             f"Send ONE brief message that:\n"
             f"1. Confirms everything is locked in\n"
             f"2. Tells them when they'll hear from you next (based on their wake_time: {user_row.wake_time})\n"
-            f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_url}'\n"
+            f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_link}'\n"
             f"4. Feels like the starting gun — they now have a coach\n"
             f"No explanations. No feature previews. Just confidence. Don't open with their name."
         )

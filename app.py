@@ -24,6 +24,7 @@ from memory import build_memory_block, build_memory_block_with_ids, apply_facts,
 from events import apply_event_signals_task
 from agent_loop import run_agent_loop
 from cost_tracking import track as track_usage
+from profile_page import profile_url, verify_profile_token, build_profile_payload
 
 # ─── Setup ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1691,6 +1692,35 @@ def waitlist_signup():
 
 
 # ─── Admin Dashboard — cost aggregations from token_usage ─────────────────
+@app.route("/profile/<token>", methods=["GET"])
+@limiter.limit("30/minute;300/hour")
+def profile_read(token):
+    """
+    Read-only JSON behind the user's profile page (cued.fit/profile.html?t=…).
+    The token is the HMAC link the coach texts them (profile_page.py) — a bad or
+    tampered token is a plain 404, indistinguishable from a missing user, so the
+    endpoint leaks nothing about which ids exist. CORS-restricted to
+    ALLOWED_ORIGINS like /waitlist; never cached.
+    """
+    user_id = verify_profile_token(token)
+    if user_id is None:
+        return jsonify({"status": "error", "message": "That link isn't valid."}), 404
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "That link isn't valid."}), 404
+        payload = build_profile_payload(session, user)
+    except Exception as e:
+        logger.exception("PROFILE_READ_FAIL user=%s: %s", user_id, e)
+        return jsonify({"status": "error", "message": "Couldn't load your profile right now."}), 500
+    finally:
+        session.close()
+    resp = jsonify({"status": "ok", "profile": payload})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 def _compute_cost_metrics(session):
     """
     Phase C1.5 — read token_usage and produce the measured-cost dict the
@@ -2341,6 +2371,7 @@ def admin_user(user_id):
             user_cost=user_cost,
             onboarding_label=onboarding_label,
             signed_up=fmt_date(user.created_at),
+            profile_link=profile_url(user),
             coach_memory=build_memory_block(user, "admin"),
         )
     finally:
@@ -2460,6 +2491,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="user-title">
       <h1>{{ user.name }}</h1>
       <div class="meta">{{ user.phone }} &nbsp;·&nbsp; ID {{ user.id }} &nbsp;·&nbsp; Signed up {{ signed_up }}</div>
+      <div class="meta">Profile link: <a href="{{ profile_link }}" target="_blank" rel="noopener">{{ profile_link }}</a></div>
     </div>
     <div style="display:flex;align-items:center;gap:12px">
       <a href="/admin/user/{{ user.id }}/debug" style="font-size:12px">Debug view →</a>

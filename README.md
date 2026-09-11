@@ -56,7 +56,8 @@ Point your Twilio number's inbound webhook at `https://<host>/webhook` (POST). F
 local dev, `ngrok http 5000` and use the https URL.
 
 Endpoints: `GET /` health · `POST /webhook` Twilio inbound · `GET /signup` ·
-`GET /admin` dashboard · `POST /admin/send` manual override.
+`GET /admin` dashboard · `POST /admin/send` manual override ·
+`GET /profile/<token>` the user's own profile JSON (HMAC link, see `profile_page.py`).
 
 ## Rollout flags (config.py)
 
