@@ -368,7 +368,23 @@ class _Resp:
         return self._p
 
 
-def test_add_user_http_shape_from_openapi(monkeypatch, photon_creds):
+def _users_list(*users):
+    return _Resp(200, {"succeed": True, "data": {"users": list(users), "total": len(users)}})
+
+
+@pytest.fixture
+def photon_no_existing(monkeypatch):
+    """Lookup-by-phone finds nothing → add_user takes the create path."""
+    import photon
+    seen = {}
+    def _get(url, params=None, headers=None, timeout=None):
+        seen.update(url=url, params=params, headers=headers, timeout=timeout)
+        return _users_list()
+    monkeypatch.setattr(photon.requests, "get", _get)
+    return seen
+
+
+def test_add_user_http_shape_from_openapi(monkeypatch, photon_creds, photon_no_existing):
     """Pinned to https://spectrum.photon.codes/openapi/json:
     POST /projects/{projectId}/users/  body {type:'shared', phoneNumber, firstName?, lastName?}
     Authorization: Basic base64(projectId:projectSecret). 200 → {succeed, data:{id,...}}."""
@@ -390,7 +406,7 @@ def test_add_user_http_shape_from_openapi(monkeypatch, photon_creds):
     assert 0 < seen["timeout"] <= 15
 
 
-def test_add_user_single_name_and_errors(monkeypatch, photon_creds):
+def test_add_user_single_name_and_errors(monkeypatch, photon_creds, photon_no_existing):
     import photon
     seen = {}
     monkeypatch.setattr(photon.requests, "post",
@@ -407,6 +423,62 @@ def test_add_user_single_name_and_errors(monkeypatch, photon_creds):
     monkeypatch.setattr(photon.requests, "post", lambda *a, **k: _Resp(200, {"succeed": False}))
     with pytest.raises(photon.PhotonError):
         photon.add_user("+12094205037", "Nau")
+
+
+OWNER = {"id": "10ef9202-owner", "phoneNumber": "+12094205037", "type": "shared",
+         "firstName": "Edwin", "lastName": "R.", "meta": {"project_owner": True}}
+OTHER = {"id": "usr_other", "phoneNumber": "+12094205038", "type": "shared"}
+
+
+def test_add_user_409_falls_back_to_lookup_by_phone(monkeypatch, photon_creds):
+    """The founder's case: a churned-and-returned user (or the project owner's own
+    row) re-signs up; the API answers 409 to the POST. add_user must list users,
+    pick the EXACT phone match — not a `search` near-miss — and return that id, so
+    provisioning links the existing Photon user instead of dropping to SMS."""
+    import photon
+    gets: list = []
+    def _get(url, params=None, headers=None, timeout=None):
+        gets.append(params)
+        return _users_list() if len(gets) == 1 else _users_list(OTHER, OWNER)
+    monkeypatch.setattr(photon.requests, "get", _get)
+    posts: list = []
+    monkeypatch.setattr(photon.requests, "post",
+                        lambda url, json=None, headers=None, timeout=None: posts.append(json) or _Resp(409, {"succeed": False, "error": "phoneNumber already exists"}))
+
+    uid = photon.add_user("+12094205037", "Nau Ruiz")
+
+    assert uid == "10ef9202-owner"
+    assert len(posts) == 1 and posts[0]["phoneNumber"] == "+12094205037"
+    assert len(gets) == 2 and all(g["search"] == "+12094205037" for g in gets)
+
+    # 409 with NO matching user is still a hard failure, not a silent None
+    monkeypatch.setattr(photon.requests, "get", lambda *a, **k: _users_list(OTHER))
+    with pytest.raises(photon.PhotonError, match="409"):
+        photon.add_user("+12094205037", "Nau Ruiz")
+
+
+def test_add_user_lookup_first_links_existing_row_without_posting(monkeypatch, photon_creds):
+    """Per the OpenAPI description, re-POSTing an existing phoneNumber returns the
+    same user but OVERWRITES firstName/lastName. Get-or-create therefore looks up
+    first and never POSTs for a phone that already exists — the owner's dashboard
+    row is linked untouched."""
+    import photon
+    seen = {}
+    def _get(url, params=None, headers=None, timeout=None):
+        seen.update(url=url, params=params, headers=headers)
+        return _users_list(OTHER, OWNER)
+    monkeypatch.setattr(photon.requests, "get", _get)
+    monkeypatch.setattr(photon.requests, "post", lambda *a, **k: pytest.fail("POST must not run when the phone already exists"))
+
+    assert photon.add_user("+12094205037", "Someone Else") == "10ef9202-owner"
+    assert seen["url"] == "https://spectrum.photon.codes/projects/ce4294aa-0000-4000-8000-000000000001/users/"
+    assert seen["params"]["search"] == "+12094205037"
+    assert seen["headers"]["Authorization"].startswith("Basic ")
+
+    # a lookup *error* (not a miss) must not block the create path
+    monkeypatch.setattr(photon.requests, "get", lambda *a, **k: _Resp(500, {"succeed": False}))
+    monkeypatch.setattr(photon.requests, "post", lambda *a, **k: _Resp(200, {"succeed": True, "data": {"id": "usr_new"}}))
+    assert photon.add_user("+15550100001", "New Person") == "usr_new"
 
 
 def test_provision_user_success_sets_id_and_preferred_channel(db, monkeypatch, photon_creds):
