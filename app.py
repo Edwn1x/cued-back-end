@@ -1211,7 +1211,20 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     if (user.onboarding_step or 0) >= 3 and should_suppress_ack(user.id, body):
         from message_buffer import cancel_buffer
         cancel_buffer(from_number)
-        logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}")
+        # Rule 1 of reactions, deterministically: a standalone "ok" never reaches the
+        # model (this branch drops it before the buffer — live 2026-09-11 the founder's
+        # bare "Ok" got nothing), and the only honest reply to a closing ack IS a 👍.
+        # No model call; the sidecar resolves message_sid (the Photon id). Never a
+        # strike (reaction rows are excluded from every silence gate). SMS: silent, as before.
+        reacted = False
+        if config.IMESSAGE_REACTIONS_ENABLED and channel == "imessage" and message_sid:
+            try:
+                from sms import react_to_message
+                reacted = react_to_message(user.id, message_sid, "like")
+            except Exception as e:  # noqa: BLE001 — a tapback must never break the webhook
+                logger.warning("ACK_REACTION_FAILED user=%s err=%s", user.id, e)
+        logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}"
+                    + (" — 👍 tapback sent" if reacted else ""))
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     # Classify the message
