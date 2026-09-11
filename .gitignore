@@ -1,4 +1,6 @@
 .env
+spectrum-sidecar/.env
+spectrum-sidecar/node_modules/
 .venv/
 venv/
 *.db
