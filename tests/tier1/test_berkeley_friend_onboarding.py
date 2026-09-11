@@ -665,3 +665,59 @@ def test_onboarding_turns_run_memory_extraction(db, anthropic_stub, sms_capture,
 
     assert calls and calls[0][0] == user.id and calls[0][1] == "we got malatang after"
     assert "malatang on shattuck" in calls[0][2]
+
+
+# ── 9. coaching-time fixes from the same live session ─────────────────────────
+
+def test_log_workout_dates_a_past_session_and_does_not_confirm_today(db):
+    """Live: "yesterday I did end up going to the gym from 9-11 / I hit pull" was stamped
+    TODAY and confirmed today's workout. A dated session lands on that local day."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from agent_tools import handle_log_workout
+    from models import Workout, is_workout_confirmed_today
+    user = make_user(db, name="Nau", user_timezone="America/Los_Angeles", current_split="ppl")
+    tz = ZoneInfo("America/Los_Angeles")
+    yday = (datetime.now(tz) - timedelta(days=1)).date()
+
+    out = handle_log_workout(user.id, {"split_day": "pull", "date": yday.isoformat(),
+                                       "notes": "9-11pm, hit pull"})
+    assert out.startswith("ok:") and f"dated {yday.isoformat()}" in out
+    db.expire_all()
+    w = db.query(Workout).filter(Workout.user_id == user.id).one()
+    assert w.workout_type == "pull"
+    assert w.date.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz).date() == yday
+    assert not is_workout_confirmed_today(user.id), "a past session must not confirm TODAY"
+
+    # no date → today, and today IS confirmed
+    handle_log_workout(user.id, {"notes": "just lifted"})
+    assert is_workout_confirmed_today(user.id)
+
+
+def test_webhook_one_shot_workout_row_is_off_when_the_loop_owns_logging(db, driver, monkeypatch, anthropic_stub):
+    """Live: "I hit pull" → the webhook's legacy one-shot wrote a bare workout_type=
+    'logged' row (no exercises) next to the loop's real log_workout row."""
+    import app, config
+    from models import Workout
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
+    monkeypatch.setattr(config, "WORKOUT_LOGGING_ENABLED", False)
+    monkeypatch.setattr(app, "classify_message", lambda body, has_image=False: "workout_log")
+    anthropic_stub.reply_with(lambda kw: "nice, logged" )  # the loop replies with text, no tool
+    user = make_user(db, name="Nau")
+
+    driver.send(user, "I hit pull")
+
+    db.expire_all()
+    rows = db.query(Workout).filter(Workout.user_id == user.id).all()
+    assert rows == [], f"legacy one-shot wrote a duplicate row: {[(r.workout_type, r.exercises) for r in rows]}"
+
+
+def test_voice_forbids_saying_ids_to_the_user():
+    from agent_loop import _voice_prompt
+    assert "never say an id to the user" in " ".join(_voice_prompt().split())  # line-wrapped in the file
+
+
+def test_log_workout_tool_never_guesses_split_day():
+    from agent_tools import LOG_WORKOUT_TOOL
+    d = LOG_WORKOUT_TOOL["description"]
+    assert "NEVER guess it" in d and "date" in LOG_WORKOUT_TOOL["input_schema"]["properties"]
