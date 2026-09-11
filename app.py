@@ -600,8 +600,11 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # turn reads by user.id through its own short sessions).
         session.close()
 
-        # "Cued is typing…" — the buffer (reading) is over; generation starts now.
+        # "Read" then "Cued is typing…" — the buffer (reading) is over; generation
+        # starts now. Receipt first so the stamp lands before the dots.
+        from read_receipts import mark_read
         from typing_indicator import typing_start, typing_stop
+        mark_read(user.id)
         typing_start(user.id)
 
         # If user is still in onboarding, route to onboarding handler
@@ -1217,6 +1220,12 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         # No model call; the sidecar resolves message_sid (the Photon id). Never a
         # strike (reaction rows are excluded from every silence gate). SMS: silent, as before.
         reacted = False
+        if channel == "imessage" and message_sid:
+            try:
+                from read_receipts import mark_read
+                mark_read(user.id)  # a 👍 without "Read" would look odd
+            except Exception:  # noqa: BLE001
+                pass
         if config.IMESSAGE_REACTIONS_ENABLED and channel == "imessage" and message_sid:
             try:
                 from sms import react_to_message

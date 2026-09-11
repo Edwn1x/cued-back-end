@@ -51,6 +51,10 @@ export type Deps = {
   react: (phone: string, messageId: string, emoji: string) => Promise<{ provider_message_id: string | null }>;
   /** Native "share name and photo" card into the DM with `phone`. Throws on failure. */
   shareContactCard: (phone: string) => Promise<void>;
+  /** Read receipt: mark the DM with `phone` read up to `messageId` (one of THEIR
+   *  messages; remote iMessage marks the whole chat read — same as a person's
+   *  "Read 11:04"). Best-effort by contract. Throws on an unknown id. */
+  read: (phone: string, messageId: string) => Promise<void>;
   /** iMessage typing indicator in the DM with `phone`: "start" shows the bubble,
    *  "stop" clears it. Best-effort by contract (the SDK no-ops where unsupported). */
   typing: (phone: string, state: TypingState) => Promise<void>;
@@ -127,6 +131,25 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
         return json(200, { ok: true, provider_message_id });
       } catch (err) {
         log("error", "react failed", { to: last4(body.phone), on: body.message_id, error: String(err) });
+        return json(502, { ok: false, error: String(err) });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/read") {
+      // Flask fires this the moment reply generation begins (right before typing
+      // "start") and when it thumbs-ups a suppressed ack — so the user sees "Read"
+      // before the dots, the way a person reads, then types, then sends.
+      const body = await readJson(req);
+      if (!body || !isNonEmptyString(body.phone) || !isNonEmptyString(body.message_id)) {
+        return json(400, { ok: false, error: "expected JSON {phone, message_id}" });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        await deps.read(body.phone, body.message_id);
+        log("info", "read", { to: last4(body.phone), upto: body.message_id });
+        return json(200, { ok: true });
+      } catch (err) {
+        log("warn", "read failed", { to: last4(body.phone), upto: body.message_id, error: String(err) });
         return json(502, { ok: false, error: String(err) });
       }
     }
@@ -345,6 +368,14 @@ async function main() {
       if (!target) throw new Error(`message not found: ${messageId}`);
       const sent = await dm.send(reaction(resolveEmoji(emoji), target));
       return { provider_message_id: sent?.id ?? null };
+    },
+    read: async (phone, messageId) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      const target = await dm.getMessage(messageId);
+      if (!target) throw new Error(`message not found: ${messageId}`);
+      await dm.read(target);
     },
     typing: async (phone, state) => {
       const app = current;

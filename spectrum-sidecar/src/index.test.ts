@@ -36,6 +36,9 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
     typing: async (phone, state) => {
       calls.push(["typing", phone, state]);
     },
+    read: async (phone, messageId) => {
+      calls.push(["read", phone, messageId]);
+    },
     ...overrides,
     calls,
   };
@@ -54,7 +57,7 @@ function req(path: string, init: RequestInit & { secret?: string | null } = {}) 
 describe("auth", () => {
   test("every route 401s without the shared secret", async () => {
     const h = createHandler(deps());
-    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"]] as const) {
+    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"], ["POST", "/read"]] as const) {
       const res = await h(req(p, { method: m, secret: null, body: m === "POST" ? "{}" : undefined }));
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
@@ -250,6 +253,29 @@ describe("POST /send reply_to", () => {
     expect(d.calls).toEqual([["send", "+1", "hi"]]);
     const res = await createHandler(d)(req("/send", { method: "POST", body: JSON.stringify({ phone: "+1", text: "hi", reply_to: 42 }) }));
     expect(res.status).toBe(400);
+  });
+});
+
+// ─── POST /read ──────────────────────────────────────────────────────────────
+
+describe("POST /read", () => {
+  test("marks the DM read up to their message", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/read", { method: "POST", body: JSON.stringify({ phone: "+12094205037", message_id: "spc-msg-1" }) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(d.calls).toEqual([["read", "+12094205037", "spc-msg-1"]]);
+  });
+
+  test("400 on missing fields; 503 down; 502 unknown id", async () => {
+    const d = deps();
+    for (const body of ["{}", JSON.stringify({ phone: "+1" }), JSON.stringify({ message_id: "x" })]) {
+      expect((await createHandler(d)(req("/read", { method: "POST", body }))).status).toBe(400);
+    }
+    expect(d.calls).toEqual([]);
+    expect((await createHandler(deps({ connected: () => false }))(req("/read", { method: "POST", body: JSON.stringify({ phone: "+1", message_id: "x" }) }))).status).toBe(503);
+    const bad = deps({ read: async () => { throw new Error("message not found: x"); } });
+    expect((await createHandler(bad)(req("/read", { method: "POST", body: JSON.stringify({ phone: "+1", message_id: "x" }) }))).status).toBe(502);
   });
 });
 
