@@ -443,7 +443,8 @@ For example:
 
     prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated ABOUT THEMSELVES AS A PATTERN.
 
-AN ANECDOTE IS NOT A FACT. "we got malatang after", "went for pizza in sf", "had crossroads for lunch" say NOTHING about cooking_situation or diet — they are one meal, not how the person eats. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none. When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
+AN ANECDOTE IS NOT A FACT. "we got malatang after", "went for pizza in sf", "had crossroads for lunch" say NOTHING about cooking_situation or diet — they are one meal, not how the person eats.
+AN ASPIRATION IS NOT THE CURRENT PATTERN. "I work out after everything's done but I wanna be more of an early bird" → workout_time is the EVENING (what they do now), NOT morning (what they wish). Every field here describes how they live today; wishes and goals belong to the coach, not to these fields. Live bug: this exact message stored workout_time=08:00. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none. When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
 
 User said: "{user_message}"
 
