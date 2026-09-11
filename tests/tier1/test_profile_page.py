@@ -168,3 +168,27 @@ def test_payload_carries_progress_and_local_dates(db, client):
     assert p["training"]["progress"]["lifts"][0]["name"] == "bench"
     assert len(p["training"]["progress"]["weekly"]) == 12
     assert p["recent"]["workouts"][0]["local_date"] == p["today"]["local_date"]
+
+
+def test_nutrition_daily_series(db, client):
+    """14 local days, oldest first, zero-filled; today's and yesterday's meals land on
+    their own local days; soft-deleted meals excluded; each meal carries local_date."""
+    from models import Meal
+    from profile_page import profile_token
+    user = make_user(db, name="Nau")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add_all([
+        Meal(user_id=user.id, eaten_at=now - timedelta(minutes=5), description="a", calories=500, protein_g=40),
+        Meal(user_id=user.id, eaten_at=now - timedelta(minutes=10), description="b", calories=300, protein_g=20),
+        Meal(user_id=user.id, eaten_at=now - timedelta(days=1), description="c", calories=700, protein_g=50),
+        Meal(user_id=user.id, eaten_at=now - timedelta(days=1, minutes=1), description="gone", calories=999, deleted_at=now),
+        Meal(user_id=user.id, eaten_at=now - timedelta(days=30), description="old", calories=999),
+    ])
+    db.commit()
+    p = client.get(f"/profile/{profile_token(user.id)}").get_json()["profile"]
+    daily = p["nutrition"]["daily"]
+    assert len(daily) == 14 and daily[-1]["date"] == p["today"]["local_date"]
+    assert daily[-1] == {"date": p["today"]["local_date"], "calories": 800, "protein_g": 60, "carbs_g": 0, "fat_g": 0, "meals": 2}
+    assert daily[-2]["calories"] == 700 and daily[-2]["meals"] == 1
+    assert sum(d["calories"] for d in daily) == 1500
+    assert p["recent"]["meals"][0]["local_date"] == p["today"]["local_date"]

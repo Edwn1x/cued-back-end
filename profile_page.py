@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 _TOKEN_BYTES = 18          # 144-bit MAC prefix → 24 url-safe chars, no padding
 _MAX_MEMORY_PER_CATEGORY = 40
-_RECENT_MEALS = 15
+_RECENT_MEALS = 60            # the "my meals" day picker on the nutrition tab
+_NUTRITION_DAYS = 14          # the calories-per-day strip
 _RECENT_WORKOUTS = 60         # the "my workouts" picker on the training tab
 _RECENT_WEIGHTS = 40          # enough for a bodyweight line
 _PROGRESS_DAYS = 120          # window for the lift-progress + consistency charts
@@ -196,6 +197,30 @@ def build_training_progress(workouts, user, *, now: datetime) -> dict:
     return {"lifts": lifts[:_MAX_LIFTS], "weekly": weeks}
 
 
+def build_nutrition_daily(meals, user, *, now: datetime) -> list[dict]:
+    """Per-local-day totals for the last _NUTRITION_DAYS days, oldest first,
+    zero-filled, from the given (already soft-delete-filtered) meals. The
+    nutrition tab's strip against the calorie target."""
+    from timefmt import to_local
+    today = to_local(now, user).date()
+    days = {(today - timedelta(days=i)).isoformat(): {"date": (today - timedelta(days=i)).isoformat(),
+            "calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "meals": 0}
+            for i in range(_NUTRITION_DAYS)}
+    for m in meals:
+        if m.eaten_at is None:
+            continue
+        d = to_local(m.eaten_at, user).date().isoformat()
+        row = days.get(d)
+        if row is None:
+            continue
+        row["calories"] += m.calories or 0
+        row["protein_g"] += m.protein_g or 0
+        row["carbs_g"] += m.carbs_g or 0
+        row["fat_g"] += m.fat_g or 0
+        row["meals"] += 1
+    return [days[k] for k in sorted(days)]
+
+
 def build_profile_payload(session, user, *, now: datetime | None = None) -> dict:
     """Everything the user is entitled to see about themselves, shaped for the page.
 
@@ -213,6 +238,9 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
     todays_meals = (meals_q.filter(Meal.eaten_at >= day_start, Meal.eaten_at < day_end)
                     .order_by(Meal.eaten_at.asc()).all())
     recent_meals = meals_q.order_by(Meal.eaten_at.desc()).limit(_RECENT_MEALS).all()
+    window_start = day_end - timedelta(days=_NUTRITION_DAYS)
+    window_meals = meals_q.filter(Meal.eaten_at >= window_start, Meal.eaten_at < day_end).all()
+    daily = build_nutrition_daily(window_meals, user, now=now)
     recent_workouts = (active(session, Workout, user.id)
                        .order_by(Workout.date.desc()).limit(_RECENT_WORKOUTS).all())
     progress = build_training_progress(recent_workouts, user, now=now)
@@ -280,6 +308,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "meal_plan": _str(user.meal_plan_status),
             "meals_per_day": _str(user.meals_per_day),
             "food_context": _str(user.food_context),
+            "daily": daily,
         },
         "routine": {
             "wake_time": _str(user.wake_time),
@@ -295,6 +324,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "meals": [{
                 "id": m.id,
                 "eaten_at": _iso(m.eaten_at),
+                "local_date": to_local(m.eaten_at, user).date().isoformat() if m.eaten_at else None,
                 "description": m.description,
                 "calories": m.calories,
                 "protein_g": m.protein_g,
