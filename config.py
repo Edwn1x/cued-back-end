@@ -20,6 +20,10 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-key-change-me")
 # founder out; the /admin/system page shows a red banner until it's set.
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html")
+# Signs the per-user profile link (see profile_page.py). Falls back to
+# FLASK_SECRET_KEY so a deploy without the var still mints valid links; set a
+# dedicated random value in prod so rotating one secret never touches the other.
+PROFILE_TOKEN_SECRET = os.getenv("PROFILE_TOKEN_SECRET", "")
 
 # CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
