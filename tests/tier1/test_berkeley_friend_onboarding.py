@@ -523,3 +523,37 @@ def test_adjust_branch_may_not_invent_new_targets(db, anthropic_stub, sms_captur
     ins = seen["instruction"]
     assert "CANNOT change them" in ins and "never invent different numbers" in ins
     assert "SAME numbers" in ins
+
+
+def test_confirmation_with_a_wh_question_answers_it_before_completing(db, anthropic_stub, sms_capture):
+    """Live (user 27): "Ok bet, that sounds like a better number / Why didn't you just go
+    with that in the first place" had no '?' → the completion branch skipped the question."""
+    import onboarding_agent
+    from models import get_session, Message, User
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="... sound right?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    instructions = []
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        instructions.append(kwargs["messages"][0]["content"])
+        return "because recomp math. locked in."
+    anthropic_stub.reply_with(_handler)
+
+    done = onboarding_agent.handle_onboarding_reply(
+        user, "Ok bet, that sounds like a better number\nWhy didn't you just go with that in the first place")
+
+    assert done is True
+    assert any("Answer their question directly" in i for i in instructions), instructions
+    db.expire_all()
+    assert db.get(User, user.id).onboarding_step == 3

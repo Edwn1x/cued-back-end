@@ -959,9 +959,15 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         msg_lower = incoming_message.lower().strip()
         is_confirmed = any(kw in msg_lower for kw in confirmation_keywords)
 
+        # A question inside the confirmation must be ANSWERED, not skipped by the
+        # completion branch. Live (user 27): "Ok bet ... Why didn't you just go with
+        # that in the first place" had no '?' and no matching wh-phrase → completed
+        # silently. Any wh-word opener counts.
         has_question = (
             "?" in incoming_message
-            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are)|how (do|can|should|long|much|many)|when (should|do|can|will)|why (do|should|is|are))\b', msg_lower))
+            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are|about)'
+                               r'|how (do|can|should|long|much|many|come)|when (should|do|can|will)'
+                               r'|why (do|did|didn\'?t|don\'?t|should|is|are|not|would|wouldn\'?t)|wait[, ])\b', msg_lower))
         )
 
         if is_confirmed and has_question:
@@ -1099,7 +1105,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
             f"2. Tells them when they'll hear from you next (based on their wake_time: {user_row.wake_time})\n"
             f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_url}'\n"
             f"4. Feels like the starting gun — they now have a coach\n"
-            f"No explanations. No feature previews. Just confidence."
+            f"No explanations. No feature previews. Just confidence. Don't open with their name."
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
