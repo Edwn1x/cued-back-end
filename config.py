@@ -247,6 +247,13 @@ PHOTON_PROVISIONING_ENABLED = os.getenv("PHOTON_PROVISIONING_ENABLED", "false").
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
+# iMessage typing bubble while a reply is being generated (typing_indicator.py).
+# ON by default (ships on + instrumented: grep TYPING_SIGNAL); reactive replies only.
+# The heartbeat is separate and OFF: decide() may choose silence, and a bubble that
+# appears and then nothing arrives reads as a glitch — founder's call after feeling it.
+TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower() == "true"
+TYPING_INDICATOR_HEARTBEAT = os.getenv("TYPING_INDICATOR_HEARTBEAT", "false").lower() == "true"
+
 SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")

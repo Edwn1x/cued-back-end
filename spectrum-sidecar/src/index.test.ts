@@ -28,6 +28,9 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
     shareContactCard: async (phone) => {
       calls.push(["contact", phone]);
     },
+    typing: async (phone, state) => {
+      calls.push(["typing", phone, state]);
+    },
     ...overrides,
     calls,
   };
@@ -46,7 +49,7 @@ function req(path: string, init: RequestInit & { secret?: string | null } = {}) 
 describe("auth", () => {
   test("every route 401s without the shared secret", async () => {
     const h = createHandler(deps());
-    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"]] as const) {
+    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"]] as const) {
       const res = await h(req(p, { method: m, secret: null, body: m === "POST" ? "{}" : undefined }));
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
@@ -155,6 +158,44 @@ function fakeMessage(over: Record<string, unknown> = {}) {
   } as never;
 }
 const fakeSpace = { id: "any;-;+12094205037", type: "dm", phone: "+15102646604" } as never;
+
+// ─── POST /typing ────────────────────────────────────────────────────────────
+
+describe("POST /typing", () => {
+  test("start shows the bubble in the DM and is the default state", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/typing", { method: "POST", body: JSON.stringify({ phone: "+12094205037" }) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, state: "start" });
+    expect(d.calls).toEqual([["typing", "+12094205037", "start"]]);
+  });
+
+  test("stop clears it", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/typing", { method: "POST", body: JSON.stringify({ phone: "+12094205037", state: "stop" }) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, state: "stop" });
+    expect(d.calls).toEqual([["typing", "+12094205037", "stop"]]);
+  });
+
+  test("400 on a missing phone or an unknown state — and nothing is sent", async () => {
+    const d = deps();
+    for (const body of ["{}", JSON.stringify({ state: "start" }), JSON.stringify({ phone: "+1", state: "pause" }), "not json"]) {
+      const res = await createHandler(d)(req("/typing", { method: "POST", body }));
+      expect(res.status).toBe(400);
+    }
+    expect(d.calls).toEqual([]);
+  });
+
+  test("503 while the stream is down, 502 when the provider rejects", async () => {
+    const down = deps({ connected: () => false });
+    expect((await createHandler(down)(req("/typing", { method: "POST", body: JSON.stringify({ phone: "+1" }) }))).status).toBe(503);
+    const bad = deps({ typing: async () => { throw new Error("Target not allowed"); } });
+    const res = await createHandler(bad)(req("/typing", { method: "POST", body: JSON.stringify({ phone: "+1" }) }));
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+  });
+});
 
 describe("buildInbound", () => {
   test("text message → JSON payload, no files", async () => {
