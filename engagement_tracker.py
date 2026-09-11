@@ -15,7 +15,7 @@ What decays is questions and check-in frequency.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 
 from models import get_session, User, Message
 
@@ -27,7 +27,19 @@ def _landed():
     stays quiet. Without it a sidecar outage mutes the coach for every
     iMessage user. NULL (legacy) counts as landed; only an explicit 'failed'
     is excluded."""
-    return or_(Message.delivery_status.is_(None), Message.delivery_status != "failed")
+    return and_(
+        or_(Message.delivery_status.is_(None), Message.delivery_status != "failed"),
+        _not_reaction(),
+    )
+
+
+def _not_reaction():
+    """A tapback is closure, not a question. Rule 1 of reactions exists to close
+    loops ("Right right" → 👍); if a silence gate saw the 👍 as an outbound the
+    user never replied to, closure would become a strike and a user who thumbs-
+    ups back and forth with the coach would read as churning (founder, 2026-09-11).
+    Excluded by message_type in EVERY place that counts silence."""
+    return or_(Message.message_type.is_(None), Message.message_type != "reaction")
 
 
 def has_unanswered_outbound(user_id: int) -> bool:
@@ -182,10 +194,10 @@ def increment_unanswered(user_id: int):
         if not user:
             return
 
-        # Find the last outbound message
+        # Find the last outbound message — a tapback is not one (see _not_reaction)
         last_out = (
             session.query(Message)
-            .filter(Message.user_id == user_id, Message.direction == "out")
+            .filter(Message.user_id == user_id, Message.direction == "out", _not_reaction())
             .order_by(Message.created_at.desc())
             .first()
         )

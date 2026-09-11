@@ -228,9 +228,13 @@ def build_loop_context(user, session) -> str:
             .all())
     msgs.reverse()
     if msgs:
-        window = "\n".join(
-            f"{'Coach' if m.direction == 'out' else user.name}: {m.body}" for m in msgs
-        )
+        def _line(m):
+            if m.direction == "out":
+                return f"Coach: {m.body}"
+            # Their iMessages carry a ref the react/reply tools can target.
+            tag = f" [m{m.id}]" if (m.channel == "imessage" and m.provider_sid) else ""
+            return f"{user.name}{tag}: {m.body}"
+        window = "\n".join(_line(m) for m in msgs)
         parts.append(f"## RECENT CONVERSATION\n{window}")
 
     # 7. Today's logged meals (ACTIVE only) — with short IDs + macros. This is the
@@ -408,6 +412,14 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.USDA_LOOKUP_TOOL_ENABLED:
         from agent_tools import USDA_FOOD_LOOKUP_TOOL
         tools.append(USDA_FOOD_LOOKUP_TOOL)
+    if config.IMESSAGE_REACTIONS_ENABLED:
+        # Tapbacks + threaded replies exist only on iMessage: offered by the SAME
+        # router the send uses (a tripped breaker = no tools), so an SMS user's
+        # model never sees an affordance it can't deliver.
+        from sms import _resolve_channel
+        if _resolve_channel(user.id) == "imessage":
+            from agent_tools import REACT_TOOL, THREAD_REPLY_TOOL
+            tools.extend([REACT_TOOL, THREAD_REPLY_TOOL])
     if config.WEB_SEARCH_TOOL_ENABLED:
         # Server-side tool: Anthropic runs the search inline and returns results as
         # content blocks; no client handler. When-to-search + output/query hygiene
@@ -415,6 +427,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # every surface lives in agent_tools (cap = WEB_SEARCH_MAX_USES per reply).
         from agent_tools import WEB_SEARCH_TOOL
         tools.append(WEB_SEARCH_TOOL)
+
+    from agent_tools import begin_turn, peek_turn_state
+    begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
 
     messages = [{"role": "user", "content": user_content}]
     last_text = ""
@@ -484,9 +499,45 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             logger.warning("AGENT_LOOP_REFUSAL user=%s iter=%d blocks=%s", user.id, i, block_types)
             return text or _LOOP_DEGRADE_REPLY
 
-        # Normal terminal turn (end_turn / stop_sequence) with a reply.
+        # Normal terminal turn (end_turn / stop_sequence) with a reply — unless the
+        # reply is the reaction-only sentinel (or the "no text needed" note a model
+        # drifts to): then the tapback WAS the reply and nothing is sent.
+        from agent_tools import is_reaction_only_text, is_single_emoji_text
+        state = peek_turn_state(user.id)
+        if text and is_reaction_only_text(text, state.get("reacted")):
+            logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
+            return ""
+        from agent_tools import leaked_tool_call
+        leak = leaked_tool_call(text) if (text and tools) else None
+        if leak and leak[0] == "react_to_message" and not state.get("reacted"):
+            from agent_tools import latest_inbound_imessage_sid
+            from sms import react_to_message, _resolve_channel
+            sid = latest_inbound_imessage_sid(user.id) if _resolve_channel(user.id) == "imessage" else None
+            if sid and react_to_message(user.id, sid, leak[1]):
+                logger.warning("AGENT_LOOP_TOOL_CALL_IN_TEXT user=%s executed=%s %r", user.id, leak[0], leak[1])
+                return ""
+            logger.warning("AGENT_LOOP_TOOL_CALL_IN_TEXT user=%s dropped=%r", user.id, text[:60])
+            return ""  # never text a tool name to the user
+        if leak and leak[0] == "reply_in_thread":
+            logger.warning("AGENT_LOOP_TOOL_CALL_IN_TEXT user=%s dropped=%r", user.id, text[:60])
+            return ""
+        if text and is_single_emoji_text(text) and tools and not state.get("reacted"):
+            # A bare ❤️ as a TEXT on iMessage is a tapback that lost its way — send it
+            # as the reaction on their latest message instead (never as a bubble).
+            from agent_tools import latest_inbound_imessage_sid
+            from sms import react_to_message, _resolve_channel
+            sid = latest_inbound_imessage_sid(user.id) if _resolve_channel(user.id) == "imessage" else None
+            if sid and react_to_message(user.id, sid, text.strip()):
+                logger.info("AGENT_LOOP_EMOJI_TEXT_AS_REACTION user=%s emoji=%r", user.id, text.strip())
+                return ""
         if text:
             return text
+
+        # A reaction-only turn: the tapback WAS the reply. Empty text is the correct
+        # outcome, not an anomaly — the caller sends nothing and clears the bubble.
+        if state.get("reacted"):
+            logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d", user.id, i)
+            return ""
 
         # A terminal stop with no text is a genuine anomaly — log stop_reason + block
         # types (not a token-count guessing game) and fall back to legacy.

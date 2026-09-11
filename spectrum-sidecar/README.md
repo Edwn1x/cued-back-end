@@ -5,7 +5,7 @@ Cued's iMessage pipe. A single-file [Spectrum](https://photon.codes/docs/spectru
 
 - receives inbound iMessages over Photon's gRPC stream and forwards each one to
   Flask `POST /internal/inbound` (JSON, or multipart when there's an attachment);
-- exposes a tiny private HTTP API Flask calls to send: `POST /send`, `POST /typing`, `POST /contact-card`, `GET /health`.
+- exposes a tiny private HTTP API Flask calls to send: `POST /send` (optional `reply_to`), `POST /react`, `POST /typing`, `POST /contact-card`, `GET /health`.
 
 It owns transport only. No coaching logic, no state. Send failures surface to
 Flask as non-2xx so Flask's channel failover and the `delivery_status='failed'`
@@ -47,6 +47,7 @@ All routes: `X-Internal-Secret` required, else `401`.
 - `POST /send` `{phone, text}` → `200 {ok:true, provider_message_id}`; `400` bad body; `502 {ok:false, error}` when Photon throws; `503` when disconnected.
 - `POST /contact-card` `{phone}` → `200` / `502`. Shares the line's native contact card (best-effort).
 - `POST /typing` `{phone, state?: "start"|"stop"}` → `200` / `400` / `503` / `502`. iMessage typing bubble in that DM (default `start`; `/send` also clears it). Flask fires `start` the moment reply generation begins — after the read-buffer, never during it — and `stop` on failure / SMS failover.
+- `POST /react` `{phone, message_id, emoji}` → `200` / `400` / `503` / `502`. Tapback on one of the user's messages (`emoji` = love|like|dislike|laugh|emphasize|question, or a raw emoji). `message_id` is the Photon id Flask stored on the inbound row; resolved via `space.getMessage`. `/send` accepts `reply_to` (same id) for a threaded reply. The coach decides WHEN on the Flask side — see `rewrite/proposals/reactions-and-threaded-replies.md`.
 
 ## Inbound → Flask
 

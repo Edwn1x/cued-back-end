@@ -627,8 +627,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             from orchestrator import route_message
             response_text = route_message(user, combined_body, message_type, image_data=image_url)
 
-        # Send the response
-        send_sms(user.phone, response_text, user_id=user.id, message_type=message_type)
+        # Send the response — threaded on the message the coach chose, if any. A
+        # reaction-only turn returns "" : the tapback was the reply, send nothing
+        # and clear the typing bubble (no text is coming).
+        from agent_tools import pop_turn_state
+        turn = pop_turn_state(user.id)
+        if response_text:
+            send_sms(user.phone, response_text, user_id=user.id, message_type=message_type,
+                     reply_to_sid=turn.get("reply_to"))
+        else:
+            logger.info("REACTION_ONLY_TURN user=%s — no text sent", user.id)
+            typing_stop(user.id)
 
         # Detect end-of-workout signals and clear session state
         end_signals = ["done", "finished", "that's it", "thats it", "heading out", "heading home", "leaving gym", "left the gym"]
