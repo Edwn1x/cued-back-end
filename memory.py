@@ -46,7 +46,7 @@ The Haiku prompt explicitly tells the model to skip those classes of fact.
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 import config
 
@@ -502,6 +502,74 @@ def _ensure_categories(profile: dict) -> dict:
         elif profile[cat] is None:
             profile[cat] = []
     return profile
+
+
+_WEEKDAY_DATE_RE = re.compile(
+    r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+"
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+FACT_MIN_WORDS = 3
+# A two-word fact is still a fact when it STATES something about the user: "hates
+# cardio", "prefers mornings", "uses Strava". "messed up" / "so tired" don't start
+# with a stating verb and stay rejected. Founder (2026-09-11): "what if the three
+# words is something like 'likes to run', that's useful no?" — it is, and so are these.
+_STATING_VERBS = {
+    "likes", "loves", "hates", "dislikes", "enjoys", "prefers", "avoids", "wants", "needs",
+    "has", "uses", "takes", "tracks", "follows", "trains", "lifts", "runs", "swims", "bikes",
+    "eats", "drinks", "cooks", "sleeps", "wakes", "works", "lives", "plays", "does", "skips",
+    "cannot", "can't", "won't", "struggles", "commutes", "studies", "majors", "owns",
+}
+
+
+def sanitize_facts(facts, *, user_id=None) -> tuple:
+    """Deterministic floor under the memory extractor, whatever model runs it.
+    Returns (kept_facts, rejected_count). Rejects — and logs MEMORY_FACT_REJECTED
+    with a reason — two shapes that reached prod on 2026-09-11:
+
+      fragment      — fewer than FACT_MIN_WORDS words ("messed up", clipped from
+                      "my gym schedule is all messed up" and stored as a CONSTRAINT,
+                      which renders into every prompt as a rule about the user).
+                      Exempt: safety_critical facts (a terse "bad knee" is exactly
+                      the kind of thing we must never drop) and two-word facts that
+                      open with a stating verb ("hates cardio", "uses Strava").
+      date_mismatch — a weekday + calendar date that disagree ("Thursday, Sep 12,
+                      2026" is a Saturday): the model did the date arithmetic wrong,
+                      so the whole fact is untrustworthy. Recurring facts carry no
+                      date and are unaffected.
+
+    `skip` actions pass through untouched (they carry no text to judge)."""
+    kept, rejected = [], 0
+    for f in facts or []:
+        if (f.get("action") or "").lower() == "skip":
+            kept.append(f)
+            continue
+        text = (f.get("text") or "").strip()
+        words = [w for w in re.split(r"\s+", text) if re.search(r"[A-Za-z0-9]", w)]
+        is_safety = bool(f.get("safety_critical"))
+        stating = len(words) == 2 and words[0].lower().strip("'\"") in _STATING_VERBS
+        if len(words) < FACT_MIN_WORDS and not is_safety and not stating:
+            logger.warning("MEMORY_FACT_REJECTED user_id=%s reason=fragment text=%r", user_id, text)
+            rejected += 1
+            continue
+        bad_date = False
+        for m in _WEEKDAY_DATE_RE.finditer(text):
+            wd, mon, day, year = m.group(1).lower(), m.group(2).lower()[:3], int(m.group(3)), int(m.group(4))
+            try:
+                actual = date(year, _MONTHS[mon], day).strftime("%A").lower()
+            except ValueError:
+                actual = None  # impossible date (Feb 30) → mismatch too
+            if actual != wd:
+                bad_date = True
+                break
+        if bad_date:
+            logger.warning("MEMORY_FACT_REJECTED user_id=%s reason=date_mismatch text=%r", user_id, text)
+            rejected += 1
+            continue
+        kept.append(f)
+    return kept, rejected
 
 
 def apply_facts(profile, facts, *, user_id=None) -> tuple:

@@ -238,15 +238,15 @@ def _render_existing_profile_for_prompt(profile: dict) -> str:
     return "\n".join(lines) if lines else "(no existing facts)"
 
 
-def extract_and_store_memory(user_id: int, user_message: str, coach_response: str):
+def extract_memory_facts(user_id: int, user_message: str, coach_response: str):
     """
-    Phase A2/A3 extraction. After each exchange, ask Haiku to emit categorized
-    fact records with action verbs (add/update/skip) and a safety_critical
-    flag. Apply them via memory.apply_facts() — which runs the action verbs,
-    the byte-exact replaces_text safe-overwrite, the dedup ladder, and
-    eviction — and write the result back atomically.
+    Phase A2/A3 extraction — the MODEL half. Ask the extractor to emit categorized
+    fact records with action verbs (add/update/skip) and a safety_critical flag.
+    Returns the raw fact list (possibly empty), or None when the output was
+    truncated (nothing may be stored from a cut list). Split from the store so
+    the live tier-2 replay can judge the model's output on its own.
 
-    Column-as-source-of-truth: Haiku is told NOT to emit body metrics
+    Column-as-source-of-truth: the model is told NOT to emit body metrics
     (weight/height/body fat) or dietary identity (diet/restrictions). Those
     fields have typed columns on User and are handled by the A5 regex
     pre-pass + future logic, never by JSON facts.
@@ -260,9 +260,8 @@ def extract_and_store_memory(user_id: int, user_message: str, coach_response: st
     try:
         user = session.get(User, user_id)
         if not user:
-            return
+            return None
         existing_profile = dict(user.user_profile_memory or {})
-        user_name = user.name
         user_tz = user.user_timezone
     finally:
         session.close()
@@ -319,6 +318,10 @@ Action semantics:
 
 Rules:
   - Each fact is one concise sentence written as a statement about the user.
+  - A FACT IS A COMPLETE STATEMENT, never a clipped phrase. "my gym schedule is all messed up" is NOT the fact "messed up" — it is either "gym schedule is irregular because of a stacked class schedule" or nothing. If you can't write it as a full sentence about the user, skip it.
+  - AN ANECDOTE IS NOT A PATTERN. One workout, one meal, one late night, one skipped session says nothing durable ("went to the gym 9-11pm last night" is not a training preference) — unless the user says it's how they usually do things, or the SAME thing has now come up more than once.
+  - DIRECT IDENTITY STATEMENTS ALWAYS COUNT: "im cs", "i'm a junior", "i live at the frat", "my roommate lifts too" → identity. Don't skip a plain statement of who they are because it was short.
+  - DATES, carefully. Only write a calendar date when the user named a specific day ("friday", "the 24th", "yesterday"). Compute it against Now above — "yesterday" is Now minus ONE day; write BOTH the weekday and the date and make sure they agree (a mismatch means you miscounted; recount). A habit or a recurring situation gets recurring phrasing ("late-evening sessions on stacked days like Thursday"), never a pinned date.
   - Resolve relative dates in fact text to absolute dates against Now above ("tomorrow" → the actual date). Never store bare "today"/"tomorrow"/"this afternoon" — the fact is read on later days, when those words resolve to the wrong day.
   - Do NOT emit temporary states ("is tired today") unless they're a recurring pattern.
   - Do NOT emit anything the coach said unless the user confirmed it.
@@ -341,12 +344,17 @@ User: "yeah I switched gyms — using the RSF now instead of my apartment gym"
 User: "Tuesdays are crushing me with classes"
 → {{"facts": [{{"action": "add", "category": "schedule", "text": "Tuesdays are class-heavy", "replaces_text": null, "safety_critical": false}}]}}
 
-User: "yeah sounds good"
-→ {{"facts": []}}"""
+User: "see why my gym schedule is all messed up"
+→ {{"facts": []}}   (a complaint, not a fact — and "messed up" alone is a fragment)
+
+User: "lol im cs"
+→ {{"facts": [{{"action": "add", "category": "identity", "text": "CS major at UC Berkeley", "replaces_text": null, "safety_critical": false}}]}}
+
+Return ONLY valid JSON."""
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=config.MEMORY_EXTRACTOR_MODEL,
             # 3000: a dense turn legitimately emits 6-8 facts (~600+ tokens with
             # fences); the old 600 cap sat inside that range. Doubled headroom —
             # truncation here discards the whole fact list.
@@ -354,21 +362,43 @@ User: "yeah sounds good"
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "extract_and_store_memory",
-                    "claude-haiku-4-5-20251001", response)
+                    config.MEMORY_EXTRACTOR_MODEL, response)
         # Gate on stop_reason BEFORE parsing: a cut fact list that still parses
         # would write durable memory from an incomplete output. Discard.
         if response.stop_reason == "max_tokens":
             logger.warning("BG_JOB_TRUNCATED site=extract_and_store_memory user=%s "
                            "max_tokens=%d — discarding, nothing stored", user_id, 3000)
-            return
-        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        if "}" in raw:
-            raw = raw[:raw.rindex("}") + 1]
+            return None
+        # ALL text blocks (Sonnet thinks by default → content[0] may be a
+        # ThinkingBlock), then the outermost {...} in case of prose around it.
+        from agent_loop import _join_text
+        raw = _join_text(response.content).replace("```json", "").replace("```", "").strip()
+        if "{" in raw and "}" in raw:
+            raw = raw[raw.index("{"):raw.rindex("}") + 1]
         data = json.loads(raw)
-        facts = data.get("facts", [])
-        if not facts:
-            return
+        return data.get("facts", []) or []
+    except Exception as e:
+        logger.error(f"Memory extraction failed for user {user_id}: {e}")
+        return None
 
+
+def extract_and_store_memory(user_id: int, user_message: str, coach_response: str):
+    """The STORE half: run the extractor, drop what the deterministic sanitizer
+    rejects (fragments, weekday/date mismatches), then apply via
+    memory.apply_facts() — action verbs, byte-exact replaces_text, the dedup
+    ladder, eviction — and write back atomically under a row lock."""
+    from memory import sanitize_facts
+
+    facts = extract_memory_facts(user_id, user_message, coach_response)
+    if not facts:
+        return
+    facts, rejected = sanitize_facts(facts, user_id=user_id)
+    if rejected:
+        logger.info("MEMORY_SANITIZE user=%s rejected=%d kept=%d", user_id, rejected, len(facts))
+    if not facts:
+        return
+
+    try:
         session = get_session()
         try:
             # Row-lock the user row so concurrent extractions / future uses-bumps
@@ -398,7 +428,7 @@ User: "yeah sounds good"
             session.commit()
             logger.info(
                 "MEMORY_EXTRACT user=%s added=%d updated=%d deduped=%d mismatched=%d skipped=%d invalid=%d",
-                user_name, stats["added"], stats["updated"], stats["deduped"],
+                user.name, stats["added"], stats["updated"], stats["deduped"],
                 stats["mismatched"], stats["skipped"], stats["invalid"],
             )
         finally:

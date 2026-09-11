@@ -84,6 +84,12 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"      # per-set parse uses Haiku (3x ch
 # wrong field here steers every meal suggestion for the whole relationship; onboarding
 # is one conversation per user, so the cost delta is noise.
 ONBOARDING_EXTRACTOR_MODEL = os.getenv("ONBOARDING_EXTRACTOR_MODEL", "claude-sonnet-5")
+# Post-turn memory extraction (app.extract_and_store_memory): same story, same fix.
+# Live 2026-09-11 (user 27) on Haiku: constraints=["messed up"] clipped from a sentence
+# (constraints render into EVERY prompt), "Thursday, Sep 12, 2026" (a Saturday) for
+# "yesterday", and "im cs" stored nowhere. memory.sanitize_facts is the deterministic
+# backstop under whichever model runs here.
+MEMORY_EXTRACTOR_MODEL = os.getenv("MEMORY_EXTRACTOR_MODEL", "claude-sonnet-5")
 WORKOUT_LOG_TIMEOUT_HOURS = 4                  # stale-session auto-finalize threshold
 WORKOUT_LOG_EXIT_SUMMARY = "silent"            # "silent" | "brief" | "full" — default per user
 WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 185x5"; if False, just "✓"
