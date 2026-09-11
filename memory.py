@@ -49,6 +49,7 @@ import uuid
 from datetime import datetime, timezone, date
 
 import config
+from llm_client import make_client
 
 logger = logging.getLogger("cued.memory")
 
@@ -1233,7 +1234,7 @@ def extract_and_store_coaching_points_task(user_id: int, user_message: str, coac
     import json
     from models import get_session, User as _User
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = make_client()
 
     prompt = f"""You are tagging substantive coaching points delivered in a single SMS coaching turn. The goal is to prevent the coach from re-explaining the same thing in future messages.
 

@@ -23,9 +23,10 @@ from cost_tracking import track
 from models import get_session, User, Message, HeartbeatTick, Workout, active
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
+from llm_client import make_client
 
 logger = logging.getLogger("cued.heartbeat")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 STAY_SILENT_TOOL = {
     "name": "stay_silent",

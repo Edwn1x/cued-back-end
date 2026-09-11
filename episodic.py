@@ -23,9 +23,10 @@ import anthropic
 import config
 from models import get_session, User, Message, EpisodicDigest, active
 from cost_tracking import track
+from llm_client import make_client
 
 logger = logging.getLogger("cued.episodic")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 DIGEST_PROMPT = """You are keeping a coach's private notebook. Read this quiet-ended conversation and write ONE short dated note (1-2 sentences) capturing the non-obvious, personal substance worth remembering for a future check-in — ESPECIALLY non-fitness life context: exams, deadlines, travel, relationships, mood, big events, work stress.
 

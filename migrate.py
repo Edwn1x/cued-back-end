@@ -260,7 +260,87 @@ def wait_for_db(retries=10, delay=3):
                 time.sleep(delay)
     raise SystemExit("Could not connect to the database after multiple retries.")
 
-def run_migrations():
+import re
+
+# ─── Lock discipline (incident 2026-09-11) ────────────────────────────────────
+# ALTER TABLE takes an ACCESS EXCLUSIVE lock — even to discover the column already
+# exists. At deploy, one app connection left "idle in transaction" made this runner
+# wait 14 minutes on `users`, and EVERY users read (admin, heartbeat, inbound turns)
+# queued behind the pending ALTER: a table-wide stall dressed as a "stuck build".
+#   1. Pre-check via information_schema: an already-applied statement is skipped
+#      WITHOUT requesting the lock.
+#   2. lock_timeout: a statement that can't get its lock in LOCK_TIMEOUT fails
+#      instead of queueing the world; retried LOCK_RETRIES times with a pause.
+#   3. Still blocked → raise → boot fails LOUDLY (Procfile `&&`), the previous
+#      container keeps serving, and the deployment shows FAILED — not BUILDING.
+LOCK_TIMEOUT = "15s"
+LOCK_RETRIES = 3
+LOCK_RETRY_PAUSE_S = 5
+
+_ADD_COLUMN = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", re.I)
+_ALTER_TYPE = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ALTER\s+COLUMN\s+(\w+)\s+TYPE\s+VARCHAR\((\d+)\)", re.I)
+
+
+_FK_CONSTRAINT = re.compile(
+    r"ALTER\s+TABLE\s+(\w+)\s+(?:DROP\s+CONSTRAINT\s+IF\s+EXISTS|ADD\s+CONSTRAINT)\s+(\w+_fkey)\b"
+    r"(?:.*?ON\s+DELETE\s+(SET\s+NULL|CASCADE|RESTRICT|NO\s+ACTION))?", re.I | re.S)
+
+
+def _fk_pair_target_rule(sql: str):
+    """The DROP/ADD CONSTRAINT pair is one logical change; the DROP line carries no
+    rule, so find the matching ADD in MIGRATIONS to know the intended delete rule."""
+    m = _FK_CONSTRAINT.search(sql)
+    if not m:
+        return None, None
+    name, rule = m.group(2), m.group(3)
+    if rule is None:
+        for other in MIGRATIONS:
+            om = _FK_CONSTRAINT.search(other)
+            if om and om.group(2) == name and om.group(3):
+                rule = om.group(3)
+                break
+    return name, (rule.upper().replace("  ", " ") if rule else None)
+
+
+def already_applied(conn, sql: str):
+    """Return a reason string when `sql` is provably already applied (so it can be
+    skipped without touching any lock), else None. Pre-checked shapes: ADD COLUMN,
+    ALTER COLUMN TYPE VARCHAR(n), and the DROP/ADD FOREIGN KEY pair (which locks
+    BOTH tables — the referenced `users` included). CREATE … IF NOT EXISTS already
+    checks before locking."""
+    fk_name, fk_rule = _fk_pair_target_rule(sql)
+    if fk_name:
+        row = conn.execute(text(
+            "SELECT delete_rule FROM information_schema.referential_constraints WHERE constraint_name=:n"),
+            {"n": fk_name.lower()}).first()
+        if row and fk_rule and row[0].upper() == fk_rule:
+            return f"constraint {fk_name} already ON DELETE {fk_rule}"
+        return None
+    m = _ADD_COLUMN.search(sql)
+    if m:
+        table, col = m.group(1), m.group(2)
+        row = conn.execute(text(
+            "SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name=:c"),
+            {"t": table.lower(), "c": col.lower()}).first()
+        return f"column {table}.{col} exists" if row else None
+    m = _ALTER_TYPE.search(sql)
+    if m:
+        table, col, width = m.group(1), m.group(2), int(m.group(3))
+        row = conn.execute(text(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_name=:t AND column_name=:c"), {"t": table.lower(), "c": col.lower()}).first()
+        if row and row[0] is not None and row[0] >= width:
+            return f"{table}.{col} already VARCHAR({row[0]})"
+        return None
+    return None
+
+
+def _is_lock_timeout(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "lock timeout" in msg or "lock_not_available" in msg or "canceling statement due to lock timeout" in msg
+
+
+def run_migrations(*, sleep=time.sleep):
     """Apply every idempotent statement in MIGRATIONS. Importable so the suite
     can run it against a test DB (guarded below so `import migrate` has no side
     effects).
@@ -269,21 +349,40 @@ def run_migrations():
     genuine failure must stop the caller (boot), not get logged and ignored.
     Deploy runs this before the app starts (see Procfile); an uncaught raise
     here exits non-zero and blocks the app from serving with a half-applied
-    schema."""
+    schema. Lock discipline: see the block above."""
     failures = []
     with engine.connect() as conn:
+        conn.execute(text(f"SET lock_timeout = '{LOCK_TIMEOUT}'"))
+        conn.commit()
         for sql in MIGRATIONS:
             try:
-                conn.execute(text(sql))
-                conn.commit()
-                logger.info(f"OK: {sql[:60]}...")
-            except Exception as e:
-                conn.rollback()
-                if "already exists" in str(e).lower():
-                    logger.info(f"SKIP (already exists): {sql[:60]}...")
-                else:
+                reason = already_applied(conn, sql)
+            except Exception as e:  # a pre-check failure never blocks the migration itself
+                logger.warning(f"PRECHECK failed ({e}) — executing: {sql[:60]}...")
+                reason = None
+            if reason:
+                logger.info(f"SKIP ({reason}, no lock): {sql[:60]}...")
+                continue
+            for attempt in range(1, LOCK_RETRIES + 1):
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                    logger.info(f"OK: {sql[:60]}...")
+                    break
+                except Exception as e:
+                    conn.rollback()
+                    if "already exists" in str(e).lower():
+                        logger.info(f"SKIP (already exists): {sql[:60]}...")
+                        break
+                    if _is_lock_timeout(e) and attempt < LOCK_RETRIES:
+                        logger.warning(f"LOCK_TIMEOUT attempt {attempt}/{LOCK_RETRIES} — another session "
+                                       f"holds a lock on this table (check pg_stat_activity for 'idle in "
+                                       f"transaction'); retrying in {LOCK_RETRY_PAUSE_S}s: {sql[:60]}...")
+                        sleep(LOCK_RETRY_PAUSE_S)
+                        continue
                     logger.error(f"FAILED: {sql[:60]}... — {e}")
                     failures.append((sql, e))
+                    break
     logger.info("Migration complete.")
     if failures:
         raise RuntimeError(

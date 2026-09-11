@@ -17,9 +17,10 @@ from memory import build_memory_block
 from cost_tracking import track
 from skill_loader import load_skill
 from models import is_workout_confirmed_today
+from llm_client import make_client
 
 logger = logging.getLogger("cued.training")
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = make_client()
 
 EXERCISE_DEMO_LINKS = {
     "machine_pec_deck": "https://youtu.be/S6rqpxVGKZ4?t=262",

@@ -39,9 +39,10 @@ from sms import send_sms
 from profile_page import profile_url
 from macro_calculator import calculate_targets
 from cost_tracking import track as track_usage
+from llm_client import make_client
 
 logger = logging.getLogger("cued.onboarding")
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+client = make_client()
 
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
