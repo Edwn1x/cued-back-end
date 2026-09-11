@@ -125,3 +125,46 @@ def test_admin_user_page_shows_the_profile_link(db, client):
     r = client.get(f"/admin/user/{user.id}")
     assert r.status_code == 200
     assert profile_url(user) in r.get_data(as_text=True)
+
+
+def test_training_progress_series(db):
+    """Lift progress: one point per local day (top weight wins), Epley e1rm, name
+    normalization, weightless exercises ignored; weekly consistency zero-filled."""
+    from types import SimpleNamespace
+    from profile_page import build_training_progress
+    user = make_user(db, name="Nau")
+    now = datetime(2026, 9, 11, 20, 0, tzinfo=timezone.utc)   # Fri 1pm Pacific
+    d = lambda days, hour=19: (now - timedelta(days=days)).replace(hour=hour, tzinfo=None)
+    W = lambda date, ex: SimpleNamespace(date=date, exercises=ex)
+    workouts = [
+        W(d(0), [{"name": "Bench Press", "sets": 3, "reps": 5, "weight": 185}, {"name": "pull-ups", "sets": 3, "reps": 8}]),
+        W(d(0, 22), [{"name": "bench press", "sets": 1, "reps": 3, "weight": 180}]),      # same local day, lower → ignored
+        W(d(3), [{"name": " bench  press ", "sets": 4, "reps": 5, "weight": 175}]),
+        W(d(10), [{"name": "bench press", "sets": 3, "reps": 5, "weight": 170}, {"name": "squat", "reps": 5, "weight": 225}]),
+        W(d(200), [{"name": "bench press", "sets": 3, "reps": 5, "weight": 135}]),    # outside the window
+    ]
+    prog = build_training_progress(workouts, user, now=now)
+    names = [l["name"] for l in prog["lifts"]]
+    assert names[0] == "bench press" and len(prog["lifts"]) == 2      # pull-ups had no weight; case/space folded
+    bench = prog["lifts"][0]
+    assert [s["top_weight"] for s in bench["sessions"]] == [170, 175, 185]
+    assert bench["sessions"][-1]["date"] == "2026-09-11" and bench["sessions"][-1]["reps"] == 5
+    assert bench["sessions"][-1]["e1rm"] == round(185 * (1 + 5 / 30), 1)
+    assert bench["best"]["top_weight"] == 185
+    weeks = prog["weekly"]
+    assert len(weeks) == 12 and weeks[-1]["week_start"] == "2026-09-07"
+    # this week (Mon Sep 7): Tue + two Fri sessions = 3; last week: the Sep 1 session; the 200-day-old one is outside the window
+    assert weeks[-1]["workouts"] == 3 and weeks[-2]["workouts"] == 1 and sum(w["workouts"] for w in weeks) == 4
+
+
+def test_payload_carries_progress_and_local_dates(db, client):
+    from models import Workout
+    from profile_page import profile_token
+    user = make_user(db, name="Nau")
+    db.add(Workout(user_id=user.id, date=datetime.now(timezone.utc).replace(tzinfo=None), workout_type="push",
+                   exercises=[{"name": "bench", "sets": 3, "reps": 5, "weight": 175}]))
+    db.commit()
+    p = client.get(f"/profile/{profile_token(user.id)}").get_json()["profile"]
+    assert p["training"]["progress"]["lifts"][0]["name"] == "bench"
+    assert len(p["training"]["progress"]["weekly"]) == 12
+    assert p["recent"]["workouts"][0]["local_date"] == p["today"]["local_date"]

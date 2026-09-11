@@ -20,7 +20,9 @@ import base64
 import hashlib
 import hmac
 import logging
-from datetime import datetime, timezone
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 import config
 from memory import CATEGORIES
@@ -30,8 +32,11 @@ logger = logging.getLogger(__name__)
 _TOKEN_BYTES = 18          # 144-bit MAC prefix → 24 url-safe chars, no padding
 _MAX_MEMORY_PER_CATEGORY = 40
 _RECENT_MEALS = 15
-_RECENT_WORKOUTS = 10
-_RECENT_WEIGHTS = 12
+_RECENT_WORKOUTS = 60         # the "my workouts" picker on the training tab
+_RECENT_WEIGHTS = 40          # enough for a bodyweight line
+_PROGRESS_DAYS = 120          # window for the lift-progress + consistency charts
+_PROGRESS_WEEKS = 12
+_MAX_LIFTS = 8
 
 
 # ─── token ───────────────────────────────────────────────────────────────────
@@ -117,6 +122,80 @@ def _memory_block(user) -> dict:
     return out
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _lift_key(name) -> str | None:
+    """Exercise names are free text from the model ("Bench", "bench press ")."""
+    n = _WS_RE.sub(" ", str(name or "").strip().lower())
+    return n or None
+
+
+def _float(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def build_training_progress(workouts, user, *, now: datetime) -> dict:
+    """Two small series the training tab leads with, both computed here so the
+    page stays a renderer and the logic is testable:
+
+    lifts   — per exercise (name lower-cased + whitespace-folded), one point per LOCAL day: the top
+              weight lifted, the reps at that weight, and an Epley estimated
+              1RM. Only exercises with a numeric weight count; sorted by how
+              often they were trained, capped at _MAX_LIFTS.
+    weekly  — workouts per local week (Mon-start) for the last _PROGRESS_WEEKS
+              weeks, oldest first, zero-filled — the consistency strip.
+    """
+    from timefmt import to_local
+
+    per_lift: dict[str, dict[str, dict]] = defaultdict(dict)   # key -> local_date -> point
+    weekly: dict[str, int] = defaultdict(int)
+    cutoff = now - timedelta(days=_PROGRESS_DAYS)
+    for w in workouts:
+        if w.date is None:
+            continue
+        when = w.date.replace(tzinfo=timezone.utc) if w.date.tzinfo is None else w.date
+        if when < cutoff:
+            continue
+        local = to_local(w.date, user)
+        day = local.date().isoformat()
+        week_start = (local.date() - timedelta(days=local.weekday())).isoformat()
+        weekly[week_start] += 1
+        for e in (w.exercises or []):
+            if not isinstance(e, dict):
+                continue
+            key = _lift_key(e.get("name"))
+            weight = _float(e.get("weight"))
+            if not key or weight is None:
+                continue
+            reps = e.get("reps")
+            reps = int(reps) if isinstance(reps, (int, float)) and reps > 0 else None
+            e1rm = round(weight * (1 + reps / 30.0), 1) if reps else weight
+            pt = per_lift[key].get(day)
+            if pt is None or weight > pt["top_weight"] or (weight == pt["top_weight"] and (reps or 0) > (pt["reps"] or 0)):
+                per_lift[key][day] = {"date": day, "top_weight": _num(weight), "reps": reps, "e1rm": _num(e1rm)}
+
+    lifts = []
+    for key, days in per_lift.items():
+        sessions = [days[d] for d in sorted(days)]
+        best = max(sessions, key=lambda s: (s["top_weight"], s["reps"] or 0))
+        lifts.append({"name": key, "sessions": sessions, "best": best})
+    # most-trained first; ties go to the heavier lift so bench/squat/deadlift lead
+    lifts.sort(key=lambda l: (-len(l["sessions"]), -(l["best"]["top_weight"] or 0), l["name"]))
+
+    this_monday = (to_local(now, user).date() - timedelta(days=to_local(now, user).weekday()))
+    weeks = []
+    for i in range(_PROGRESS_WEEKS - 1, -1, -1):
+        ws = (this_monday - timedelta(weeks=i)).isoformat()
+        weeks.append({"week_start": ws, "workouts": weekly.get(ws, 0)})
+
+    return {"lifts": lifts[:_MAX_LIFTS], "weekly": weeks}
+
+
 def build_profile_payload(session, user, *, now: datetime | None = None) -> dict:
     """Everything the user is entitled to see about themselves, shaped for the page.
 
@@ -125,7 +204,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
     the recent-log tails come straight from the soft-delete-filtered tables.
     """
     from models import Meal, Workout, WeightLog, active
-    from timefmt import local_day_bounds
+    from timefmt import local_day_bounds, to_local
 
     now = now or datetime.now(timezone.utc)
     day_start, day_end = local_day_bounds(user, now=now)
@@ -136,6 +215,8 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
     recent_meals = meals_q.order_by(Meal.eaten_at.desc()).limit(_RECENT_MEALS).all()
     recent_workouts = (active(session, Workout, user.id)
                        .order_by(Workout.date.desc()).limit(_RECENT_WORKOUTS).all())
+    progress = build_training_progress(recent_workouts, user, now=now)
+    local_today = to_local(now, user).date().isoformat()
     recent_weights = (session.query(WeightLog).filter(WeightLog.user_id == user.id)
                       .order_by(WeightLog.weighed_at.desc()).limit(_RECENT_WEIGHTS).all())
 
@@ -173,6 +254,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
         },
         "today": {
             "date": day_start and _iso(day_start),
+            "local_date": local_today,
             "calories": sum(m.calories or 0 for m in todays_meals),
             "protein_g": sum(m.protein_g or 0 for m in todays_meals),
             "carbs_g": sum(m.carbs_g or 0 for m in todays_meals),
@@ -189,6 +271,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "injuries": _str(user.injuries),
             "activity_level": _str(user.activity_level),
             "avg_steps": user.avg_steps,
+            "progress": progress,
         },
         "nutrition": {
             "diet": _str(user.diet),
@@ -222,6 +305,7 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "workouts": [{
                 "id": w.id,
                 "date": _iso(w.date),
+                "local_date": to_local(w.date, user).date().isoformat() if w.date else None,
                 "type": _str(w.workout_type),
                 "exercises": [
                     {"name": e.get("name"), "sets": e.get("sets"), "reps": e.get("reps"),
