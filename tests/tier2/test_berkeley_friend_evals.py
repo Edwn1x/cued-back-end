@@ -177,3 +177,21 @@ def test_extractor_does_not_turn_an_anecdote_into_a_fact(db, monkeypatch):
     print(f"[EXTRACT explicit] {b}")
     assert b.get("cooking_situation") in ("mix", "cook_myself"), b
     assert b.get("diet") is None, b
+
+
+def test_extractor_keeps_a_2am_bedtime_as_sleep_time(db, monkeypatch):
+    """Live (user 27): 'anywhere from like 2-5am' / 'wake up 11am - 2pm' was stored as
+    wake=02:00 sleep=11:00 — swapped. The heartbeat reads those hours to decide when it
+    may text, so a swap means 3am texts and afternoon silence."""
+    import onboarding_agent
+    from tests.factories import make_user
+    user = make_user(db, name="Nau", onboarding_step=2, **INTAKE)
+    msg = ("Hmm\nLowkey anywhere from like 2-5am\n"
+           "And then I wake up like anywhere from 11am - 2pm or something. Like that ngl")
+    out = onboarding_agent._extract_data_from_message(
+        msg, user, last_coach_message="roughly when do you end up crashing and waking up these days?")
+    print(f"\n[EXTRACT late schedule] wake={out.get('wake_time')} sleep={out.get('sleep_time')}")
+    def _h(t):
+        return int(str(t).split(":")[0])
+    assert out.get("sleep_time") and 1 <= _h(out["sleep_time"]) <= 5, out
+    assert out.get("wake_time") and 11 <= _h(out["wake_time"]) <= 14, out

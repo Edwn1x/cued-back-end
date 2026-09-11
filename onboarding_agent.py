@@ -492,6 +492,11 @@ wake_time / wake_time_alt / wake_days_alt rules:
 - "7am except friday when I sleep in till 9" → wake_time="07:00", wake_time_alt="09:00", wake_days_alt="fri"
 - Always put the EARLIER time as wake_time (primary), later time as wake_time_alt
 - wake_days_alt lists which days use the LATER/alt time
+- LATE SCHEDULES: a bedtime after midnight is STILL sleep_time, even though its clock
+  number is small. "I go to sleep like 2-5am and wake up 11am-2pm" → sleep_time="03:00",
+  wake_time="12:00" (midpoints). NEVER assign the smaller clock number to wake_time —
+  read which one they said they fall asleep at. Live bug: a 2am bedtime stored as wake.
+- A range ("11am-2pm") → its midpoint in 24h ("12:30" → round to "12:00" or "13:00")
 
 Activity level — always extract something if the user described their daily movement. Use a short, plain-English phrase. Examples:
 - "desk job, mostly sitting" → "sedentary — desk job, mostly sitting"
@@ -513,9 +518,13 @@ Activity level — always extract something if the user described their daily mo
         track_usage(getattr(user, "id", None),
                     "onboarding.extract_data_from_message",
                     config.ONBOARDING_EXTRACTOR_MODEL, response)
-        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        if "}" in text:
-            text = text[:text.rindex("}") + 1]
+        # ALL text blocks, not content[0]: Sonnet thinks by default, so the first block
+        # is often a ThinkingBlock (no .text) — the live test caught the crash before it
+        # shipped. Then take the outermost {...} in case the model wrapped it in prose.
+        from agent_loop import _join_text
+        text = _join_text(response.content).replace("```json", "").replace("```", "").strip()
+        if "{" in text and "}" in text:
+            text = text[text.index("{"):text.rindex("}") + 1]
         return json.loads(text)
     except Exception as e:
         logger.error(f"Onboarding data extraction failed: {e}")
@@ -645,9 +654,17 @@ def _build_confirmation_summary(user) -> str:
     }
     goal_label = goal_map.get(user.goal, user.goal.replace("_", " "))
 
+    # wake/sleep are in the summary on purpose: they drive when the coach is allowed
+    # to text. Live (user 27): a 2am bedtime was stored as the WAKE time and the old
+    # summary didn't show it, so the one place the user could catch it was blind.
+    sleep_bit = ""
+    if user.wake_time or user.sleep_time:
+        sleep_bit = (f" Up around {user.wake_time or '?'}, asleep around {user.sleep_time or '?'}"
+                     f" — that's when I'll know to leave you alone.")
     return (
         f"Here's what I'm working with: {height_str}, {user.weight_lbs} lbs, {user.age} years old. "
-        f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}. "
+        f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}."
+        f"{sleep_bit} "
         f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
         f"Sound right?"
     )
@@ -969,8 +986,14 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         instruction = (
             f"Do NOT greet the user — you already said hello earlier.\n\n"
             f"You showed them this summary:\n\n{summary}\n\nThey replied: \"{incoming_message}\"\n\n"
-            f"Address their concern or adjustment like a friend. Then re-present the updated "
-            f"summary and end with 'sound right?'. One message, brief."
+            f"Address their concern like a friend. The calorie and protein numbers are COMPUTED "
+            f"from their stats and goal — you can explain them (recomp = maintenance; their steps "
+            f"and training; protein holds muscle) but you CANNOT change them in this message, so "
+            f"never invent different numbers. If they still want them different after the "
+            f"explanation, say the numbers get tuned after the first real week of data — and mean "
+            f"it. If they corrected a FACT (height, weight, days, times), acknowledge it; it'll be "
+            f"fixed. Then re-present the summary with the SAME numbers and end with 'sound right?'. "
+            f"One message, brief."
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")

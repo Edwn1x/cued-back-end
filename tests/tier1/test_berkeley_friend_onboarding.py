@@ -460,3 +460,66 @@ def test_store_accepts_year_and_meal_plan_status(db):
     db.expire_all()
     u = db.get(User, user.id)
     assert (u.year, u.meal_plan_status) == ("junior", "no_meal_plan")
+
+
+def test_summary_shows_wake_and_sleep_so_a_swap_can_be_caught(db):
+    """Live (user 27): sleep 2-5am / wake 11am-2pm was stored swapped (wake=02:00) and
+    the summary didn't show either, so the confirmation step couldn't catch it."""
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       workout_days="4", workout_time="afternoon", wake_time="12:00", sleep_time="03:00",
+                       goal="fat_loss,muscle_building")
+    summary = onboarding_agent._build_confirmation_summary(user)
+    assert "Up around 12:00" in summary and "asleep around 03:00" in summary
+    assert summary.rstrip().endswith("Sound right?")
+
+
+def test_extractor_prompt_states_the_late_schedule_rule(db, anthropic_stub):
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+    anthropic_stub.reply_with(lambda kw: seen.update(prompt=kw["messages"][0]["content"]) or "{}")
+    onboarding_agent._extract_data_from_message("i sleep at 2am", user)
+    assert "LATE SCHEDULES" in seen["prompt"] and 'sleep_time="03:00"' in seen["prompt"]
+
+
+def test_extractor_survives_a_thinking_block_first(db, anthropic_stub):
+    """Sonnet thinks by default: content[0] can be a ThinkingBlock with no .text.
+    Live tier-2 caught the crash ('ThinkingBlock' object has no attribute 'text')."""
+    import onboarding_agent
+    from tests._fake_anthropic import MultiText
+    user = _new_signup(db, onboarding_step=2)
+    anthropic_stub.push(MultiText(("thinking", ""), 'Here you go: {"sleep_time": "03:00", "wake_time": "12:00"} '))
+    out = onboarding_agent._extract_data_from_message("i sleep at 3 and wake at noon", user)
+    assert out == {"sleep_time": "03:00", "wake_time": "12:00"}
+
+
+def test_adjust_branch_may_not_invent_new_targets(db, anthropic_stub, sms_capture):
+    """Live (user 27): 'sounds kinda high?' → the coach wrote '2300 cal and 150g protein.
+    sound right?' — numbers it cannot set; completion stores the computed 2450/139."""
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="here's what i'm working with ... sound right?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    seen = {}
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        seen["instruction"] = kwargs["messages"][0]["content"]
+        return "fair pushback ... same numbers. sound right?"
+    anthropic_stub.reply_with(_handler)
+
+    assert onboarding_agent.handle_onboarding_reply(user, "2450 sounds kinda high for losing fat no?") is False
+    ins = seen["instruction"]
+    assert "CANNOT change them" in ins and "never invent different numbers" in ins
+    assert "SAME numbers" in ins
