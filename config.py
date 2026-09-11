@@ -263,6 +263,9 @@ TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower()
 # The WHEN rules live in voice.md; the never-a-strike rule in engagement_tracker.
 IMESSAGE_REACTIONS_ENABLED = os.getenv("IMESSAGE_REACTIONS_ENABLED", "true").lower() == "true"
 TYPING_INDICATOR_HEARTBEAT = os.getenv("TYPING_INDICATOR_HEARTBEAT", "false").lower() == "true"
+# "Read 11:04" on the user's message when reply generation begins (read_receipts.py).
+# ON by default; reactive replies + the suppressed-ack thumbs-up. Never on arrival.
+READ_RECEIPTS_ENABLED = os.getenv("READ_RECEIPTS_ENABLED", "true").lower() == "true"
 
 SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
