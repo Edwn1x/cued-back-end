@@ -368,3 +368,68 @@ def test_questions_never_get_a_tapback_by_code(db, imessage_on, sidecar, anthrop
     anthropic_stub.reply_with(lambda kw: "❤️")
     app.process_buffered_message(user.id, "Why does everyone think that c104 means data science?", "freeform")
     assert not [j for r, j in sidecar if r == "react"], "no tapback on a question, even via the emoji-text path"
+
+
+# ── rule 1 on a STANDALONE ack: the webhook's ack suppression happens before the buffer ──
+
+def _post_imessage(client, phone, text, msg_id):
+    import json
+    return client.post("/internal/inbound", data=json.dumps({
+        "phone": phone, "text": text, "provider_message_id": msg_id, "chat_guid": "g", "service": "iMessage",
+        "line_phone": "+16282649335", "timestamp": "2026-09-11T20:17:12Z", "attachments": []}),
+        headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+
+
+def test_suppressed_closing_ack_gets_a_thumbs_up_on_imessage(db, imessage_on, sidecar, client, anthropic_stub, sms_capture):
+    """Live 2026-09-11 20:17: the founder's bare 'Ok' hit 'Fix 1: suppressed closing ack'
+    and got NOTHING — the suppression drops it before the buffer, so the tools never see
+    it. Rule 1 says the only honest reply to a closing ack is a 👍. Deterministic, no model."""
+    from sms import _log_message
+    from models import User
+    from engagement_tracker import increment_unanswered
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _log_message(user.id, "go study. i'll check in at noon.", "freeform", channel="imessage",
+                 provider_sid="spc-prior", delivery_status="sent")          # recent, no question → suppress
+    calls_before = len(anthropic_stub.calls)
+
+    r = _post_imessage(client, user.phone, "Ok", "spc-msg-ok")
+    assert r.status_code == 200
+    reacts = [j for r_, j in sidecar if r_ == "react"]
+    assert reacts == [{"phone": user.phone, "message_id": "spc-msg-ok", "emoji": "like"}]
+    assert not [j for r_, j in sidecar if r_ == "send"] and sms_capture == []
+    assert len(anthropic_stub.calls) == calls_before, "no model call for a bare ack"
+    out = [m for m in _rows(db, user) if m.message_type == "reaction"]
+    assert len(out) == 1 and "👍" in out[0].body
+    increment_unanswered(user.id)
+    db.expire_all()
+    assert db.get(User, user.id).unanswered_count == 0
+
+
+def test_suppressed_closing_ack_stays_silent_on_sms(db, imessage_on, sidecar, driver, sms_capture):
+    from sms import _log_message
+    user = make_user(db, preferred_channel="sms", onboarding_step=3)
+    _log_message(user.id, "go study.", "freeform", channel="sms", provider_sid="SM1", delivery_status="sent")
+    driver.send(user, "Ok")
+    assert sidecar == [] and sms_capture == [], "Twilio has no tapbacks — a suppressed ack stays silent"
+
+
+def test_ack_with_an_open_question_still_reaches_the_model(db, imessage_on, sidecar, client, anthropic_stub, sms_capture):
+    """Suppression only fires when the coach's last message wasn't a question; with an
+    open question the ack goes through the buffer to the model as before."""
+    from models import get_session, Message
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    s = get_session()
+    try:  # naive UTC like prod writes — an aware value shifts by the test cluster's local tz and reads hours old
+        s.add(Message(user_id=user.id, direction="out", body="you gonna lift today?", message_type="freeform",
+                      channel="imessage", provider_sid="spc-q", delivery_status="sent",
+                      created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+        s.commit()
+    finally:
+        s.close()
+    anthropic_stub.reply_with(lambda kw: "say less, go get it")
+    from tests._sync import PENDING_TIMERS
+    _post_imessage(client, user.phone, "Ok", "spc-msg-ok2")
+    t = PENDING_TIMERS.pop(user.phone, None)
+    assert t is not None, "the ack was buffered for the model, not suppressed"
+    t.fire()
+    assert [j for r_, j in sidecar if r_ == "send"], "the model's text went out"
