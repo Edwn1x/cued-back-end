@@ -55,10 +55,12 @@ def _is_quiet(last_msg) -> bool:
     return age_min >= config.EPISODIC_QUIET_MINUTES
 
 
-def digest_user(user_id: int) -> dict:
+def digest_user(user_id: int, *, force: bool = False) -> dict:
     """Digest one user's un-digested window IF the conversation has gone quiet and
     there's enough to summarize. Advances the watermark so the same messages are
-    never digested twice. Returns a small status dict."""
+    never digested twice. Returns a small status dict.
+    force=True skips the quiet gate (onboarding completion: the transcript is done
+    and is the coach's first real life-context about the person)."""
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).with_for_update().first()
@@ -70,7 +72,7 @@ def digest_user(user_id: int) -> dict:
                 .order_by(Message.id).all())
         if len(msgs) < config.EPISODIC_MIN_MESSAGES:
             return {"status": "too_few", "count": len(msgs)}
-        if not _is_quiet(msgs[-1]):
+        if not force and not _is_quiet(msgs[-1]):
             return {"status": "still_active"}  # conversation live — wait, don't advance
 
         transcript = "\n".join(

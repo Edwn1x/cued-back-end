@@ -564,6 +564,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             handle_onboarding_reply(user, combined_body)
+            # Onboarding turns are FULL of durable life facts (their classes, where
+            # they eat, gear, year) and until 2026-09-11 none of it reached memory —
+            # this branch returned before the post-reply extraction below. Run the
+            # same memory extraction normal turns get (background, best-effort).
+            from onboarding_agent import _last_coach_message
+            reply_text = _last_coach_message(user.id) or ""
+            threading.Thread(
+                target=extract_and_store_memory,
+                args=(user.id, combined_body, reply_text),
+                daemon=True,
+            ).start()
             return
 
         # Phase 2: single agent loop behind a flag. On ANY runtime failure, fall

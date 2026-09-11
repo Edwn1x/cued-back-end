@@ -557,3 +557,111 @@ def test_confirmation_with_a_wh_question_answers_it_before_completing(db, anthro
     assert any("Answer their question directly" in i for i in instructions), instructions
     db.expire_all()
     assert db.get(User, user.id).onboarding_step == 3
+
+
+# ── 8. the onboarding model remembers the conversation; it survives into coaching ──
+
+def test_onboarding_prompt_includes_the_conversation_so_far(db):
+    """Live (user 27): the model saw ONLY the current message + fields — it couldn't
+    answer "how'd you know?" and lost "quiz at 4pm" two exchanges later."""
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="hey how's your day going?", message_type="onboarding"))
+        s.add(Message(user_id=user.id, direction="in", body="have a 70 quiz at 4pm and i'm behind", message_type="freeform"))
+        s.add(Message(user_id=user.id, direction="out", body="70 at 4 on a friday is criminal. you gonna hit the gym after?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    sp = onboarding_agent._build_system_prompt(user)
+    assert "## THE CONVERSATION SO FAR" in sp
+    assert "them: have a 70 quiz at 4pm" in sp and "you: 70 at 4 on a friday" in sp
+    assert sp.index("them: have a 70 quiz") < sp.index("you: 70 at 4")  # oldest first
+    assert "how'd you know?" in sp  # the rule to answer from the transcript
+
+
+def test_episodic_force_digests_an_active_conversation(db, anthropic_stub):
+    import episodic
+    from models import get_session, Message, EpisodicDigest, User
+    from datetime import datetime, timezone
+    user = make_user(db, name="Nau")
+    s = get_session()
+    try:
+        for i, (d, b) in enumerate([("out", "hey"), ("in", "70 quiz at 4pm today"), ("out", "criminal"),
+                                    ("in", "then tony's pizza in sf"), ("out", "legit")]):
+            # naive UTC like prod writes (an aware value gets shifted by the test
+            # cluster's local timezone and reads back as hours old → "quiet")
+            s.add(Message(user_id=user.id, direction=d, body=b, message_type="freeform",
+                          created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+        s.commit()
+    finally:
+        s.close()
+    anthropic_stub.reply_with(lambda kw: "Fri Sep 11: CS70 quiz at 4pm; Tony's pizza in SF planned.")
+    assert episodic.digest_user(user.id)["status"] == "still_active"        # the normal gate holds
+    res = episodic.digest_user(user.id, force=True)
+    assert res["status"] == "wrote", res
+    s = get_session()
+    try:
+        notes = s.query(EpisodicDigest).filter(EpisodicDigest.user_id == user.id).all()
+        assert len(notes) == 1 and "CS70 quiz" in notes[0].text
+        assert s.get(User, user.id).last_episodic_message_id == res["watermark"]
+    finally:
+        s.close()
+
+
+def test_completion_digests_the_onboarding_transcript(db, anthropic_stub, sms_capture, monkeypatch):
+    import config, onboarding_agent
+    from tests import _sync
+    from models import get_session, Message, EpisodicDigest
+    monkeypatch.setattr(config, "EPISODIC_ENABLED", True)
+    monkeypatch.setattr(onboarding_agent, "threading",
+                        _sync.make_threading_shim(Thread=_sync.SyncThread))
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        for d, b in [("out", "hey"), ("in", "70 quiz at 4pm"), ("out", "criminal"), ("in", "yeah"),
+                     ("out", "... sound right?")]:
+            s.add(Message(user_id=user.id, direction=d, body=b, message_type="onboarding" if d == "out" else "freeform"))
+        s.commit()
+    finally:
+        s.close()
+
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        if "Coach:" in str(kwargs["messages"][0]["content"]):  # the digest gets the transcript
+            return "Fri Sep 11: CS70 quiz at 4pm."
+        return "locked in. talk at noon."
+    anthropic_stub.reply_with(_handler)
+
+    assert onboarding_agent.handle_onboarding_reply(user, "yeah sounds good") is True
+    s = get_session()
+    try:
+        notes = s.query(EpisodicDigest).filter(EpisodicDigest.user_id == user.id).all()
+    finally:
+        s.close()
+    assert len(notes) == 1 and "CS70 quiz" in notes[0].text
+
+
+def test_onboarding_turns_run_memory_extraction(db, anthropic_stub, sms_capture, monkeypatch):
+    """The onboarding branch of process_buffered_message returned before the post-reply
+    extraction — nothing said during onboarding reached memory."""
+    import app
+    calls = []
+    monkeypatch.setattr(app, "extract_and_store_memory", lambda uid, body, reply: calls.append((uid, body, reply)))
+    user = _new_signup(db, onboarding_step=2)
+    def _handler(kwargs):
+        return "{}" if _is_extract(kwargs) else "malatang on shattuck is elite"
+    anthropic_stub.reply_with(_handler)
+
+    app.process_buffered_message(user.id, "we got malatang after", "freeform")
+
+    assert calls and calls[0][0] == user.id and calls[0][1] == "we got malatang after"
+    assert "malatang on shattuck" in calls[0][2]

@@ -255,6 +255,32 @@ def _now_local(tz_str: str | None) -> datetime:
         return datetime.now(ZoneInfo("America/Los_Angeles"))
 
 
+ONBOARDING_HISTORY_LIMIT = 30  # messages of this conversation shown to the model
+
+
+def _conversation_so_far(user_id: int, limit: int = ONBOARDING_HISTORY_LIMIT) -> str:
+    """The onboarding conversation, oldest first, as 'them:' / 'you:' lines. Until
+    2026-09-11 the onboarding model saw ONLY the current message + extracted fields —
+    no memory of the previous turn. Live: it couldn't answer "how'd you know?" (it had
+    no idea what it had said) and lost "quiz at 4pm" two exchanges later. A friend
+    remembers what you said two texts ago."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        rows = (session.query(Message)
+                .filter(Message.user_id == user_id)
+                .order_by(Message.id.desc()).limit(limit).all())
+    finally:
+        session.close()
+    lines = []
+    for m in reversed(rows):
+        who = "you" if m.direction == "out" else "them"
+        body = (m.body or "").strip().replace("\n", " / ")
+        if body:
+            lines.append(f"{who}: {body[:400]}")
+    return "\n".join(lines)
+
+
 def _build_system_prompt(user) -> str:
     """Build the system prompt for onboarding exchanges: the shared identity,
     the safety rules, what we know, what's still unknown, and how this first
@@ -299,6 +325,9 @@ def _build_system_prompt(user) -> str:
     else:
         unknown_block = "- nothing — you have what you need"
 
+    history = _conversation_so_far(user.id) if getattr(user, "id", None) else ""
+    history_block = history or "(nothing yet — you just said hey)"
+
     return f"""{identity}
 
 ---
@@ -319,6 +348,9 @@ the time of day; read it here.
 
 ## STILL UNKNOWN (things you'd learn by caring about their day — never by listing them)
 {unknown_block}
+
+## THE CONVERSATION SO FAR (oldest first — you remember all of it)
+{history_block}
 
 ## HOW THIS FIRST CONVERSATION WORKS
 - You just met. You're getting to know a new friend, and along the way you'll end up
@@ -343,6 +375,8 @@ the time of day; read it here.
   semester's schedule, not memory) is the detail. That one detail is what makes you
   sound like you're there.
 - If they ask you something, answer it first, fully, then be a friend about the rest.
+  "how'd you know?" / "i already told you" → check THE CONVERSATION SO FAR and answer
+  from it; never claim you don't have something that's written there.
 - If they hand you several things at once, react to them like a person would — don't
   read a checklist back.
 - Never mention fields, profiles, forms, plans you're "building," or what you "need."
@@ -1112,5 +1146,21 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
 
     finally:
         session.close()
+
+    # The onboarding conversation is the richest life-context the coach will ever
+    # get about this person (their classes, where they eat, who they went to SF
+    # with) and until now NONE of it survived into coaching: onboarding turns ran
+    # no memory extraction, and the coach loop's history window rolls past a
+    # bursty onboarding within a day. Digest it NOW (force past the quiet gate) so
+    # RECENT LIFE CONTEXT carries it forward. Background; never blocks the kickoff.
+    if config.EPISODIC_ENABLED:
+        def _digest():
+            try:
+                from episodic import digest_user
+                res = digest_user(user.id, force=True)
+                logger.info("ONBOARDING_DIGEST user=%s result=%s", user.id, res)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ONBOARDING_DIGEST_FAILED user=%s err=%s", user.id, e)
+        threading.Thread(target=_digest, daemon=True).start()
 
     return True
