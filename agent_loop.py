@@ -288,9 +288,16 @@ def build_loop_context(user, session) -> str:
     # sent it had rolled to the edge of the history window. This is the ONE link
     # the coach may always send.
     if getattr(user, "phone", None):
-        _digits = user.phone.replace("+", "")
+        # PR #34 (user-profile-page) makes profile_page.profile_url(user) the single
+        # builder (token-keyed; the phone leaves the URL). Use it when present; until
+        # it merges, the phone-keyed form is what the kickoff sends today.
+        try:
+            from profile_page import profile_url as _profile_url
+            _link = _profile_url(user)
+        except ImportError:
+            _link = f"{config.PROFILE_BASE_URL}?phone={user.phone.replace('+', '')}"
         parts.append("## THEIR PROFILE PAGE\n"
-                     f"{config.PROFILE_BASE_URL}?phone={_digits}\n"
+                     f"{_link}\n"
                      "This is their own profile/settings page. When they ask for their profile, "
                      "their link, or want to double-check what you have on them, send this URL "
                      "(the one link you may always send). Never say you don't have it.")
