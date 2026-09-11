@@ -74,6 +74,12 @@ PROMPT_CACHING_ENABLED = os.getenv("PROMPT_CACHING_ENABLED", "true").lower() == 
 # set-by-set logging mode until the user texts an exit signal. See
 # plans/cued-memory-architecture-joyful-ullman.md Part B.
 HAIKU_MODEL = "claude-haiku-4-5-20251001"      # per-set parse uses Haiku (3x cheaper than Sonnet)
+# Onboarding field extraction: Sonnet, not Haiku. Live (2026-09-11, user 27): Haiku
+# inferred cooking_situation=mostly_eat_out from a malatang ANECDOTE and diet=omnivore
+# from nothing — "only what the user clearly stated" needs a model that obeys it. A
+# wrong field here steers every meal suggestion for the whole relationship; onboarding
+# is one conversation per user, so the cost delta is noise.
+ONBOARDING_EXTRACTOR_MODEL = os.getenv("ONBOARDING_EXTRACTOR_MODEL", "claude-sonnet-5")
 WORKOUT_LOG_TIMEOUT_HOURS = 4                  # stale-session auto-finalize threshold
 WORKOUT_LOG_EXIT_SUMMARY = "silent"            # "silent" | "brief" | "full" — default per user
 WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 185x5"; if False, just "✓"

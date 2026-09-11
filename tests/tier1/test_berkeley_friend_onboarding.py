@@ -35,6 +35,11 @@ INTAKE = dict(height_ft=None, weight_lbs=None, occupation=None, activity_level=N
               sleep_time=None, existing_tools=None)
 
 
+def _is_extract(kwargs) -> bool:
+    """The field extractor call (any model) vs the reply call."""
+    return "Extract any fitness coaching profile data" in str(kwargs["messages"][0]["content"])
+
+
 def _new_signup(db, **over):
     """A user right after the hook: signup fields only, onboarding_step=1."""
     kw = dict(INTAKE, name="Nau", age=20, goal="muscle_building", experience="beginner",
@@ -98,7 +103,7 @@ def test_first_reply_is_one_friend_message_and_advances_to_step_2(db, anthropic_
 
     def _handler(kwargs):
         # the extractor (Haiku) returns nothing; the generate call is the reply
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["system"] = kwargs["system"]
         seen["instruction"] = kwargs["messages"][0]["content"]
@@ -234,7 +239,7 @@ def test_extractor_is_given_the_previous_coach_message(db, anthropic_stub, sms_c
     prompts = []
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             prompts.append(kwargs["messages"][0]["content"])
             return '{"workout_days": "5"}'
         return "5 days is a real commitment. rsf or the dorm gym"
@@ -265,7 +270,7 @@ def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthrop
     gen_instructions = []
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return '{"injuries": "none"}'
         gen_instructions.append(kwargs["messages"][0]["content"])
         return "alr here's what i'm working with ... sound right?"
@@ -282,7 +287,7 @@ def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthrop
     # now a confirmation TO the summary completes
     sms_capture.clear()
     def _handler2(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         return "locked in. you'll hear from me at 8"
     anthropic_stub.reply_with(_handler2)
@@ -322,7 +327,7 @@ def test_asking_for_the_list_sends_the_big_ask_in_the_friend_voice(db, anthropic
     seen = {}
 
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "alr real talk, just send me the basics in one go - height, weight, what your days look like, food situation, sleep."
@@ -367,7 +372,7 @@ def test_long_conversation_with_most_unknown_escalates_to_big_ask(db, anthropic_
     _seed_conversation(user.id, coach_replies=onboarding_agent.BIG_ASK_AFTER_TURNS, inbound_texts=6)
     seen = {}
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "ok real talk"
@@ -396,7 +401,7 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
     _seed_conversation(user.id, coach_replies=onboarding_agent.BUNDLE_AFTER_TURNS, inbound_texts=4)
     seen = {}
     def _handler(kwargs):
-        if "haiku" in kwargs.get("model", ""):
+        if _is_extract(kwargs):
             return "{}"
         seen["instruction"] = kwargs["messages"][0]["content"]
         return "last thing - anything banged up, and you tracking on any apps?"
@@ -407,3 +412,312 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
     ins = seen["instruction"]
     assert "last thing" in ins and "any injuries" in ins and "fitness apps" in ins
     assert "ONE text" not in ins
+
+
+# ── 7. extraction: anecdotes aren't facts; latest clear statement wins ────────
+
+def test_extractor_uses_sonnet_and_states_the_anecdote_rule(db, anthropic_stub):
+    import config, onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+    anthropic_stub.reply_with(lambda kw: seen.update(model=kw.get("model"), prompt=kw["messages"][0]["content"]) or "{}")
+    onboarding_agent._extract_data_from_message("we got malatang after", user)
+    assert seen["model"] == config.ONBOARDING_EXTRACTOR_MODEL == "claude-sonnet-5"
+    assert "AN ANECDOTE IS NOT A FACT" in seen["prompt"]
+    assert "never fill diet=\"omnivore\" unless" in seen["prompt"]
+
+
+def test_store_latest_clear_statement_wins_during_onboarding(db):
+    """Live bug: an early over-inference (mostly_eat_out) was made permanent by
+    first-write-wins; the explicit 'I mostly cook' 30s later was dropped."""
+    import onboarding_agent
+    from models import User
+    user = _new_signup(db, onboarding_step=2)
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mostly_eat_out"})
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mix", "diet": None})
+    db.expire_all()
+    u = db.get(User, user.id)
+    assert u.cooking_situation == "mix"
+    assert u.diet is None  # a null never clears a value, never invents one
+
+
+def test_store_is_inert_after_onboarding(db):
+    import onboarding_agent
+    from models import User
+    user = make_user(db, onboarding_step=3, cooking_situation="cook_myself")
+    onboarding_agent._store_extracted_data(user.id, {"cooking_situation": "mostly_eat_out"})
+    db.expire_all()
+    assert db.get(User, user.id).cooking_situation == "cook_myself"
+
+
+def test_store_accepts_year_and_meal_plan_status(db):
+    """Live: "I'm a junior so I don't got the dining hall pass" — two Berkeley facts the
+    User model already has columns for; the extractor now has keys for them."""
+    import onboarding_agent
+    from models import User
+    user = _new_signup(db, onboarding_step=2)
+    onboarding_agent._store_extracted_data(user.id, {"year": "junior", "meal_plan_status": "no_meal_plan"})
+    db.expire_all()
+    u = db.get(User, user.id)
+    assert (u.year, u.meal_plan_status) == ("junior", "no_meal_plan")
+
+
+def test_summary_shows_wake_and_sleep_so_a_swap_can_be_caught(db):
+    """Live (user 27): sleep 2-5am / wake 11am-2pm was stored swapped (wake=02:00) and
+    the summary didn't show either, so the confirmation step couldn't catch it."""
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       workout_days="4", workout_time="afternoon", wake_time="12:00", sleep_time="03:00",
+                       goal="fat_loss,muscle_building")
+    summary = onboarding_agent._build_confirmation_summary(user)
+    assert "Up around 12:00" in summary and "asleep around 03:00" in summary
+    assert summary.rstrip().endswith("Sound right?")
+
+
+def test_extractor_prompt_states_the_late_schedule_rule(db, anthropic_stub):
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+    anthropic_stub.reply_with(lambda kw: seen.update(prompt=kw["messages"][0]["content"]) or "{}")
+    onboarding_agent._extract_data_from_message("i sleep at 2am", user)
+    assert "LATE SCHEDULES" in seen["prompt"] and 'sleep_time="03:00"' in seen["prompt"]
+
+
+def test_extractor_survives_a_thinking_block_first(db, anthropic_stub):
+    """Sonnet thinks by default: content[0] can be a ThinkingBlock with no .text.
+    Live tier-2 caught the crash ('ThinkingBlock' object has no attribute 'text')."""
+    import onboarding_agent
+    from tests._fake_anthropic import MultiText
+    user = _new_signup(db, onboarding_step=2)
+    anthropic_stub.push(MultiText(("thinking", ""), 'Here you go: {"sleep_time": "03:00", "wake_time": "12:00"} '))
+    out = onboarding_agent._extract_data_from_message("i sleep at 3 and wake at noon", user)
+    assert out == {"sleep_time": "03:00", "wake_time": "12:00"}
+
+
+def test_adjust_branch_may_not_invent_new_targets(db, anthropic_stub, sms_capture):
+    """Live (user 27): 'sounds kinda high?' → the coach wrote '2300 cal and 150g protein.
+    sound right?' — numbers it cannot set; completion stores the computed 2450/139."""
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="here's what i'm working with ... sound right?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    seen = {}
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        seen["instruction"] = kwargs["messages"][0]["content"]
+        return "fair pushback ... same numbers. sound right?"
+    anthropic_stub.reply_with(_handler)
+
+    assert onboarding_agent.handle_onboarding_reply(user, "2450 sounds kinda high for losing fat no?") is False
+    ins = seen["instruction"]
+    assert "CANNOT change them" in ins and "never invent different numbers" in ins
+    assert "SAME numbers" in ins
+
+
+def test_confirmation_with_a_wh_question_answers_it_before_completing(db, anthropic_stub, sms_capture):
+    """Live (user 27): "Ok bet, that sounds like a better number / Why didn't you just go
+    with that in the first place" had no '?' → the completion branch skipped the question."""
+    import onboarding_agent
+    from models import get_session, Message, User
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="... sound right?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    instructions = []
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        instructions.append(kwargs["messages"][0]["content"])
+        return "because recomp math. locked in."
+    anthropic_stub.reply_with(_handler)
+
+    done = onboarding_agent.handle_onboarding_reply(
+        user, "Ok bet, that sounds like a better number\nWhy didn't you just go with that in the first place")
+
+    assert done is True
+    assert any("Answer their question directly" in i for i in instructions), instructions
+    db.expire_all()
+    assert db.get(User, user.id).onboarding_step == 3
+
+
+# ── 8. the onboarding model remembers the conversation; it survives into coaching ──
+
+def test_onboarding_prompt_includes_the_conversation_so_far(db):
+    """Live (user 27): the model saw ONLY the current message + fields — it couldn't
+    answer "how'd you know?" and lost "quiz at 4pm" two exchanges later."""
+    import onboarding_agent
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2)
+    s = get_session()
+    try:
+        s.add(Message(user_id=user.id, direction="out", body="hey how's your day going?", message_type="onboarding"))
+        s.add(Message(user_id=user.id, direction="in", body="have a 70 quiz at 4pm and i'm behind", message_type="freeform"))
+        s.add(Message(user_id=user.id, direction="out", body="70 at 4 on a friday is criminal. you gonna hit the gym after?", message_type="onboarding"))
+        s.commit()
+    finally:
+        s.close()
+    sp = onboarding_agent._build_system_prompt(user)
+    assert "## THE CONVERSATION SO FAR" in sp
+    assert "them: have a 70 quiz at 4pm" in sp and "you: 70 at 4 on a friday" in sp
+    assert sp.index("them: have a 70 quiz") < sp.index("you: 70 at 4")  # oldest first
+    assert "how'd you know?" in sp  # the rule to answer from the transcript
+
+
+def test_episodic_force_digests_an_active_conversation(db, anthropic_stub):
+    import episodic
+    from models import get_session, Message, EpisodicDigest, User
+    from datetime import datetime, timezone
+    user = make_user(db, name="Nau")
+    s = get_session()
+    try:
+        for i, (d, b) in enumerate([("out", "hey"), ("in", "70 quiz at 4pm today"), ("out", "criminal"),
+                                    ("in", "then tony's pizza in sf"), ("out", "legit")]):
+            # naive UTC like prod writes (an aware value gets shifted by the test
+            # cluster's local timezone and reads back as hours old → "quiet")
+            s.add(Message(user_id=user.id, direction=d, body=b, message_type="freeform",
+                          created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+        s.commit()
+    finally:
+        s.close()
+    anthropic_stub.reply_with(lambda kw: "Fri Sep 11: CS70 quiz at 4pm; Tony's pizza in SF planned.")
+    assert episodic.digest_user(user.id)["status"] == "still_active"        # the normal gate holds
+    res = episodic.digest_user(user.id, force=True)
+    assert res["status"] == "wrote", res
+    s = get_session()
+    try:
+        notes = s.query(EpisodicDigest).filter(EpisodicDigest.user_id == user.id).all()
+        assert len(notes) == 1 and "CS70 quiz" in notes[0].text
+        assert s.get(User, user.id).last_episodic_message_id == res["watermark"]
+    finally:
+        s.close()
+
+
+def test_completion_digests_the_onboarding_transcript(db, anthropic_stub, sms_capture, monkeypatch):
+    import config, onboarding_agent
+    from tests import _sync
+    from models import get_session, Message, EpisodicDigest
+    monkeypatch.setattr(config, "EPISODIC_ENABLED", True)
+    monkeypatch.setattr(onboarding_agent, "threading",
+                        _sync.make_threading_shim(Thread=_sync.SyncThread))
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+                       occupation="student", activity_level="active", avg_steps=10000,
+                       workout_days="4", workout_time="afternoon", current_split="ppl",
+                       cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
+                       goal="fat_loss,muscle_building")
+    s = get_session()
+    try:
+        for d, b in [("out", "hey"), ("in", "70 quiz at 4pm"), ("out", "criminal"), ("in", "yeah"),
+                     ("out", "... sound right?")]:
+            s.add(Message(user_id=user.id, direction=d, body=b, message_type="onboarding" if d == "out" else "freeform"))
+        s.commit()
+    finally:
+        s.close()
+
+    def _handler(kwargs):
+        if _is_extract(kwargs):
+            return "{}"
+        if "Coach:" in str(kwargs["messages"][0]["content"]):  # the digest gets the transcript
+            return "Fri Sep 11: CS70 quiz at 4pm."
+        return "locked in. talk at noon."
+    anthropic_stub.reply_with(_handler)
+
+    assert onboarding_agent.handle_onboarding_reply(user, "yeah sounds good") is True
+    s = get_session()
+    try:
+        notes = s.query(EpisodicDigest).filter(EpisodicDigest.user_id == user.id).all()
+    finally:
+        s.close()
+    assert len(notes) == 1 and "CS70 quiz" in notes[0].text
+
+
+def test_onboarding_turns_run_memory_extraction(db, anthropic_stub, sms_capture, monkeypatch):
+    """The onboarding branch of process_buffered_message returned before the post-reply
+    extraction — nothing said during onboarding reached memory."""
+    import app
+    calls = []
+    monkeypatch.setattr(app, "extract_and_store_memory", lambda uid, body, reply: calls.append((uid, body, reply)))
+    user = _new_signup(db, onboarding_step=2)
+    def _handler(kwargs):
+        return "{}" if _is_extract(kwargs) else "malatang on shattuck is elite"
+    anthropic_stub.reply_with(_handler)
+
+    app.process_buffered_message(user.id, "we got malatang after", "freeform")
+
+    assert calls and calls[0][0] == user.id and calls[0][1] == "we got malatang after"
+    assert "malatang on shattuck" in calls[0][2]
+
+
+# ── 9. coaching-time fixes from the same live session ─────────────────────────
+
+def test_log_workout_dates_a_past_session_and_does_not_confirm_today(db):
+    """Live: "yesterday I did end up going to the gym from 9-11 / I hit pull" was stamped
+    TODAY and confirmed today's workout. A dated session lands on that local day."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from agent_tools import handle_log_workout
+    from models import Workout, is_workout_confirmed_today
+    user = make_user(db, name="Nau", user_timezone="America/Los_Angeles", current_split="ppl")
+    tz = ZoneInfo("America/Los_Angeles")
+    yday = (datetime.now(tz) - timedelta(days=1)).date()
+
+    out = handle_log_workout(user.id, {"split_day": "pull", "date": yday.isoformat(),
+                                       "notes": "9-11pm, hit pull"})
+    assert out.startswith("ok:") and f"dated {yday.isoformat()}" in out
+    db.expire_all()
+    w = db.query(Workout).filter(Workout.user_id == user.id).one()
+    assert w.workout_type == "pull"
+    assert w.date.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz).date() == yday
+    assert not is_workout_confirmed_today(user.id), "a past session must not confirm TODAY"
+
+    # no date → today, and today IS confirmed
+    handle_log_workout(user.id, {"notes": "just lifted"})
+    assert is_workout_confirmed_today(user.id)
+
+
+def test_webhook_one_shot_workout_row_is_off_when_the_loop_owns_logging(db, driver, monkeypatch, anthropic_stub):
+    """Live: "I hit pull" → the webhook's legacy one-shot wrote a bare workout_type=
+    'logged' row (no exercises) next to the loop's real log_workout row."""
+    import app, config
+    from models import Workout
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
+    monkeypatch.setattr(config, "WORKOUT_LOGGING_ENABLED", False)
+    monkeypatch.setattr(app, "classify_message", lambda body, has_image=False: "workout_log")
+    anthropic_stub.reply_with(lambda kw: "nice, logged" )  # the loop replies with text, no tool
+    user = make_user(db, name="Nau")
+
+    driver.send(user, "I hit pull")
+
+    db.expire_all()
+    rows = db.query(Workout).filter(Workout.user_id == user.id).all()
+    assert rows == [], f"legacy one-shot wrote a duplicate row: {[(r.workout_type, r.exercises) for r in rows]}"
+
+
+def test_voice_forbids_saying_ids_to_the_user():
+    from agent_loop import _voice_prompt
+    assert "never say an id to the user" in " ".join(_voice_prompt().split())  # line-wrapped in the file
+
+
+def test_log_workout_tool_never_guesses_split_day():
+    from agent_tools import LOG_WORKOUT_TOOL
+    d = LOG_WORKOUT_TOOL["description"]
+    assert "NEVER guess it" in d and "date" in LOG_WORKOUT_TOOL["input_schema"]["properties"]

@@ -152,7 +152,7 @@ export async function buildInbound(
     const a = c as { name: string; mimeType: string; size?: number; read: () => Promise<Uint8Array> };
     files.push({ name: a.name, mimeType: a.mimeType, bytes: await a.read() });
   } else {
-    return null; // reaction, typing, read, poll, … — not coaching input
+    return null; // reaction, typing, read, poll, richlink, … — not coaching input
   }
 
   return {
@@ -288,6 +288,14 @@ async function main() {
       log("info", "spectrum connected", { providers: ["imessage"] });
 
       for await (const [space, message] of app.messages) {
+        // Every inbound tick, by TYPE (never body): live 2026-09-11 the founder sent a
+        // calendar screenshot and this process logged nothing — a silent stream is
+        // undiagnosable. This line tells us whether Photon delivered it at all, and as what.
+        if (message.direction !== "outbound") {
+          const ct = (message.content as { type?: string } | undefined)?.type ?? "none";
+          const inner = ct === "reply" ? ((message.content as { content?: { type?: string } }).content?.type ?? "none") : undefined;
+          log("info", "stream tick", { id: message.id, platform: message.platform, content_type: ct, ...(inner ? { inner_type: inner } : {}) });
+        }
         try {
           const built = await buildInbound(space, message);
           if (!built) continue;

@@ -255,6 +255,32 @@ def _now_local(tz_str: str | None) -> datetime:
         return datetime.now(ZoneInfo("America/Los_Angeles"))
 
 
+ONBOARDING_HISTORY_LIMIT = 30  # messages of this conversation shown to the model
+
+
+def _conversation_so_far(user_id: int, limit: int = ONBOARDING_HISTORY_LIMIT) -> str:
+    """The onboarding conversation, oldest first, as 'them:' / 'you:' lines. Until
+    2026-09-11 the onboarding model saw ONLY the current message + extracted fields —
+    no memory of the previous turn. Live: it couldn't answer "how'd you know?" (it had
+    no idea what it had said) and lost "quiz at 4pm" two exchanges later. A friend
+    remembers what you said two texts ago."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        rows = (session.query(Message)
+                .filter(Message.user_id == user_id)
+                .order_by(Message.id.desc()).limit(limit).all())
+    finally:
+        session.close()
+    lines = []
+    for m in reversed(rows):
+        who = "you" if m.direction == "out" else "them"
+        body = (m.body or "").strip().replace("\n", " / ")
+        if body:
+            lines.append(f"{who}: {body[:400]}")
+    return "\n".join(lines)
+
+
 def _build_system_prompt(user) -> str:
     """Build the system prompt for onboarding exchanges: the shared identity,
     the safety rules, what we know, what's still unknown, and how this first
@@ -299,6 +325,9 @@ def _build_system_prompt(user) -> str:
     else:
         unknown_block = "- nothing — you have what you need"
 
+    history = _conversation_so_far(user.id) if getattr(user, "id", None) else ""
+    history_block = history or "(nothing yet — you just said hey)"
+
     return f"""{identity}
 
 ---
@@ -320,6 +349,9 @@ the time of day; read it here.
 ## STILL UNKNOWN (things you'd learn by caring about their day — never by listing them)
 {unknown_block}
 
+## THE CONVERSATION SO FAR (oldest first — you remember all of it)
+{history_block}
+
 ## HOW THIS FIRST CONVERSATION WORKS
 - You just met. You're getting to know a new friend, and along the way you'll end up
   knowing the things above. The intake isn't a form; it's stuff you learn by caring
@@ -331,9 +363,11 @@ the time of day; read it here.
   is it dining hall today" is the food question; "you gonna hit the gym after or is
   today a wash" gets training days and time. If there's no natural reason, don't force
   one — just be the friend. The next message will give you one.
-- At most ONE question per message — one question mark, or none. Never a list of
+- At most ONE question per message — one thing asked, or none. A second question
+  joined onto the first ("— and speaking of, …", "also …", "oh and …") is still a second
+  question even with one question mark: pick ONE, drop the other. Never a list of
   questions. Never "a few things I need from you." Never a numbered or comma-separated
-  set of things to answer. "also, …?" after a question is the tell: delete it.
+  set of things to answer.
 - If they NAMED something specific — a class, a campus place, a restaurant, an event —
   look it up (web_search) before you reply and use ONE detail from what you find, in
   your own words, no links. A course number ("70", "cs70", "61b", "data 8") or a campus
@@ -341,6 +375,8 @@ the time of day; read it here.
   semester's schedule, not memory) is the detail. That one detail is what makes you
   sound like you're there.
 - If they ask you something, answer it first, fully, then be a friend about the rest.
+  "how'd you know?" / "i already told you" → check THE CONVERSATION SO FAR and answer
+  from it; never claim you don't have something that's written there.
 - If they hand you several things at once, react to them like a person would — don't
   read a checklist back.
 - Never mention fields, profiles, forms, plans you're "building," or what you "need."
@@ -403,7 +439,9 @@ For example:
 
 """
 
-    prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated.
+    prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated ABOUT THEMSELVES AS A PATTERN.
+
+AN ANECDOTE IS NOT A FACT. "we got malatang after", "went for pizza in sf", "had crossroads for lunch" say NOTHING about cooking_situation or diet — they are one meal, not how the person eats. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none. When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
 
 User said: "{user_message}"
 
@@ -428,8 +466,16 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "existing_tools": "comma separated app/device names" or "none" or null,
   "tools_decision": "integrate" or "acknowledged" or "none" or null,
   "avg_steps": integer (daily step count) or null,
-  "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null
+  "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null,
+  "year": "freshman" or "sophomore" or "junior" or "senior" or "grad" or "transfer" or null,
+  "meal_plan_status": "on_meal_plan" or "no_meal_plan" or null
 }}
+
+year / meal_plan_status rules (Berkeley context — bonus facts, only when clearly stated):
+- "I'm a junior" → year="junior"; "first year" / "freshman" → "freshman"; "grad student" → "grad"
+- "I don't have a meal plan" / "no dining hall pass" / "not on the meal plan" → meal_plan_status="no_meal_plan"
+- "I'm on the meal plan" / "I have swipes" / "dining hall pass" → meal_plan_status="on_meal_plan"
+- Eating AT a dining hall once says nothing about meal_plan_status → null
 
 tools_decision rules:
 - "none" → user has no tools (existing_tools="none")
@@ -480,6 +526,11 @@ wake_time / wake_time_alt / wake_days_alt rules:
 - "7am except friday when I sleep in till 9" → wake_time="07:00", wake_time_alt="09:00", wake_days_alt="fri"
 - Always put the EARLIER time as wake_time (primary), later time as wake_time_alt
 - wake_days_alt lists which days use the LATER/alt time
+- LATE SCHEDULES: a bedtime after midnight is STILL sleep_time, even though its clock
+  number is small. "I go to sleep like 2-5am and wake up 11am-2pm" → sleep_time="03:00",
+  wake_time="12:00" (midpoints). NEVER assign the smaller clock number to wake_time —
+  read which one they said they fall asleep at. Live bug: a 2am bedtime stored as wake.
+- A range ("11am-2pm") → its midpoint in 24h ("12:30" → round to "12:00" or "13:00")
 
 Activity level — always extract something if the user described their daily movement. Use a short, plain-English phrase. Examples:
 - "desk job, mostly sitting" → "sedentary — desk job, mostly sitting"
@@ -491,7 +542,7 @@ Activity level — always extract something if the user described their daily mo
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=config.ONBOARDING_EXTRACTOR_MODEL,
             # 1000: same sizing class as extract_and_store_decisions — a fully
             # populated field set + fences needs real headroom; truncation
             # discards the extraction.
@@ -500,10 +551,14 @@ Activity level — always extract something if the user described their daily mo
         )
         track_usage(getattr(user, "id", None),
                     "onboarding.extract_data_from_message",
-                    "claude-haiku-4-5-20251001", response)
-        text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
-        if "}" in text:
-            text = text[:text.rindex("}") + 1]
+                    config.ONBOARDING_EXTRACTOR_MODEL, response)
+        # ALL text blocks, not content[0]: Sonnet thinks by default, so the first block
+        # is often a ThinkingBlock (no .text) — the live test caught the crash before it
+        # shipped. Then take the outermost {...} in case the model wrapped it in prose.
+        from agent_loop import _join_text
+        text = _join_text(response.content).replace("```json", "").replace("```", "").strip()
+        if "{" in text and "}" in text:
+            text = text[text.index("{"):text.rindex("}") + 1]
         return json.loads(text)
     except Exception as e:
         logger.error(f"Onboarding data extraction failed: {e}")
@@ -511,7 +566,15 @@ Activity level — always extract something if the user described their daily mo
 
 
 def _store_extracted_data(user_id: int, data: dict):
-    """Write extracted fields to the user record."""
+    """Write extracted fields to the user record.
+
+    During onboarding the LATEST clear statement wins: a new non-null value
+    overwrites an earlier one. Live bug (2026-09-11, user 27): an early
+    over-inference (cooking_situation=mostly_eat_out from an anecdote) was made
+    permanent by first-write-wins, and the user's explicit "I mostly cook" 30s
+    later was silently dropped. The summary/confirmation step is the final check.
+    Once onboarding is complete (step >= 3) nothing here runs — coaching-time
+    corrections go through the coach's tools."""
     from models import get_session, User
 
     session = get_session()
@@ -519,71 +582,41 @@ def _store_extracted_data(user_id: int, data: dict):
         user = session.get(User, user_id)
         if not user:
             return
+        if (user.onboarding_step or 0) >= 3:
+            return
 
         changed = False
 
-        if data.get("height_ft") and not user.height_ft:
-            user.height_ft = data["height_ft"]
-            changed = True
-        if data.get("height_in") is not None and user.height_in is None:
-            user.height_in = data["height_in"]
-            changed = True
-        if data.get("weight_lbs") and not user.weight_lbs:
-            user.weight_lbs = data["weight_lbs"]
-            changed = True
-        if data.get("occupation") and not user.occupation:
-            user.occupation = data["occupation"]
-            changed = True
-        if data.get("workout_days") and not user.workout_days:
-            user.workout_days = str(data["workout_days"])
-            changed = True
-        if data.get("workout_time") and not user.workout_time:
+        def _set(attr, value):
+            nonlocal changed
+            if value is not None and getattr(user, attr) != value:
+                setattr(user, attr, value)
+                changed = True
+
+        for key in ("height_ft", "height_in", "weight_lbs", "occupation", "diet",
+                    "cooking_situation", "injuries", "wake_time", "wake_time_alt",
+                    "wake_days_alt", "sleep_time", "existing_tools", "tools_decision",
+                    "activity_level", "current_split", "year", "meal_plan_status"):
+            if key in data and data.get(key) is not None:
+                val = data[key]
+                if key == "weight_lbs" and not val:
+                    continue
+                _set(key, val)
+        if data.get("workout_days"):
+            _set("workout_days", str(data["workout_days"]))
+        if data.get("workout_time"):
             wt = data["workout_time"]
             time_map = {"morning": "08:00", "afternoon": "14:00", "evening": "18:00"}
             if isinstance(wt, str) and wt.lower() in time_map:
                 wt = time_map[wt.lower()]
-            user.workout_time = wt
-            changed = True
-        if data.get("diet") and not user.diet:
-            user.diet = data["diet"]
-            changed = True
-        if data.get("cooking_situation") and not user.cooking_situation:
-            user.cooking_situation = data["cooking_situation"]
-            changed = True
-        if data.get("injuries") is not None and user.injuries is None:
-            user.injuries = data["injuries"]
-            changed = True
-        if data.get("wake_time") and not user.wake_time:
-            user.wake_time = data["wake_time"]
-            changed = True
-        if data.get("wake_time_alt") and not user.wake_time_alt:
-            user.wake_time_alt = data["wake_time_alt"]
-            changed = True
-        if data.get("wake_days_alt") and not user.wake_days_alt:
-            user.wake_days_alt = data["wake_days_alt"]
-            changed = True
-        if data.get("sleep_time") and not user.sleep_time:
-            user.sleep_time = data["sleep_time"]
-            changed = True
-        if data.get("existing_tools") is not None and user.existing_tools is None:
-            user.existing_tools = data["existing_tools"]
-            changed = True
-        if data.get("tools_decision") is not None and not user.tools_decision:
-            user.tools_decision = data["tools_decision"]
-            changed = True
-        if data.get("activity_level") and (not user.activity_level or user.activity_level == "lightly_active"):
-            user.activity_level = data["activity_level"]
-            changed = True
-        if data.get("avg_steps") is not None and user.avg_steps is None:
-            user.avg_steps = int(data["avg_steps"])
-            changed = True
-        if data.get("current_split") is not None and user.current_split is None:
-            user.current_split = data["current_split"]
-            changed = True
+            _set("workout_time", wt)
+        if data.get("avg_steps") is not None:
+            _set("avg_steps", int(data["avg_steps"]))
 
         if changed:
             session.commit()
-            logger.info(f"Stored onboarding data for {user.name}: {data}")
+            logger.info(f"Stored onboarding data for {user.name}: "
+                        f"{ {k: v for k, v in data.items() if v is not None} }")
     finally:
         session.close()
 
@@ -655,9 +688,17 @@ def _build_confirmation_summary(user) -> str:
     }
     goal_label = goal_map.get(user.goal, user.goal.replace("_", " "))
 
+    # wake/sleep are in the summary on purpose: they drive when the coach is allowed
+    # to text. Live (user 27): a 2am bedtime was stored as the WAKE time and the old
+    # summary didn't show it, so the one place the user could catch it was blind.
+    sleep_bit = ""
+    if user.wake_time or user.sleep_time:
+        sleep_bit = (f" Up around {user.wake_time or '?'}, asleep around {user.sleep_time or '?'}"
+                     f" — that's when I'll know to leave you alone.")
     return (
         f"Here's what I'm working with: {height_str}, {user.weight_lbs} lbs, {user.age} years old. "
-        f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}. "
+        f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}."
+        f"{sleep_bit} "
         f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
         f"Sound right?"
     )
@@ -679,7 +720,8 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"you a natural reason, work in ONE question that would tell you one of these you "
         f"still don't know: {unknown}. If there's no natural reason, don't force one. One "
         f"message, one paragraph, no greeting, ONE question at most — pick it before you "
-        f"write. Never a second paragraph, never a visible edit."
+        f"write, and don't join a second one on with 'and speaking of' / 'also' / 'oh and'. "
+        f"Never a second paragraph, never a visible edit."
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -951,9 +993,15 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         msg_lower = incoming_message.lower().strip()
         is_confirmed = any(kw in msg_lower for kw in confirmation_keywords)
 
+        # A question inside the confirmation must be ANSWERED, not skipped by the
+        # completion branch. Live (user 27): "Ok bet ... Why didn't you just go with
+        # that in the first place" had no '?' and no matching wh-phrase → completed
+        # silently. Any wh-word opener counts.
         has_question = (
             "?" in incoming_message
-            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are)|how (do|can|should|long|much|many)|when (should|do|can|will)|why (do|should|is|are))\b', msg_lower))
+            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are|about)'
+                               r'|how (do|can|should|long|much|many|come)|when (should|do|can|will)'
+                               r'|why (do|did|didn\'?t|don\'?t|should|is|are|not|would|wouldn\'?t)|wait[, ])\b', msg_lower))
         )
 
         if is_confirmed and has_question:
@@ -978,8 +1026,14 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         instruction = (
             f"Do NOT greet the user — you already said hello earlier.\n\n"
             f"You showed them this summary:\n\n{summary}\n\nThey replied: \"{incoming_message}\"\n\n"
-            f"Address their concern or adjustment like a friend. Then re-present the updated "
-            f"summary and end with 'sound right?'. One message, brief."
+            f"Address their concern like a friend. The calorie and protein numbers are COMPUTED "
+            f"from their stats and goal — you can explain them (recomp = maintenance; their steps "
+            f"and training; protein holds muscle) but you CANNOT change them in this message, so "
+            f"never invent different numbers. If they still want them different after the "
+            f"explanation, say the numbers get tuned after the first real week of data — and mean "
+            f"it. If they corrected a FACT (height, weight, days, times), acknowledge it; it'll be "
+            f"fixed. Then re-present the summary with the SAME numbers and end with 'sound right?'. "
+            f"One message, brief."
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
@@ -1085,12 +1139,28 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
             f"2. Tells them when they'll hear from you next (based on their wake_time: {user_row.wake_time})\n"
             f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_url}'\n"
             f"4. Feels like the starting gun — they now have a coach\n"
-            f"No explanations. No feature previews. Just confidence."
+            f"No explanations. No feature previews. Just confidence. Don't open with their name."
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
 
     finally:
         session.close()
+
+    # The onboarding conversation is the richest life-context the coach will ever
+    # get about this person (their classes, where they eat, who they went to SF
+    # with) and until now NONE of it survived into coaching: onboarding turns ran
+    # no memory extraction, and the coach loop's history window rolls past a
+    # bursty onboarding within a day. Digest it NOW (force past the quiet gate) so
+    # RECENT LIFE CONTEXT carries it forward. Background; never blocks the kickoff.
+    if config.EPISODIC_ENABLED:
+        def _digest():
+            try:
+                from episodic import digest_user
+                res = digest_user(user.id, force=True)
+                logger.info("ONBOARDING_DIGEST user=%s result=%s", user.id, res)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ONBOARDING_DIGEST_FAILED user=%s err=%s", user.id, e)
+        threading.Thread(target=_digest, daemon=True).start()
 
     return True

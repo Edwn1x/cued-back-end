@@ -564,6 +564,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             handle_onboarding_reply(user, combined_body)
+            # Onboarding turns are FULL of durable life facts (their classes, where
+            # they eat, gear, year) and until 2026-09-11 none of it reached memory —
+            # this branch returned before the post-reply extraction below. Run the
+            # same memory extraction normal turns get (background, best-effort).
+            from onboarding_agent import _last_coach_message
+            reply_text = _last_coach_message(user.id) or ""
+            threading.Thread(
+                target=extract_and_store_memory,
+                args=(user.id, combined_body, reply_text),
+                daemon=True,
+            ).start()
             return
 
         # Phase 2: single agent loop behind a flag. On ANY runtime failure, fall
@@ -1171,17 +1182,23 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
 
     # Track workout intent (skip in logging mode)
     if message_type == "workout_log" and not _pb_in_mode:
-        parsed = parse_workout_log(user, body)
-        if parsed:
-            workout = Workout(
-                user_id=user.id,
-                workout_type="logged",
-                exercises=parsed.get("exercises", []),
-                user_notes=body,
-                completed=True,
-            )
-            session.add(workout)
-            session.commit()
+        # The one-shot Workout row is the LEGACY writer. With the agent loop on, its
+        # log_workout tool is the single writer (read-before-write, split day, sets) —
+        # live 2026-09-11 (user 27, "I hit pull") this path wrote a bare
+        # workout_type="logged" row with no exercises next to the loop's real one.
+        # State writes (confirmed today / at_gym) stay: cheap and idempotent.
+        if not config.SINGLE_AGENT_LOOP_ENABLED:
+            parsed = parse_workout_log(user, body)
+            if parsed:
+                workout = Workout(
+                    user_id=user.id,
+                    workout_type="logged",
+                    exercises=parsed.get("exercises", []),
+                    user_notes=body,
+                    completed=True,
+                )
+                session.add(workout)
+                session.commit()
         confirm_workout_today(user.id)
         set_session_state(user.id, "at_gym")
         threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
