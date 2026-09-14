@@ -346,3 +346,27 @@ def test_abandon_sweep_closes_stale_sessions_silently(db, imessage_on, sidecar_o
 def test_start_tool_is_offered_and_claimed_by_the_registry(all_on=None):
     from capabilities import CAPABILITIES
     assert any("start_workout_session" in c.tools for c in CAPABILITIES)
+
+
+def test_silent_sentinel_after_the_start_tool_sends_nothing(db, imessage_on, sidecar_ok, card_ok, driver, anthropic_stub, monkeypatch):
+    """Live 2026-09-14: the coach's '[silent]' reply after start_workout_session was
+    TEXTED to the founder — the sentinel was only swallowed after a reaction."""
+    import config
+    from tests._fake_anthropic import ToolUse
+    from agent_tools import is_reaction_only_text
+    assert is_reaction_only_text("[silent]", False) and is_reaction_only_text(" [Silent] ", False)
+    assert not is_reaction_only_text("", False) and not is_reaction_only_text("no text needed", False)
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
+    monkeypatch.setattr(config, "START_WORKOUT_TOOL_ENABLED", True)
+    calls = []
+
+    def handler(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        calls.append(1)
+        return ToolUse("start_workout_session", {}) if len(calls) == 1 else "[silent]"
+    anthropic_stub.reply_with(handler)
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    driver.send(user, "starting push")
+    assert sidecar_ok == ["legs day. 4 sets squat, then the usual. tap as you go — text me if a set goes different."]
+    assert "[silent]" not in "".join(sidecar_ok)

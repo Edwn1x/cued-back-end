@@ -688,8 +688,12 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
         # Send the response — threaded on the message the coach chose, if any. A
         # reaction-only turn returns "" : the tapback was the reply, send nothing
-        # and clear the typing bubble (no text is coming).
-        from agent_tools import pop_turn_state
+        # and clear the typing bubble (no text is coming). Belt to the loop's
+        # suspenders: the literal sentinel must never reach a phone.
+        from agent_tools import pop_turn_state, REACTION_ONLY_SENTINEL
+        if (response_text or "").strip().lower() == REACTION_ONLY_SENTINEL:
+            logger.info("SENTINEL_SWALLOWED_AT_SEND user=%s", user.id)
+            response_text = ""
         turn = pop_turn_state(user.id)
         if response_text:
             send_sms(user.phone, response_text, user_id=user.id, message_type=message_type,
