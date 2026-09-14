@@ -39,6 +39,14 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
     read: async (phone, messageId) => {
       calls.push(["read", phone, messageId]);
     },
+    sendCard: async (phone, url, live) => {
+      calls.push(["sendCard", phone, url, live]);
+      return { provider_message_id: "photon-card-1",
+               card_session: { id: "photon-card-1", miniAppCardSession: { chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" }, space: { id: "sp", type: "dm", phone } } };
+    },
+    updateCard: async (phone, cardSession, url) => {
+      calls.push(["updateCard", phone, cardSession.id, url]);
+    },
     ...overrides,
     calls,
   };
@@ -410,4 +418,104 @@ test("last4 masks everything but the tail", () => {
   expect(last4("+12094205037")).toBe("…5037");
   expect(last4("me@example.com")).toBe("….com");
   expect(last4("")).toBe("…");
+});
+
+
+// ─── mini-app cards (workout logger, Phase 0) ────────────────────────────────
+
+describe("POST /send-card", () => {
+  test("sends an app card and returns the id + serializable card_session", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/send-card", {
+      method: "POST", body: JSON.stringify({ phone: "+12094205037", url: "https://web.example/card/test", live: true }),
+    }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; provider_message_id: string; card_session: { id: string; miniAppCardSession: unknown } };
+    expect(body.ok).toBe(true);
+    expect(body.provider_message_id).toBe("photon-card-1");
+    expect(body.card_session.id).toBe("photon-card-1");
+    expect(body.card_session.miniAppCardSession).toEqual({ chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" });
+    expect(d.calls).toEqual([["sendCard", "+12094205037", "https://web.example/card/test", true]]);
+  });
+
+  test("live defaults to true; live:false is passed through", async () => {
+    const d = deps();
+    const h = createHandler(d);
+    await h(req("/send-card", { method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://x/y" }) }));
+    await h(req("/send-card", { method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://x/y", live: false }) }));
+    expect(d.calls.map((c) => c[3])).toEqual([true, false]);
+  });
+
+  test("400 on a missing phone, a non-http url, or bad json", async () => {
+    const h = createHandler(deps());
+    for (const body of ["{}", JSON.stringify({ phone: "+1555" }), JSON.stringify({ url: "https://x" }),
+                        JSON.stringify({ phone: "+1555", url: "javascript:alert(1)" }), "nope"]) {
+      const res = await h(req("/send-card", { method: "POST", body }));
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test("provider throw → 502 with the error text (tier / extension refusals surface verbatim)", async () => {
+    const d = deps({ sendCard: async () => { throw new Error("mini apps require the Business plan"); } });
+    const res = await createHandler(d)(req("/send-card", {
+      method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://x/y", live: true }),
+    }));
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("Business plan");
+  });
+
+  test("503 when the stream is down", async () => {
+    const res = await createHandler(deps({ connected: () => false }))(req("/send-card", {
+      method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://x/y" }),
+    }));
+    expect(res.status).toBe(503);
+  });
+});
+
+describe("POST /update-card", () => {
+  const cs = { id: "photon-card-1", miniAppCardSession: { chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" } };
+
+  test("edits the card in place with the serialized session", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/update-card", {
+      method: "POST", body: JSON.stringify({ phone: "+12094205037", card_session: cs, url: "https://web.example/card/test?v=2" }),
+    }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(d.calls).toEqual([["updateCard", "+12094205037", "photon-card-1", "https://web.example/card/test?v=2"]]);
+  });
+
+  test("400 without a card_session id or a url", async () => {
+    const h = createHandler(deps());
+    for (const body of [JSON.stringify({ phone: "+1555", url: "https://x" }),
+                        JSON.stringify({ phone: "+1555", card_session: {}, url: "https://x" }),
+                        JSON.stringify({ phone: "+1555", card_session: cs })]) {
+      const res = await h(req("/update-card", { method: "POST", body }));
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test("provider throw → 502 (e.g. session expired after a restart)", async () => {
+    const d = deps({ updateCard: async () => { throw new Error("mini app card edits require a miniAppCardSession from the original send"); } });
+    const res = await createHandler(d)(req("/update-card", {
+      method: "POST", body: JSON.stringify({ phone: "+1555", card_session: { id: "gone" }, url: "https://x/y" }),
+    }));
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("card session helpers", () => {
+  test("serializeCardSession keeps only what edit() needs; rebuildCardTarget is outbound with the session", async () => {
+    const { serializeCardSession, rebuildCardTarget } = await import("./index");
+    const sent = { id: "m1", content: { type: "app" }, direction: "outbound", miniAppCardSession: { chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" },
+                   space: { id: "sp", type: "dm", phone: "+1555", extra: "dropped" }, sender: { id: "agent" } };
+    const cs = serializeCardSession(sent)!;
+    expect(cs).toEqual({ id: "m1", miniAppCardSession: sent.miniAppCardSession, space: { id: "sp", type: "dm", phone: "+1555" } });
+    expect(serializeCardSession(undefined)).toBeNull();
+    const t = rebuildCardTarget(cs) as unknown as { id: string; direction: string; miniAppCardSession: unknown; content: unknown };
+    expect(t.id).toBe("m1");
+    expect(t.direction).toBe("outbound");
+    expect(t.miniAppCardSession).toEqual(sent.miniAppCardSession);
+    expect(t.content).toBeTruthy();
+  });
 });

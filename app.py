@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, render_template_string, Response
+from flask import Flask, request, jsonify, render_template_string, Response, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -1768,6 +1768,76 @@ def signup_channel():
         sent = send_onboarding_hook(uid, reason="no_iphone")
     logger.info("SIGNUP_CHANNEL user=%s channel=sms hook_sent=%s", uid, sent)
     return jsonify({"status": "ok", "channel": "sms", "hook_sent": sent})
+
+
+# ─── Workout card, Phase 0: static smoke page for the mini-app install test ───
+CARD_TEST_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>bench</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 12px 14px; font: -apple-system-body, -apple-system, system-ui, sans-serif;
+         width: 300px; box-sizing: border-box; background: transparent; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
+  label { display: flex; align-items: center; justify-content: space-between; min-height: 44px;
+          padding: 0 4px; border-top: 1px solid rgba(128,128,128,.25); font-size: 16px; }
+  label:first-of-type { border-top: 0; }
+  input[type=checkbox] { width: 22px; height: 22px; }
+</style></head>
+<body>
+<h1>bench 185 &times; 5</h1>
+<label>set 1 <input type="checkbox"></label>
+<label>set 2 <input type="checkbox"></label>
+<label>set 3 <input type="checkbox"></label>
+<label>set 4 <input type="checkbox"></label>
+</body></html>"""
+
+
+@app.route("/card/test", methods=["GET"])
+def card_test_page():
+    """Phase 0 smoke page: plain HTML, no JS, no auth. Sent as a live mini-app card
+    (sidecar /send-card) to learn what a phone WITHOUT the Spectrum extension
+    shows — the go/no-go for the whole card surface (GATE 0)."""
+    resp = make_response(CARD_TEST_HTML)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/internal/card-test", methods=["POST"])
+def card_test_send():
+    """Phase 0 driver, secret-gated (same X-Internal-Secret as the sidecar), so the
+    founder can run the install-flow experiment with plain curl:
+      {"phone": "+1…", "action": "send"}                        → sends /card/test as a live card
+      {"phone": "+1…", "action": "update", "card_session": {…}, "v": 2} → edits it in place
+    Returns the sidecar's answer verbatim; a refusal (tier, extension) comes back as
+    502 with Photon's text — that text IS the experiment's result."""
+    if request.headers.get("X-Internal-Secret") != config.INTERNAL_SHARED_SECRET or not config.INTERNAL_SHARED_SECRET:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    phone = str(d.get("phone") or "").strip()
+    action = str(d.get("action") or "send").lower()
+    if not phone.startswith("+"):
+        return jsonify({"ok": False, "error": "phone must be E.164"}), 400
+    from photon_cards import send_card, update_card, CardError
+    base = request.url_root.rstrip("/").replace("http://", "https://")
+    url = f"{base}/card/test"
+    try:
+        if action == "send":
+            return jsonify({"ok": True, "url": url, **send_card(phone, url, live=d.get("live", True) is not False)})
+        if action == "update":
+            cs = d.get("card_session")
+            if not isinstance(cs, dict) or not cs.get("id"):
+                return jsonify({"ok": False, "error": "update needs card_session from the send"}), 400
+            v = d.get("v", 2)
+            update_card(phone, cs, f"{url}?v={v}")
+            return jsonify({"ok": True, "url": f"{url}?v={v}"})
+        return jsonify({"ok": False, "error": "action must be send|update"}), 400
+    except CardError as e:
+        logger.warning("CARD_TEST_REFUSED phone_last4=%s action=%s err=%s", phone[-4:], action, e)
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 
 # ─── Activate SMS (for users who skipped consent) ───

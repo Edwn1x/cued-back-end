@@ -68,3 +68,18 @@ On shared-pool plans a phone number must exist in the Photon **Users** list befo
 `/send` to it will succeed; otherwise Photon returns `Target not allowed for this
 project` and `/send` answers `502`. Flask adds users at signup (Phase 4C); until
 then add them in the dashboard by hand.
+
+## Mini-app cards (workout logger, Phase 0)
+
+- `POST /send-card { phone, url, live? }` → `{ ok, provider_message_id, card_session }`.
+  Sends `url` as an iMessage app card (`app(url, { live })`). `card_session` is the
+  serializable handle (`id`, `miniAppCardSession`, `space`) Flask stores to update the
+  card later. `live` defaults to `true`.
+- `POST /update-card { phone, card_session, url }` → `{ ok }`. Edits the card in place
+  (`edit(app(url, { live: true }), original)`). The original `Message` is kept in this
+  process's memory; after a sidecar restart the target is rebuilt from `card_session`
+  (the SDK notes refetched ids come back as inbound, so this is best-effort).
+- Both behind `X-Internal-Secret`; provider refusals (tier, no extension) surface as
+  `502 { error }` verbatim.
+
+Phase 0 smoke test (from the Flask side): `GET /card/test` is a static 300px page.
