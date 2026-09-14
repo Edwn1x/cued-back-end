@@ -1413,15 +1413,13 @@ def webhook():
                 auth=(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
             )
             if img_response.status_code == 200:
-                content_type = img_response.headers.get("Content-Type", "image/jpeg")
-                image_data = {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": content_type,
-                        "data": base64.b64encode(img_response.content).decode("utf-8")
-                    }
-                }
+                # Decided from the bytes, not the header (image_normalize.py): a
+                # HEIC or a mislabeled jpeg becomes a block the API accepts, or
+                # None → text-only turn with the stored [image attached] marker.
+                from image_normalize import normalize_image
+                image_data = normalize_image(img_response.content,
+                                             img_response.headers.get("Content-Type"),
+                                             name=image_url.rsplit("/", 1)[-1])
             else:
                 logger.error(f"Failed to download Twilio image: {img_response.status_code}")
 
@@ -1511,15 +1509,18 @@ def internal_inbound():
         except ValueError:
             return jsonify({"ok": False, "error": "bad phone"}), 400
 
-    # First image attachment → the same base64 image block the MMS path builds.
+    # First attachment that normalizes to an image → the same base64 block the
+    # MMS path builds. Format is decided from the bytes (an iPhone camera photo
+    # arrives as image/heic and must become jpeg; live 2026-09-13), never from
+    # the declared mime, so a non-image or unreadable attachment leaves
+    # image_data None: the turn runs text-only and the stored marker still says
+    # a picture came.
     image_name, image_data = None, None
+    from image_normalize import normalize_image
     for f in files:
         image_name = image_name or f.filename or "attachment"
-        mime = (f.mimetype or "").lower()
-        if image_data is None and mime.startswith("image/"):
-            import base64
-            image_data = {"type": "image", "source": {"type": "base64", "media_type": mime,
-                          "data": base64.b64encode(f.read()).decode("utf-8")}}
+        if image_data is None:
+            image_data = normalize_image(f.read(), f.mimetype, name=f.filename)
 
     session = get_session()
     try:
