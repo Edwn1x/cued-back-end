@@ -398,6 +398,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_MEAL_TOOL_ENABLED:
         from agent_tools import LOG_MEAL_TOOL
         tools.append(LOG_MEAL_TOOL)
+    if config.SET_TARGETS_TOOL_ENABLED:
+        from agent_tools import SET_TARGETS_TOOL
+        tools.append(SET_TARGETS_TOOL)
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)

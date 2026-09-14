@@ -71,7 +71,8 @@ def test_profile_endpoint_serves_the_users_own_data(db, client):
     assert p["name"] == "Nau Ruiz" and p["first_name"] == "Nau"
     assert p["about"]["height"] == {"ft": 5, "in": 10} and p["about"]["weight_lbs"] == 172
     assert p["goals"]["goals"] == ["fat_loss", "muscle_building"]
-    assert p["targets"] == {"calories": 2400, "protein_g": 170}
+    assert p["targets"]["calories"] == 2400 and p["targets"]["protein_g"] == 170
+    assert p["targets"]["source"] == "computed"  # no user pick on this row
     assert p["training"]["days"] == ["mon", "wed", "fri"] and p["training"]["split"] == "ppl"
     assert p["nutrition"]["restrictions"] == "lactose"
     # memory: live entries only, history never leaks

@@ -182,6 +182,53 @@ def _local_day_bounds_utc(tz):
     return to_utc(start), to_utc(start + timedelta(days=1))
 
 
+SET_TARGETS_TOOL = {
+    "name": "set_targets",
+    "description": (
+        "Set the user's daily calorie and/or protein target to a number THEY asked for. "
+        "Code enforces the band: each value must be within 15% of the computed target, or it "
+        "is rejected and the result tells you the nearest allowed values — offer those instead "
+        "of inventing a number. Use it when they say things like 'can we do 2200' or 'bump "
+        "protein to 150'; never to move a target on your own initiative. The stored target "
+        "becomes their pick (logged as user-chosen); say so plainly and note what you'd have "
+        "set. Returns 'ok: …' or 'error: …' — only claim a change after 'ok'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "calories": {"type": "integer", "description": "requested daily calories"},
+            "protein_g": {"type": "integer", "description": "requested daily protein in grams"},
+            "reason": {"type": "string", "description": "their words for why, in brief"},
+        },
+        "required": [],
+    },
+}
+
+
+def handle_set_targets(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from macro_calculator import apply_target_override
+    cal = tool_input.get("calories")
+    pro = tool_input.get("protein_g")
+    if cal is None and pro is None:
+        return "error: give calories and/or protein_g"
+    r = apply_target_override(user_id, calories=cal, protein=pro, note=tool_input.get("reason"))
+    if "error" in r:
+        return f"error: {r['error']}"
+    parts = []
+    if r["accepted"]:
+        got = ", ".join(f"{k} {v}" for k, v in r["accepted"].items())
+        parts.append(f"ok: set {got} (their pick; computed was {r['computed']['calories']} cal / "
+                     f"{r['computed']['protein']}g)")
+    for field, rj in r["rejected"].items():
+        if "min" in rj:
+            parts.append(f"error: {field} {rj['asked']} is outside the 15% band — nearest allowed "
+                         f"{rj['min']}–{rj['max']} (computed {rj['computed']}); offer one of those")
+        else:
+            parts.append(f"error: {field} {rj['asked']!r} {rj.get('reason', 'invalid')}")
+    parts.append(f"current: {r['current']['calories']} cal / {r['current']['protein']}g")
+    return "; ".join(parts)
+
+
 def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Create a Workout and advance the split pointer under the Phase-1 policy.
 
@@ -1201,6 +1248,7 @@ _HANDLERS = {
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
     "log_meal": handle_log_meal,
+    "set_targets": lambda user_id, tool_input, **kw: handle_set_targets(user_id, tool_input, **kw),
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,

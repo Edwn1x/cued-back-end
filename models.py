@@ -58,6 +58,12 @@ class User(Base):
     food_context = Column(Text, default=None)  # what they actually have/eat — fridge contents, nearby restaurants, go-to orders
     calorie_target = Column(Integer, default=None)  # computed daily calorie target
     protein_target = Column(Integer, default=None)  # computed daily protein target (grams)
+    # Bounded user override (2026-09-14): when the user picks a number within ±15% of
+    # the computed one, calorie_target/protein_target hold THEIR pick, these keep the
+    # computed pair beside it, and targets_source says whose number it is.
+    calorie_target_computed = Column(Integer, default=None)
+    protein_target_computed = Column(Integer, default=None)
+    targets_source = Column(String(16), default=None)  # 'computed' | 'user'
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     confirmed_goal_priority = Column(String(50), default=None)  # "cutting" or "building" — set once user confirms
     confirmed_training_split = Column(String(500), default=None)  # "ppl", "upper_lower", … (prod width 500)

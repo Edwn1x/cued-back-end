@@ -172,6 +172,9 @@ MEAL_ROUTING_PROMPT_ENABLED = os.getenv("MEAL_ROUTING_PROMPT_ENABLED", "false").
 # to persist schedule items; they fell to legacy extraction into the `schedule`
 # memory category and got evicted by the per-category soft cap (burn-in finding).
 LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() == "true"
+# Bounded target override on the coach loop (set_targets: ±15% of computed). Defaults ON —
+# the same rule runs deterministically in onboarding; this just extends it past day one.
+SET_TARGETS_TOOL_ENABLED = os.getenv("SET_TARGETS_TOOL_ENABLED", "true").lower() == "true"
 # Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
 # and inject a code-computed macro totals block. Default ON (these are corrections);
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.

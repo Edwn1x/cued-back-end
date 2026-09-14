@@ -624,6 +624,42 @@ def _store_extracted_data(user_id: int, data: dict):
         session.close()
 
 
+def _extract_target_request(message: str, user) -> dict:
+    """{"calories": int|None, "protein": int|None} — the numbers the user ASKED FOR as
+    targets in this message, or {} if they didn't name any. Extractor model, JSON
+    only. A number that is a fact (weight, age, days) is NOT a target."""
+    prompt = (
+        "The user is reacting to proposed daily targets during onboarding. Return ONLY JSON: "
+        '{"calories": <int or null>, "protein": <int or null>} with the values they are ASKING '
+        "FOR as their targets. null when they didn't name one. Examples:\n"
+        '"how about 2200 and we up the protein to like 150g?" → {"calories": 2200, "protein": 150}\n'
+        '"can we do 2k" → {"calories": 2000, "protein": null}\n'
+        '"150 protein sounds better" → {"calories": null, "protein": 150}\n'
+        '"thats too much food" → {"calories": null, "protein": null}\n'
+        '"actually im 145 lbs not 139" → {"calories": null, "protein": null}\n\n'
+        f'Message: "{message}"'
+    )
+    try:
+        response = client.messages.create(model=config.ONBOARDING_EXTRACTOR_MODEL, max_tokens=200,
+                                          messages=[{"role": "user", "content": prompt}])
+        track_usage(getattr(user, "id", None), "onboarding.extract_target_request",
+                    config.ONBOARDING_EXTRACTOR_MODEL, response)
+        from agent_loop import _join_text
+        text = _join_text(response.content).replace("```json", "").replace("```", "").strip()
+        if "{" in text and "}" in text:
+            text = text[text.index("{"):text.rindex("}") + 1]
+        data = json.loads(text)
+        out = {}
+        for k in ("calories", "protein"):
+            v = data.get(k) if isinstance(data, dict) else None
+            if isinstance(v, (int, float)) and v > 0:
+                out[k] = int(v)
+        return out
+    except Exception as e:  # noqa: BLE001 — a failed parse just means "no request"
+        logger.warning("TARGET_REQUEST_EXTRACT_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return {}
+
+
 def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
     """One onboarding reply. The model may search the web mid-reply (server-side
     tool, capped per reply by WEB_SEARCH_MAX_USES) when something specific came up
@@ -698,11 +734,16 @@ def _build_confirmation_summary(user) -> str:
     if user.wake_time or user.sleep_time:
         sleep_bit = (f" Up around {user.wake_time or '?'}, asleep around {user.sleep_time or '?'}"
                      f" — that's when I'll know to leave you alone.")
+    if getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
+        targets_bit = (f"You picked {user.calorie_target} cal and {user.protein_target}g protein daily "
+                       f"(I'd have set {targets['calories']}/{targets['protein']}g). ")
+    else:
+        targets_bit = f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
     return (
         f"Here's what I'm working with: {height_str}, {user.weight_lbs} lbs, {user.age} years old. "
         f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}."
         f"{sleep_bit} "
-        f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
+        f"{targets_bit}"
         f"Sound right?"
     )
 
@@ -1086,18 +1127,48 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         if is_confirmed:
             return _complete_onboarding(user_row, incoming_message)
 
-        # Not confirmed — user wants to adjust
+        # Not confirmed — user wants to adjust. If they named a number, the bounded
+        # override runs HERE in code (±15% of computed; macro_calculator.apply_
+        # target_override) and the model is told the outcome — it never invents one.
         summary = _build_confirmation_summary(user_row)
+        override_note = ""
+        asked = _extract_target_request(incoming_message, user_row) if _re.search(r"\d", incoming_message) else {}
+        if asked:
+            from macro_calculator import apply_target_override
+            r = apply_target_override(user_row.id, calories=asked.get("calories"),
+                                      protein=asked.get("protein"), note=incoming_message[:120])
+            session = get_session()
+            try:
+                user_row = session.get(UserModel, user.id)
+            finally:
+                session.close()
+            summary = _build_confirmation_summary(user_row)
+            lines = []
+            for field, val in r.get("accepted", {}).items():
+                lines.append(f"- {field}: they asked for {val} → ACCEPTED and now set (computed was "
+                             f"{r['computed'][field]}). It's their pick; say so, and that you'd have "
+                             f"gone {r['computed'][field]}.")
+            for field, rj in r.get("rejected", {}).items():
+                if "min" in rj:
+                    lines.append(f"- {field}: they asked for {rj['asked']} → NOT allowed (band is "
+                                 f"{rj['min']}–{rj['max']} around the computed {rj['computed']}). Offer "
+                                 f"the nearest end of the band and say why; do not state any other number.")
+            if lines:
+                override_note = ("TARGET REQUEST HANDLED IN CODE:\n" + "\n".join(lines) +
+                                 "\nCurrent targets: " + f"{r['current']['calories']} cal / "
+                                 f"{r['current']['protein']}g.\n\n")
         instruction = (
             f"Do NOT greet the user — you already said hello earlier.\n\n"
             f"You showed them this summary:\n\n{summary}\n\nThey replied: \"{incoming_message}\"\n\n"
+            f"{override_note}"
             f"Address their concern like a friend. The calorie and protein numbers are COMPUTED "
             f"from their stats and goal — you can explain them (recomp = maintenance; their steps "
-            f"and training; protein holds muscle) but you CANNOT change them in this message, so "
-            f"never invent different numbers. If they still want them different after the "
-            f"explanation, say the numbers get tuned after the first real week of data — and mean "
-            f"it. If they corrected a FACT (height, weight, days, times), acknowledge it; it'll be "
-            f"fixed. Then re-present the summary with the SAME numbers and end with 'sound right?'. "
+            f"and training; protein holds muscle). They CAN pick a number within 15% of the "
+            f"computed one — if they want it different but didn't name a number, invite one "
+            f"(\"what feels doable?\"). Never invent or announce a number yourself; only code sets "
+            f"them. If they corrected a FACT (height, weight, days, times), acknowledge it; it'll be "
+            f"fixed. Do NOT repeat the whole summary again — they just read it. End with the "
+            f"current numbers in one short line and a short close like 'lock it in?'. "
             f"One message, brief."
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
@@ -1175,8 +1246,15 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
     try:
         user_row = session.get(UserModel, user.id)
 
-        user_row.calorie_target = targets["calories"]
-        user_row.protein_target = targets["protein"]
+        if getattr(user_row, "targets_source", None) == "user" and user_row.calorie_target and user_row.protein_target:
+            # They picked (within the band) during the adjust turn — keep their numbers.
+            targets = dict(targets, calories=user_row.calorie_target, protein=user_row.protein_target)
+        else:
+            user_row.calorie_target = targets["calories"]
+            user_row.protein_target = targets["protein"]
+            user_row.targets_source = "computed"
+        user_row.calorie_target_computed = calculate_targets(user)["calories"]
+        user_row.protein_target_computed = calculate_targets(user)["protein"]
         user_row.confirmed_goal_priority = targets.get("goal_label", user_row.goal)
         user_row.coaching_branch = _determine_coaching_branch(user_row)
         user_row.onboarding_step = 3  # complete
@@ -1185,7 +1263,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         _finalize_onboarding_profile(user_row)
 
         session.commit()
-        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, branch={user_row.coaching_branch}")
+        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
 
         try:
             schedule_user(user_row)

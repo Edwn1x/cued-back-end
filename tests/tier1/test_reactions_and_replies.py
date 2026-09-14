@@ -325,7 +325,7 @@ def test_voice_forbids_announcing_new_targets():
     from agent_loop import _voice_prompt
     v = " ".join(_voice_prompt().split())
     assert "Their calorie and protein targets are set in code" in v
-    assert "never announce one" in v
+    assert "never change them by stating a new number" in v and "set_targets" in v
 
 
 def test_tool_call_written_as_text_is_executed_never_sent(db, imessage_on, sidecar, anthropic_stub, sms_capture):

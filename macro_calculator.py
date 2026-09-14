@@ -17,7 +17,10 @@ A workout_days RANGE counts as its lower bound ("4-5" → 4 → Mifflin): Ten Ha
 runs higher, so only a clear 5+ earns it.
 """
 
+import logging
 import re
+
+logger = logging.getLogger("cued.macros")
 
 TEN_HAAF_MIN_DAYS = 5
 
@@ -136,3 +139,67 @@ def calculate_targets(user) -> dict:
         "bmr_formula": bmr_formula,
         "goal_label": goal_label,
     }
+
+
+# ─── Bounded user override (founder, 2026-09-14) ─────────────────────────────
+# "I just don't think I could eat that much" is a real constraint, and the
+# no-invented-numbers rule left no path for it. Middle ground: the user can set
+# either target within ±15% of the COMPUTED value; the row records that it's
+# their pick (targets_source='user') and keeps the computed number beside it.
+# Outside the band the caller offers the nearest allowed value and explains.
+TARGET_OVERRIDE_PCT = 0.15
+_NEAREST_STEP = 10
+
+
+def override_bounds(computed: int) -> tuple[int, int]:
+    lo = int(round(computed * (1 - TARGET_OVERRIDE_PCT) / _NEAREST_STEP) * _NEAREST_STEP)
+    hi = int(round(computed * (1 + TARGET_OVERRIDE_PCT) / _NEAREST_STEP) * _NEAREST_STEP)
+    return lo, hi
+
+
+def apply_target_override(user_id: int, *, calories=None, protein=None, note: str = None) -> dict:
+    """Code-owned. Bounds each requested value against calculate_targets(user);
+    writes accepted ones to users.calorie_target / protein_target, stamps
+    targets_source='user' and the computed pair beside them. Returns
+      {"accepted": {"calories": 2200}, "rejected": {"protein": {"asked": 200, "min": 120, "max": 160}},
+       "computed": {"calories": 2450, "protein": 139}, "current": {"calories": 2200, "protein": 139}}
+    Never raises on bad numbers — they land in "rejected"."""
+    from models import get_session, User
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return {"error": "user not found"}
+        computed = calculate_targets(user)
+        accepted, rejected = {}, {}
+        for field, asked in (("calories", calories), ("protein", protein)):
+            if asked is None:
+                continue
+            try:
+                asked = int(round(float(asked)))
+            except (TypeError, ValueError):
+                rejected[field] = {"asked": asked, "reason": "not a number"}
+                continue
+            lo, hi = override_bounds(computed[field])
+            if lo <= asked <= hi:
+                accepted[field] = asked
+            else:
+                rejected[field] = {"asked": asked, "min": lo, "max": hi, "computed": computed[field]}
+        if accepted:
+            if "calories" in accepted:
+                user.calorie_target = accepted["calories"]
+            if "protein" in accepted:
+                user.protein_target = accepted["protein"]
+            user.calorie_target_computed = computed["calories"]
+            user.protein_target_computed = computed["protein"]
+            user.targets_source = "user"
+            session.commit()
+            logger.info("TARGETS_USER_CHOSEN user=%s accepted=%s computed=%s/%s note=%s",
+                        user_id, accepted, computed["calories"], computed["protein"], (note or "")[:80])
+        if rejected:
+            logger.info("TARGETS_OVERRIDE_REJECTED user=%s rejected=%s", user_id, rejected)
+        return {"accepted": accepted, "rejected": rejected,
+                "computed": {"calories": computed["calories"], "protein": computed["protein"]},
+                "current": {"calories": user.calorie_target, "protein": user.protein_target}}
+    finally:
+        session.close()
