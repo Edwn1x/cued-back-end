@@ -266,3 +266,24 @@ def test_add_remove_refused_on_a_closed_session(client, planned, monkeypatch):
     client.post("/card/api/finish", headers=_auth(tok), data="{}")
     assert client.post("/card/api/set", headers=_auth(tok), data=json.dumps({"exercise": "bench_press"})).status_code == 409
     assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "ohp"})).status_code == 409
+
+
+def test_swap_exercise_keeps_done_sets_and_replaces_the_rest(client, planned):
+    user, ws, tok = planned
+    state = client.get("/card/api/session", headers=_auth(tok)).get_json()
+    ids = _bench_ids(state)
+    client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": True}))
+    d = client.post("/card/api/exercise/bench_press/swap", headers=_auth(tok), data=json.dumps({"name": "OHP"})).get_json()
+    assert d["ok"] and d["removed"] == 3 and d["added"] == 3
+    bench = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"]
+    assert len(bench) == 1 and bench[0]["done"]
+    ohp = next(e for e in d["exercises"] if e["slug"] == "overhead_press")["sets"]
+    assert len(ohp) == 3 and ohp[0]["planned_weight"] == 75 and not any(x["done"] for x in ohp)
+    # free text needs numbers; same lift → 409; unknown slug → 404; sets override
+    assert client.post("/card/api/exercise/incline_db_press/swap", headers=_auth(tok), data=json.dumps({"name": "landmine press"})).status_code == 400
+    assert client.post("/card/api/exercise/incline_db_press/swap", headers=_auth(tok), data=json.dumps({"name": "ohp"})).status_code == 409
+    assert client.post("/card/api/exercise/nope/swap", headers=_auth(tok), data=json.dumps({"name": "squat"})).status_code == 404
+    d = client.post("/card/api/exercise/cable_fly/swap", headers=_auth(tok),
+                    data=json.dumps({"name": "landmine press", "weight": 70, "reps": 8, "sets": 4})).get_json()
+    assert not any(e["slug"] == "cable_fly" for e in d["exercises"])
+    assert len(next(e for e in d["exercises"] if e["slug"] == "landmine_press")["sets"]) == 4
