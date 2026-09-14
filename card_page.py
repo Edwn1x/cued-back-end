@@ -356,8 +356,9 @@ def card_api_add_exercise():
         return jsonify({"ok": False, "error": "sets/weight/reps must be numbers"}), 400
     from workouts.templates import slug_for_name, label_for_slug
     import re as _re
-    slug = slug_for_name(name) or _re.sub(r"[^a-z0-9]+", "_", name).strip("_")[:40]
-    label = label_for_slug(slug) if slug_for_name(name) else name
+    name = _re.sub(r"\s+", " ", name).strip()                       # 'seated  shoulder press' → one space
+    free_slug = _re.sub(r"[^a-z0-9]+", "_", name).strip("_")[:40]
+    hinted = slug_for_name(name)
     session = get_session()
     try:
         ws = _load(session, ids)
@@ -365,8 +366,22 @@ def card_api_add_exercise():
             return jsonify({"ok": False, "error": "not found"}), 404
         if ws.status in ("done", "abandoned"):
             return jsonify({"ok": False, "error": "session closed"}), 409
-        if session.query(SetLog.id).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).first():
-            return jsonify({"ok": False, "error": "already in this session — add a set instead"}), 409
+        present = {r[0] for r in session.query(SetLog.exercise).filter(SetLog.session_id == ws.id).distinct().all()}
+        # A hinted slug that's already in the session is the SAME lift only when the
+        # name carries no qualifier beyond it ('ohp' → overhead press → 409). A
+        # qualified variant ('dumbbell bench' next to bench press) is its own
+        # exercise, not a refusal (live: the founder's add was rejected for wording).
+        QUALIFIERS = ("dumbbell", "db", "incline", "decline", "seated", "standing", "machine", "cable", "smith",
+                      "close", "wide", "paused", "pause", "tempo", "single", "one arm", "kettlebell", "banded",
+                      "deficit", "front", "back", "sumo", "hack", "goblet", "bulgarian", "hammer", "preacher", "landmine")
+        hinted_label = label_for_slug(hinted) if hinted else ""
+        qualified = any(q in name and q not in hinted_label for q in QUALIFIERS)
+        if hinted and (hinted not in present or (not qualified)):
+            slug, label = hinted, hinted_label
+        else:
+            slug, label = free_slug, name
+        if slug in present:
+            return jsonify({"ok": False, "error": f"{label} is already in this session — add a set to it instead"}), 409
         pw, pr_ = _next_plan_for(session, ws, slug, label)
         weight = w_in if w_in is not None else pw
         reps = r_in if r_in is not None else pr_
