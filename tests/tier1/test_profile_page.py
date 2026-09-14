@@ -110,11 +110,15 @@ def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch
     seen = {}
 
     def fake_generate(system_prompt, instruction, **kw):
-        seen["instruction"] = instruction
+        # Two calls at completion now: the kickoff, then the capability rundown.
+        # The link lives in the kickoff (the rundown is told NOT to repeat it).
+        if "Onboarding is complete" in instruction:
+            seen["instruction"] = instruction
         return "locked in."
 
     monkeypatch.setattr(onboarding_agent, "_generate", fake_generate)
     monkeypatch.setattr(onboarding_agent, "send_sms", lambda *a, **k: None)
+    monkeypatch.setattr(onboarding_agent.config, "ONBOARDING_RUNDOWN_DELAY_S", 0)
     onboarding_agent._complete_onboarding(user, "yes")
     assert f"?t={profile_token(user.id)}" in seen["instruction"]
     assert "?phone=" not in seen["instruction"]

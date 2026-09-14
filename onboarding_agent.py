@@ -624,6 +624,34 @@ def _store_extracted_data(user_id: int, data: dict):
         session.close()
 
 
+def _send_capability_rundown(user_row, system_prompt: str) -> bool:
+    """The 'oh and quick rundown of how i work' bubble. Content comes from the
+    registry (only what's ON for this user, ranked by their profile); the model
+    writes it in the friend's voice. Six lines max, no list formatting."""
+    if not config.ONBOARDING_RUNDOWN_ENABLED:
+        return False
+    from capabilities import rundown_context
+    ctx = rundown_context(user_row)
+    instruction = (
+        "You just sent the 'locked in' message. Now send ONE more bubble, a beat later, "
+        "that tells them how to actually use you — like a friend adding 'oh and'. Open with "
+        "something like 'oh and quick rundown of how i work'. Use ONLY what's below; do not "
+        "mention anything else you can do. No bullet points, no numbered list, no headers, "
+        "no bold — plain sentences, 4 to 6 short lines total, their words. Do not repeat "
+        "the targets or the profile link (they just got both). No question at the end.\n\n"
+        f"{ctx}"
+    )
+    if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
+        import time
+        time.sleep(config.ONBOARDING_RUNDOWN_DELAY_S)
+    text = _generate(system_prompt, instruction, user_id=user_row.id)
+    if not text:
+        return False
+    send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+    logger.info("ONBOARDING_RUNDOWN_SENT user=%s chars=%d", user_row.id, len(text))
+    return True
+
+
 def _extract_target_request(message: str, user) -> dict:
     """{"calories": int|None, "protein": int|None} — the numbers the user ASKED FOR as
     targets in this message, or {} if they didn't name any. Extractor model, JSON
@@ -1285,9 +1313,17 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         )
         text = _generate(system_prompt, instruction, user_id=user_row.id)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        rundown_user = user_row
 
     finally:
         session.close()
+
+    # Second bubble, a beat later: how to use me — from capabilities.py for THIS
+    # user. Best-effort; the kickoff already went out and completion is committed.
+    try:
+        _send_capability_rundown(rundown_user, system_prompt)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
 
     # The onboarding conversation is the richest life-context the coach will ever
     # get about this person (their classes, where they eat, who they went to SF
