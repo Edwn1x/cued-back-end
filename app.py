@@ -1778,8 +1778,10 @@ CARD_TEST_HTML = """<!doctype html>
 <title>bench</title>
 <style>
   :root { color-scheme: light dark; }
-  body { margin: 0; padding: 12px 14px; font: -apple-system-body, -apple-system, system-ui, sans-serif;
+  body { margin: 0; padding: 12px 14px 12px 14px; font-family: -apple-system, system-ui, sans-serif; font-size: 16px;
          width: 300px; box-sizing: border-box; background: transparent; }
+  /* the Spectrum launcher's icon overlays the top-left ~36px of the card */
+  h1 { padding-left: 40px; }
   h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
   label { display: flex; align-items: center; justify-content: space-between; min-height: 44px;
           padding: 0 4px; border-top: 1px solid rgba(128,128,128,.25); font-size: 16px; }
@@ -1787,8 +1789,8 @@ CARD_TEST_HTML = """<!doctype html>
   input[type=checkbox] { width: 22px; height: 22px; }
 </style></head>
 <body>
-<h1>bench 185 &times; 5</h1>
-<label>set 1 <input type="checkbox"></label>
+<h1>bench 185 &times; 5{{ ' · v' ~ v if v else '' }}</h1>
+<label>set 1 <input type="checkbox"{{ ' checked' if v else '' }}></label>
 <label>set 2 <input type="checkbox"></label>
 <label>set 3 <input type="checkbox"></label>
 <label>set 4 <input type="checkbox"></label>
@@ -1800,7 +1802,8 @@ def card_test_page():
     """Phase 0 smoke page: plain HTML, no JS, no auth. Sent as a live mini-app card
     (sidecar /send-card) to learn what a phone WITHOUT the Spectrum extension
     shows — the go/no-go for the whole card surface (GATE 0)."""
-    resp = make_response(CARD_TEST_HTML)
+    v = (request.args.get("v") or "").strip()[:8]
+    resp = make_response(render_template_string(CARD_TEST_HTML, v=v))
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
     resp.headers["Cache-Control"] = "no-store"
     return resp

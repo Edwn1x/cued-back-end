@@ -12,6 +12,15 @@ def test_card_test_page_is_plain_html_no_js_no_auth(client):
     assert html.count('type="checkbox"') == 4
     assert "<script" not in html
     assert "width: 300px" in html and "color-scheme" in html
+    assert "· v" not in html and "checked" not in html
+
+
+def test_card_test_page_shows_its_version_when_updated(client):
+    """The Phase 0 update test needs a VISIBLE change: ?v=2 marks the heading and
+    pre-checks set 1, so an in-place card edit is unmistakable on the phone."""
+    html = client.get("/card/test?v=2").get_data(as_text=True)
+    assert "bench 185 &times; 5 · v2" in html
+    assert 'type="checkbox" checked' in html and html.count(" checked") == 1
 
 
 # ─── Flask → sidecar card client + the Phase 0 driver ───────────────────────
