@@ -37,6 +37,8 @@ CORS(app, origins=config.ALLOWED_ORIGINS)
 # Introspection-driven debug console (/admin/system, /admin/heartbeat,
 # /admin/consolidation, /admin/data/<table>, /admin/user/<id>/debug).
 app.register_blueprint(admin_system_bp)
+from card_page import card_bp
+app.register_blueprint(card_bp)
 
 
 @app.before_request
