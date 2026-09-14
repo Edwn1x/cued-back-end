@@ -30,7 +30,7 @@ import logging
 import random
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from anthropic import Anthropic
 import config
@@ -811,46 +811,108 @@ def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, sys
     return _generate(system_prompt, instruction, user_id=user.id)
 
 
+def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
+    """Send the hook (first coaching text) NOW, synchronously, and move the user to
+    step 1. Idempotent: a user already past step 0 gets nothing. Registers them
+    with Photon first (flag-gated, idempotent) so the hook can go blue; on the
+    shared-pool consent gate send_sms falls over to SMS with the opt-in link.
+    Returns True when a hook went out."""
+    from models import get_session, User as UserModel
+    session = get_session()
+    try:
+        user = session.get(UserModel, user_id)
+        if not user:
+            return False
+        if (user.onboarding_step or 0) >= 1:
+            return False
+        name, goal, phone = user.name, user.goal, user.phone
+    finally:
+        session.close()
+
+    try:
+        import photon
+        photon.provision_user(user_id)
+    except Exception as e:  # never block onboarding on Photon
+        logger.warning(f"PHOTON_PROVISION_SKIPPED user={user_id} err={e}")
+
+    hook = random.choice(HOOK_TEMPLATES)
+    text = hook["text"].format(name=name, goal_label=_goal_label(goal))
+    send_sms(phone, text, user_id=user_id, message_type="onboarding")
+
+    session = get_session()
+    try:
+        user = session.get(UserModel, user_id)
+        if user:
+            user.onboarding_step = 1
+            user.onboarding_hook_template = hook["id"]
+            session.commit()
+    finally:
+        session.close()
+    logger.info("ONBOARDING_HOOK_SENT user=%s template=%s reason=%s", user_id, hook["id"], reason)
+    return True
+
+
 def start_onboarding(user):
     """
-    Entry point — called from app.py after signup.
-    Sends a hook message from the template pool in a background thread.
+    Entry point — called from app.py after signup, /activate-sms, admin activation.
+    Sends the hook in a background thread (send_onboarding_hook does the work).
     """
     def _run():
-        from models import get_session, User as UserModel
         try:
-            hook = random.choice(HOOK_TEMPLATES)
-            goal = _goal_label(user.goal)
-            text = hook["text"].format(name=user.name, goal_label=goal)
-
-            # Photon migration 4C: register the user with Spectrum (the shared-pool
-            # allowlist) BEFORE the first outbound so it can go blue. Flag-gated
-            # inside provision_user; any failure leaves preferred_channel='sms' and
-            # the hook still goes out over Twilio. Every entry point (signup with
-            # consent, /activate-sms, admin waitlist activation) funnels through here.
-            try:
-                import photon
-                photon.provision_user(user.id)
-            except Exception as e:  # never block onboarding on Photon
-                logger.warning(f"PHOTON_PROVISION_SKIPPED user={user.id} err={e}")
-
-            send_sms(user.phone, text, user_id=user.id, message_type="onboarding")
-
-            session = get_session()
-            try:
-                user_row = session.get(UserModel, user.id)
-                if user_row:
-                    user_row.onboarding_step = 1
-                    user_row.onboarding_hook_template = hook["id"]
-                    session.commit()
-            finally:
-                session.close()
-
-            logger.info(f"Onboarding hook '{hook['id']}' sent to {user.name}")
+            send_onboarding_hook(user.id, reason="start_onboarding")
         except Exception as e:
             logger.error(f"Onboarding start failed for {user.name}: {e}")
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def awaiting_channel_choice(user) -> bool:
+    """A user whose hook was DEFERRED at signup: provisioned (has a link), asked
+    for iMessage, no hook yet, and nothing sent or received on any channel."""
+    from models import get_session, Message
+    if (user.onboarding_step or 0) >= 1 or not user.photon_user_id:
+        return False
+    if (user.preferred_channel or "sms") != "imessage":
+        return False
+    session = get_session()
+    try:
+        return session.query(Message.id).filter(Message.user_id == user.id,
+                                                 Message.direction == "out").first() is None
+    finally:
+        session.close()
+
+
+def send_fallback_hooks() -> int:
+    """Scheduler job: users who signed up with a link but neither texted the line
+    nor tapped "no iPhone" within ONBOARDING_HOOK_FALLBACK_MINUTES get the hook by
+    SMS (send_sms hits the consent gate → falls over with the opt-in link). Each
+    user is picked up once: after this their outbound rows exist."""
+    from models import get_session, User as UserModel, Message
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(minutes=config.ONBOARDING_HOOK_FALLBACK_MINUTES))
+    session = get_session()
+    try:
+        has_out = (session.query(Message.id)
+                   .filter(Message.user_id == UserModel.id, Message.direction == "out").exists())
+        ids = [u.id for u in (session.query(UserModel)
+                              .filter(UserModel.onboarding_step == 0,
+                                      UserModel.photon_user_id.isnot(None),
+                                      UserModel.preferred_channel == "imessage",
+                                      UserModel.created_at < cutoff,
+                                      ~has_out)
+                              .all())]
+    finally:
+        session.close()
+    sent = 0
+    for uid in ids:
+        try:
+            if send_onboarding_hook(uid, reason="fallback_no_choice"):
+                sent += 1
+                logger.info("ONBOARDING_HOOK_FALLBACK user=%s — no channel choice in %s min, hook by SMS with the link",
+                            uid, config.ONBOARDING_HOOK_FALLBACK_MINUTES)
+        except Exception as e:  # noqa: BLE001 — one bad user must not stop the sweep
+            logger.error("ONBOARDING_HOOK_FALLBACK_FAILED user=%s err=%s", uid, e)
+    return sent
 
 
 def _maybe_auto_fill_no_training(user, message: str) -> None:

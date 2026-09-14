@@ -479,6 +479,19 @@ def start_scheduler():
     except Exception as e:
         logger.warning(f"Startup dining scrape failed: {e}")
 
+    # iMessage-first signup: users who got an opt-in link but chose nothing get
+    # their hook by SMS (with the link) after ONBOARDING_HOOK_FALLBACK_MINUTES.
+    from apscheduler.triggers.interval import IntervalTrigger as _IT
+    from onboarding_agent import send_fallback_hooks
+    scheduler.add_job(
+        send_fallback_hooks,
+        trigger=_IT(minutes=2),
+        id="onboarding_hook_fallback",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell

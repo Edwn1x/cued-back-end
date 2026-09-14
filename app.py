@@ -607,6 +607,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         mark_read(user.id)
         typing_start(user.id)
 
+        # iMessage-first signup: their first text IS the channel choice. The hook
+        # was deferred at signup; send it now as the reply (it routes blue — the
+        # breaker was never tripped) and skip the model. Their "hey cued" is already
+        # logged as the inbound; the friend turn starts on their next message.
+        from onboarding_agent import awaiting_channel_choice, send_onboarding_hook
+        if awaiting_channel_choice(user):
+            logger.info("ONBOARDING_HOOK_ON_FIRST_TEXT user=%s", user.id)
+            send_onboarding_hook(user.id, reason="first_text")
+            typing_stop(user.id)
+            return
+
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             handle_onboarding_reply(user, combined_body)
@@ -1695,6 +1706,7 @@ def signup_submit():
         # here (one Photon round trip, flag-gated + never raises); start_onboarding's
         # own call is then an idempotent no-op. A Photon failure just means no link.
         imessage_link = None
+        hook_deferred = False
         if sms_consent:
             import photon
             try:
@@ -1702,17 +1714,60 @@ def signup_submit():
                     imessage_link = photon.imessage_link_for_user(user.id)
             except Exception as e:  # noqa: BLE001 — never block signup on Photon
                 logger.warning("PHOTON_PROVISION_SKIPPED user=%s err=%s", user.id, e)
-            start_onboarding(user)
+            # iMessage-first (founder, 2026-09-14): with a link in hand the hook WAITS
+            # for their choice — their first blue text triggers it on iMessage
+            # (process_buffered_message), "I don't have an iPhone" sends it by SMS
+            # (/signup/channel), and the scheduler falls back to SMS + link after
+            # ONBOARDING_HOOK_FALLBACK_MINUTES. Without a link there's no choice to make.
+            if imessage_link:
+                hook_deferred = True
+                logger.info("ONBOARDING_HOOK_DEFERRED user=%s — awaiting channel choice (fallback in %s min)",
+                            user.id, config.ONBOARDING_HOOK_FALLBACK_MINUTES)
+            else:
+                start_onboarding(user)
 
         logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent} | source: {'json' if request.is_json else 'form'} | imessage_link: {'yes' if imessage_link else 'no'}")
         return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name,
-                        "imessage_link": imessage_link})
+                        "imessage_link": imessage_link, "hook_deferred": hook_deferred})
 
     except Exception as e:
         logger.error(f"Signup error: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         session.close()
+
+
+# ─── Channel choice from the signup success screen ───
+@app.route("/signup/channel", methods=["POST"])
+@limiter.limit("10/minute;60/hour")
+def signup_channel():
+    """"I don't have an iPhone" on the success screen: put the user on SMS and send
+    the deferred hook now. JSON {phone, channel:"sms"}. Idempotent — a user whose
+    hook already went out just has their channel flipped. Phone-keyed like
+    /activate-sms; rate-limited."""
+    d = request.get_json(silent=True) or {}
+    phone = str(d.get("phone") or "").strip()
+    channel = str(d.get("channel") or "").strip().lower()
+    if channel != "sms":
+        return jsonify({"status": "error", "message": "channel must be 'sms'"}), 400
+    if not phone.startswith("+"):
+        phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.phone == phone).first()
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."}), 404
+        user.preferred_channel = "sms"  # photon_user_id stays: the link still works later
+        session.commit()
+        uid, step = user.id, (user.onboarding_step or 0)
+    finally:
+        session.close()
+    sent = False
+    if step == 0:
+        from onboarding_agent import send_onboarding_hook
+        sent = send_onboarding_hook(uid, reason="no_iphone")
+    logger.info("SIGNUP_CHANNEL user=%s channel=sms hook_sent=%s", uid, sent)
+    return jsonify({"status": "ok", "channel": "sms", "hook_sent": sent})
 
 
 # ─── Activate SMS (for users who skipped consent) ───

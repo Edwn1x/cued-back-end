@@ -250,6 +250,11 @@ EPISODIC_MIN_MESSAGES = int(os.getenv("EPISODIC_MIN_MESSAGES", "4"))        # do
 #       preferred_channel. Off → no call; users stay SMS.
 IMESSAGE_CHANNEL_ENABLED = os.getenv("IMESSAGE_CHANNEL_ENABLED", "false").lower() == "true"
 PHOTON_PROVISIONING_ENABLED = os.getenv("PHOTON_PROVISIONING_ENABLED", "false").lower() == "true"
+# iMessage-first signup (2026-09-14): when /signup could mint an opt-in link the
+# hook is NOT sent right away — the site shows "Text me on iMessage" (their first
+# blue text triggers the hook there) and "I don't have an iPhone" (hook by SMS).
+# If they do neither for this many minutes, the hook goes by SMS with the link.
+ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUTES", "10"))
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
