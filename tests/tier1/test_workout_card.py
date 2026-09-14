@@ -29,14 +29,15 @@ def _state(done, total, vol, status="active", key="push"):
 
 
 def test_card_layout_follows_the_session():
+    """Caption + subcaption only: the trailing caption rendered glued to the title
+    on the phone ('push · mon7,085 lb')."""
     from workouts.card import card_layout
     assert card_layout(_state(0, 13, 0, "planned")) == {
-        "caption": "push · wed", "subcaption": "4 sets bench press, then the usual — tap to start",
-        "trailingCaption": "0/13", "summary": "push day"}
+        "caption": "push · wed", "subcaption": "4 sets bench press, then the usual — tap to start", "summary": "push day"}
     assert card_layout(_state(3, 13, 1935)) == {
-        "caption": "push · wed", "subcaption": "in progress — tap to log", "trailingCaption": "3/13 · 1,935 lb", "summary": "push day"}
-    assert card_layout(_state(13, 13, 8040, "done"))["subcaption"] == "done — tap for the log"
-    assert card_layout(_state(13, 13, 8040, "done"))["trailingCaption"] == "8,040 lb"
+        "caption": "push · wed", "subcaption": "3/13 sets · 1,935 lb — tap to log", "summary": "push day"}
+    assert card_layout(_state(13, 13, 8040, "done"))["subcaption"] == "done · 8,040 lb — tap for the log"
+    assert "trailingCaption" not in card_layout(_state(13, 13, 8040, "done"))
     assert card_layout(_state(0, 5, 0, "planned", "full_body"))["caption"] == "full body · wed"
 
 
@@ -63,7 +64,7 @@ def test_refresh_card_edits_in_place_with_new_captions_and_is_best_effort(db, si
     assert refresh_card(ws.id) is True
     cid, url, live, layout = calls[-1]
     assert cid == "photon-card-1" and live is False and "&v=" in url
-    assert layout["subcaption"] == "in progress — tap to log" and layout["trailingCaption"] == "1/13 · 675 lb"
+    assert layout["subcaption"] == "1/13 sets · 675 lb — tap to log"
 
     def _boom(*a, **k):
         raise photon_cards.CardError("sidecar /update-card 502: session expired")
@@ -101,4 +102,4 @@ def test_card_tap_flow_refreshes_the_bubble_on_activation_and_finish(client, db,
     client.post(f"/card/api/set/{ids[0]}", headers=H, data=json.dumps({"done": True}))
     client.post(f"/card/api/set/{ids[1]}", headers=H, data=json.dumps({"done": True}))   # no refresh: not a transition, no PR
     client.post("/card/api/finish", headers=H, data="{}")
-    assert layouts == ["in progress — tap to log", "done — tap for the log"]
+    assert layouts == ["1/13 sets · 675 lb — tap to log", "done · 1,350 lb — tap for the log"]

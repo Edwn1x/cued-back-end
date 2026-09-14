@@ -140,7 +140,7 @@ def test_internal_card_test_driver_send_session_sends_the_real_card(client, side
                     headers={"X-Internal-Secret": SECRET}, content_type="application/json")
     assert r.status_code == 200 and r.get_json()["provider_message_id"] == "photon-card-9"
     assert seen["live"] is False and seen["url"].startswith("https://cued.fit/card.html?t=") and "&v=" in seen["url"]
-    assert seen["layout"]["caption"].startswith("push · ") and seen["layout"]["trailingCaption"] == "0/13"
+    assert seen["layout"]["caption"].startswith("push · ") and "trailingCaption" not in seen["layout"]
     assert "4 sets bench press, then the usual — tap to start" == seen["layout"]["subcaption"]
     s = get_session()
     try:

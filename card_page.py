@@ -79,23 +79,66 @@ def _fmt(w) -> str:
     return f"{float(w):g}" if w is not None else ""
 
 
+def _prior_by_exercise(session, user_id: int, session_id: int, exercises: list[str]) -> dict:
+    """One query: (weight, reps) of every done set in PREVIOUS sessions, grouped by
+    exercise — so state building is O(1) queries instead of one per set."""
+    from models import WorkoutSession as WS
+    if not exercises:
+        return {}
+    q = (session.query(SetLog.exercise, SetLog.actual_weight, SetLog.actual_reps)
+         .join(WS, SetLog.session_id == WS.id)
+         .filter(WS.user_id == user_id, SetLog.session_id != session_id, SetLog.done.is_(True),
+                 SetLog.exercise.in_(exercises), SetLog.actual_weight.isnot(None), SetLog.actual_reps.isnot(None)))
+    out: dict = {}
+    for ex, w, r in q.all():
+        if w and r:
+            out.setdefault(ex, []).append((float(w), int(r)))
+    return out
+
+
+def pr_for_set(prior: list[tuple[float, int]], session_best_before: tuple | None, weight: float, reps: int):
+    """The badge/message rule: a set earns a PR when it beats PREVIOUS sessions
+    (Epley e1RM, or more reps at the same weight) AND is a new best for TODAY
+    (strictly heavier, or same weight and more reps, than every earlier done set
+    of the exercise). Equal repeats — 185×5 three times — badge once, not thrice.
+    Returns the message or None."""
+    from workouts.prs import epley_1rm, PR
+    if not prior or not weight or not reps:
+        return None
+    if session_best_before is not None and (weight, reps) <= session_best_before:
+        return None
+    best = max(prior, key=lambda p: epley_1rm(*p))
+    if epley_1rm(weight, reps) > epley_1rm(*best) + 1e-9:
+        return PR("", weight, reps, best[0], best[1], "e1rm").message
+    same = [p for p in prior if p[0] == weight]
+    if same:
+        br = max(same, key=lambda p: p[1])
+        if reps > br[1]:
+            return PR("", weight, reps, br[0], br[1], "reps_at_weight").message
+    return None
+
+
 def build_state(session, ws: WorkoutSession) -> dict:
-    from workouts.prs import check_pr
     sets = session.query(SetLog).filter(SetLog.session_id == ws.id).order_by(SetLog.id).all()
     exercises, order = {}, []
-    volume, done_count = 0, 0
     for s in sets:
         if s.exercise not in exercises:
             exercises[s.exercise] = {"slug": s.exercise, "label": s.exercise_label or s.exercise, "sets": []}
             order.append(s.exercise)
+    prior = _prior_by_exercise(session, ws.user_id, ws.id, order)
+    best_so_far: dict = {}
+    volume, done_count = 0, 0
+    for s in sets:
         edited = bool(s.done and s.actual_weight is not None and s.actual_reps is not None
                       and (float(s.actual_weight) != float(s.planned_weight or 0) or int(s.actual_reps) != int(s.planned_reps or 0)))
         pr = None
         if s.done and s.actual_weight and s.actual_reps:
-            volume += int(round(float(s.actual_weight) * int(s.actual_reps)))
+            w, r = float(s.actual_weight), int(s.actual_reps)
+            volume += int(round(w * r))
             done_count += 1
-            p = check_pr(session, ws.user_id, s.exercise, float(s.actual_weight), int(s.actual_reps), exclude_session_id=ws.id)
-            pr = p.message if p else None
+            pr = pr_for_set(prior.get(s.exercise, []), best_so_far.get(s.exercise), w, r)
+            if best_so_far.get(s.exercise) is None or (w, r) > best_so_far[s.exercise]:
+                best_so_far[s.exercise] = (w, r)
         exercises[s.exercise]["sets"].append({
             "id": s.id, "index": s.set_index,
             "planned_weight": s.planned_weight, "planned_reps": s.planned_reps,
@@ -158,7 +201,6 @@ def apply_set_update(session, ws: WorkoutSession, set_row: SetLog, *, done: bool
                      actual_weight=None, actual_reps=None, source: str) -> dict | None:
     """The one write path for a set (card tap/edit now; text + tapback in Phase 4).
     Returns the PR (message) if this update made one, else None."""
-    from workouts.prs import check_pr
     now = _utcnow()
     if actual_weight is not None:
         set_row.actual_weight = float(actual_weight)
@@ -182,9 +224,14 @@ def apply_set_update(session, ws: WorkoutSession, set_row: SetLog, *, done: bool
         set_row.actual_weight, set_row.actual_reps = None, None
     session.commit()
     if set_row.done and set_row.actual_weight and set_row.actual_reps:
-        pr = check_pr(session, ws.user_id, set_row.exercise, float(set_row.actual_weight), int(set_row.actual_reps),
-                      exclude_session_id=ws.id)
-        return pr.message if pr else None
+        w, r = float(set_row.actual_weight), int(set_row.actual_reps)
+        prior = _prior_by_exercise(session, ws.user_id, ws.id, [set_row.exercise]).get(set_row.exercise, [])
+        earlier = [(float(x.actual_weight), int(x.actual_reps)) for x in
+                   session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == set_row.exercise,
+                                                SetLog.done.is_(True), SetLog.id != set_row.id).all()
+                   if x.actual_weight and x.actual_reps and x.done_at and set_row.done_at and x.done_at <= set_row.done_at]
+        best_before = max(earlier) if earlier else None
+        return pr_for_set(prior, best_before, w, r)
     return None
 
 
@@ -215,12 +262,151 @@ def card_api_set(set_id):
         session_id, went_active = ws.id, (was_planned and ws.status == "active")
     finally:
         session.close()
-    if went_active or pr:
-        # The bubble's captions follow the session: first set → "in progress";
-        # a PR is worth showing in the thread too. Best-effort, off the request path.
+    if went_active:
+        # The bubble's captions follow the session: first set → "in progress".
+        # (Not on every PR — each edit is a Photon round trip and a thread event.)
         from workouts.card import refresh_card_async
         refresh_card_async(session_id)
     return jsonify({"ok": True, "pr": pr, **state})
+
+
+def _next_plan_for(session, ws: WorkoutSession, exercise: str, label: str):
+    """Planned (weight, reps) for a new set/exercise: this session's last set of it,
+    else the user's history via the plan module, else the template default, else 0."""
+    last = (session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == exercise)
+            .order_by(SetLog.id.desc()).first())
+    if last:
+        return last.planned_weight, last.planned_reps
+    from workouts.templates import TEMPLATES, label_for_slug
+    from workouts.plan import next_targets
+    tmpl = next((e for exs in TEMPLATES.values() for e in exs if e.slug == exercise), None)
+    if tmpl:
+        w, r, _ = next_targets(session, ws.user_id, tmpl)
+        return w, r
+    return None, None
+
+
+@card_bp.route("/card/api/set", methods=["POST"])
+def card_api_add_set():
+    """Add one set to an exercise in this session ({exercise}), planned like its last set."""
+    ids = _auth()
+    if not ids:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    ex = (d.get("exercise") or "").strip()
+    session = get_session()
+    try:
+        ws = _load(session, ids)
+        if not ws:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        if ws.status in ("done", "abandoned"):
+            return jsonify({"ok": False, "error": "session closed"}), 409
+        rows = session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == ex).order_by(SetLog.id).all()
+        if not rows:
+            return jsonify({"ok": False, "error": "unknown exercise in this session"}), 404
+        last = rows[-1]
+        session.add(SetLog(session_id=ws.id, exercise=ex, exercise_label=last.exercise_label,
+                           set_index=(last.set_index or 0) + 1, planned_weight=last.planned_weight,
+                           planned_reps=last.planned_reps, done=False))
+        session.commit()
+        logger.info("CARD_ADD_SET user=%s session=%s exercise=%s", ws.user_id, ws.id, ex)
+        return jsonify({"ok": True, **build_state(session, ws)})
+    finally:
+        session.close()
+
+
+@card_bp.route("/card/api/set/<int:set_id>", methods=["DELETE"])
+def card_api_remove_set(set_id):
+    ids = _auth()
+    if not ids:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    session = get_session()
+    try:
+        ws = _load(session, ids)
+        row = session.get(SetLog, set_id)
+        if not ws or not row or row.session_id != ws.id:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        if ws.status in ("done", "abandoned"):
+            return jsonify({"ok": False, "error": "session closed"}), 409
+        session.delete(row)
+        session.commit()
+        logger.info("CARD_REMOVE_SET user=%s session=%s set=%s", ws.user_id, ws.id, set_id)
+        return jsonify({"ok": True, **build_state(session, ws)})
+    finally:
+        session.close()
+
+
+@card_bp.route("/card/api/exercise", methods=["POST"])
+def card_api_add_exercise():
+    """Add an exercise to this session: {name, weight?, reps?, sets?}. Known names
+    map to a template slug (history-planned); anything else is a free-text
+    exercise planned at the given weight/reps."""
+    ids = _auth()
+    if not ids:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip().lower()[:60]
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    try:
+        n_sets = max(1, min(int(d.get("sets") or 3), 10))
+        w_in = float(d["weight"]) if d.get("weight") not in (None, "") else None
+        r_in = int(d["reps"]) if d.get("reps") not in (None, "") else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "sets/weight/reps must be numbers"}), 400
+    from workouts.templates import slug_for_name, label_for_slug
+    import re as _re
+    slug = slug_for_name(name) or _re.sub(r"[^a-z0-9]+", "_", name).strip("_")[:40]
+    label = label_for_slug(slug) if slug_for_name(name) else name
+    session = get_session()
+    try:
+        ws = _load(session, ids)
+        if not ws:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        if ws.status in ("done", "abandoned"):
+            return jsonify({"ok": False, "error": "session closed"}), 409
+        if session.query(SetLog.id).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).first():
+            return jsonify({"ok": False, "error": "already in this session — add a set instead"}), 409
+        pw, pr_ = _next_plan_for(session, ws, slug, label)
+        weight = w_in if w_in is not None else pw
+        reps = r_in if r_in is not None else pr_
+        if weight is None or reps is None:
+            return jsonify({"ok": False, "error": "weight and reps needed for a new exercise"}), 400
+        for i in range(n_sets):
+            session.add(SetLog(session_id=ws.id, exercise=slug, exercise_label=label, set_index=i,
+                               planned_weight=weight, planned_reps=reps, done=False))
+        session.commit()
+        logger.info("CARD_ADD_EXERCISE user=%s session=%s exercise=%s sets=%s", ws.user_id, ws.id, slug, n_sets)
+        return jsonify({"ok": True, **build_state(session, ws)})
+    finally:
+        session.close()
+
+
+@card_bp.route("/card/api/exercise/<slug>", methods=["DELETE"])
+def card_api_remove_exercise(slug):
+    """Remove an exercise's UNDONE sets from this session (done sets stay — they happened)."""
+    ids = _auth()
+    if not ids:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    session = get_session()
+    try:
+        ws = _load(session, ids)
+        if not ws:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        if ws.status in ("done", "abandoned"):
+            return jsonify({"ok": False, "error": "session closed"}), 409
+        rows = session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).all()
+        if not rows:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        removed = 0
+        for r in rows:
+            if not r.done:
+                session.delete(r); removed += 1
+        session.commit()
+        logger.info("CARD_REMOVE_EXERCISE user=%s session=%s exercise=%s removed=%s", ws.user_id, ws.id, slug, removed)
+        return jsonify({"ok": True, "removed": removed, **build_state(session, ws)})
+    finally:
+        session.close()
 
 
 @card_bp.route("/card/api/finish", methods=["POST"])

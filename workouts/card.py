@@ -29,23 +29,22 @@ TEMPLATE_INTRO = {
 
 
 def card_layout(state: dict) -> dict:
-    """What the bubble says. Always at least a caption (the SDK refuses an empty layout)."""
+    """What the bubble says. Caption + subcaption only: on the phone the trailing
+    caption rendered glued to the title ('push · mon7,085 lb'), so progress lives
+    in the subcaption. Always at least a caption (the SDK refuses an empty layout)."""
     s = state["session"]
     key = (s["template_key"] or "workout").replace("_", " ")
     caption = f"{key} · {s['weekday']}"
     done, total, vol = state["done_count"], state["set_count"], state["volume_lb"]
     if s["status"] == "done":
-        sub = "done — tap for the log"
-        trailing = f"{vol:,} lb"
+        sub = f"done · {vol:,} lb — tap for the log"
     elif done:
-        sub = "in progress — tap to log"
-        trailing = f"{done}/{total} · {vol:,} lb"
+        sub = f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
         lead = next((e for e in state["exercises"]), None)
         first = f"{len(lead['sets'])} sets {lead['label']}" if lead else key
         sub = f"{first}, then the usual — tap to start"
-        trailing = f"0/{total}"
-    return {"caption": caption, "subcaption": sub, "trailingCaption": trailing, "summary": f"{key} day"}
+    return {"caption": caption, "subcaption": sub, "summary": f"{key} day"}
 
 
 def _version(ws: WorkoutSession) -> int:
@@ -106,7 +105,7 @@ def refresh_card(session_id: int) -> bool:
         session.close()
     try:
         update_card(phone, cs, url, live=False, layout=layout)
-        logger.info("WORKOUT_CARD_REFRESHED user=%s session=%s trailing=%s", uid, session_id, layout["trailingCaption"])
+        logger.info("WORKOUT_CARD_REFRESHED user=%s session=%s sub=%s", uid, session_id, layout["subcaption"])
         return True
     except CardError as e:
         logger.warning("WORKOUT_CARD_REFRESH_FAILED user=%s session=%s err=%s", uid, session_id, e)

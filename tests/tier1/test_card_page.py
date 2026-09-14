@@ -182,3 +182,82 @@ def test_finish_with_nothing_done_sends_no_summary(client, planned, sms_capture,
     d = client.post("/card/api/finish", headers=_auth(tok), data="{}").get_json()
     assert d["ok"] and d["summary"]["sets_done"] == 0
     assert sms_capture == []
+
+
+# ─── PR once, not on every equal repeat ──────────────────────────────────────
+
+def test_pr_badge_fires_once_per_new_session_best(client, db):
+    """Live: 185×5 ×3 then 190×5 over last week's 185×3 badged all four rows and
+    refreshed the bubble three times. Rule: badge when a set beats last time AND is
+    a new best for today → 185×5 (first), then 190×5. Not the two equal repeats."""
+    from workouts.plan import build_session
+    from card_page import card_token
+    from models import get_session, SetLog, WorkoutSession
+    user = make_user(db, **FOUNDER)
+    prior = build_session(user, "push", now=_now() - timedelta(days=7))
+    s = get_session()
+    try:
+        for x in s.query(SetLog).filter_by(session_id=prior.id, exercise="bench_press").all():
+            x.actual_weight, x.actual_reps, x.done, x.source = 185, 3, True, "card"
+        s.get(WorkoutSession, prior.id).status = "done"
+        s.commit()
+    finally:
+        s.close()
+    ws = build_session(user, "push")
+    tok = card_token(user.id, ws.id)
+    ids = _bench_ids(client.get("/card/api/session", headers=_auth(tok)).get_json())
+    prs = []
+    for i, sid in enumerate(ids):
+        body = {"done": True, "actual_weight": 190 if i == 3 else 185, "actual_reps": 5}
+        prs.append(client.post(f"/card/api/set/{sid}", headers=_auth(tok), data=json.dumps(body)).get_json()["pr"])
+    assert prs == ["185 × 5 is a PR 🎉 last time was 185 × 3.", None, None, "190 × 5 is a PR 🎉 last time was 185 × 3."]
+    state = client.get("/card/api/session", headers=_auth(tok)).get_json()
+    badges = [x["pr"] for x in next(e for e in state["exercises"] if e["slug"] == "bench_press")["sets"]]
+    assert badges == prs
+
+
+# ─── add / remove sets and exercises ─────────────────────────────────────────
+
+def test_add_and_remove_sets(client, planned):
+    user, ws, tok = planned
+    state = client.get("/card/api/session", headers=_auth(tok)).get_json()
+    assert state["set_count"] == 13
+    d = client.post("/card/api/set", headers=_auth(tok), data=json.dumps({"exercise": "bench_press"})).get_json()
+    bench = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"]
+    assert d["set_count"] == 14 and len(bench) == 5 and bench[-1]["planned_weight"] == 135 and bench[-1]["index"] == 4
+    d = client.delete(f"/card/api/set/{bench[-1]['id']}", headers=_auth(tok)).get_json()
+    assert d["set_count"] == 13
+    assert client.post("/card/api/set", headers=_auth(tok), data=json.dumps({"exercise": "nope"})).status_code == 404
+    assert client.delete("/card/api/set/999999", headers=_auth(tok)).status_code == 404
+
+
+def test_add_and_remove_exercises(client, planned):
+    user, ws, tok = planned
+    # known name → template slug + label, history/template-planned, 3 sets by default
+    d = client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "OHP"})).get_json()
+    ohp = next(e for e in d["exercises"] if e["slug"] == "overhead_press")
+    assert ohp["label"] == "overhead press" and len(ohp["sets"]) == 3 and ohp["sets"][0]["planned_weight"] == 75
+    # free-text name needs weight + reps; sets capped at 10
+    r = client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "landmine press"}))
+    assert r.status_code == 400
+    d = client.post("/card/api/exercise", headers=_auth(tok),
+                    data=json.dumps({"name": "Landmine Press", "weight": 70, "reps": 8, "sets": 2})).get_json()
+    lm = next(e for e in d["exercises"] if e["slug"] == "landmine_press")
+    assert lm["label"] == "landmine press" and len(lm["sets"]) == 2 and lm["sets"][0]["planned_reps"] == 8
+    # duplicate → 409; remove only the undone sets
+    assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "ohp"})).status_code == 409
+    client.post(f"/card/api/set/{ohp['sets'][0]['id']}", headers=_auth(tok), data=json.dumps({"done": True}))
+    d = client.delete("/card/api/exercise/overhead_press", headers=_auth(tok)).get_json()
+    assert d["removed"] == 2
+    ohp = next(e for e in d["exercises"] if e["slug"] == "overhead_press")
+    assert len(ohp["sets"]) == 1 and ohp["sets"][0]["done"]
+    assert client.delete("/card/api/exercise/nothing_here", headers=_auth(tok)).status_code == 404
+
+
+def test_add_remove_refused_on_a_closed_session(client, planned, monkeypatch):
+    import threading
+    monkeypatch.setattr(threading, "Thread", lambda target=None, args=(), kwargs=None, daemon=None: type("T", (), {"start": lambda self: target(*args, **(kwargs or {}))})())
+    user, ws, tok = planned
+    client.post("/card/api/finish", headers=_auth(tok), data="{}")
+    assert client.post("/card/api/set", headers=_auth(tok), data=json.dumps({"exercise": "bench_press"})).status_code == 409
+    assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "ohp"})).status_code == 409
