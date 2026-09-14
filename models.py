@@ -504,17 +504,29 @@ def get_or_create_today_log(session, user_id: int) -> "DailyLog":
         user_tz = ZoneInfo(user.user_timezone or "America/Los_Angeles") if user else ZoneInfo("America/Los_Angeles")
     except Exception:
         user_tz = ZoneInfo("America/Los_Angeles")
+    # The user's LOCAL day as a naive-UTC window. `func.date(date) == local_today`
+    # compared the UTC calendar date of the row against the user's local date, so
+    # between 5pm and midnight Pacific every call created a fresh row and
+    # confirm_workout_today / is_workout_confirmed_today disagreed (CI in UTC
+    # caught it after 00:00Z; prod has the same hole every evening).
+    from datetime import timedelta
     today = datetime.now(user_tz).date()
+    lo = (datetime(today.year, today.month, today.day, tzinfo=user_tz)
+          .astimezone(timezone.utc).replace(tzinfo=None))
+    hi = lo + timedelta(days=1)
     log = (
         session.query(DailyLog)
         .filter(
             DailyLog.user_id == user_id,
-            func.date(DailyLog.date) == today,
+            DailyLog.date >= lo,
+            DailyLog.date < hi,
         )
+        .order_by(DailyLog.id.asc())
         .first()
     )
     if not log:
-        log = DailyLog(user_id=user_id)
+        log = DailyLog(user_id=user_id,
+                       date=datetime.now(timezone.utc).replace(tzinfo=None))
         session.add(log)
         session.commit()
     return log

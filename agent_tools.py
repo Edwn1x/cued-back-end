@@ -135,13 +135,21 @@ LOG_WORKOUT_TOOL = {
         "omit it and code infers the next day. (Live: 'went to the gym 9-11' was logged "
         "as pull before the user said pull.) Include exercises the user mentioned with "
         "any sets/reps/weight. If the session was NOT today ('yesterday', 'tuesday'), "
-        "pass date as YYYY-MM-DD in the user's local calendar — otherwise it's logged today."
+        "pass date as YYYY-MM-DD in the user's local calendar — otherwise it's logged today. "
+        "CARDIO (a run, bike, swim, walk, hike, sport): pass cardio=true and NEVER a split_day — "
+        "cardio is recorded as its own session and does not move the split pointer. Put "
+        "distance in distance_miles and time in duration_min, never in reps. (Live: a 2-mile "
+        "run was logged as split_day=full_body with reps=2 and knocked the pointer off push.) "
+        "Logging a second time on the same day for the same split day ADDS to that session "
+        "(e.g. 'i went' then 'bench 135x3x8') — you never need to delete and re-log."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "split_day": {"type": "string",
-                          "description": "ONLY the day the user literally named: push/pull/legs/upper/lower/full_body. Omit if they didn't."},
+                          "description": "ONLY the day the user literally named: push/pull/legs/upper/lower/full_body. Omit if they didn't. Never for cardio."},
+            "cardio": {"type": "boolean",
+                       "description": "true for a run/bike/swim/walk/hike/sport session. Recorded as cardio; the split pointer is untouched."},
             "date": {"type": "string",
                      "description": "YYYY-MM-DD (user's local day) when the session was not today, e.g. 'yesterday'"},
             "exercises": {
@@ -153,6 +161,8 @@ LOG_WORKOUT_TOOL = {
                         "sets": {"type": "integer"},
                         "reps": {"type": "integer"},
                         "weight": {"type": "number"},
+                        "distance_miles": {"type": "number", "description": "cardio distance"},
+                        "duration_min": {"type": "number", "description": "cardio time"},
                     },
                     "required": ["name"],
                 },
@@ -164,14 +174,35 @@ LOG_WORKOUT_TOOL = {
 }
 
 
+def _local_day_bounds_utc(tz):
+    """[start, end) of the user's current local day as naive UTC."""
+    today = datetime.now(tz).date()
+    start = datetime(today.year, today.month, today.day, tzinfo=tz)
+    to_utc = lambda d: d.astimezone(timezone.utc).replace(tzinfo=None)
+    return to_utc(start), to_utc(start + timedelta(days=1))
+
+
 def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Create a Workout and advance the split pointer under the Phase-1 policy."""
+    """Create a Workout and advance the split pointer under the Phase-1 policy.
+
+    Three live-driven rules (2026-09-12, user 27):
+      - cardio=true → workout_type='cardio', pointer untouched (a run logged as
+        split_day=full_body knocked the pointer off push).
+      - a same-day log for the same split day APPENDS to that session instead of
+        creating a second row ("i went" → "bench 135x3x8" was create+delete twice).
+      - a pointer advance is recorded on the row (edits[] field='split_pointer') so
+        manage_log delete can roll it back — a deleted session must not leave the
+        pointer claiming it happened.
+    """
     from split_pointer import advance_split_pointer, parse_named_split_day
 
     exercises = tool_input.get("exercises") or []
     split_day = (tool_input.get("split_day") or "").strip().lower() or None
+    cardio = bool(tool_input.get("cardio"))
     notes = tool_input.get("notes")
     date_str = (tool_input.get("date") or "").strip() or None
+    if cardio:
+        split_day = None  # never a split day, whatever the model passed
 
     session = get_session()
     try:
@@ -179,13 +210,13 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
                 .with_for_update().one_or_none())
         if not user:
             return "error: user not found"
+        tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
         # A past-day session ("yesterday i went 9-11") is stamped on THAT local day
         # (noon local → UTC) so day-bucketed readers see it where it happened. Live
         # 2026-09-11: yesterday's pull was logged as today's. Bad date → today.
         when = None
         is_today = True
         if date_str:
-            tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
             try:
                 local_day = _resolve_local_date(tz, date_str, strict=True)
                 is_today = local_day == datetime.now(tz).date()
@@ -193,26 +224,108 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
                         .astimezone(timezone.utc).replace(tzinfo=None))
             except Exception:
                 when, is_today = None, True
-        w = Workout(user_id=user_id, workout_type=(split_day or "logged"),
-                    exercises=exercises, user_notes=notes, completed=True)
-        if when is not None:
-            w.date = when
+
+        # Same-day append: today's active non-cardio session for the same split day
+        # (or an unlabeled 'logged' one) absorbs this call. Cardio is always its own row.
+        existing = None
+        if not cardio and when is None:
+            lo, hi = _local_day_bounds_utc(tz)
+            for w0 in (active(session, Workout, user_id=user_id)
+                       .filter(Workout.date >= lo, Workout.date < hi)
+                       .order_by(Workout.id.desc()).all()):
+                if w0.workout_type == "cardio":
+                    continue
+                if split_day is None or w0.workout_type in (split_day, "logged"):
+                    existing = w0
+                    break
+        if existing is not None:
+            merged = list(existing.exercises or []) + list(exercises)
+            existing.exercises = merged
+            flag_modified(existing, "exercises")
+            if notes:
+                existing.user_notes = f"{existing.user_notes}; {notes}" if existing.user_notes else notes
+            relabel = bool(split_day and existing.workout_type == "logged")
+            if relabel:
+                existing.workout_type = split_day
+            existing.completed = True
+            session.commit()
+            wid, wtype = existing.id, existing.workout_type
+            session.close()
+            pointer = None
+            if relabel:  # "i went" → "it was push": the unnamed row now has a name
+                pointer = advance_split_pointer(user_id, named_day=split_day)
+            logger.info("LOG_WORKOUT_TOOL user=%s appended workout_id=%s split_day=%s +%d exercises pointer=%s",
+                        user_id, wid, split_day, len(exercises), pointer)
+            return (f"ok: added {len(exercises)} exercises to today's {wtype} session (id={wid}, "
+                    f"{len(merged)} total)"
+                    + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else ""))
+
+        w = Workout(user_id=user_id,
+                    workout_type=("cardio" if cardio else (split_day or "logged")),
+                    exercises=exercises, user_notes=notes, completed=True,
+                    date=(when if when is not None else _naive_utcnow()))
         session.add(w)
         session.commit()
         wid = w.id
     finally:
         session.close()
 
+    if cardio:
+        logger.info("LOG_WORKOUT_TOOL user=%s workout_id=%s cardio (pointer untouched)", user_id, wid)
+        return (f"ok: logged cardio (id={wid}, {len(exercises)} activities"
+                + (f", dated {date_str}" if when is not None else "") + "), split pointer untouched")
+
     if is_today:
         confirm_workout_today(user_id)
     # named day -> confirmed advance; else infer from the notes, then the cycle.
     day = split_day or parse_named_split_day(notes or "")
+    from split_pointer import get_split_pointer
+    before = get_split_pointer(user_id)
     pointer = advance_split_pointer(user_id, named_day=day)
+    if pointer and pointer != before:
+        _record_pointer_advance(wid, before, pointer)
     logger.info("LOG_WORKOUT_TOOL user=%s workout_id=%s split_day=%s pointer=%s",
                 user_id, wid, split_day, pointer)
     return (f"ok: logged workout (id={wid}, {len(exercises)} exercises"
             + (f", dated {date_str}" if when is not None else "") + ")"
             + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else ""))
+
+
+def _pointer_ser(p):
+    return {"day": p["day"], "at": _ser(p["at"]), "source": p["source"]} if p else None
+
+
+def _record_pointer_advance(workout_id: int, before, after):
+    """Audit the pointer move on the workout row that caused it (edits[] entry,
+    field='split_pointer'), so deleting the row can undo exactly that move."""
+    session = get_session()
+    try:
+        w = session.get(Workout, workout_id)
+        if w is None:
+            return
+        w.edits = list(w.edits or []) + [{"at": _naive_utcnow().isoformat(), "field": "split_pointer",
+                                          "old": _pointer_ser(before), "new": _pointer_ser(after)}]
+        flag_modified(w, "edits")
+        session.commit()
+    finally:
+        session.close()
+
+
+def _rollback_pointer_for_deleted_workout(user_id: int, row) -> str | None:
+    """If this workout's log moved the split pointer AND the pointer still sits where
+    that move left it, put it back where it was. If it moved again since (a later
+    log), leave it — that later log owns the pointer now."""
+    from split_pointer import get_split_pointer, restore_split_pointer
+    entry = next((e for e in reversed(list(row.edits or [])) if e.get("field") == "split_pointer"), None)
+    if not entry:
+        return None
+    current = _pointer_ser(get_split_pointer(user_id))
+    if current != entry.get("new"):
+        return None
+    restored = restore_split_pointer(user_id, entry.get("old"))
+    logger.info("SPLIT_POINTER_ROLLBACK user=%s workout_id=%s restored=%s", user_id, row.id, restored)
+    return (f"split pointer rolled back to {restored['day']} ({restored['source']})"
+            if restored else "split pointer cleared (nothing logged before this)")
 
 
 MANAGE_LOG_TOOL = {
@@ -525,8 +638,9 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             session.commit()
             if entity == "meal":
                 recompute_daily_totals(user_id)
+            note = _rollback_pointer_for_deleted_workout(user_id, row) if entity == "workout" else None
             logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
-            return f"ok: deleted {entity} id={entry_id}"
+            return f"ok: deleted {entity} id={entry_id}" + (f"; {note}" if note else "")
 
         # edit — field-level, ID-targeted, AUDITED. Only supplied fields change; each
         # change captures its prior value into row.edits (an edited row otherwise silently
