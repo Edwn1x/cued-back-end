@@ -296,6 +296,47 @@ class TargetAdjustment(Base):
     weighins = Column(Integer)
 
 
+class WorkoutSession(Base):
+    """One planned/active/done session (the card). Sits beside the legacy
+    `workouts` row; `SetLog` rows are the truth for sets."""
+    __tablename__ = "workout_sessions"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    template_key = Column(String(30))            # push / pull / legs / upper / lower / full_body
+    status = Column(String(12), default="planned")  # planned | active | done | abandoned
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    card_session = Column(JSON)                  # sidecar card_session (edit() handle)
+    card_message_id = Column(String(120))
+    total_volume_lb = Column(Integer)
+    pr_count = Column(Integer)
+
+    sets = relationship("SetLog", back_populates="session", order_by="SetLog.id",
+                        cascade="all, delete-orphan")
+
+
+class SetLog(Base):
+    __tablename__ = "set_logs"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("workout_sessions.id"), nullable=False)
+    exercise = Column(String(40), nullable=False)      # canonical slug
+    exercise_label = Column(String(60))                # display
+    set_index = Column(Integer, default=0)
+    planned_weight = Column(Float)
+    planned_reps = Column(Integer)
+    actual_weight = Column(Float)
+    actual_reps = Column(Integer)
+    done = Column(Boolean, default=False)
+    done_at = Column(DateTime)
+    source = Column(String(10))                        # card | text | tapback | coach
+    provider_message_ref = Column(String(120))         # per-exercise message id (tapback path)
+
+    session = relationship("WorkoutSession", back_populates="sets")
+
+
 class WeightLog(Base):
     __tablename__ = "weight_logs"
 
