@@ -433,3 +433,22 @@ def test_ack_with_an_open_question_still_reaches_the_model(db, imessage_on, side
     assert t is not None, "the ack was buffered for the model, not suppressed"
     t.fire()
     assert [j for r_, j in sidecar if r_ == "send"], "the model's text went out"
+
+
+def test_ig_and_hesitation_go_to_the_model_not_the_ack_list():
+    """Founder (2026-09-13): "ig" is not always a conversation ender, so it is NOT a
+    deterministic 👍 — it reaches the model, which voice.md tells not to re-deliver
+    its last message. Same for "idk" / "we'll see" / "hmm"."""
+    from app import is_closing_acknowledgment
+    for not_ack in ("Ig", "ig", "i guess", "I guess so", "sure ig", "idk", "we'll see", "hmm",
+                    "ig but what if i choke", "i guess why though"):
+        assert not is_closing_acknowledgment(not_ack), not_ack
+    for ack in ("ok bet", "got it", "sounds good"):
+        assert is_closing_acknowledgment(ack), ack
+
+
+def test_voice_forbids_re_delivering_the_last_message():
+    from agent_loop import _voice_prompt
+    v = " ".join(_voice_prompt().split())
+    assert "Never re-deliver your last message" in v
+    assert "don't prescribe it back to them" in v

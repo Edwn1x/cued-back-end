@@ -366,12 +366,16 @@ LOG_MEAL_TOOL = {
         "you're unsure whether it's a repeat, ask the user one short question before "
         "logging — never guess in either direction. Include macros if you can estimate "
         "them. For a multi-item plate ('chicken, rice, and a coke'), pass an `items` "
-        "list — one call is cheaper than several and less likely to truncate."
+        "list — one call is cheaper than several and less likely to truncate. If they're "
+        "telling you about a meal from an EARLIER day ('last night's dinner', 'yesterday I "
+        "had…'), pass `date` ('yesterday' or YYYY-MM-DD) so it lands on that day — never "
+        "log a past meal as today (it would wrongly eat into today's remaining)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "description": {"type": "string"},
+            "date": {"type": "string", "description": "'yesterday' or 'YYYY-MM-DD' when the meal was NOT today (default today)"},
             "calories": {"type": "integer"},
             "protein_g": {"type": "integer"},
             "carbs_g": {"type": "integer"},
@@ -404,6 +408,28 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     if not items:
         return "error: description required"
 
+    # A past-day meal ("last night's dinner", reported this morning) is stamped on
+    # THAT local day (noon local → UTC) so today's totals don't absorb it. Live
+    # 2026-09-12: Friday's SF pizza logged as Saturday → "why is it 1450 cal, i just
+    # woke up" → deleted instead of re-dated. Bad date → today (never lose a meal).
+    date_str = (tool_input.get("date") or "").strip() or None
+    when, is_today = _naive_utcnow(), True
+    if date_str:
+        session = get_session()
+        try:
+            tz_str = (session.query(User.user_timezone).filter(User.id == user_id).first() or [None])[0]
+        finally:
+            session.close()
+        tz = ZoneInfo(tz_str or "America/Los_Angeles")
+        try:
+            local_day = _resolve_local_date(tz, date_str, strict=True)
+            is_today = local_day == datetime.now(tz).date()
+            if not is_today:
+                when = (datetime(local_day.year, local_day.month, local_day.day, 12, 0, tzinfo=tz)
+                        .astimezone(timezone.utc).replace(tzinfo=None))
+        except Exception:
+            when, is_today = _naive_utcnow(), True
+
     logged = []
     session = get_session()
     try:
@@ -414,7 +440,7 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                 calories=it.get("calories"), protein_g=it.get("protein_g"),
                 carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
                 source="text", log_type="user_reported",
-                notes=(f"saw_similar={saw}" if saw else None), eaten_at=_naive_utcnow(),
+                notes=(f"saw_similar={saw}" if saw else None), eaten_at=when,
             )
             session.add(meal)
             session.flush()
@@ -424,16 +450,18 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     finally:
         session.close()
 
-    recompute_daily_totals(user_id)  # once, after all inserts
+    if is_today:
+        recompute_daily_totals(user_id)  # once, after all inserts — a past-day meal leaves today alone
     for mid, desc, _cal, _pro, saw in logged:
         if saw:
             logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
                         user_id, mid, saw)
         logger.info("LOG_MEAL user=%s meal_id=%s desc=%r", user_id, mid, desc[:40])
 
+    dated = f", dated {date_str}" if (date_str and not is_today) else ""
     if len(logged) == 1:
         mid, _desc, cal, pro, saw = logged[0]
-        return f"ok: logged meal id={mid} ({cal}cal/{pro}g)" + (f" [saw_similar={saw}]" if saw else "")
+        return f"ok: logged meal id={mid} ({cal}cal/{pro}g{dated})" + (f" [saw_similar={saw}]" if saw else "")
     ids = [m for m, _d, _c, _p, _s in logged]
     total_cal = sum(c for _m, _d, c, _p, _s in logged)
     return f"ok: logged {len(logged)} items (ids {ids}, {total_cal}cal total)"
@@ -482,6 +510,8 @@ def _resolve_local_date(tz: ZoneInfo, date_str, *, strict: bool = False) -> date
     ds = (date_str or "today").strip().lower()
     if ds == "tomorrow":
         return today_local + timedelta(days=1)
+    if ds in ("yesterday", "last night"):
+        return today_local - timedelta(days=1)
     if ds in ("", "today"):
         return today_local
     try:

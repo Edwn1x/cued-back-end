@@ -742,3 +742,15 @@ def test_coach_context_carries_the_profile_link(db):
     assert "?phone=" not in ctx, "the phone number must never appear in the URL"
     assert "Never say you don't have it" in ctx
     assert "THEIR PROFILE PAGE (in context)" in " ".join(_voice_prompt().split())
+
+
+def test_extractor_prompt_states_aspiration_is_not_pattern(db, anthropic_stub):
+    """Live (user 28): 'i work out after everything's done but i wanna be an early bird'
+    stored workout_time=08:00 — the wish, not the pattern. The field drives check-in timing."""
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2)
+    seen = {}
+    anthropic_stub.reply_with(lambda kw: seen.update(prompt=kw["messages"][0]["content"]) or "{}")
+    onboarding_agent._extract_data_from_message("i wanna be an early bird", user)
+    assert "AN ASPIRATION IS NOT THE CURRENT PATTERN" in seen["prompt"]
+    assert "workout_time is the EVENING" in seen["prompt"]

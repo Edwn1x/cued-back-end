@@ -783,6 +783,10 @@ _ACK_TOKENS = frozenset({
 _ACK_PHRASES = frozenset({
     "got it", "sounds good", "will do", "ok cool", "ok bet",
     "thank you", "appreciate it", "ok thanks", "alr thanks",
+    # "ig" / "i guess" are deliberately NOT here (founder, 2026-09-13: "ig is not
+    # always a conversation ender"). They go to the model, which voice.md tells not
+    # to re-deliver its last message — the fix for the live "Ig" pep-talk repeat
+    # lives at the prompt layer, not in this list.
 })
 
 
@@ -1108,23 +1112,42 @@ def _looks_like_email(s: str) -> bool:
     return bool(s) and len(s) <= 200 and bool(_EMAIL_RE.match(s.strip()))
 
 
-def is_goodnight_signal(body: str) -> bool:
-    """Detect if the user is signaling end-of-conversation."""
-    body_lower = body.lower().strip()
-    goodnight_phrases = [
-        "goodnight", "good night", "gn", "night",
-        "going to sleep", "going to bed", "gonna sleep", "gonna go to bed",
-        "gts", "ttyt", "talk tomorrow", "ttyl",
-        "bye", "byw", "peace out",
-        "ima sleep", "ima gts", "ima go to bed",
-        "heading to bed", "off to bed", "crashing now",
-    ]
-    if body_lower in goodnight_phrases:
+# Explicit sign-offs: count at any hour. Implicit ones ("night", "gn", "bye",
+# "ttyl", "peace out"): only in the evening window — "night" alone at 3pm is
+# never a goodnight. Live 2026-09-12 15:43 PDT: "That was last nights dinner"
+# matched the substring "night" and the coach sent "Get some rest. Hit me up in
+# the morning." to someone who had just woken up (and set quiet_until to the
+# next wake time — a mute). Word boundaries + exclusions + the hour gate fix it.
+_GOODNIGHT_EXPLICIT = (
+    "goodnight", "good night", "going to sleep", "going to bed", "gonna sleep",
+    "gonna go to bed", "gts", "ima sleep", "ima gts", "ima go to bed",
+    "heading to bed", "off to bed", "crashing now", "night night", "nighty night",
+)
+_GOODNIGHT_IMPLICIT = ("night", "gn", "ttyt", "talk tomorrow", "ttyl", "bye", "byw", "peace out")
+_GOODNIGHT_NOT = ("last night", "tonight", "nights", "night's", "night before", "other night",
+                  "all night", "every night", "night shift", "night class", "late night", "night out")
+_GOODNIGHT_EVENING = (20, 5)  # implicit forms count only from 8pm to 5am local
+
+
+def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
+    """Detect if the user is signaling end-of-conversation. Whole-word matches
+    only, never inside "last night" / "tonight" / "nights". Implicit forms need
+    the evening window when `local_hour` is given (the webhook passes it)."""
+    import re as _re
+    body_lower = (body or "").lower().strip().rstrip(".!")
+    if len(body_lower) >= 40:
+        return False
+    if any(ex in body_lower for ex in _GOODNIGHT_NOT):
+        return False
+    def _has(phrase):
+        return _re.search(r"(?<![a-z])" + _re.escape(phrase) + r"(?![a-z])", body_lower) is not None
+    if any(_has(p) for p in _GOODNIGHT_EXPLICIT):
         return True
-    if len(body_lower) < 40:
-        for phrase in goodnight_phrases:
-            if phrase in body_lower:
-                return True
+    if any(_has(p) for p in _GOODNIGHT_IMPLICIT):
+        if local_hour is None:
+            return True
+        start, end = _GOODNIGHT_EVENING
+        return local_hour >= start or local_hour < end
     return False
 
 
@@ -1308,7 +1331,13 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
 
     # Check for goodnight signal — handle immediately, skip buffer
     # Never trigger during onboarding — user is answering questions, not signing off
-    if is_goodnight_signal(body) and (user.onboarding_step or 0) >= 3:
+    from zoneinfo import ZoneInfo as _ZI
+    try:
+        _gn_tz = _ZI(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        _gn_tz = _ZI("America/Los_Angeles")
+    from datetime import datetime as _gn_dt
+    if is_goodnight_signal(body, local_hour=_gn_dt.now(_gn_tz).hour) and (user.onboarding_step or 0) >= 3:
         from datetime import datetime, timedelta, timezone as _tz_store
         from zoneinfo import ZoneInfo
         wake_time = user.wake_time or "07:00"
