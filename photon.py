@@ -28,6 +28,7 @@ add when the Business-tier trigger fires.
 
 import base64
 import logging
+from urllib.parse import quote
 
 import requests
 
@@ -149,3 +150,30 @@ def provision_user(user_id: int) -> bool:
         return True
     finally:
         session.close()
+
+
+# ─── Shared-pool consent gate: the deep link ─────────────────────────────────
+# A shared Photon user can't be MESSAGED until they text their assigned line
+# once ("Target not allowed for this project"; live 2026-09-12, user 28). Photon
+# publishes a per-user redirect that opens Messages pre-addressed to that line:
+#   GET /users/{photon_user_id}/redirect?msg=…  → 302 sms:+1628…&body=…
+# (openapi/json; verified live 2026-09-14 against the founder's row). One tap
+# on an iPhone = opted in; their inbound iMessage then resets the breaker.
+DEFAULT_INVITE_MSG = "hey cued"
+
+
+def imessage_link(photon_user_id: str | None, msg: str = DEFAULT_INVITE_MSG) -> str | None:
+    """Public opt-in link for a provisioned user, or None if they aren't one."""
+    if not photon_user_id:
+        return None
+    return (f"{config.SPECTRUM_API_URL.rstrip('/')}/users/{photon_user_id}/redirect"
+            f"?msg={quote(msg, safe='')}")
+
+
+def imessage_link_for_user(user_id: int) -> str | None:
+    session = get_session()
+    try:
+        row = session.query(User.photon_user_id).filter(User.id == user_id).first()
+    finally:
+        session.close()
+    return imessage_link(row[0]) if row else None

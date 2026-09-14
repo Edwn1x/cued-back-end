@@ -181,6 +181,29 @@ def react_to_message(user_id: int, provider_sid: str, emoji: str) -> bool:
         return False
 
 
+CONSENT_GATE_MARKER = "Target not allowed"
+
+
+def _is_consent_gate(err) -> bool:
+    """Photon's shared-pool refusal for a user who hasn't texted their line yet."""
+    return CONSENT_GATE_MARKER.lower() in str(err).lower()
+
+
+IMESSAGE_INVITE = "ps — i can text you on iMessage instead. tap this once and say hey: {link}"
+
+
+def _with_imessage_invite(user_id: int, body: str) -> str:
+    """Append the one-tap opt-in link to an SMS body (onboarding hook only)."""
+    try:
+        from photon import imessage_link_for_user
+        link = imessage_link_for_user(user_id)
+    except Exception:  # noqa: BLE001 — the hook must go out regardless
+        link = None
+    if not link:
+        return body
+    return f"{body}\n\n{IMESSAGE_INVITE.format(link=link)}"
+
+
 def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform",
              reply_to_sid: str = None):
     """Send an SMS, splitting longer messages into sequential texts with a delay.
@@ -217,8 +240,19 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
                 typing_stop(user_id)
             except Exception:  # noqa: BLE001
                 pass
-            logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
-                         user_id, message_type, e)
+            if _is_consent_gate(e):
+                # Shared-pool consent gate: THEY haven't texted their line yet. Not a
+                # dead pipe — a distinct, non-alarming line; the breaker still trips
+                # (every send would fail the same way) and their first inbound
+                # iMessage resets it. The onboarding hook carries the one-tap link
+                # so the invitation reaches them on the very first text.
+                logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
+                            "their line yet; falling over to SMS", user_id, message_type)
+                if message_type == "onboarding":
+                    body = _with_imessage_invite(user_id, body)
+            else:
+                logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
+                             user_id, message_type, e)
             _log_message(user_id, im_body, message_type,
                          channel="imessage", provider_sid=None, delivery_status="failed")
             _mark_failed_over(user_id)

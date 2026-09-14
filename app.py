@@ -1661,10 +1661,13 @@ def signup_submit():
         if not sms_consent and not sms_skipped:
             return jsonify({"status": "error", "message": "You must agree to receive SMS messages to use Cued."})
 
-        # Duplicate check
+        # Duplicate check. A returning user still gets their iMessage opt-in link
+        # (a shared Photon user can't be messaged until they text the line once).
         existing = session.query(User).filter(User.phone == phone).first()
         if existing:
-            return jsonify({"status": "exists", "message": f"{existing.name} is already signed up!"})
+            import photon
+            return jsonify({"status": "exists", "message": f"{existing.name} is already signed up!",
+                            "imessage_link": photon.imessage_link(existing.photon_user_id)})
 
         # Goals: chat sends array, form sends comma-joined string
         goal_raw = get("goal", "general_fitness")
@@ -1686,11 +1689,24 @@ def signup_submit():
         session.add(user)
         session.commit()
 
+        # Photon shared-pool consent gate (live 2026-09-12, user 28): a new shared
+        # user can't be MESSAGED until they text their assigned line once, so the
+        # site needs the opt-in deep link IN this response. Provision synchronously
+        # here (one Photon round trip, flag-gated + never raises); start_onboarding's
+        # own call is then an idempotent no-op. A Photon failure just means no link.
+        imessage_link = None
         if sms_consent:
+            import photon
+            try:
+                if photon.provision_user(user.id):
+                    imessage_link = photon.imessage_link_for_user(user.id)
+            except Exception as e:  # noqa: BLE001 — never block signup on Photon
+                logger.warning("PHOTON_PROVISION_SKIPPED user=%s err=%s", user.id, e)
             start_onboarding(user)
 
-        logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent} | source: {'json' if request.is_json else 'form'}")
-        return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name})
+        logger.info(f"New user signed up: {user.name} ({user.phone}) | SMS consent: {sms_consent} | source: {'json' if request.is_json else 'form'} | imessage_link: {'yes' if imessage_link else 'no'}")
+        return jsonify({"status": "ok", "message": f"Welcome {user.name}!", "name": user.name,
+                        "imessage_link": imessage_link})
 
     except Exception as e:
         logger.error(f"Signup error: {e}", exc_info=True)
