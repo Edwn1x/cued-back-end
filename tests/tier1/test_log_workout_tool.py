@@ -236,3 +236,23 @@ def test_cardio_via_loop_keeps_pointer(db, driver, monkeypatch, anthropic_stub):
     ws = _workouts(user.id)
     assert [w[1] for w in ws] == ["cardio"]
     assert get_split_pointer(user.id)["day"] == "push"
+
+
+def test_today_log_is_the_users_local_day_not_utc(db):
+    """CI (UTC) failed test_log_workout_dates_a_past_session… after 00:00Z: the daily
+    log was looked up by the row's UTC calendar date but the user's LOCAL date, so
+    confirm and check hit different rows every evening. At any instant at least one
+    of these two zones is on a different calendar date from UTC."""
+    from tests.factories import make_user
+    from models import get_session, DailyLog, confirm_workout_today, is_workout_confirmed_today
+    for tz in ("Pacific/Kiritimati", "Pacific/Pago_Pago", "America/Los_Angeles"):
+        user = make_user(db, user_timezone=tz)
+        assert not is_workout_confirmed_today(user.id)
+        confirm_workout_today(user.id)
+        assert is_workout_confirmed_today(user.id), tz
+        s = get_session()
+        try:
+            n = s.query(DailyLog).filter(DailyLog.user_id == user.id).count()
+        finally:
+            s.close()
+        assert n == 1, f"{tz}: {n} daily_log rows for one local day"
