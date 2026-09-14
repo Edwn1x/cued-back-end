@@ -1831,7 +1831,7 @@ def card_test_send():
     url = f"{base}/card/test"
     # Optional same-origin override (e.g. a real /card/workout/<token> link) so a
     # Phase 2 session can be tested inside Messages before the Phase 3 coach tool.
-    override = str(d.get("url") or "").strip()
+    override = str(d.get("url") or "").strip().replace("http://", "https://", 1)
     if override:
         if not override.startswith(base + "/card/"):
             return jsonify({"ok": False, "error": "url must be a /card/ path on this host"}), 400
