@@ -336,8 +336,16 @@ describe("buildInbound", () => {
     expect(out!.payload.text).toBe("yes that one");
   });
 
-  test("unsupported content (reaction, typing) is skipped", async () => {
-    expect(await buildInbound(fakeSpace, fakeMessage({ content: { type: "reaction", emoji: "👍", target: {} } }))).toBeNull();
+  test("a reaction is forwarded with its emoji and target id (workout tapbacks, Phase 5)", async () => {
+    const built = await buildInbound(fakeSpace, fakeMessage({ content: { type: "reaction", emoji: "👍", target: { id: "spc-msg-ex-1" } } }));
+    expect(built).not.toBeNull();
+    expect(built!.payload.text).toBe("");
+    expect(built!.payload.reaction).toEqual({ emoji: "👍", target_id: "spc-msg-ex-1" });
+    const noTarget = await buildInbound(fakeSpace, fakeMessage({ content: { type: "reaction", emoji: "👍", target: {} } }));
+    expect(noTarget!.payload.reaction).toEqual({ emoji: "👍", target_id: null });
+  });
+
+  test("unsupported content (typing, poll) is skipped", async () => {
     expect(await buildInbound(fakeSpace, fakeMessage({ content: { type: "typing", state: "start" } }))).toBeNull();
   });
 

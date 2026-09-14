@@ -299,6 +299,9 @@ export type InboundPayload = {
   line_phone: string | null;
   timestamp: string;
   attachments: { name: string; mime_type: string; size: number | null }[];
+  /** Set when the inbound is a tapback/emoji reaction on one of our messages
+   *  (workout logger Phase 5: 👍 on a per-exercise message). text is "" then. */
+  reaction?: { emoji: string; target_id: string | null };
 };
 export type InboundFile = { name: string; mimeType: string; bytes: Uint8Array };
 
@@ -326,17 +329,22 @@ export async function buildInbound(
   const c = content as
     | { type: "text"; text: string }
     | { type: "attachment"; id: string; name: string; mimeType: string; size?: number; read: () => Promise<Uint8Array> }
+    | { type: "reaction"; emoji: string; target?: { id?: string } }
     | { type: string };
 
   let body = "";
   const files: InboundFile[] = [];
+  let reaction: InboundPayload["reaction"] | undefined;
   if (c.type === "text") {
     body = (c as { text: string }).text;
   } else if (c.type === "attachment") {
     const a = c as { name: string; mimeType: string; size?: number; read: () => Promise<Uint8Array> };
     files.push({ name: a.name, mimeType: a.mimeType, bytes: await a.read() });
+  } else if (c.type === "reaction") {
+    const r = c as { emoji: string; target?: { id?: string } };
+    reaction = { emoji: r.emoji, target_id: r.target?.id ?? null };
   } else {
-    return null; // reaction, typing, read, poll, richlink, … — not coaching input
+    return null; // typing, read, poll, richlink, … — not coaching input
   }
 
   return {
@@ -349,6 +357,7 @@ export async function buildInbound(
       line_phone: (space as { phone?: string }).phone ?? null,
       timestamp: message.timestamp.toISOString(),
       attachments: files.map((f) => ({ name: f.name, mime_type: f.mimeType, size: f.bytes.byteLength || null })),
+      ...(reaction ? { reaction } : {}),
     },
     files,
   };
