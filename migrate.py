@@ -256,6 +256,38 @@ MIGRATIONS = [
         weighins INTEGER
     )""",
     "CREATE INDEX IF NOT EXISTS idx_target_adjustments_user_at ON target_adjustments (user_id, at)",
+    # Workout logger (iMessage card), Phase 1: sessions + set rows beside the legacy workouts table.
+    """CREATE TABLE IF NOT EXISTS workout_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        date TIMESTAMP DEFAULT NOW(),
+        template_key VARCHAR(30),
+        status VARCHAR(12) DEFAULT 'planned',
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        card_session JSON,
+        card_message_id VARCHAR(120),
+        total_volume_lb INTEGER,
+        pr_count INTEGER
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_workout_sessions_user_date ON workout_sessions (user_id, date)",
+    """CREATE TABLE IF NOT EXISTS set_logs (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES workout_sessions(id),
+        exercise VARCHAR(40) NOT NULL,
+        exercise_label VARCHAR(60),
+        set_index INTEGER DEFAULT 0,
+        planned_weight DOUBLE PRECISION,
+        planned_reps INTEGER,
+        actual_weight DOUBLE PRECISION,
+        actual_reps INTEGER,
+        done BOOLEAN DEFAULT FALSE,
+        done_at TIMESTAMP,
+        source VARCHAR(10),
+        provider_message_ref VARCHAR(120)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_set_logs_session ON set_logs (session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_set_logs_exercise ON set_logs (exercise)",
     # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
     """CREATE TABLE IF NOT EXISTS unknown_inbounds (
         id SERIAL PRIMARY KEY,
