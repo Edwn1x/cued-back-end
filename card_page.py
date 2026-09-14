@@ -497,15 +497,20 @@ def card_api_finish():
         user_id, session_id = ws.user_id, ws.id
     finally:
         session.close()
-    from workouts.summary import finish_session
-    summary = finish_session(session_id)
+    # ONE close path for card and text: finish + bubble → done + summary text +
+    # the legacy mirror (workouts row, split pointer, today confirmed). Live
+    # 2026-09-14: the card's own finish skipped the mirror, so a card session
+    # never moved the pointer.
+    from workouts.session_ops import close_session
+    from workouts.summary import summarize
     if not already:
-        from workouts.close import send_session_summary
-        from workouts.card import refresh_card
-        def _close():
-            refresh_card(session_id)          # bubble → "done — tap for the log"
-            send_session_summary(session_id)  # then the summary text
-        threading.Thread(target=_close, daemon=True).start()
+        summary = close_session(session_id, via="card")
+    else:
+        session = get_session()
+        try:
+            summary = summarize(session, session.get(WorkoutSession, session_id))
+        finally:
+            session.close()
     session = get_session()
     try:
         ws = session.get(WorkoutSession, session_id)

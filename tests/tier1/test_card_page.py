@@ -166,6 +166,16 @@ def test_finish_closes_the_session_and_sends_the_summary_text(client, planned, s
     assert len(sms_capture) == 1
     text = sms_capture[0][1]
     assert text.splitlines()[0].startswith("push · wed")
+    # the card's finish mirrors like the text path: legacy row + pointer + today confirmed
+    from models import Workout, is_workout_confirmed_today
+    from split_pointer import get_split_pointer
+    s = get_session()
+    try:
+        legacy = s.query(Workout).filter_by(user_id=user.id).one()
+        assert legacy.workout_type == "push" and legacy.user_notes == f"card session #{ws.id}"
+    finally:
+        s.close()
+    assert get_split_pointer(user.id)["day"] == "push" and is_workout_confirmed_today(user.id)
     assert "bench press - 135x5 · 135x5 · 140x4 · 135x5" in text.replace("×", "x").replace("—", "-")
     assert "2,585 lb total · 0 PRs" in text
     assert "four taps. that's the whole log - no app opened." in text.replace("—", "-")
