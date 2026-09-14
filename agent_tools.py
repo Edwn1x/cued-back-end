@@ -1231,12 +1231,16 @@ _REACTION_ONLY_META = re.compile(
 
 
 def is_reaction_only_text(text: str, reacted: bool) -> bool:
-    """True when a turn that already reacted produced only the sentinel or a meta note
-    in place of a real reply — i.e. nothing should be sent."""
+    """True when nothing should be sent: the exact sentinel ALWAYS (a tool result may
+    ask for it — start_workout_session sends its own text + card; live 2026-09-14
+    the literal '[silent]' was texted to the founder), and, after a reaction, an
+    empty reply or the meta note a model drifts to."""
+    t = (text or "").strip()
+    if t.lower() == REACTION_ONLY_SENTINEL:
+        return True
     if not reacted:
         return False
-    t = (text or "").strip()
-    return t == "" or t == REACTION_ONLY_SENTINEL or bool(_REACTION_ONLY_META.match(t))
+    return t == "" or bool(_REACTION_ONLY_META.match(t))
 
 
 # A tool call written INTO the visible text ("react_to_message 👍") — a documented
