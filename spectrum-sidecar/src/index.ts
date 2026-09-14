@@ -15,7 +15,7 @@
  * `delivery_status='failed'` row (the keystone) happen there, never hidden here.
  */
 
-import { Emoji, Spectrum, reaction, reply, text, type Message, type Space } from "spectrum-ts";
+import { Emoji, Spectrum, app as appCard, edit, reaction, reply, text, type Message, type Space } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
 // ─── small helpers ───────────────────────────────────────────────────────────
@@ -58,7 +58,47 @@ export type Deps = {
   /** iMessage typing indicator in the DM with `phone`: "start" shows the bubble,
    *  "stop" clears it. Best-effort by contract (the SDK no-ops where unsupported). */
   typing: (phone: string, state: TypingState) => Promise<void>;
+  /** Live mini-app card (workout logger, Phase 0): send `url` as an app card into
+   *  the DM with `phone`. Returns the Photon message id and a serializable
+   *  `card_session` (the fields `edit()` needs later). Throws on failure. */
+  sendCard: (phone: string, url: string, live: boolean) => Promise<{ provider_message_id: string | null; card_session: CardSession | null }>;
+  /** Update a previously sent card in place (`edit(app(url), original)`). The
+   *  original Message is looked up from this process's memory first, then rebuilt
+   *  from `card_session` (survives a sidecar restart as far as the SDK allows). */
+  updateCard: (phone: string, cardSession: CardSession, url: string) => Promise<void>;
 };
+
+/** What `edit()` needs to update a mini-app card: the sent message's id, the
+ *  provider's `miniAppCardSession` handle, and the space it lives in. Serialized
+ *  to Flask and stored on the workout session row. */
+export type CardSession = {
+  id: string;
+  miniAppCardSession?: Record<string, string> | null;
+  space?: { id: string; type: string; phone?: string } | null;
+};
+
+export function serializeCardSession(sent: unknown): CardSession | null {
+  const m = sent as { id?: string; miniAppCardSession?: Record<string, string>; space?: { id: string; type: string; phone?: string } } | undefined;
+  if (!m?.id) return null;
+  return {
+    id: m.id,
+    miniAppCardSession: m.miniAppCardSession ?? null,
+    space: m.space ? { id: m.space.id, type: m.space.type, phone: m.space.phone } : null,
+  };
+}
+
+/** Rebuild a target `edit()` will accept from a serialized card session: the
+ *  provider reads `id` + `miniAppCardSession`; the core builder wants an
+ *  outbound Message-shaped object (`id`, `content`, `direction`). */
+export function rebuildCardTarget(cs: CardSession): Message {
+  return {
+    id: cs.id,
+    direction: "outbound",
+    content: { type: "text", text: "" },
+    miniAppCardSession: cs.miniAppCardSession ?? undefined,
+    space: cs.space ?? undefined,
+  } as unknown as Message;
+}
 
 export type TypingState = "start" | "stop";
 const isTypingState = (v: unknown): v is TypingState => v === "start" || v === "stop";
@@ -172,6 +212,44 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       } catch (err) {
         log("warn", "typing failed", { to: last4(body.phone), state, error: String(err) });
         return json(502, { ok: false, error: String(err) });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/send-card") {
+      let body: { phone?: unknown; url?: unknown; live?: unknown };
+      try { body = (await req.json()) as typeof body; } catch { return json(400, { ok: false, error: "invalid json" }); }
+      if (typeof body.phone !== "string" || !body.phone || typeof body.url !== "string" || !/^https?:\/\//.test(body.url)) {
+        return json(400, { ok: false, error: "expected { phone, url (http/https), live? }" });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        const { provider_message_id, card_session } = await deps.sendCard(body.phone, body.url, body.live !== false);
+        log("info", "card sent", { to: last4(body.phone), id: provider_message_id, live: body.live !== false });
+        return json(200, { ok: true, provider_message_id, card_session });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("warn", "card send failed", { to: last4(body.phone), error: msg });
+        return json(502, { ok: false, error: msg });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/update-card") {
+      let body: { phone?: unknown; card_session?: unknown; url?: unknown };
+      try { body = (await req.json()) as typeof body; } catch { return json(400, { ok: false, error: "invalid json" }); }
+      const cs = body.card_session as CardSession | undefined;
+      if (typeof body.phone !== "string" || !body.phone || typeof body.url !== "string" || !/^https?:\/\//.test(body.url)
+          || !cs || typeof cs !== "object" || typeof cs.id !== "string" || !cs.id) {
+        return json(400, { ok: false, error: "expected { phone, card_session: { id, miniAppCardSession? }, url }" });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        await deps.updateCard(body.phone, cs, body.url);
+        log("info", "card updated", { to: last4(body.phone), id: cs.id });
+        return json(200, { ok: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log("warn", "card update failed", { to: last4(body.phone), id: cs.id, error: msg });
+        return json(502, { ok: false, error: msg });
       }
     }
 
@@ -335,6 +413,9 @@ async function main() {
   const connect = () =>
     Spectrum({ projectId, projectSecret, providers: [imessage.config()] });
 
+  /** Sent mini-app card Messages by id — `edit()` needs the original object. */
+  const sentCards = new Map<string, Message>();
+
   const dmFor = async (app: App, phone: string) => {
     const im = imessage(app);
     const user = await im.user(phone);
@@ -389,6 +470,27 @@ async function main() {
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
       await imessage(dm).shareContactCard();
+    },
+    sendCard: async (phone, url, live) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      const sent = await dm.send(appCard(url, { live }));
+      const msg = Array.isArray(sent) ? sent[0] : sent;
+      const cs = serializeCardSession(msg);
+      // Keep the SDK's own Message for in-place edits: `edit()` wants the object
+      // `send` returned (a refetched id comes back wrapped as inbound).
+      if (msg && cs) sentCards.set(cs.id, msg as Message);
+      return { provider_message_id: cs?.id ?? null, card_session: cs };
+    },
+    updateCard: async (phone, cardSession, url) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      const target = sentCards.get(cardSession.id) ?? rebuildCardTarget(cardSession);
+      await dm.send(edit(appCard(url, { live: true }), target));
+      // The provider refreshes miniAppCardSession on the target after each update.
+      sentCards.set(cardSession.id, target);
     },
   };
 
