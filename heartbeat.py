@@ -204,6 +204,16 @@ def _proactive_context(user, session) -> str:
     if win:
         parts.append(win)
 
+    # Adaptive targets: a due weigh-in is a standing condition (once a week, mornings).
+    if config.ADAPTIVE_TARGETS_ENABLED:
+        try:
+            from adaptive_targets import weigh_in_condition
+            wc = weigh_in_condition(user, session)
+            if wc:
+                parts.append(wc)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("WEIGH_IN_CONDITION_FAILED user=%s err=%s", user.id, e)
+
     from engagement_tracker import _not_reaction
     last_out = (session.query(Message)
                 .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction())

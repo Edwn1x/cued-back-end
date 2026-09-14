@@ -78,6 +78,11 @@ def _events_logged(session, user):
     return active(session, Event, user_id=user.id).first() is not None
 
 
+def _weighed_in(session, user):
+    from models import WeightLog
+    return session.query(WeightLog.id).filter(WeightLog.user_id == user.id).first() is not None
+
+
 def _sent_a_photo(session, user):
     from models import Message
     from sms import IMAGE_MARKER
@@ -166,6 +171,16 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=_events_logged,
         reveal_when="they mention something coming up with a date",
+    ),
+    Capability(
+        id="weigh_ins",
+        what="tell me your weight now and then and i'll track the trend and tune your calories off real data",
+        how="'weighed in at 141' or a scale screenshot; once a week is plenty",
+        tools=("log_weight",),
+        enabled=lambda u: config.LOG_WEIGHT_TOOL_ENABLED and not getattr(u, "weigh_in_opt_out", False),
+        relevance=lambda u: 7 if _goal_has(u, "fat_loss", "muscle") else 4,
+        used=lambda session, u: _weighed_in(session, u),
+        reveal_when="they mention the scale, their weight, or ask if the numbers are right",
     ),
     Capability(
         id="fix_a_log",

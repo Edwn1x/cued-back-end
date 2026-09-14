@@ -50,6 +50,21 @@ def training_days_per_week(workout_days, default: int = 3) -> int:
     return default
 
 
+def apply_goal(tdee: int, goal: str) -> dict:
+    """The goal rule on a maintenance number → {"calories", "goal_label"}. Shared by
+    calculate_targets (onboarding) and adaptive_targets (biweekly re-application)."""
+    goal = goal or "general_fitness"
+    if "fat_loss" in goal and "muscle" in goal:
+        return {"calories": round(tdee * 0.9 / 50) * 50, "goal_label": "recomp"}
+    if "fat_loss" in goal:
+        return {"calories": round((tdee - 500) / 50) * 50, "goal_label": "cutting"}
+    if "muscle" in goal or "strength" in goal:
+        return {"calories": round((tdee + 250) / 50) * 50, "goal_label": "building"}
+    if "endurance" in goal:
+        return {"calories": round((tdee + 150) / 50) * 50, "goal_label": "endurance"}
+    return {"calories": round(tdee / 50) * 50, "goal_label": "maintenance"}
+
+
 def calculate_targets(user) -> dict:
     """
     Calculate calorie and protein targets based on user profile.
@@ -98,25 +113,9 @@ def calculate_targets(user) -> dict:
 
     tdee = round(bmr * multiplier)
 
-    # Adjust for goal
     goal = user.goal or "general_fitness"
-    goal_label = "maintenance"
-
-    if "fat_loss" in goal and "muscle" in goal:
-        calories = round(tdee * 0.9 / 50) * 50
-        goal_label = "recomp"
-    elif "fat_loss" in goal:
-        calories = round((tdee - 500) / 50) * 50
-        goal_label = "cutting"
-    elif "muscle" in goal or "strength" in goal:
-        calories = round((tdee + 250) / 50) * 50
-        goal_label = "building"
-    elif "endurance" in goal:
-        calories = round((tdee + 150) / 50) * 50  # slight surplus to fuel training volume
-        goal_label = "endurance"
-    else:
-        calories = round(tdee / 50) * 50
-        goal_label = "maintenance"
+    g = apply_goal(tdee, goal)
+    calories, goal_label = g["calories"], g["goal_label"]
 
     # Protein: 1g/lb for muscle/fat-loss/strength, 0.7g for endurance, 0.8g otherwise
     weight_lbs = user.weight_lbs or 150

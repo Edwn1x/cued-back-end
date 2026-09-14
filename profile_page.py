@@ -221,6 +221,26 @@ def build_nutrition_daily(meals, user, *, now: datetime) -> list[dict]:
     return [days[k] for k in sorted(days)]
 
 
+def _weight_block(session, user) -> dict:
+    from adaptive_targets import weight_series, ewma
+    pts = weight_series(session, user)
+    trend = ewma(pts)
+    return {
+        "latest_lbs": pts[-1][1] if pts else user.weight_lbs,
+        "trend_lbs": trend[-1][1] if trend else None,
+        "logs": [{"at": _iso(t), "lbs": v, "trend": tv} for (t, v), (_, tv) in zip(pts[-30:], trend[-30:])],
+        "opted_out": bool(getattr(user, "weigh_in_opt_out", False)),
+    }
+
+
+def _adjustments_block(session, user) -> list:
+    from models import TargetAdjustment
+    rows = (session.query(TargetAdjustment).filter(TargetAdjustment.user_id == user.id)
+            .order_by(TargetAdjustment.at.desc()).limit(12).all())
+    return [{"at": _iso(r.at), "old": r.old_target, "new": r.new_target, "changed": bool(r.changed),
+             "reason": r.reason} for r in rows]
+
+
 def build_profile_payload(session, user, *, now: datetime | None = None) -> dict:
     """Everything the user is entitled to see about themselves, shaped for the page.
 
@@ -322,6 +342,8 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "weigh_in_day": _str(user.weigh_in_day),
             "schedule_details": _str(user.schedule_details),
         },
+        "weight": _weight_block(session, user),
+        "target_adjustments": _adjustments_block(session, user),
         "memory": _memory_block(user),
         "recent": {
             "meals": [{

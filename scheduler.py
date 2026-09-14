@@ -492,6 +492,15 @@ def start_scheduler():
         max_instances=1,
     )
 
+    # Adaptive targets: daily sweep; each user is only DUE every 14 days.
+    if config.ADAPTIVE_TARGETS_ENABLED:
+        from adaptive_targets import run_all as adaptive_run_all
+        scheduler.add_job(
+            adaptive_run_all,
+            trigger=CronTrigger(hour=5, minute=45, timezone=ZoneInfo("America/Los_Angeles")),
+            id="adaptive_targets_daily", replace_existing=True, coalesce=True, max_instances=1,
+        )
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell
