@@ -30,6 +30,10 @@ PROFILE_BASE_URL = os.getenv("PROFILE_BASE_URL", "https://cued.fit/profile.html"
 # FLASK_SECRET_KEY so a deploy without the var still mints valid links; set a
 # dedicated random value in prod so rotating one secret never touches the other.
 PROFILE_TOKEN_SECRET = os.getenv("PROFILE_TOKEN_SECRET", "")
+# Workout card (card_page.py): signed 24h links rendered inside the iMessage bubble.
+# Falls back to PROFILE_TOKEN_SECRET then FLASK_SECRET_KEY; set its own value in prod.
+CARD_TOKEN_SECRET = os.getenv("CARD_TOKEN_SECRET", "")
+CARD_BASE_URL = os.getenv("CARD_BASE_URL", "https://web-production-90171c.up.railway.app")
 
 # CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
