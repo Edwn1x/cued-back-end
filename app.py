@@ -1827,6 +1827,16 @@ def card_test_send():
     if not phone.startswith("+"):
         return jsonify({"ok": False, "error": "phone must be E.164"}), 400
     from photon_cards import send_card, update_card, CardError
+    if action == "send_session":
+        # A real session card (static layout, tap → overlay) for the founder's tests.
+        from workouts.card import send_workout_card
+        try:
+            r = send_workout_card(int(d.get("session_id") or 0))
+            return jsonify({"ok": True, **r})
+        except CardError as e:
+            return jsonify({"ok": False, "error": str(e)}), 502
+        except (ValueError, TypeError) as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
     base = request.url_root.rstrip("/").replace("http://", "https://")
     url = f"{base}/card/test"
     # Optional same-origin override (e.g. a real /card/workout/<token> link) so a
@@ -1846,7 +1856,7 @@ def card_test_send():
             v = d.get("v", 2)
             update_card(phone, cs, f"{url}?v={v}")
             return jsonify({"ok": True, "url": f"{url}?v={v}"})
-        return jsonify({"ok": False, "error": "action must be send|update"}), 400
+        return jsonify({"ok": False, "error": "action must be send|update|send_session"}), 400
     except CardError as e:
         logger.warning("CARD_TEST_REFUSED phone_last4=%s action=%s err=%s", phone[-4:], action, e)
         return jsonify({"ok": False, "error": str(e)}), 502

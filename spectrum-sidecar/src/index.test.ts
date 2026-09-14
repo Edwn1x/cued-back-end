@@ -39,13 +39,13 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
     read: async (phone, messageId) => {
       calls.push(["read", phone, messageId]);
     },
-    sendCard: async (phone, url, live) => {
-      calls.push(["sendCard", phone, url, live]);
+    sendCard: async (phone, url, live, layout) => {
+      calls.push(layout ? ["sendCard", phone, url, live, layout] : ["sendCard", phone, url, live]);
       return { provider_message_id: "photon-card-1",
                card_session: { id: "photon-card-1", miniAppCardSession: { chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" }, space: { id: "sp", type: "dm", phone } } };
     },
-    updateCard: async (phone, cardSession, url) => {
-      calls.push(["updateCard", phone, cardSession.id, url]);
+    updateCard: async (phone, cardSession, url, live, layout) => {
+      calls.push(layout || live !== undefined ? ["updateCard", phone, cardSession.id, url, live, layout] : ["updateCard", phone, cardSession.id, url]);
     },
     ...overrides,
     calls,
@@ -517,5 +517,38 @@ describe("card session helpers", () => {
     expect(t.direction).toBe("outbound");
     expect(t.miniAppCardSession).toEqual(sent.miniAppCardSession);
     expect(t.content).toBeTruthy();
+  });
+});
+
+
+describe("card layout (static preview + overlay)", () => {
+  test("/send-card passes a trimmed layout and live:false through", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/send-card", {
+      method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://cued.fit/card.html?t=x", live: false,
+        layout: { caption: "push · wed", subcaption: "4 sets bench, then the usual", trailingCaption: "0/13", junk: 1, image: "no" } }),
+    }));
+    expect(res.status).toBe(200);
+    expect(d.calls).toEqual([["sendCard", "+1555", "https://cued.fit/card.html?t=x", false,
+      { caption: "push · wed", subcaption: "4 sets bench, then the usual", trailingCaption: "0/13" }]]);
+  });
+
+  test("/update-card passes layout + live for the in-place caption refresh", async () => {
+    const d = deps();
+    const cs = { id: "photon-card-1", miniAppCardSession: { chatGuid: "c", messageGuid: "m", sessionId: "s", targetMessageGuid: "t" } };
+    const res = await createHandler(d)(req("/update-card", {
+      method: "POST", body: JSON.stringify({ phone: "+1555", card_session: cs, url: "https://cued.fit/card.html?t=x&v=2", live: false,
+        layout: { caption: "push · wed", trailingCaption: "13/13 · 8,040 lb" } }),
+    }));
+    expect(res.status).toBe(200);
+    expect(d.calls).toEqual([["updateCard", "+1555", "photon-card-1", "https://cued.fit/card.html?t=x&v=2", false,
+      { caption: "push · wed", trailingCaption: "13/13 · 8,040 lb" }]]);
+  });
+
+  test("pickLayout drops non-strings and empty objects", async () => {
+    const { pickLayout } = await import("./index");
+    expect(pickLayout({ caption: "", summary: 5 })).toBeUndefined();
+    expect(pickLayout("x")).toBeUndefined();
+    expect(pickLayout({ caption: "a", subcaption: "b" })).toEqual({ caption: "a", subcaption: "b" });
   });
 });

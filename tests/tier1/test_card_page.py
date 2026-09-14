@@ -46,12 +46,12 @@ def test_card_token_roundtrip_expiry_and_tamper():
     assert verify_card_token("31.7") is None and verify_card_token(None) is None
 
 
-def test_card_url_shape_and_version():
+def test_card_url_is_the_site_page_with_the_token():
     from card_page import card_url, verify_card_token
     url = card_url(31, 7)
-    assert url.startswith("https://") and "/card/workout/" in url and "?" not in url
-    assert verify_card_token(url.rsplit("/", 1)[1]) == (31, 7)
-    assert card_url(31, 7, version=1699).endswith("?v=1699")
+    assert url.startswith("https://cued.fit/card.html?t=")
+    assert verify_card_token(url.split("?t=")[1]) == (31, 7)
+    assert card_url(31, 7, version=1699).endswith("&v=1699")
 
 
 # ─── page + api ──────────────────────────────────────────────────────────────
@@ -65,16 +65,10 @@ def planned(db):
     return user, ws, card_token(user.id, ws.id)
 
 
-def test_page_renders_session_state_and_is_uncached(client, planned):
+def test_legacy_page_route_redirects_a_valid_token_to_the_site(client, planned):
     user, ws, tok = planned
     r = client.get(f"/card/workout/{tok}")
-    assert r.status_code == 200 and r.headers["Cache-Control"] == "no-store"
-    html = r.get_data(as_text=True)
-    assert '"template_key": "push"' in html and '"weekday": "wed"' in html
-    assert '"label": "bench press"' in html and html.count('"planned_weight": 135.0') == 4
-    assert "prefers-color-scheme" in html and "width: 300px" in html and "padding-left: 40px" in html
-    assert "min-height: 44px" in html
-    assert 'type="checkbox"' not in html   # circles are drawn from state (GATE 0 finding)
+    assert r.status_code == 302 and r.headers["Location"] == f"https://cued.fit/card.html?t={tok}"
 
 
 def test_bad_or_expired_token_is_401_and_wrong_session_404(client, planned, monkeypatch):
@@ -82,7 +76,6 @@ def test_bad_or_expired_token_is_401_and_wrong_session_404(client, planned, monk
     user, ws, tok = planned
     assert client.get("/card/workout/nope").status_code == 401
     assert client.get(f"/card/workout/{card_token(user.id, ws.id, exp=int(time.time()) - 5)}").status_code == 401
-    assert client.get(f"/card/workout/{card_token(user.id, ws.id + 999)}").status_code == 404
     assert client.get("/card/api/session").status_code == 401
     assert client.post(f"/card/api/set/1", headers=_auth("x.y.z.w"), data="{}").status_code == 401
 
