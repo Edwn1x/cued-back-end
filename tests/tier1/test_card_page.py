@@ -244,8 +244,13 @@ def test_add_and_remove_exercises(client, planned):
                     data=json.dumps({"name": "Landmine Press", "weight": 70, "reps": 8, "sets": 2})).get_json()
     lm = next(e for e in d["exercises"] if e["slug"] == "landmine_press")
     assert lm["label"] == "landmine press" and len(lm["sets"]) == 2 and lm["sets"][0]["planned_reps"] == 8
-    # duplicate → 409; remove only the undone sets
+    # the SAME lift again → 409; a similar wording next to an existing lift → its own exercise
     assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "ohp"})).status_code == 409
+    d = client.post("/card/api/exercise", headers=_auth(tok),
+                    data=json.dumps({"name": "Dumbbell  bench", "weight": 60, "reps": 10})).get_json()
+    db_bench = next(e for e in d["exercises"] if e["slug"] == "dumbbell_bench")
+    assert db_bench["label"] == "dumbbell bench" and len(db_bench["sets"]) == 3
+    assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "dumbbell bench", "weight": 60, "reps": 10})).status_code == 409
     client.post(f"/card/api/set/{ohp['sets'][0]['id']}", headers=_auth(tok), data=json.dumps({"done": True}))
     d = client.delete("/card/api/exercise/overhead_press", headers=_auth(tok)).get_json()
     assert d["removed"] == 2
