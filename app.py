@@ -587,6 +587,23 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
 
 
 # ─── Buffered Message Processor ─────────────────────
+def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
+    """Best-effort tapback on the user's newest iMessage (their PR text)."""
+    try:
+        from sms import react_to_message
+        session = get_session()
+        try:
+            m = (session.query(Message.provider_sid)
+                 .filter(Message.user_id == user_id, Message.direction == "in", Message.channel == "imessage",
+                         Message.provider_sid.isnot(None)).order_by(Message.id.desc()).first())
+        finally:
+            session.close()
+        if m and m[0]:
+            react_to_message(user_id, m[0], emoji)
+    except Exception as e:  # noqa: BLE001
+        logger.info("REACT_LATEST_SKIPPED user=%s err=%s", user_id, e)
+
+
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
     session = get_session()
@@ -619,6 +636,24 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             send_onboarding_hook(user.id, reason="first_text")
             typing_stop(user.id)
             return
+
+        # Workout card, Phase 4: with a session open, a terse set ('190 x4',
+        # 'only got 3', 'skipped incline') or a close ('done') is handled in code —
+        # exactly one line back ('swapped it in.' / the PR line), never a model turn.
+        if (user.onboarding_step or 0) >= 3:
+            try:
+                from workouts.session_ops import apply_text_update
+                line = apply_text_update(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001 — never let the card path break a turn
+                logger.error("WORKOUT_TEXT_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                line = None
+            if line is not None:
+                if line:
+                    send_sms(user.phone, line, user_id=user.id, message_type="workout_set")
+                    if "PR" in line:
+                        _react_to_latest_inbound(user.id, "emphasize")   # ‼️ = the hype tapback
+                typing_stop(user.id)
+                return
 
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
@@ -1540,6 +1575,7 @@ def internal_inbound():
     raw_handle = str(payload.get("phone")).strip()
     body = str(payload.get("text") or "").strip()
     provider_message_id = str(payload.get("provider_message_id") or "")
+    reaction = payload.get("reaction") if isinstance(payload.get("reaction"), dict) else None
 
     # Same E.164 shape the Twilio webhook receives. An Apple-ID email can never
     # match a phone-keyed User; it falls straight into the unknown path.
@@ -1572,6 +1608,14 @@ def internal_inbound():
                            _last4(handle), len(body), len(files))
             record_unknown_inbound(handle, "imessage", body)
             return jsonify({"ok": True, "known": False}), 200
+        if reaction:
+            # Phase 5: a 👍 on a per-exercise message marks its sets done. Any other
+            # inbound reaction is acknowledged and dropped (not coaching input).
+            from workouts.session_ops import apply_tapback
+            hit = apply_tapback(user.id, str(reaction.get("target_id") or ""), str(reaction.get("emoji") or ""))
+            logger.info("IMESSAGE_REACTION_IN user=%s emoji=%s target=%s workout_hit=%s",
+                        user.id, reaction.get("emoji"), str(reaction.get("target_id") or "")[:24], hit)
+            return jsonify({"ok": True, "known": True, "reaction": True, "workout_hit": hit}), 200
         if not body and not files:
             return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200
         logger.info("Incoming iMessage from %s: %s", _last4(handle), body[:120])

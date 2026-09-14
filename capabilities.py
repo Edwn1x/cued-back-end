@@ -115,8 +115,8 @@ CAPABILITIES: list[Capability] = [
     Capability(
         id="log_workouts",
         what="i keep your training log and track where you are in your split",
-        how="tell me what you hit — 'did push, bench 135x3x8' — and it's logged",
-        tools=("log_workout",),
+        how="say 'starting push' and a card shows up you tap as you go — or just tell me what you hit",
+        tools=("log_workout", "start_workout_session"),
         enabled=lambda u: config.LOG_WORKOUT_TOOL_ENABLED,
         relevance=lambda u: 9 if _has(u, "current_split") else 7,
         used=_workouts_logged,

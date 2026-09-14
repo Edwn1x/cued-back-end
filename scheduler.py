@@ -501,6 +501,12 @@ def start_scheduler():
             id="adaptive_targets_daily", replace_existing=True, coalesce=True, max_instances=1,
         )
 
+    # Workout card: a session still open 6h after it started → abandoned, silently.
+    from apscheduler.triggers.interval import IntervalTrigger as _IT2
+    from workouts.session_ops import abandon_stale
+    scheduler.add_job(abandon_stale, trigger=_IT2(minutes=30), id="workout_abandon_sweep",
+                      replace_existing=True, coalesce=True, max_instances=1)
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell

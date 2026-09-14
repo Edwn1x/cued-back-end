@@ -258,6 +258,39 @@ def handle_log_weight(user_id: int, tool_input: dict, *, message_id=None) -> str
             + protein_note + " — quote the trend from context, not this reading")
 
 
+START_WORKOUT_SESSION_TOOL = {
+    "name": "start_workout_session",
+    "description": (
+        "Start today's session for the user: 'starting push', 'about to lift', 'gym time', "
+        "'send me today's workout'. Code builds the plan from their history and sends it — "
+        "on iMessage one short text plus a card they tap as they go; on SMS one message per "
+        "exercise they 👍. Pass template_key only when THEY named the day (push/pull/legs/"
+        "upper/lower/full_body); otherwise omit it and code picks the next day of their split. "
+        "After 'ok', reply with exactly [silent] — the text and the card already went out; "
+        "never add a per-set prompt or a second intro. On 'error' tell them plainly."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"template_key": {"type": "string", "description": "only if they named the day"}},
+        "required": [],
+    },
+}
+
+
+def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.start import start_workout_session
+    try:
+        r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None)
+    except ValueError as e:
+        return f"error: {e}"
+    except Exception as e:  # noqa: BLE001 — a send failure must not crash the turn
+        logger.error("START_WORKOUT_SESSION_FAILED user=%s err=%s", user_id, e, exc_info=True)
+        return f"error: couldn't send the session ({e})"
+    how = "card" if r["surface"] == "card" else "one message per exercise"
+    return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets). "
+            f"Reply with exactly [silent].")
+
+
 SET_TARGETS_TOOL = {
     "name": "set_targets",
     "description": (
@@ -305,6 +338,52 @@ def handle_set_targets(user_id: int, tool_input: dict, *, message_id=None) -> st
     return "; ".join(parts)
 
 
+def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> str | None:
+    """If a card/session is open, the model's extracted sets land there (source
+    'text'), matched by name to the session's exercises; unmatched names become
+    new exercises. Returns the tool result, or None when no session is open."""
+    from workouts.session_ops import active_session_id
+    from workouts.templates import slug_for_name
+    from card_page import apply_set_update
+    from models import WorkoutSession, SetLog
+    ws_id = active_session_id(user_id)
+    if not ws_id:
+        return None
+    applied = 0
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, ws_id)
+        rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
+        labels = {r.exercise: (r.exercise_label or r.exercise) for r in rows}
+        for e in exercises or []:
+            if not isinstance(e, dict):
+                continue
+            name = (e.get("name") or "").strip().lower()
+            slug = next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None) or slug_for_name(name)
+            n_sets = int(e.get("sets") or 1)
+            w, r = e.get("weight"), e.get("reps")
+            mine = [x for x in rows if x.exercise == slug and not x.done]
+            for i in range(n_sets):
+                if i < len(mine):
+                    apply_set_update(session, ws, mine[i], done=True,
+                                     actual_weight=w if w is not None else mine[i].planned_weight,
+                                     actual_reps=r if r is not None else mine[i].planned_reps, source="text")
+                    applied += 1
+                elif slug and w is not None and r is not None:
+                    new = SetLog(session_id=ws_id, exercise=slug, exercise_label=labels.get(slug, name or slug),
+                                 set_index=len([x for x in rows if x.exercise == slug]) + i, planned_weight=w, planned_reps=r)
+                    session.add(new); session.flush()
+                    apply_set_update(session, ws, new, done=True, actual_weight=w, actual_reps=r, source="text")
+                    applied += 1
+    finally:
+        session.close()
+    from workouts.card import refresh_card_async
+    refresh_card_async(ws_id)
+    logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s", user_id, ws_id, applied)
+    return (f"ok: logged {applied} sets into today's open session (#{ws_id}); it's still open — "
+            f"they finish on the card or by texting 'done'")
+
+
 def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Create a Workout and advance the split pointer under the Phase-1 policy.
 
@@ -326,6 +405,11 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
     date_str = (tool_input.get("date") or "").strip() or None
     if cardio:
         split_day = None  # never a split day, whatever the model passed
+    elif not date_str:
+        # One truth: an open card/session absorbs a text log ("bench 190x4 done").
+        routed = _log_into_open_session(user_id, exercises, notes)
+        if routed:
+            return routed
 
     session = get_session()
     try:
@@ -1326,6 +1410,7 @@ _HANDLERS = {
     "log_meal": handle_log_meal,
     "set_targets": lambda user_id, tool_input, **kw: handle_set_targets(user_id, tool_input, **kw),
     "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
+    "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,

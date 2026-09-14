@@ -83,3 +83,10 @@ then add them in the dashboard by hand.
   `502 { error }` verbatim.
 
 Phase 0 smoke test (from the Flask side): `GET /card/test` is a static 300px page.
+
+## Inbound reactions (workout logger, Phase 5)
+
+A tapback/emoji reaction on one of our messages is forwarded to Flask as a normal
+inbound with `text: ""` and `reaction: { emoji, target_id }` (the reacted-to Photon
+message id). Flask uses it for 👍 on a per-exercise workout message; anything else
+is acknowledged and dropped.
