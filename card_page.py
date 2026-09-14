@@ -4,9 +4,9 @@ The workout card — Phase 2. A chromeless page rendered inside an iMessage bubb
 names (user, session). Taps and inline edits POST to /card/api/*; the page polls
 so a text deviation (Phase 4) shows up without a resend.
 
-Layout facts from GATE 0 (2026-09-14, founder's phone): 300px wide, dark mode
-on, the launcher's icon overlays the top-left ~36px, native checkboxes don't
-render state — so the circles are drawn from JS state.
+The page itself is on the site (cued-site card.html, design tokens shared with
+profile.html); this module is the token + the JSON API behind it. The bubble in
+the thread is a static preview refreshed in place (workouts/card.py).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request, make_response, render_template_string
+from flask import Blueprint, jsonify, request, make_response
 
 import config
 from models import get_session, User, WorkoutSession, SetLog
@@ -63,9 +63,10 @@ def verify_card_token(token: str | None, *, now: float | None = None) -> tuple[i
 
 
 def card_url(user_id: int, session_id: int, *, version: int | None = None) -> str:
-    base = config.CARD_BASE_URL.rstrip("/")
-    url = f"{base}/card/workout/{card_token(user_id, session_id)}"
-    return f"{url}?v={version}" if version else url
+    """The link users see: the site's card page (cued.fit/card.html?t=…), like
+    profile.html. `v` busts the extension's cache on in-place updates."""
+    url = f"{config.CARD_PAGE_URL}?t={card_token(user_id, session_id)}"
+    return f"{url}&v={version}" if version else url
 
 
 # ─── state ───────────────────────────────────────────────────────────────────
@@ -129,21 +130,13 @@ def _load(session, ids) -> WorkoutSession | None:
 
 @card_bp.route("/card/workout/<token>", methods=["GET"])
 def card_workout_page(token):
+    """Legacy/dev entry: the page lives on the site now. Valid token → redirect to
+    the site page with the token; bad/expired → 401 (no info leak)."""
+    from flask import redirect
     ids = verify_card_token(token)
     if not ids:
         return make_response("link expired", 401)
-    session = get_session()
-    try:
-        ws = _load(session, ids)
-        if not ws:
-            return make_response("not found", 404)
-        state = build_state(session, ws)
-    finally:
-        session.close()
-    resp = make_response(render_template_string(CARD_HTML, state=state, token=token))
-    resp.headers["Content-Type"] = "text/html; charset=utf-8"
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
+    return redirect(f"{config.CARD_PAGE_URL}?t={token}", code=302)
 
 
 @card_bp.route("/card/api/session", methods=["GET"])
@@ -214,13 +207,20 @@ def card_api_set(set_id):
             ar = int(d["actual_reps"]) if d.get("actual_reps") not in (None, "") else None
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "weight/reps must be numbers"}), 400
+        was_planned = ws.status in ("planned", None)
         pr = apply_set_update(session, ws, row, done=d.get("done"), actual_weight=aw, actual_reps=ar, source="card")
         logger.info("CARD_SET user=%s session=%s set=%s done=%s w=%s r=%s pr=%s",
                     ws.user_id, ws.id, row.id, row.done, row.actual_weight, row.actual_reps, bool(pr))
         state = build_state(session, ws)
-        return jsonify({"ok": True, "pr": pr, **state})
+        session_id, went_active = ws.id, (was_planned and ws.status == "active")
     finally:
         session.close()
+    if went_active or pr:
+        # The bubble's captions follow the session: first set → "in progress";
+        # a PR is worth showing in the thread too. Best-effort, off the request path.
+        from workouts.card import refresh_card_async
+        refresh_card_async(session_id)
+    return jsonify({"ok": True, "pr": pr, **state})
 
 
 @card_bp.route("/card/api/finish", methods=["POST"])
@@ -241,7 +241,11 @@ def card_api_finish():
     summary = finish_session(session_id)
     if not already:
         from workouts.close import send_session_summary
-        threading.Thread(target=send_session_summary, args=(session_id,), daemon=True).start()
+        from workouts.card import refresh_card
+        def _close():
+            refresh_card(session_id)          # bubble → "done — tap for the log"
+            send_session_summary(session_id)  # then the summary text
+        threading.Thread(target=_close, daemon=True).start()
     session = get_session()
     try:
         ws = session.get(WorkoutSession, session_id)
@@ -250,129 +254,3 @@ def card_api_finish():
         session.close()
     logger.info("CARD_FINISH user=%s session=%s volume=%s prs=%s", user_id, session_id, summary["volume_lb"], summary["pr_count"])
     return jsonify({"ok": True, "summary": summary, **state})
-
-
-# ─── the page ────────────────────────────────────────────────────────────────
-
-CARD_HTML = r"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<title>{{ state.session.template_key }}</title>
-<style>
-  :root { color-scheme: light dark; --ink: #111; --ink2: #6b6b6b; --line: rgba(128,128,128,.28); --blue: #0a84ff; --bg2: rgba(128,128,128,.10); }
-  @media (prefers-color-scheme: dark) { :root { --ink: #f2f2f2; --ink2: #9a9a9a; } }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { margin: 0; width: 300px; padding: 10px 12px 14px; background: transparent; color: var(--ink);
-         font-family: -apple-system, system-ui, sans-serif; font-size: 16px; -webkit-user-select: none; user-select: none; }
-  header { padding-left: 40px; min-height: 36px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 17px; font-weight: 600; margin: 0; text-transform: lowercase; }
-  header .prog { font-size: 13px; color: var(--ink2); }
-  .ex { margin-top: 10px; }
-  .ex .name { font-size: 13px; color: var(--ink2); text-transform: lowercase; padding: 0 4px 4px; }
-  .row { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 0 4px; border-top: 1px solid var(--line); }
-  .row.editing { flex-wrap: wrap; }
-  .nums { font-variant-numeric: tabular-nums; }
-  .nums.edited::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); margin-left: 6px; vertical-align: middle; }
-  .circle { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--ink2); flex: none; }
-  .row.done .circle { background: var(--blue); border-color: var(--blue); }
-  .pr { flex-basis: 100%; font-size: 13px; color: var(--blue); padding: 0 0 8px; }
-  .edit { flex-basis: 100%; display: flex; gap: 8px; align-items: center; padding: 6px 0 10px; }
-  .edit input { width: 76px; min-height: 40px; font: inherit; font-size: 16px; text-align: center; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); color: var(--ink); }
-  .edit button, .finish { min-height: 40px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--blue); color: #fff; font: inherit; font-size: 15px; font-weight: 600; }
-  footer { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--ink2); min-height: 44px; }
-  .finish { display: none; }
-  .finish.show { display: inline-block; }
-  .doneall { font-size: 14px; color: var(--ink2); padding: 8px 4px; }
-</style></head>
-<body>
-<header><h1 id="title"></h1><div class="prog" id="prog"></div></header>
-<div id="list"></div>
-<footer><span id="vol"></span><button class="finish" id="finish" type="button">finish</button></footer>
-<script>
-(function(){
-  const TOKEN = {{ token|tojson }};
-  let state = {{ state|tojson }};
-  let editing = null;          // set id being edited
-  const API = { headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' } };
-  const $ = (id) => document.getElementById(id);
-  const fmt = (w) => (w === null || w === undefined) ? '' : String(Number(w));
-
-  function render(){
-    const s = state.session;
-    $('title').textContent = s.template_key.replace('_',' ') + ' · ' + s.weekday;
-    $('prog').textContent = state.done_count + '/' + state.set_count;
-    const list = $('list'); list.innerHTML = '';
-    for (const ex of state.exercises){
-      const box = document.createElement('div'); box.className = 'ex';
-      const name = document.createElement('div'); name.className = 'name'; name.textContent = ex.label; box.appendChild(name);
-      for (const st of ex.sets){
-        const row = document.createElement('div'); row.className = 'row' + (st.done ? ' done' : '') + (editing === st.id ? ' editing' : '');
-        const nums = document.createElement('span'); nums.className = 'nums' + (st.edited ? ' edited' : '');
-        const w = st.done ? st.actual_weight : st.planned_weight, r = st.done ? st.actual_reps : st.planned_reps;
-        nums.textContent = fmt(w) + ' × ' + fmt(r);
-        const circle = document.createElement('span'); circle.className = 'circle';
-        row.appendChild(nums); row.appendChild(circle);
-        if (st.pr && st.done){ const p = document.createElement('div'); p.className = 'pr'; p.textContent = st.pr; row.appendChild(p); }
-        if (editing === st.id){
-          const ed = document.createElement('div'); ed.className = 'edit';
-          const iw = document.createElement('input'); iw.type = 'number'; iw.inputMode = 'decimal'; iw.value = fmt(st.actual_weight ?? st.planned_weight); iw.setAttribute('aria-label','weight');
-          const ir = document.createElement('input'); ir.type = 'number'; ir.inputMode = 'numeric'; ir.value = fmt(st.actual_reps ?? st.planned_reps); ir.setAttribute('aria-label','reps');
-          const ok = document.createElement('button'); ok.type = 'button'; ok.textContent = 'done';
-          ok.addEventListener('click', (e) => { e.stopPropagation(); post(st.id, { done: true, actual_weight: iw.value, actual_reps: ir.value }); editing = null; });
-          ed.appendChild(iw); ed.appendChild(ir); ed.appendChild(ok); row.appendChild(ed);
-          setTimeout(() => iw.focus(), 0);
-        }
-        // tap = toggle at planned (or at the edited values); long-press or tapping the numbers = edit
-        let timer = null, longed = false;
-        row.addEventListener('touchstart', () => { longed = false; timer = setTimeout(() => { longed = true; editing = st.id; render(); }, 500); }, { passive: true });
-        row.addEventListener('touchend', () => { clearTimeout(timer); });
-        row.addEventListener('touchmove', () => { clearTimeout(timer); }, { passive: true });
-        nums.addEventListener('click', (e) => { e.stopPropagation(); if (editing === st.id) return; editing = st.id; render(); });
-        row.addEventListener('click', (e) => {
-          if (longed || editing === st.id || e.target.closest('.edit')) return;
-          post(st.id, { done: !st.done });
-        });
-        box.appendChild(row);
-      }
-      list.appendChild(box);
-    }
-    const any = state.done_count > 0;
-    $('vol').textContent = any ? (state.volume_lb.toLocaleString() + ' lb so far') : '';
-    const fin = $('finish');
-    if (s.status === 'done'){ fin.classList.remove('show'); $('vol').textContent = state.volume_lb.toLocaleString() + ' lb · done'; }
-    else fin.classList.toggle('show', any);
-  }
-
-  async function post(setId, body){
-    try {
-      const res = await fetch('/card/api/set/' + setId, { method: 'POST', headers: API.headers, body: JSON.stringify(body) });
-      const data = await res.json();
-      if (data && data.ok){ state = data; render(); }
-    } catch (e) { /* offline: the next poll reconciles */ }
-  }
-
-  async function poll(){
-    if (document.visibilityState !== 'visible' || editing !== null) return;
-    try {
-      const res = await fetch('/card/api/session', { headers: API.headers });
-      const data = await res.json();
-      if (data && data.ok && data.updated_at !== state.updated_at){ state = data; render(); }
-    } catch (e) {}
-  }
-
-  $('finish').addEventListener('click', async () => {
-    $('finish').disabled = true;
-    try {
-      const res = await fetch('/card/api/finish', { method: 'POST', headers: API.headers, body: '{}' });
-      const data = await res.json();
-      if (data && data.ok){ state = data; render(); }
-    } catch (e) {} finally { $('finish').disabled = false; }
-  });
-
-  render();
-  setInterval(poll, 5000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); });
-})();
-</script>
-</body></html>"""

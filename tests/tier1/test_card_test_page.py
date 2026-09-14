@@ -121,3 +121,32 @@ def test_internal_card_test_driver_accepts_a_same_origin_card_url_only(client, s
                                                              "url": "https://evil.example/card/x"}),
                     headers={"X-Internal-Secret": SECRET}, content_type="application/json")
     assert r.status_code == 400
+
+
+def test_internal_card_test_driver_send_session_sends_the_real_card(client, sidecar_cfg, monkeypatch, db):
+    import photon_cards
+    from tests.factories import make_user
+    from workouts.plan import build_session
+    from models import get_session, WorkoutSession, Message
+    user = make_user(db, onboarding_step=3, current_split="ppl", preferred_channel="imessage")
+    ws = build_session(user, "push")
+    seen = {}
+
+    def fake_send(phone, url, live=True, layout=None):
+        seen.update(phone=phone, url=url, live=live, layout=layout)
+        return {"provider_message_id": "photon-card-9", "card_session": {"id": "photon-card-9", "miniAppCardSession": {"sessionId": "s"}}}
+    monkeypatch.setattr(photon_cards, "send_card", fake_send)
+    r = client.post("/internal/card-test", data=json.dumps({"phone": user.phone, "action": "send_session", "session_id": ws.id}),
+                    headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+    assert r.status_code == 200 and r.get_json()["provider_message_id"] == "photon-card-9"
+    assert seen["live"] is False and seen["url"].startswith("https://cued.fit/card.html?t=") and "&v=" in seen["url"]
+    assert seen["layout"]["caption"].startswith("push · ") and seen["layout"]["trailingCaption"] == "0/13"
+    assert "4 sets bench press, then the usual — tap to start" == seen["layout"]["subcaption"]
+    s = get_session()
+    try:
+        row = s.get(WorkoutSession, ws.id)
+        assert row.card_message_id == "photon-card-9" and row.card_session["id"] == "photon-card-9"
+        m = s.query(Message).filter_by(user_id=user.id, direction="out").one()
+        assert m.message_type == "workout_card" and m.channel == "imessage" and m.provider_sid == "photon-card-9"
+    finally:
+        s.close()

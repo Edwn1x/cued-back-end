@@ -33,7 +33,9 @@ PROFILE_TOKEN_SECRET = os.getenv("PROFILE_TOKEN_SECRET", "")
 # Workout card (card_page.py): signed 24h links rendered inside the iMessage bubble.
 # Falls back to PROFILE_TOKEN_SECRET then FLASK_SECRET_KEY; set its own value in prod.
 CARD_TOKEN_SECRET = os.getenv("CARD_TOKEN_SECRET", "")
-CARD_BASE_URL = os.getenv("CARD_BASE_URL", "https://web-production-90171c.up.railway.app")
+# The page itself lives on the site (cued-site card.html), like profile.html: the
+# link users see is cued.fit; the page talks to this API with the token.
+CARD_PAGE_URL = os.getenv("CARD_PAGE_URL", "https://cued.fit/card.html")
 
 # CORS — comma-separated list of allowed frontend origins, e.g. "https://mycued.com,https://www.mycued.com"
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]

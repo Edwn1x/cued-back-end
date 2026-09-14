@@ -38,13 +38,24 @@ def _post(path: str, payload: dict) -> dict:
     return data
 
 
-def send_card(phone: str, url: str, live: bool = True) -> dict:
-    """→ {"provider_message_id": str|None, "card_session": dict|None}."""
-    data = _post("/send-card", {"phone": phone, "url": url, "live": live})
+def send_card(phone: str, url: str, live: bool = True, layout: dict | None = None) -> dict:
+    """→ {"provider_message_id": str|None, "card_session": dict|None}. `layout`
+    (caption/subcaption/trailingCaption/trailingSubcaption/summary) is the static
+    preview in the bubble when `live` is False; tapping it opens `url` in the
+    Spectrum extension's sheet (the overlay)."""
+    payload = {"phone": phone, "url": url, "live": live}
+    if layout:
+        payload["layout"] = layout
+    data = _post("/send-card", payload)
     logger.info("CARD_SENT phone_last4=%s id=%s live=%s url=%s", phone[-4:], data.get("provider_message_id"), live, url)
     return {"provider_message_id": data.get("provider_message_id"), "card_session": data.get("card_session")}
 
 
-def update_card(phone: str, card_session: dict, url: str) -> None:
-    _post("/update-card", {"phone": phone, "card_session": card_session, "url": url})
+def update_card(phone: str, card_session: dict, url: str, live: bool | None = None, layout: dict | None = None) -> None:
+    payload = {"phone": phone, "card_session": card_session, "url": url}
+    if live is not None:
+        payload["live"] = live
+    if layout:
+        payload["layout"] = layout
+    _post("/update-card", payload)
     logger.info("CARD_UPDATED phone_last4=%s id=%s url=%s", phone[-4:], (card_session or {}).get("id"), url)

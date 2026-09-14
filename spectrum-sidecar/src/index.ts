@@ -61,12 +61,29 @@ export type Deps = {
   /** Live mini-app card (workout logger, Phase 0): send `url` as an app card into
    *  the DM with `phone`. Returns the Photon message id and a serializable
    *  `card_session` (the fields `edit()` needs later). Throws on failure. */
-  sendCard: (phone: string, url: string, live: boolean) => Promise<{ provider_message_id: string | null; card_session: CardSession | null }>;
+  sendCard: (phone: string, url: string, live: boolean, layout?: CardLayout) => Promise<{ provider_message_id: string | null; card_session: CardSession | null }>;
   /** Update a previously sent card in place (`edit(app(url), original)`). The
    *  original Message is looked up from this process's memory first, then rebuilt
    *  from `card_session` (survives a sidecar restart as far as the SDK allows). */
-  updateCard: (phone: string, cardSession: CardSession, url: string) => Promise<void>;
+  updateCard: (phone: string, cardSession: CardSession, url: string, live?: boolean, layout?: CardLayout) => Promise<void>;
 };
+
+/** The static preview shown in the bubble when the card is NOT live (tapping it
+ *  opens `url` in the Spectrum extension's sheet). Mirrors the SDK's AppLayout
+ *  text fields; `image` is not exposed here. */
+export type CardLayout = {
+  caption?: string; subcaption?: string; trailingCaption?: string; trailingSubcaption?: string; summary?: string;
+};
+
+export function pickLayout(v: unknown): CardLayout | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  const out: CardLayout = {};
+  for (const k of ["caption", "subcaption", "trailingCaption", "trailingSubcaption", "summary"] as const) {
+    if (typeof o[k] === "string" && (o[k] as string).length) out[k] = (o[k] as string).slice(0, 200);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 /** What `edit()` needs to update a mini-app card: the sent message's id, the
  *  provider's `miniAppCardSession` handle, and the space it lives in. Serialized
@@ -216,15 +233,16 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
     }
 
     if (req.method === "POST" && pathname === "/send-card") {
-      let body: { phone?: unknown; url?: unknown; live?: unknown };
+      let body: { phone?: unknown; url?: unknown; live?: unknown; layout?: unknown };
       try { body = (await req.json()) as typeof body; } catch { return json(400, { ok: false, error: "invalid json" }); }
       if (typeof body.phone !== "string" || !body.phone || typeof body.url !== "string" || !/^https?:\/\//.test(body.url)) {
-        return json(400, { ok: false, error: "expected { phone, url (http/https), live? }" });
+        return json(400, { ok: false, error: "expected { phone, url (http/https), live?, layout? }" });
       }
       if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
       try {
-        const { provider_message_id, card_session } = await deps.sendCard(body.phone, body.url, body.live !== false);
-        log("info", "card sent", { to: last4(body.phone), id: provider_message_id, live: body.live !== false });
+        const layout = pickLayout(body.layout);
+        const { provider_message_id, card_session } = await deps.sendCard(body.phone, body.url, body.live !== false, layout);
+        log("info", "card sent", { to: last4(body.phone), id: provider_message_id, live: body.live !== false, layout: !!layout });
         return json(200, { ok: true, provider_message_id, card_session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -234,7 +252,7 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
     }
 
     if (req.method === "POST" && pathname === "/update-card") {
-      let body: { phone?: unknown; card_session?: unknown; url?: unknown };
+      let body: { phone?: unknown; card_session?: unknown; url?: unknown; live?: unknown; layout?: unknown };
       try { body = (await req.json()) as typeof body; } catch { return json(400, { ok: false, error: "invalid json" }); }
       const cs = body.card_session as CardSession | undefined;
       if (typeof body.phone !== "string" || !body.phone || typeof body.url !== "string" || !/^https?:\/\//.test(body.url)
@@ -243,7 +261,7 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       }
       if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
       try {
-        await deps.updateCard(body.phone, cs, body.url);
+        await deps.updateCard(body.phone, cs, body.url, body.live === undefined ? undefined : body.live !== false, pickLayout(body.layout));
         log("info", "card updated", { to: last4(body.phone), id: cs.id });
         return json(200, { ok: true });
       } catch (err) {
@@ -471,11 +489,14 @@ async function main() {
       const dm = await dmFor(app, phone);
       await imessage(dm).shareContactCard();
     },
-    sendCard: async (phone, url, live) => {
+    sendCard: async (phone, url, live, layout) => {
       const app = current;
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
-      const sent = await dm.send(appCard(url, { live }));
+      // AppOptions only types `live`; at runtime `...options` overrides the SDK's
+      // Open-Graph-derived layout when a `layout` accessor is given (core asApp).
+      const opts = (layout ? { live, layout: async () => layout } : { live }) as Parameters<typeof appCard>[1];
+      const sent = await dm.send(appCard(url, opts));
       const msg = Array.isArray(sent) ? sent[0] : sent;
       const cs = serializeCardSession(msg);
       // Keep the SDK's own Message for in-place edits: `edit()` wants the object
@@ -483,12 +504,15 @@ async function main() {
       if (msg && cs) sentCards.set(cs.id, msg as Message);
       return { provider_message_id: cs?.id ?? null, card_session: cs };
     },
-    updateCard: async (phone, cardSession, url) => {
+    updateCard: async (phone, cardSession, url, live, layout) => {
       const app = current;
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
       const target = sentCards.get(cardSession.id) ?? rebuildCardTarget(cardSession);
-      await dm.send(edit(appCard(url, { live: true }), target));
+      const opts: Record<string, unknown> = {};
+      if (live !== undefined) opts.live = live;
+      if (layout) opts.layout = async () => layout;
+      await dm.send(edit(appCard(url, opts as Parameters<typeof appCard>[1]), target));
       // The provider refreshes miniAppCardSession on the target after each update.
       sentCards.set(cardSession.id, target);
     },
