@@ -106,3 +106,18 @@ def test_internal_card_test_driver_surfaces_a_refusal_as_502(client, sidecar_cfg
     r = client.post("/internal/card-test", data=json.dumps({"phone": "+12094205037"}),
                     headers={"X-Internal-Secret": SECRET}, content_type="application/json")
     assert r.status_code == 502 and "Business plan" in r.get_json()["error"]
+
+
+def test_internal_card_test_driver_accepts_a_same_origin_card_url_only(client, sidecar_cfg, monkeypatch):
+    import photon_cards
+    seen = {}
+    monkeypatch.setattr(photon_cards, "send_card", lambda phone, url, live=True: seen.update(url=url) or
+                        {"provider_message_id": "photon-card-2", "card_session": {"id": "photon-card-2"}})
+    r = client.post("/internal/card-test", data=json.dumps({"phone": "+12094205037", "action": "send",
+                                                             "url": "http://localhost/card/workout/31.2.1.abc"}),
+                    headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+    assert r.status_code == 200 and seen["url"] == "https://localhost/card/workout/31.2.1.abc"
+    r = client.post("/internal/card-test", data=json.dumps({"phone": "+12094205037", "action": "send",
+                                                             "url": "https://evil.example/card/x"}),
+                    headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+    assert r.status_code == 400

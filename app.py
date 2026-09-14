@@ -1829,6 +1829,13 @@ def card_test_send():
     from photon_cards import send_card, update_card, CardError
     base = request.url_root.rstrip("/").replace("http://", "https://")
     url = f"{base}/card/test"
+    # Optional same-origin override (e.g. a real /card/workout/<token> link) so a
+    # Phase 2 session can be tested inside Messages before the Phase 3 coach tool.
+    override = str(d.get("url") or "").strip()
+    if override:
+        if not override.startswith(base + "/card/"):
+            return jsonify({"ok": False, "error": "url must be a /card/ path on this host"}), 400
+        url = override
     try:
         if action == "send":
             return jsonify({"ok": True, "url": url, **send_card(phone, url, live=d.get("live", True) is not False)})
