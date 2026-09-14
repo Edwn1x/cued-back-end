@@ -240,6 +240,22 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS calorie_target_computed INTEGER",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS protein_target_computed INTEGER",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS targets_source VARCHAR(16)",
+    # Adaptive targets (2026-09-14): weigh-in opt-out + the per-cycle audit table.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS weigh_in_opt_out BOOLEAN DEFAULT FALSE",
+    """CREATE TABLE IF NOT EXISTS target_adjustments (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        at TIMESTAMP DEFAULT NOW(),
+        old_target INTEGER,
+        new_target INTEGER,
+        changed BOOLEAN DEFAULT FALSE,
+        reason VARCHAR(300),
+        est_expenditure INTEGER,
+        trend_delta_lbs DOUBLE PRECISION,
+        counted_days INTEGER,
+        weighins INTEGER
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_target_adjustments_user_at ON target_adjustments (user_id, at)",
     # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
     """CREATE TABLE IF NOT EXISTS unknown_inbounds (
         id SERIAL PRIMARY KEY,

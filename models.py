@@ -63,7 +63,8 @@ class User(Base):
     # computed pair beside it, and targets_source says whose number it is.
     calorie_target_computed = Column(Integer, default=None)
     protein_target_computed = Column(Integer, default=None)
-    targets_source = Column(String(16), default=None)  # 'computed' | 'user'
+    targets_source = Column(String(16), default=None)  # 'computed' | 'user' | 'adaptive'
+    weigh_in_opt_out = Column(Boolean, default=False)   # "i don't own a scale" — never nudge
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     confirmed_goal_priority = Column(String(50), default=None)  # "cutting" or "building" — set once user confirms
     confirmed_training_split = Column(String(500), default=None)  # "ppl", "upper_lower", … (prod width 500)
@@ -275,6 +276,24 @@ class Meal(Base):
     edits = Column(JSON, default=None)  # append-only manage_log edit audit: [{at,field,old,new}]
 
     user = relationship("User", back_populates="meals")
+
+
+class TargetAdjustment(Base):
+    """One row per adaptive cycle (adaptive_targets.apply_cycle), changed or not —
+    the audit the coach explains from and the admin/profile pages show."""
+    __tablename__ = "target_adjustments"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    old_target = Column(Integer)
+    new_target = Column(Integer)
+    changed = Column(Boolean, default=False)
+    reason = Column(String(300))
+    est_expenditure = Column(Integer)
+    trend_delta_lbs = Column(Float)
+    counted_days = Column(Integer)
+    weighins = Column(Integer)
 
 
 class WeightLog(Base):

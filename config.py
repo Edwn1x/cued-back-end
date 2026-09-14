@@ -179,6 +179,9 @@ SET_TARGETS_TOOL_ENABLED = os.getenv("SET_TARGETS_TOOL_ENABLED", "true").lower()
 # capabilities.py for THIS user (top 3 + their obstacle). Never a feature list.
 ONBOARDING_RUNDOWN_ENABLED = os.getenv("ONBOARDING_RUNDOWN_ENABLED", "true").lower() == "true"
 ONBOARDING_RUNDOWN_DELAY_S = float(os.getenv("ONBOARDING_RUNDOWN_DELAY_S", "4"))
+# Adaptive targets (adaptive_targets.py): log_weight tool + daily cycle sweep.
+LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() == "true"
+ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
 # and inject a code-computed macro totals block. Default ON (these are corrections);
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.

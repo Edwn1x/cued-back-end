@@ -182,6 +182,82 @@ def _local_day_bounds_utc(tz):
     return to_utc(start), to_utc(start + timedelta(days=1))
 
 
+LOG_WEIGHT_TOOL = {
+    "name": "log_weight",
+    "description": (
+        "Log a body-weight reading the user reports ('weighed in at 141 this morning', a "
+        "scale or fitness-app screenshot). Pass weight_lbs (convert kg → lb yourself and put "
+        "their raw words in note). If the reading was NOT today, pass date as YYYY-MM-DD in "
+        "their local calendar. The stored TREND (context: WEIGHT) is what you quote back, "
+        "never the single reading. If they say they don't own a scale, call this with "
+        "no_scale=true and nothing else — you'll never be asked to nudge them again."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "weight_lbs": {"type": "number"},
+            "date": {"type": "string", "description": "YYYY-MM-DD (local) when not today"},
+            "note": {"type": "string", "description": "their words, e.g. '64 kg after breakfast'"},
+            "no_scale": {"type": "boolean", "description": "true = they don't own a scale; stop nudging"},
+        },
+        "required": [],
+    },
+}
+
+
+def handle_log_weight(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from models import WeightLog
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        if tool_input.get("no_scale"):
+            user.weigh_in_opt_out = True
+            session.commit()
+            logger.info("WEIGH_IN_OPT_OUT user=%s", user_id)
+            return "ok: noted — no scale, weigh-in nudges are off"
+        try:
+            lbs = float(tool_input.get("weight_lbs"))
+        except (TypeError, ValueError):
+            return "error: weight_lbs must be a number"
+        if not (60 <= lbs <= 600):
+            return f"error: {lbs:g} lb is outside a plausible range — check the unit (kg → lb?)"
+        tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+        when = _naive_utcnow()
+        date_str = (tool_input.get("date") or "").strip() or None
+        if date_str:
+            try:
+                d = _resolve_local_date(tz, date_str, strict=True)
+                when = (datetime(d.year, d.month, d.day, 9, 0, tzinfo=tz)
+                        .astimezone(timezone.utc).replace(tzinfo=None))
+            except Exception:
+                date_str = None
+        row = WeightLog(user_id=user_id, weighed_at=when, weight_lbs=round(lbs, 1),
+                        notes=(tool_input.get("note") or None))
+        session.add(row)
+        # users.weight_lbs follows the LATEST reading (protein is g/lb; profile shows it).
+        latest = (session.query(WeightLog.weighed_at).filter(WeightLog.user_id == user_id)
+                  .order_by(WeightLog.weighed_at.desc()).first())
+        is_latest = latest is None or when >= latest[0]
+        protein_note = ""
+        if is_latest:
+            user.weight_lbs = round(lbs, 1)
+            if getattr(user, "targets_source", None) != "user" and user.protein_target:
+                from macro_calculator import calculate_targets
+                new_p = calculate_targets(user)["protein"]
+                if new_p != user.protein_target:
+                    protein_note = f"; protein target {user.protein_target} → {new_p}g (follows weight)"
+                    user.protein_target = new_p
+        session.commit()
+        wid = row.id
+    finally:
+        session.close()
+    logger.info("LOG_WEIGHT user=%s lbs=%s dated=%s latest=%s", user_id, lbs, date_str, is_latest)
+    return (f"ok: logged {lbs:g} lb (id={wid}" + (f", dated {date_str}" if date_str else "") + ")"
+            + protein_note + " — quote the trend from context, not this reading")
+
+
 SET_TARGETS_TOOL = {
     "name": "set_targets",
     "description": (
@@ -1249,6 +1325,7 @@ _HANDLERS = {
     "manage_log": handle_manage_log,
     "log_meal": handle_log_meal,
     "set_targets": lambda user_id, tool_input, **kw: handle_set_targets(user_id, tool_input, **kw),
+    "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
     "log_event": handle_log_event,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,

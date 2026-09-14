@@ -303,6 +303,16 @@ def build_loop_context(user, session) -> str:
                      "their link, or want to double-check what you have on them, send this URL "
                      "(the one link you may always send). Never say you don't have it.")
 
+    # Adaptive targets: the weight trend, and today's cycle result if there is one.
+    if (getattr(user, "onboarding_step", 0) or 0) >= 3:
+        try:
+            from adaptive_targets import weight_context, todays_adjustment_context
+            for _blk in (weight_context(user, session), todays_adjustment_context(user, session)):
+                if _blk:
+                    parts.append(_blk)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ADAPTIVE_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # Contextual reveals: capabilities they haven't touched yet (capabilities.py).
     # Post-onboarding only; the voice rule limits it to one clause when it fits.
     if (getattr(user, "onboarding_step", 0) or 0) >= 3:
@@ -412,6 +422,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SET_TARGETS_TOOL_ENABLED:
         from agent_tools import SET_TARGETS_TOOL
         tools.append(SET_TARGETS_TOOL)
+    if config.LOG_WEIGHT_TOOL_ENABLED:
+        from agent_tools import LOG_WEIGHT_TOOL
+        tools.append(LOG_WEIGHT_TOOL)
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)
