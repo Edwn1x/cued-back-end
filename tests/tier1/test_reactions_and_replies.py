@@ -435,15 +435,16 @@ def test_ack_with_an_open_question_still_reaches_the_model(db, imessage_on, side
     assert [j for r_, j in sidecar if r_ == "send"], "the model's text went out"
 
 
-def test_resigned_agreement_is_a_closing_ack_but_hesitation_is_not():
-    """Live: a standalone "Ig" reached the model, which re-delivered its previous pep
-    talk. "i guess" is resigned agreement → the 👍 path. "idk" / "we'll see" / "hmm"
-    may need an answer and still go to the model."""
+def test_ig_and_hesitation_go_to_the_model_not_the_ack_list():
+    """Founder (2026-09-13): "ig" is not always a conversation ender, so it is NOT a
+    deterministic 👍 — it reaches the model, which voice.md tells not to re-deliver
+    its last message. Same for "idk" / "we'll see" / "hmm"."""
     from app import is_closing_acknowledgment
-    for ack in ("Ig", "ig", "i guess", "I guess so", "sure ig", "yeah ig", "ok ig", "Ig."):
-        assert is_closing_acknowledgment(ack), ack
-    for not_ack in ("idk", "we'll see", "well see", "hmm", "ig but what if i choke", "i guess why though"):
+    for not_ack in ("Ig", "ig", "i guess", "I guess so", "sure ig", "idk", "we'll see", "hmm",
+                    "ig but what if i choke", "i guess why though"):
         assert not is_closing_acknowledgment(not_ack), not_ack
+    for ack in ("ok bet", "got it", "sounds good"):
+        assert is_closing_acknowledgment(ack), ack
 
 
 def test_voice_forbids_re_delivering_the_last_message():
