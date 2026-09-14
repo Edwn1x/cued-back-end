@@ -133,6 +133,31 @@ def advance_split_pointer(user_id: int, *, named_day: str = None, at=None) -> di
         session.close()
 
 
+def restore_split_pointer(user_id: int, prev: dict | None) -> dict | None:
+    """Rollback seam for manage_log delete: put the pointer back to a serialized
+    prior value (None clears it). Code-mediated like advance; never inferred."""
+    session = get_session()
+    try:
+        user = (session.query(User).filter(User.id == user_id)
+                .with_for_update().one_or_none())
+        if not user:
+            return None
+        if prev:
+            at = prev.get("at")
+            user.split_pointer_day = prev.get("day")
+            user.split_pointer_at = datetime.fromisoformat(at) if isinstance(at, str) else at
+            user.split_pointer_source = prev.get("source")
+        else:
+            user.split_pointer_day = None
+            user.split_pointer_at = None
+            user.split_pointer_source = None
+        session.commit()
+        logger.info("SPLIT_POINTER user=%s day=%s source=restored", user_id, user.split_pointer_day)
+        return _pointer_dict(user)
+    finally:
+        session.close()
+
+
 def get_split_pointer(user_id: int) -> dict | None:
     """Read the raw pointer (day / at / source). Does NOT compute today's workout."""
     session = get_session()

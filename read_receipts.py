@@ -7,7 +7,7 @@ before the typing bubble — and when it thumbs-ups a suppressed ack. Sequence t
 user sees: their text → a pause (reading) → "Read" → dots → the reply. That is how
 a person's thread looks; sending "Read" on arrival would look like a bot.
 
-Same contract as typing_indicator: fire-and-forget, 2s timeout, never raises, only
+Same contract as typing_indicator: fire-and-forget, short timeout, never raises, only
 when the user's RESOLVED channel is iMessage (tripped breaker = nothing). SMS has
 no equivalent.
 """
@@ -23,7 +23,10 @@ import config
 
 logger = logging.getLogger("cued.read")
 
-TIMEOUT_S = 2.0
+# Live 2026-09-12: 3 of 12 receipts timed out at 2s, every one the FIRST sidecar
+# call after a long idle; the typing signal 1s later always succeeded. This runs
+# in its own thread (mark_read is fire-and-forget), so a longer cap costs nothing.
+TIMEOUT_S = 5.0
 
 
 def _latest_inbound_sid(user_id: int):
