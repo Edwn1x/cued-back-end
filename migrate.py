@@ -236,6 +236,10 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failed_over BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failover_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS photon_user_id VARCHAR(64)",
+    # Bounded target override (2026-09-14): the user's pick vs the computed pair.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS calorie_target_computed INTEGER",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS protein_target_computed INTEGER",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS targets_source VARCHAR(16)",
     # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
     """CREATE TABLE IF NOT EXISTS unknown_inbounds (
         id SERIAL PRIMARY KEY,

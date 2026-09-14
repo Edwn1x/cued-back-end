@@ -279,6 +279,9 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
         "targets": {
             "calories": user.calorie_target,
             "protein_g": user.protein_target,
+            "source": getattr(user, "targets_source", None) or ("computed" if user.calorie_target else None),
+            "computed_calories": getattr(user, "calorie_target_computed", None),
+            "computed_protein_g": getattr(user, "protein_target_computed", None),
         },
         "today": {
             "date": day_start and _iso(day_start),

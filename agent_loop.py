@@ -303,6 +303,17 @@ def build_loop_context(user, session) -> str:
                      "their link, or want to double-check what you have on them, send this URL "
                      "(the one link you may always send). Never say you don't have it.")
 
+    # Contextual reveals: capabilities they haven't touched yet (capabilities.py).
+    # Post-onboarding only; the voice rule limits it to one clause when it fits.
+    if (getattr(user, "onboarding_step", 0) or 0) >= 3:
+        try:
+            from capabilities import unused_context
+            _uc = unused_context(user, session)
+            if _uc:
+                parts.append(_uc)
+        except Exception as e:  # noqa: BLE001 — never break a turn over a hint
+            logger.warning("UNUSED_CAPABILITIES_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     if _local:
         parts.append(f"## NOW\n{now_anchor(user)}")
     else:
@@ -398,6 +409,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_MEAL_TOOL_ENABLED:
         from agent_tools import LOG_MEAL_TOOL
         tools.append(LOG_MEAL_TOOL)
+    if config.SET_TARGETS_TOOL_ENABLED:
+        from agent_tools import SET_TARGETS_TOOL
+        tools.append(SET_TARGETS_TOOL)
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)

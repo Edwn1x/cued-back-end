@@ -521,8 +521,9 @@ def test_adjust_branch_may_not_invent_new_targets(db, anthropic_stub, sms_captur
 
     assert onboarding_agent.handle_onboarding_reply(user, "2450 sounds kinda high for losing fat no?") is False
     ins = seen["instruction"]
-    assert "CANNOT change them" in ins and "never invent different numbers" in ins
-    assert "SAME numbers" in ins
+    assert "Never invent or announce a number yourself" in ins
+    assert "TARGET REQUEST HANDLED" not in ins   # no number asked → no override ran
+    assert "Do NOT repeat the whole summary" in ins
 
 
 def test_confirmation_with_a_wh_question_answers_it_before_completing(db, anthropic_stub, sms_capture):
