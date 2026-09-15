@@ -261,6 +261,17 @@ def build_loop_context(user, session) -> str:
             nl = "\n".join(f"- {_d(n.occurred_on)}: {n.text}" for n in notes)
             parts.append(f"## RECENT LIFE CONTEXT (personal — follow up naturally)\n{nl}")
 
+    # 5c. Connected integrations — the one-line status, NEVER a token. Lets the
+    # coach know what it can see (calendar, strava) and mention a disconnect once.
+    if config.GCAL_ENABLED or config.STRAVA_READ_ENABLED or config.BCOURSES_ENABLED:
+        try:
+            from integrations.base import status_line
+            sl = status_line(user.id)
+            if sl:
+                parts.append(f"## INTEGRATIONS\n{sl}")
+        except Exception:
+            logger.exception("INTEGRATIONS_STATUS_FAILED user=%s", user.id)
+
     # 6. Recent conversation window (reuse the watermark boundary — no overlap with summary).
     watermark = user.last_compressed_message_id or 0
     msgs = (session.query(Message)
@@ -625,6 +636,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # every surface lives in agent_tools (cap = WEB_SEARCH_MAX_USES per reply).
         from agent_tools import WEB_SEARCH_TOOL
         tools.append(WEB_SEARCH_TOOL)
+    if config.SEND_CONNECT_LINK_TOOL_ENABLED:
+        # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
+        # identity/voice.md; the link bubble is an allowed URL exception.
+        from agent_tools import SEND_CONNECT_LINK_TOOL
+        tools.append(SEND_CONNECT_LINK_TOOL)
 
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it

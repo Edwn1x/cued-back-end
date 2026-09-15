@@ -39,6 +39,12 @@ CORS(app, origins=config.ALLOWED_ORIGINS)
 app.register_blueprint(admin_system_bp)
 from card_page import card_bp
 app.register_blueprint(card_bp)
+# Third-party OAuth connect flow (/c/<provider>, /oauth/<provider>/callback).
+# Provider modules register themselves on import; import them here so the registry
+# is populated before the first request (each is a no-op behind its own flag).
+from integrations.routes import integrations_bp
+app.register_blueprint(integrations_bp)
+import integrations.providers_boot  # noqa: F401  (registers gcal/strava when wired)
 
 
 @app.before_request

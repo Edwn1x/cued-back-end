@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import config
@@ -581,6 +581,35 @@ class Event(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
     edits = Column(JSON, default=None)                 # append-only manage_log edit audit
+
+
+class Integration(Base):
+    """One third-party OAuth connection per (user, provider). The shared home for
+    Google Calendar, Strava, bCourses, and any later wearable. Tokens are stored
+    as Fernet ciphertext (integrations.crypto) — NEVER plaintext, never logged,
+    never in the coach's context. The coach sees only the derived status line
+    (integrations.base.status_line), e.g. "gcal connected, strava connected".
+
+    `meta` (JSONB) carries the provider-specific bits: per-calendar syncToken /
+    feed_url / last_sync_at / last_error, and the pending single-use connect
+    nonce during an in-flight OAuth handshake. Timestamps are naive UTC (matching
+    events / session_state)."""
+    __tablename__ = "integrations"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_integrations_user_provider"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(16), nullable=False)   # gcal | bcourses | strava | fitbit | whoop | oura
+    status = Column(String(16), nullable=False, default="pending")  # pending | connected | revoked | error
+    access_token = Column(Text)                      # Fernet ciphertext (nullable — bcourses has none)
+    refresh_token = Column(Text)                     # Fernet ciphertext
+    expires_at = Column(DateTime)                    # naive UTC; when the access token dies
+    scopes = Column(Text)                            # granted scopes, space/comma-delimited
+    external_id = Column(String(64))                 # provider's user/athlete id (Google sub, Strava athlete id)
+    meta = Column(JSON, default=dict)                # sync tokens, feed urls, last_sync_at, last_error, connect nonce
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+                        onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class HeartbeatTick(Base):
