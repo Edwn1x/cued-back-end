@@ -63,7 +63,7 @@ def test_identity_is_the_first_thing_on_every_surface(db):
     import onboarding_agent
 
     ident = identity_prompt()
-    assert "friend at Berkeley" in ident and "Engage the specific thing" in ident
+    assert "You go to Berkeley and you lift" in ident and "Simple and direct" in ident
     assert "Know the campus" in ident and "Look things up" in ident
     # coach loop + heartbeat prefix
     assert _voice_prompt().startswith(ident)
@@ -755,3 +755,18 @@ def test_extractor_prompt_states_aspiration_is_not_pattern(db, anthropic_stub):
     onboarding_agent._extract_data_from_message("i wanna be an early bird", user)
     assert "AN ASPIRATION IS NOT THE CURRENT PATTERN" in seen["prompt"]
     assert "workout_time is the EVENING" in seen["prompt"]
+
+
+def test_recap_uses_int_weight_and_omits_age_when_absent(db):
+    """Voice rewrite: never '137.0 lbs', never a field the user didn't give."""
+    from onboarding_agent import _build_confirmation_summary
+    u = _new_signup(db, onboarding_step=2, height_ft=5, height_in=0, weight_lbs=137.0, age=None,
+                    goal="fat_loss", workout_days="5", workout_time="evening",
+                    calorie_target=1450, protein_target=137)
+    recap = _build_confirmation_summary(u)
+    assert "137 lbs" in recap and "137.0" not in recap
+    assert "years old" not in recap and "None" not in recap
+    u2 = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139, age=20,
+                     goal="fat_loss", workout_days="5", workout_time="14:00",
+                     calorie_target=2450, protein_target=139)
+    assert "139 lbs, 20." in _build_confirmation_summary(u2)

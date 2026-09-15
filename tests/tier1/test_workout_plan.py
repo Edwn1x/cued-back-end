@@ -170,7 +170,7 @@ BRIEF_CARD = {
 
 def test_summary_lines_volume_prs_and_closer_on_the_briefs_card(db):
     from workouts.plan import build_session
-    from workouts.summary import finish_session, format_summary, closer_line
+    from workouts.summary import finish_session, format_summary
     from models import get_session, WorkoutSession, SetLog
     user = make_user(db, **FOUNDER)
     # history so 190×4 is a PR over 185×3 (the brief's example)
@@ -207,20 +207,12 @@ def test_summary_lines_volume_prs_and_closer_on_the_briefs_card(db):
     assert text.splitlines()[-1] == "8,040 lb total · 1 PR"
     assert summary["prs"] == ["190 × 4 is a PR 🎉 last time was 185 × 3."]
     assert summary["taps"] == 3 and summary["texts"] == 1 and summary["tapbacks"] == 9
-    assert closer_line(summary) == "twelve taps and one text. that's the whole log — no app opened."
     s = get_session()
     try:
         row = s.get(WorkoutSession, ws.id)
         assert row.status == "done" and row.total_volume_lb == 8040 and row.pr_count == 1
     finally:
         s.close()
-
-
-def test_closer_counts_are_real_and_absent_when_nothing_logged():
-    from workouts.summary import closer_line
-    assert closer_line({"taps": 3, "tapbacks": 0, "texts": 1}) == "three taps and one text. that's the whole log — no app opened."
-    assert closer_line({"taps": 1, "tapbacks": 0, "texts": 0}) == "one tap. that's the whole log — no app opened."
-    assert closer_line({"taps": 0, "tapbacks": 0, "texts": 0}) is None
 
 
 def test_finish_is_idempotent_and_counts_only_done_sets(db):

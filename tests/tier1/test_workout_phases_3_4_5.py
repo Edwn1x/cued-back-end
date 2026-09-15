@@ -261,7 +261,7 @@ def test_text_close_finishes_sends_summary_and_mirrors_to_legacy(db, imessage_on
         s.close()
     summary = sidecar_ok[-1]
     assert summary.splitlines()[0].startswith("push · ") and "bench press — 135×5 · 135×5" in summary
-    assert "1,350 lb total · 0 PRs" in summary and "two texts. that's the whole log" in summary
+    assert "1,350 lb total · 0 PRs" in summary and "no app opened" not in summary
     p = get_split_pointer(user.id)
     assert p["day"] == "push" and p["source"] == "confirmed"      # the pointer moved with the session
 
@@ -303,7 +303,7 @@ def test_sms_done_fills_untouched_sets_as_planned_without_counting_them_as_taps(
     rows = _sets(db, sid)
     assert all(r[2] for r in rows) and rows[0][5] == "text" and rows[1][5] == "coach"
     summary = sms_capture[-1][1]
-    assert "one text. that's the whole log" in summary
+    assert "no app opened" not in summary and summary.strip().endswith("PR") or "lb total" in summary
 
 
 # ─── log_workout routes into an open session; abandon sweep ─────────────────

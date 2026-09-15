@@ -76,24 +76,6 @@ def format_summary(s: dict) -> str:
     return "\n".join([head, *s["lines"], tail])
 
 
-def closer_line(s: dict) -> str | None:
-    """`three taps and one text. that's the whole log — no app opened.` — only with
-    the REAL counts, in words up to twenty."""
-    words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-             "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
-             "nineteen", "twenty"]
-    taps, texts = s["taps"] + s["tapbacks"], s["texts"]
-    if taps + texts == 0:
-        return None
-    def w(n, noun):
-        n_word = words[n] if n < len(words) else str(n)
-        return f"{n_word} {noun}{'' if n == 1 else 's'}"
-    parts = [w(taps, "tap")] if taps else []
-    if texts:
-        parts.append(w(texts, "text"))
-    return f"{' and '.join(parts)}. that's the whole log — no app opened."
-
-
 def finish_session(session_id: int, *, now=None) -> dict:
     now = now or _utcnow()
     session = get_session()
