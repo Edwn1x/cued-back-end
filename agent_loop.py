@@ -16,6 +16,7 @@ switching thinking modes would break the messages cache — see INVESTIGATION §
 from __future__ import annotations
 
 import logging
+import re
 import os
 from datetime import datetime, timezone
 
@@ -365,6 +366,19 @@ def _join_text(content) -> str:
     ).strip()
 
 
+_GYM_RE = re.compile(r"\b(gym|rsf|weight ?room|lift(?:ing)?|workout|train(?:ing)?|push|pull|legs|bench|squat|crowded|busy|packed|line)\b", re.I)
+
+
+def _gym_mentioned(text: str, user) -> bool:
+    if text and _GYM_RE.search(text):
+        return True
+    try:
+        from workouts.session_ops import active_session_id
+        return active_session_id(user.id) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
                    message_id: str = None) -> str:
     """One agentic turn → the reply text. Raises only on genuine anomalies (caller
@@ -372,6 +386,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     session = get_session()
     try:
         context = build_loop_context(user, session)
+        # Series §2.4: when a workout is discussed or the gym comes up, the coach
+        # gets the meter as ONE code line — it phrases it, never invents a number.
+        if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
+            try:
+                import occupancy as _occ
+                _line = _occ.context_line(_occ.now())
+                if _line:
+                    context += f"\n\n## RSF WEIGHT ROOM (live meter — quote it, never invent a number)\n{_line}"
+            except Exception as e:  # noqa: BLE001
+                logger.warning("RSF_CONTEXT_FAILED user=%s err=%s", user.id, e)
     finally:
         session.close()
 

@@ -65,6 +65,8 @@ class User(Base):
     protein_target_computed = Column(Integer, default=None)
     targets_source = Column(String(16), default=None)  # 'computed' | 'user' | 'adaptive'
     weigh_in_opt_out = Column(Boolean, default=False)   # "i don't own a scale" — never nudge
+    queue_opt_in = Column(Boolean, default=False)        # §2.7: let the coach join the RSF line for them
+    location_opt_out = Column(Boolean, default=False)    # §3.5: 'stop asking' for location pins
     targets_explained = Column(Boolean, default=False)  # True once the coach has explained the targets to the user
     confirmed_goal_priority = Column(String(50), default=None)  # "cutting" or "building" — set once user confirms
     confirmed_training_split = Column(String(500), default=None)  # "ppl", "upper_lower", … (prod width 500)
@@ -351,6 +353,20 @@ class Place(Base):
     radius_m = Column(Integer, default=120)
     walk_min_to_rsf = Column(Integer)
     user_id = Column(Integer, ForeignKey("users.id"))  # NULL = global
+
+
+class QueueTicket(Base):
+    """RSF virtual-line tickets (series §2.6). One open ticket per user, max."""
+    __tablename__ = "queue_tickets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    ticket_id = Column(String(80), nullable=False)
+    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    est_wait_min = Column(Integer)
+    summoned_at = Column(DateTime)
+    left_at = Column(DateTime)
+    status = Column(String(12), default="open")        # open | summoned | left | expired
 
 
 class WorkoutSession(Base):
