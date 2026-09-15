@@ -90,3 +90,13 @@ A tapback/emoji reaction on one of our messages is forwarded to Flask as a norma
 inbound with `text: ""` and `reaction: { emoji, target_id }` (the reacted-to Photon
 message id). Flask uses it for 👍 on a per-exercise workout message; anything else
 is acknowledged and dropped.
+
+## Location experiment (series §3.0)
+
+- `GET /location/:phone` (secret) → **501** with the reason: spectrum-ts 12.8.0 has no
+  `locations` API on the iMessage provider (nor do Photon's docs). Swap in the real call
+  when the SDK grows one.
+- `INBOUND_DEBUG_LOG=1` (env, experiment window only) logs the FULL shape of every inbound
+  — content kinds, field names, attachment name/mime/size, the text, contact/richlink
+  bodies — with the phone reduced to its last 4. Any content kind we don't forward is
+  logged as `inbound skipped` with its type.

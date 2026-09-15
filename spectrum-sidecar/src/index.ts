@@ -66,6 +66,10 @@ export type Deps = {
    *  original Message is looked up from this process's memory first, then rebuilt
    *  from `card_session` (survives a sidecar restart as far as the SDK allows). */
   updateCard: (phone: string, cardSession: CardSession, url: string, live?: boolean, layout?: CardLayout) => Promise<void>;
+  /** Series §3.0 (b): Photon's continuous-share read, IF the SDK exposes one. Left
+   *  undefined in this build — spectrum-ts 12.8.0 has no `locations` API — so
+   *  GET /location/:phone answers 501 with that reason. */
+  getLocation?: (phone: string) => Promise<unknown>;
 };
 
 /** The static preview shown in the bubble when the card is NOT live (tapping it
@@ -232,6 +236,25 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       }
     }
 
+    // Series §3.0 experiment (b): Photon's continuous-share API. spectrum-ts 12.8.0
+    // (installed = latest on npm) exposes no `locations` on the iMessage provider and
+    // Photon's docs have no location section — so this answers with the exact reason
+    // instead of pretending. Swap the body for the real call the day the SDK has one.
+    if (req.method === "GET" && pathname.startsWith("/location/")) {
+      const phone = decodeURIComponent(pathname.slice("/location/".length));
+      if (!phone) return json(400, { ok: false, error: "expected /location/:phone" });
+      if (!deps.getLocation) {
+        log("info", "location api unavailable", { to: last4(phone), sdk: "spectrum-ts 12.8.0" });
+        return json(501, { ok: false, error: "imessage(app).locations is not available in spectrum-ts 12.8.0 (no locations API in the SDK typings or Photon docs as of 2026-09-14)" });
+      }
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        return json(200, { ok: true, location: await deps.getLocation(phone) });
+      } catch (err) {
+        return json(502, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
     if (req.method === "POST" && pathname === "/send-card") {
       let body: { phone?: unknown; url?: unknown; live?: unknown; layout?: unknown };
       try { body = (await req.json()) as typeof body; } catch { return json(400, { ok: false, error: "invalid json" }); }
@@ -332,6 +355,23 @@ export async function buildInbound(
     | { type: "reaction"; emoji: string; target?: { id?: string } }
     | { type: string };
 
+  if (process.env.INBOUND_DEBUG_LOG === "1") {
+    // §3.0 experiment (a): what does a Messages location pin look like on the wire?
+    // Everything but the phone, verbatim: content kinds (outer + unwrapped), every
+    // field name, attachment name/mime/size, the full text.
+    const outer = (message.content as { type?: string }).type;
+    const fields = c && typeof c === "object" ? Object.keys(c as object) : [];
+    const att = (c as { name?: string; mimeType?: string; size?: number });
+    log("info", "inbound DEBUG", {
+      from: last4(sender.address ?? sender.id), service: sender.service ?? null, id: message.id,
+      outer_type: outer, type: (c as { type?: string }).type, fields,
+      text: (c as { text?: string }).text ?? null,
+      attachment: att.mimeType ? { name: att.name, mime: att.mimeType, size: att.size ?? null } : null,
+      contact: (c as { type?: string }).type === "contact" ? JSON.stringify(c, (k, v) => (k === "raw" && typeof v === "string" ? v.slice(0, 2000) : v)).slice(0, 4000) : null,
+      richlink: (c as { type?: string }).type === "richlink" ? JSON.stringify(c).slice(0, 1500) : null,
+    });
+  }
+
   let body = "";
   const files: InboundFile[] = [];
   let reaction: InboundPayload["reaction"] | undefined;
@@ -344,7 +384,8 @@ export async function buildInbound(
     const r = c as { emoji: string; target?: { id?: string } };
     reaction = { emoji: r.emoji, target_id: r.target?.id ?? null };
   } else {
-    return null; // typing, read, poll, richlink, … — not coaching input
+    log("info", "inbound skipped", { from: last4(sender.address ?? sender.id), type: (c as { type?: string }).type });
+    return null; // typing, read, poll, richlink, contact, … — not coaching input (yet)
   }
 
   return {
