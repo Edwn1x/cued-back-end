@@ -232,6 +232,16 @@ CAPABILITIES: list[Capability] = [
         used=None,
         reveal_when="they ask what you know about them",
     ),
+    Capability(
+        id="connect_accounts",
+        what="i can read your google calendar and strava so i plan around your week and see your runs",
+        how="say the word and i text you a one-tap link — no app, no login",
+        tools=("send_connect_link",),
+        enabled=lambda u: config.GCAL_ENABLED or config.STRAVA_READ_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
+        used=None,
+        reveal_when="they mention their calendar, a busy week, strava, or a run/ride",
+    ),
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.

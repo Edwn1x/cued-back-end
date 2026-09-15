@@ -1422,8 +1422,64 @@ def log_web_search_queries(user_id, content, site: str) -> list[str]:
     return queries
 
 
+SEND_CONNECT_LINK_TOOL = {
+    "name": "send_connect_link",
+    "description": (
+        "Text the user a one-tap link to connect a third-party account. Use it "
+        "ONLY when they ask to connect something or clearly accept the offer "
+        "(\"can u see my calendar\" / \"yeah connect it\" / \"i use strava\"). "
+        "Fire it once — the link goes out as its own bubble; your reply is the "
+        "sentence around it, not the URL. Providers: 'gcal' (google calendar, "
+        "read-only) and 'strava' (activities). Not for bcourses — that's a pasted "
+        "feed URL, no link needed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"provider": {"type": "string", "enum": ["gcal", "strava"]}},
+        "required": ["provider"],
+    },
+}
+
+
+def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Mint a single-use connect token, record it on the pending Integration row,
+    and text the user the /c/<provider> link as its own bubble. Returns a status
+    string for the model (the model's own reply is the sentence around the link)."""
+    provider = (tool_input or {}).get("provider", "").strip().lower()
+    if provider not in ("gcal", "strava"):
+        return f"error: unknown provider {provider!r}"
+    # gate: only offer a provider whose flag is on
+    flag = {"gcal": config.GCAL_ENABLED,
+            "strava": config.STRAVA_READ_ENABLED or config.STRAVA_POST_ENABLED}[provider]
+    if not flag:
+        return f"error: {provider} is not enabled"
+
+    from integrations import base
+    from integrations.tokens import connect_token
+
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        phone = user.phone if user else None
+    finally:
+        session.close()
+    if not phone:
+        return "error: no phone on file"
+
+    token, nonce = connect_token(user_id, provider)
+    import time as _time
+    base.set_pending(user_id, provider, nonce, int(_time.time()) + 30 * 60)
+    link = f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/c/{provider}?t={token}"
+
+    from sms import send_sms
+    send_sms(phone, link, user_id=user_id, message_type="connect_link")
+    logger.info("SEND_CONNECT_LINK user=%s provider=%s", user_id, provider)
+    return f"ok: sent the {provider} connect link"
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
+    "send_connect_link": handle_send_connect_link,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,
     "log_workout": handle_log_workout,
