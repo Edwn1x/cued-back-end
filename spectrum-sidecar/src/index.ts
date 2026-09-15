@@ -369,6 +369,12 @@ export async function buildInbound(
       attachment: att.mimeType ? { name: att.name, mime: att.mimeType, size: att.size ?? null } : null,
       contact: (c as { type?: string }).type === "contact" ? JSON.stringify(c, (k, v) => (k === "raw" && typeof v === "string" ? v.slice(0, 2000) : v)).slice(0, 4000) : null,
       richlink: (c as { type?: string }).type === "richlink" ? JSON.stringify(c).slice(0, 1500) : null,
+      // A Messages location pin arrived as { type: "custom", raw } (live 2026-09-15) —
+      // the provider's escape hatch for content it doesn't model. Dump `raw` (bounded,
+      // phone digits redacted) so we can see the actual shape.
+      custom: (c as { type?: string }).type === "custom"
+        ? JSON.stringify((c as { raw?: unknown }).raw, (_k, v) => (typeof v === "string" ? v.replace(/\+?1?\d{10}\b/g, "…redacted…") : v)).slice(0, 6000)
+        : null,
     });
   }
 
