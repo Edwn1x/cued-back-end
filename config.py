@@ -196,6 +196,17 @@ RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
 RECEIPT_CLASSIFIER_MODEL = os.getenv("RECEIPT_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
 RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5")
 PANTRY_MAX_STOCKED_DAYS = 7
+# RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
+# integrations/waitwell/). All default off. The Density share token is the public
+# one embedded in recwell's crowd-meter page (see INVESTIGATION.md).
+RSF_METER_ENABLED = os.getenv("RSF_METER_ENABLED", "false").lower() == "true"
+RSF_BEATS_ENABLED = os.getenv("RSF_BEATS_ENABLED", "false").lower() == "true"
+RSF_QUEUE_ENABLED = os.getenv("RSF_QUEUE_ENABLED", "false").lower() == "true"
+DENSITY_SHARE_TOKEN = os.getenv("DENSITY_SHARE_TOKEN", "shr_o69HxjQ0BYrY2FPD9HxdirhJYcFDCeRolEd744Uj88e")
+DENSITY_DISPLAY_ID = os.getenv("DENSITY_DISPLAY_ID", "dsp_956223069054042646")
+RSF_CONTACT_EMAIL = os.getenv("RSF_CONTACT_EMAIL", "enrr865@gmail.com")
+RSF_TIMEOUT_S = int(os.getenv("RSF_TIMEOUT_S", "10"))
+RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
 # Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
 # and inject a code-computed macro totals block. Default ON (these are corrections);
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.

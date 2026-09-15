@@ -651,6 +651,29 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # Series §2.7: opt-in replies / 'handle the line for me' / 'not going' — in code.
+        if (user.onboarding_step or 0) >= 3 and not image_url:
+            try:
+                from gym_beats import handle_text as _gym_text
+                gline = _gym_text(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("GYM_TEXT_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                gline = None
+            if gline:
+                send_sms(user.phone, gline, user_id=user.id, message_type="gym_reply")
+                if gline.startswith("bet — i'll handle it from now on"):
+                    from gym_beats import propose as _gym_propose
+                    s2 = get_session()
+                    try:
+                        u2 = s2.get(User, user.id)
+                        beat = _gym_propose(u2, s2)
+                    finally:
+                        s2.close()
+                    if beat and beat.kind in ("line_d2", "line_d1"):
+                        send_sms(user.phone, beat.text, user_id=user.id, message_type=beat.message_type)
+                typing_stop(user.id)
+                return
+
         # Workout card, Phase 4: with a session open, a terse set ('190 x4',
         # 'only got 3', 'skipped incline') or a close ('done') is handled in code —
         # exactly one line back ('swapped it in.' / the PR line), never a model turn.
