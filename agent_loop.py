@@ -303,6 +303,17 @@ def build_loop_context(user, session) -> str:
                      "their link, or want to double-check what you have on them, send this URL "
                      "(the one link you may always send). Never say you don't have it.")
 
+    # Series §1.5: what they have at home (receipts / text), so dinner suggestions
+    # prefer it. Flag-gated inside pantry_context.
+    if (getattr(user, "onboarding_step", 0) or 0) >= 3:
+        try:
+            from receipts import pantry_context
+            _pc = pantry_context(user.id)
+            if _pc:
+                parts.append(_pc)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PANTRY_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # Adaptive targets: the weight trend, and today's cycle result if there is one.
     if (getattr(user, "onboarding_step", 0) or 0) >= 3:
         try:
@@ -393,9 +404,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         if estimation:
             system += f"\n\n{estimation}"
 
+    if image_data and config.READ_IMAGE_ENABLED and config.RECEIPTS_ENABLED:
+        # Series §1.2: a cheap pre-classifier. A receipt is itemized into the pantry
+        # and answered in code — the meal path never sees it. meal/other → unchanged.
+        from receipts import handle_receipt_image
+        receipt_reply = handle_receipt_image(user.id, image_data)
+        if receipt_reply is not None:
+            return receipt_reply
     if image_data and config.READ_IMAGE_ENABLED:
         # The model sees the image and routes it in-call (food/calendar/whiteboard/
-        # other) — no pre-classifier. Log the receipt as corpus for schema tuning.
+        # other) — no pre-classifier beyond the receipt check. Log the receipt as corpus.
         logger.info("AGENT_LOOP_IMAGE user=%s — vision routing (read_image corpus marker)", user.id)
         user_content = [image_data, {"type": "text", "text": combined_body or "(the user sent an image)"}]
     elif image_data:

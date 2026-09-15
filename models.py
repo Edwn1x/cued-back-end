@@ -296,6 +296,63 @@ class TargetAdjustment(Base):
     weighins = Column(Integer)
 
 
+class Signal(Base):
+    """Shared signal ledger (receipts, locations, …). `payload` is reduced at ingest —
+    never raw coordinates. `expires_at` set → readers ignore after it."""
+    __tablename__ = "signals"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    kind = Column(String(20), nullable=False)          # receipt | location | …
+    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    source = Column(String(30))
+    payload = Column(JSON)
+    expires_at = Column(DateTime)
+
+
+class PantryItem(Base):
+    __tablename__ = "pantry"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    item = Column(String(80), nullable=False)          # canonical (USDA description or normalized name)
+    label = Column(String(80))                         # as printed / as the user says it
+    qty = Column(Float)
+    unit = Column(String(20))
+    est_grams = Column(Float)
+    protein_per_100g = Column(Float)
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    source = Column(String(10))                        # receipt | text
+    depleted_at = Column(DateTime)
+
+
+class GymOccupancy(Base):
+    """Global (not per-user): one row per poll of the RSF crowd meter."""
+    __tablename__ = "gym_occupancy"
+
+    id = Column(Integer, primary_key=True)
+    facility = Column(String(20), nullable=False)      # rsf_weights | rsf_cardio
+    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    pct = Column(Integer)
+    est_wait_min = Column(Integer)
+    raw = Column(JSON)
+
+
+class Place(Base):
+    """Seeded campus POIs (+ a per-user 'home'). walk_min_to_rsf precomputed; no maps
+    API at message time."""
+    __tablename__ = "places"
+
+    id = Column(Integer, primary_key=True)
+    slug = Column(String(40), nullable=False)
+    name = Column(String(80))
+    lat = Column(Float)
+    lng = Column(Float)
+    radius_m = Column(Integer, default=120)
+    walk_min_to_rsf = Column(Integer)
+    user_id = Column(Integer, ForeignKey("users.id"))  # NULL = global
+
+
 class WorkoutSession(Base):
     """One planned/active/done session (the card). Sits beside the legacy
     `workouts` row; `SetLog` rows are the truth for sets."""

@@ -190,6 +190,12 @@ LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() =
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"
+# Receipts → pantry (receipts.py). Off by default: the image pre-classifier adds
+# one haiku call to every photo turn; flip after GATE 1 on the founder's phone.
+RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
+RECEIPT_CLASSIFIER_MODEL = os.getenv("RECEIPT_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
+RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5")
+PANTRY_MAX_STOCKED_DAYS = 7
 # Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
 # and inject a code-computed macro totals block. Default ON (these are corrections);
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.
