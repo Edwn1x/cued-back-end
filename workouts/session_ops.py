@@ -44,6 +44,47 @@ def _session_exercises(session, ws_id: int) -> list[tuple[str, str]]:
     return out
 
 
+def _resolve_exercise(session, ws_id: int, upd: SetUpdate) -> str | None:
+    rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
+    ex = upd.exercise
+    if ex:
+        return ex
+    done = [r for r in rows if r.done and r.done_at]
+    if done:
+        return max(done, key=lambda r: r.done_at).exercise
+    first_undone = next((r for r in rows if not r.done), None)
+    return first_undone.exercise if first_undone else None
+
+
+def _apply_multi(session, ws, ws_id: int, upd: SetUpdate) -> int:
+    """A structured "135 for 3 sets 7 reps" report: fill/create that many sets of the
+    exercise at the given weight/reps. Supersedes this exercise's prior TEXT sets in
+    the session (an earlier terse mis-parse), keeping card/tapback/coach sets."""
+    from card_page import apply_set_update
+    ex = _resolve_exercise(session, ws_id, upd)
+    if not ex:
+        return 0
+    label = next((r.exercise_label for r in session.query(SetLog).filter(SetLog.session_id == ws_id, SetLog.exercise == ex)), None) or ex
+    for r in session.query(SetLog).filter(SetLog.session_id == ws_id, SetLog.exercise == ex,
+                                          SetLog.source == "text", SetLog.done.is_(True)).all():
+        session.delete(r)
+    session.flush()
+    undone = session.query(SetLog).filter(SetLog.session_id == ws_id, SetLog.exercise == ex,
+                                          SetLog.done.is_(False)).order_by(SetLog.set_index).all()
+    existing = session.query(SetLog).filter(SetLog.session_id == ws_id, SetLog.exercise == ex).count()
+    applied = 0
+    for i in range(upd.sets or 1):
+        if i < len(undone):
+            apply_set_update(session, ws, undone[i], done=True, actual_weight=upd.weight, actual_reps=upd.reps, source="text")
+        else:
+            new = SetLog(session_id=ws_id, exercise=ex, exercise_label=label, set_index=existing + i,
+                         planned_weight=upd.weight, planned_reps=upd.reps)
+            session.add(new); session.flush()
+            apply_set_update(session, ws, new, done=True, actual_weight=upd.weight, actual_reps=upd.reps, source="text")
+        applied += 1
+    return applied
+
+
 def _target_set(session, ws_id: int, upd: SetUpdate) -> SetLog | None:
     rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
     ex = upd.exercise
@@ -87,6 +128,17 @@ def apply_text_update(user_id: int, text: str) -> str | None:
             session.commit()
             logger.info("WORKOUT_TEXT_SKIP user=%s session=%s exercise=%s removed=%s", user_id, ws_id, upd.exercise, n)
             return "skipped it." if n else "nothing left to skip there."
+        if (upd.sets or 1) > 1:
+            n = _apply_multi(session, ws, ws_id, upd)
+            logger.info("WORKOUT_TEXT_MULTISET user=%s session=%s exercise=%s sets=%s w=%s r=%s",
+                        user_id, ws_id, upd.exercise, n, upd.weight, upd.reps)
+            reply = f"logged {n} sets." if n else None
+            if reply is None:
+                return None
+            session.close()
+            from workouts.card import refresh_card_async
+            refresh_card_async(ws_id)
+            return reply
         row = _target_set(session, ws_id, upd)
         if not row:
             return None
