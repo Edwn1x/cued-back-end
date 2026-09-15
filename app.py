@@ -1492,6 +1492,13 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         else:
             buffer_delay = (90, 150)
 
+    # A captionless photo is the strongest signal that a caption is coming (people
+    # send the pic, then the words). Live 2026-09-15: the image flushed at 20s, the
+    # caption landed the same second → two turns, two replies, two questions.
+    # Hold a bare image longer so the words join it.
+    if image_data and not (body or "").strip():
+        buffer_delay = (max(buffer_delay[0], 45), max(buffer_delay[1], 60))
+
     # Buffer the message — AI call and SMS response happen after the delay
     buffer_message(
         phone=from_number,

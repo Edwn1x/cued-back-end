@@ -158,3 +158,33 @@ def test_inbound_unreadable_attachment_is_text_only_but_still_marked(db, client,
     assert r.status_code == 200
     assert seen["image_url"] == "clip.mov"     # the marker still records that media came
     assert seen["image_data"] is None          # but no block goes to the model
+
+
+def test_captionless_image_gets_a_longer_buffer_so_the_caption_joins_it(db, client, imessage_on, monkeypatch):
+    """Live 2026-09-15: photo at :41, 'From binge' at :08 the next minute — the image
+    flushed at 20s (active-convo band) and the caption became a second turn with a
+    second question. A bare image now waits ≥45s; a captioned one keeps its band."""
+    import app as appmod
+    from tests.factories import make_user
+    from models import get_session, Message
+    from datetime import datetime, timezone
+    seen = []
+    monkeypatch.setattr(appmod, "buffer_message", lambda **kw: seen.append(kw))
+    user = make_user(db, onboarding_step=3)
+    s = get_session()
+    try:  # a recent inbound → the 20–30s active band applies
+        s.add(Message(user_id=user.id, direction="in", body="yo", message_type="freeform", channel="imessage",
+                      provider_sid="spc-0", delivery_status="delivered", created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+        s.commit()
+    finally:
+        s.close()
+    png = PNG_1PX
+    _post(client, user.phone, "IMG_1.png", "image/png", png)
+    assert seen[-1]["delay_override"] == (45, 60)
+    # with a caption, the normal active band
+    payload = {"phone": user.phone, "text": "from binge", "provider_message_id": "photon-cap", "chat_guid": "x",
+               "service": "iMessage", "line_phone": "+1628", "timestamp": "2026-09-15T01:19:00.000Z",
+               "attachments": [{"name": "IMG_2.png", "mime_type": "image/png", "size": len(png)}]}
+    data = {"payload": json.dumps(payload), "attachment_0": (io.BytesIO(png), "IMG_2.png", "image/png")}
+    client.post("/internal/inbound", data=data, headers={"X-Internal-Secret": SECRET}, content_type="multipart/form-data")
+    assert seen[-1]["delay_override"] == (20, 30)
