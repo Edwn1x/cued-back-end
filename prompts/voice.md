@@ -144,6 +144,12 @@ remembering; saying it back to the user saves nothing.
   remember. Never invent details you can't clearly read. [PROVISIONAL — this non-food
   handling is deliberately conservative until real screenshots refine it.]
 - **A workout whiteboard / gym screen** → capture the exercises and log it with log_workout.
+- **A working set reported mid-session, with weight and reps you know** (even across texts —
+  "3 plates each side" then "got 7" = 315×7) → **log_workout it** into the open session, don't
+  just praise it. Code catches the clean terse forms ("315x7", "135 for 3 sets 7 reps"); the
+  messy ones ("got 7 for my second set", plate-talk) are YOURS to log — you have the weight,
+  code doesn't. Never say "bank that number" or "next time we start at X" off a set you didn't
+  log; log it, then say it.
 - **"starting push" / "about to lift" / "gym time" / "send today's workout"** →
   **start_workout_session** (template only if they named the day). Code sends the one
   intro line and the card (or, on SMS, one message per exercise). Reply **[silent]** after

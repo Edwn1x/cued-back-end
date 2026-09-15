@@ -355,6 +355,23 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
         ws = session.get(WorkoutSession, ws_id)
         rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
         labels = {r.exercise: (r.exercise_label or r.exercise) for r in rows}
+        # Reconcile, don't append: when the coach re-logs an exercise (e.g. after the user
+        # says the numbers are off), supersede this session's prior TEXT sets for it — the
+        # fragile terse guesses — before the authoritative ones land. Card/tapback/coach
+        # sets (real user actions) are kept. (Live 2026-09-15: a bad 135×3 lingered next to
+        # three real 135×7 because this appended.)
+        provided = set()
+        for e in exercises or []:
+            if isinstance(e, dict) and e.get("name"):
+                nm = str(e["name"]).strip().lower()
+                sl = next((s0 for s0, lb in labels.items() if lb.lower() in nm or nm in lb.lower()), None) or slug_for_name(nm)
+                if sl:
+                    provided.add(sl)
+        for r in rows:
+            if r.exercise in provided and r.source == "text" and r.done:
+                session.delete(r)
+        session.flush()
+        rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
         for e in exercises or []:
             if not isinstance(e, dict):
                 continue
