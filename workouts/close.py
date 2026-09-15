@@ -1,5 +1,5 @@
 """Closing a session: the summary text (the site card as a message) + the honest
-closer line, sent through send_sms (routes blue/green like any message)."""
+sent through send_sms (routes blue/green like any message)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 
 from models import get_session, User, WorkoutSession
 from sms import send_sms
-from workouts.summary import summarize, format_summary, closer_line
+from workouts.summary import summarize, format_summary
 
 logger = logging.getLogger("cued.workouts")
 
@@ -23,9 +23,9 @@ def session_summary_text(session_id: int) -> str | None:
         session.close()
     if s["sets_done"] == 0:
         return None
-    text = format_summary(s)
-    closer = closer_line(s)
-    return f"{text}\n\n{closer}" if closer else text
+    # No closer line: the summary is the card + the total, nothing after (the
+    # "no app opened" pitch was marketing copy inside the product — voice rewrite).
+    return format_summary(s)
 
 
 def send_session_summary(session_id: int) -> bool:

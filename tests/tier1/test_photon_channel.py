@@ -160,19 +160,16 @@ def test_twilio_failure_writes_failed_row_and_reraises(db, monkeypatch):
     assert [(r.channel, r.delivery_status, r.provider_sid) for r in rows] == [("sms", "failed", None)]
 
 
-def test_imessage_gets_the_full_body_in_one_call_parts_joined(db, imessage_on, sidecar_ok):
-    """SMS splits on `---` into separate texts; iMessage sends ONE bubble with the
-    coach's part boundaries kept as blank lines, never a literal `---`. No GSM-7
-    normalization either — iMessage is unicode."""
+def test_imessage_splits_bubbles_on_dashes_no_gsm7(db, imessage_on, sidecar_ok):
+    """Voice rewrite: each `---` part is its own blue bubble (up to 3); the em dash and
+    unicode survive (no GSM-7 normalization on iMessage); a literal `---` never sends."""
     from sms import send_sms
     user = make_user(db, preferred_channel="imessage")
 
     send_sms(user.phone, "main point — with an em dash --- context here --- so, lift today?", user_id=user.id)
 
-    assert len(sidecar_ok) == 1
-    body = sidecar_ok[0][1]
-    assert body == "main point — with an em dash\n\ncontext here\n\nso, lift today?"
-    assert "---" not in body
+    assert [b for _, b in sidecar_ok] == ["main point — with an em dash", "context here", "so, lift today?"]
+    assert all("---" not in b for _, b in sidecar_ok)
 
 
 def test__send_imessage_http_shape_and_error_handling(monkeypatch, imessage_on):

@@ -178,7 +178,7 @@ def test_finish_closes_the_session_and_sends_the_summary_text(client, planned, s
     assert get_split_pointer(user.id)["day"] == "push" and is_workout_confirmed_today(user.id)
     assert "bench press - 135x5 · 135x5 · 140x4 · 135x5" in text.replace("×", "x").replace("—", "-")
     assert "2,585 lb total · 0 PRs" in text
-    assert "four taps. that's the whole log - no app opened." in text.replace("—", "-")
+    assert "no app opened" not in text and "taps" not in text.split("PR")[-1]  # closer removed (voice rewrite)
     # a closed session refuses further taps; finishing again is idempotent
     assert client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": False})).status_code == 409
     assert client.post("/card/api/finish", headers=_auth(tok), data="{}").get_json()["ok"]

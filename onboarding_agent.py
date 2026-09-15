@@ -767,8 +767,14 @@ def _build_confirmation_summary(user) -> str:
                        f"(I'd have set {targets['calories']}/{targets['protein']}g). ")
     else:
         targets_bit = f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
+    # Only state fields the user actually gave — a fact they didn't give is a trust
+    # break (live: "20 years old" recited when age was never asked). Weight as an int,
+    # never 137.0.
+    who = f"{height_str}, {int(user.weight_lbs)} lbs" if user.weight_lbs else height_str
+    if user.age:
+        who += f", {user.age}"
     return (
-        f"Here's what I'm working with: {height_str}, {user.weight_lbs} lbs, {user.age} years old. "
+        f"Here's what I'm working with: {who}. "
         f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}."
         f"{sleep_bit} "
         f"{targets_bit}"

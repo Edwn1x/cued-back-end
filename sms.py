@@ -118,22 +118,28 @@ def _imessage_body(body: str) -> str:
     return "\n\n".join(parts) if parts else body
 
 
-def split_message(body: str) -> list[str]:
-    """Split a coach message into SMS parts using --- as the delimiter.
+BUBBLE_CAP = 3
+BUBBLE_MIN_DELAY = 1.0
+BUBBLE_MAX_DELAY = 3.5
 
-    The AI is instructed to separate messages with ---. Each part maps to
-    one text: msg 1 = main content, msg 2 = context, msg 3 = CTA/question.
-    Falls back to the full body as a single message if no delimiter found.
-    Caps at 3 parts.
-    """
-    import re
+
+def split_bubbles(body: str, cap: int = BUBBLE_CAP) -> list[str]:
+    """Split a coach reply into bubbles on `---`; each is one send. Up to `cap`;
+    extras fold into the last (blank-line joined). Voice rewrite 2026-09-15."""
     parts = [p.strip() for p in re.split(r"\s*---\s*", body) if p.strip()]
-
-    # Cap at 2
-    if len(parts) > 2:
-        parts = parts[:1] + [" --- ".join(parts[1:])]
-
+    if len(parts) > cap:
+        parts = parts[:cap - 1] + ["\n\n".join(parts[cap - 1:])]
     return parts if parts else [body]
+
+
+def bubble_delay(part: str) -> float:
+    """Roughly typing speed: short bubble follows fast, longer one takes a beat."""
+    return max(BUBBLE_MIN_DELAY, min(BUBBLE_MAX_DELAY, len(part) / 25.0))
+
+
+def split_message(body: str) -> list[str]:
+    """Back-compat alias — both channels split on `---` up to BUBBLE_CAP now."""
+    return split_bubbles(body)
 
 
 TAPBACKS = {"love": "❤️", "like": "👍", "dislike": "👎", "laugh": "😂", "emphasize": "‼️", "question": "❓"}
@@ -223,39 +229,50 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     # On ANY failure: write the `failed` row FIRST (the keystone reads it), trip
     # the breaker, then fall through to Twilio so the same message still lands.
     if _resolve_channel(user_id) == "imessage":
-        im_body = _imessage_body(body)
-        try:
-            # Threaded only when the coach asked; the 2-arg form is preserved so
-            # every existing caller (and test double) of _send_imessage still works.
-            sid = (_send_imessage(phone, im_body, reply_to_sid) if reply_to_sid
-                   else _send_imessage(phone, im_body))
-            _log_message(user_id, im_body, message_type,
-                         channel="imessage", provider_sid=sid, delivery_status="sent")
-            return sid
-        except Exception as e:  # noqa: BLE001 — every failure class fails over
-            # The bubble was up for an iMessage reply that isn't coming — clear it
-            # before the green one goes out (best-effort; the DM may be unreachable).
+        # Each `---` part is its own blue bubble, threaded on the first only. The first
+        # bubble is the failover pivot: if IT fails the pipe is down and the whole
+        # message falls over to SMS (below, with the consent-gate handling intact); a
+        # later bubble failing logs a failed row and stops — the earlier bubbles landed.
+        bubbles = [_imessage_body(b) for b in split_bubbles(body)]
+        first_sid = None
+        first_err = None
+        for i, part in enumerate(bubbles):
             try:
-                from typing_indicator import typing_stop
-                typing_stop(user_id)
-            except Exception:  # noqa: BLE001
-                pass
-            if _is_consent_gate(e):
-                # Shared-pool consent gate: THEY haven't texted their line yet. Not a
-                # dead pipe — a distinct, non-alarming line; the breaker still trips
-                # (every send would fail the same way) and their first inbound
-                # iMessage resets it. The onboarding hook carries the one-tap link
-                # so the invitation reaches them on the very first text.
-                logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
-                            "their line yet; falling over to SMS", user_id, message_type)
-                if message_type == "onboarding":
-                    body = _with_imessage_invite(user_id, body)
-            else:
-                logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
-                             user_id, message_type, e)
-            _log_message(user_id, im_body, message_type,
-                         channel="imessage", provider_sid=None, delivery_status="failed")
-            _mark_failed_over(user_id)
+                sid = (_send_imessage(phone, part, reply_to_sid) if (i == 0 and reply_to_sid)
+                       else _send_imessage(phone, part))
+                _log_message(user_id, part, message_type,
+                             channel="imessage", provider_sid=sid, delivery_status="sent")
+                if i == 0:
+                    first_sid = sid
+                if i < len(bubbles) - 1:
+                    time.sleep(bubble_delay(part))
+            except Exception as e:  # noqa: BLE001
+                _log_message(user_id, part, message_type,
+                             channel="imessage", provider_sid=None, delivery_status="failed")
+                if i == 0:
+                    first_err = e
+                    break
+                logger.warning("IMESSAGE_BUBBLE_FAILED user_id=%s idx=%s err=%s — earlier bubbles landed",
+                               user_id, i, e)
+                return first_sid
+        if first_err is None:
+            return first_sid
+        e = first_err
+        # First bubble failed → clear the dots and fall the WHOLE message over to SMS.
+        try:
+            from typing_indicator import typing_stop
+            typing_stop(user_id)
+        except Exception:  # noqa: BLE001
+            pass
+        if _is_consent_gate(e):
+            logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
+                        "their line yet; falling over to SMS", user_id, message_type)
+            if message_type == "onboarding":
+                body = _with_imessage_invite(user_id, body)
+        else:
+            logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
+                         user_id, message_type, e)
+        _mark_failed_over(user_id)
 
     # Last transform before dispatch — normalize once on the full body so the
     # warning log (next 6 lines) reports per-logical-message, not per-segment.
@@ -277,12 +294,12 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
             user_id, message_type, segs, len(body),
         )
 
-    parts = split_message(body)
+    parts = split_bubbles(body)
 
     last_sid = None
     for i, part in enumerate(parts):
         if i > 0:
-            time.sleep(SMS_SPLIT_DELAY)
+            time.sleep(bubble_delay(parts[i - 1]))
         try:
             last_sid = _send_single(phone, part)
         except Exception:
