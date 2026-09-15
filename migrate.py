@@ -356,6 +356,27 @@ MIGRATIONS = [
         received_at TIMESTAMP DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_unknown_inbounds_received ON unknown_inbounds (received_at)",
+    # Integrations (OAuth: gcal, strava, bcourses, wearables) — one row per
+    # (user, provider). Tokens stored as Fernet ciphertext (never plaintext). meta
+    # holds sync tokens / feed urls / last_error / the in-flight connect nonce. The
+    # UNIQUE matches models.Integration.__table_args__ so create_all and migrate agree.
+    """CREATE TABLE IF NOT EXISTS integrations (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider VARCHAR(16) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        access_token TEXT,
+        refresh_token TEXT,
+        expires_at TIMESTAMP,
+        scopes TEXT,
+        external_id VARCHAR(64),
+        meta JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (user_id, provider)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_integrations_user ON integrations (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_integrations_provider_status ON integrations (provider, status)",
 ]
 
 def wait_for_db(retries=10, delay=3):
