@@ -288,6 +288,51 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_set_logs_session ON set_logs (session_id)",
     "CREATE INDEX IF NOT EXISTS idx_set_logs_exercise ON set_logs (exercise)",
+    # RSF line / location / receipts series (2026-09-14), §1.1: shared tables.
+    """CREATE TABLE IF NOT EXISTS signals (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        kind VARCHAR(20) NOT NULL,
+        ts TIMESTAMP DEFAULT NOW(),
+        source VARCHAR(30),
+        payload JSON,
+        expires_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_signals_user_kind_ts ON signals (user_id, kind, ts)",
+    """CREATE TABLE IF NOT EXISTS pantry (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        item VARCHAR(80) NOT NULL,
+        label VARCHAR(80),
+        qty DOUBLE PRECISION,
+        unit VARCHAR(20),
+        est_grams DOUBLE PRECISION,
+        protein_per_100g DOUBLE PRECISION,
+        added_at TIMESTAMP DEFAULT NOW(),
+        source VARCHAR(10),
+        depleted_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pantry_user ON pantry (user_id, depleted_at)",
+    """CREATE TABLE IF NOT EXISTS gym_occupancy (
+        id SERIAL PRIMARY KEY,
+        facility VARCHAR(20) NOT NULL,
+        ts TIMESTAMP DEFAULT NOW(),
+        pct INTEGER,
+        est_wait_min INTEGER,
+        raw JSON
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_gym_occupancy_facility_ts ON gym_occupancy (facility, ts)",
+    """CREATE TABLE IF NOT EXISTS places (
+        id SERIAL PRIMARY KEY,
+        slug VARCHAR(40) NOT NULL,
+        name VARCHAR(80),
+        lat DOUBLE PRECISION,
+        lng DOUBLE PRECISION,
+        radius_m INTEGER DEFAULT 120,
+        walk_min_to_rsf INTEGER,
+        user_id INTEGER REFERENCES users(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_places_slug ON places (slug)",
     # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
     """CREATE TABLE IF NOT EXISTS unknown_inbounds (
         id SERIAL PRIMARY KEY,

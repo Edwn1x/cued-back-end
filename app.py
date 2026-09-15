@@ -637,6 +637,20 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             typing_stop(user.id)
             return
 
+        # Series §1.4: pantry text ('out of chicken', 'what do i have') is answered
+        # in code — one line, no model turn. Flag-gated inside handle_pantry_text.
+        if (user.onboarding_step or 0) >= 3 and not image_url:
+            try:
+                from receipts import handle_pantry_text
+                pline = handle_pantry_text(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("PANTRY_TEXT_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                pline = None
+            if pline:
+                send_sms(user.phone, pline, user_id=user.id, message_type="pantry")
+                typing_stop(user.id)
+                return
+
         # Workout card, Phase 4: with a session open, a terse set ('190 x4',
         # 'only got 3', 'skipped incline') or a close ('done') is handled in code —
         # exactly one line back ('swapped it in.' / the PR line), never a model turn.
