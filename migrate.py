@@ -333,6 +333,20 @@ MIGRATIONS = [
         user_id INTEGER REFERENCES users(id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_places_slug ON places (slug)",
+    # §2.6/§2.7/§3.5
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS queue_opt_in BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS location_opt_out BOOLEAN DEFAULT FALSE",
+    """CREATE TABLE IF NOT EXISTS queue_tickets (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        ticket_id VARCHAR(80) NOT NULL,
+        joined_at TIMESTAMP DEFAULT NOW(),
+        est_wait_min INTEGER,
+        summoned_at TIMESTAMP,
+        left_at TIMESTAMP,
+        status VARCHAR(12) DEFAULT 'open'
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_queue_tickets_user_status ON queue_tickets (user_id, status)",
     # Photon migration Phase 4B: unknown-sender ledger (Business-tier trigger count).
     """CREATE TABLE IF NOT EXISTS unknown_inbounds (
         id SERIAL PRIMARY KEY,

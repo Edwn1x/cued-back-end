@@ -560,3 +560,26 @@ describe("card layout (static preview + overlay)", () => {
     expect(pickLayout({ caption: "a", subcaption: "b" })).toEqual({ caption: "a", subcaption: "b" });
   });
 });
+
+
+describe("GET /location/:phone (series §3.0 experiment b)", () => {
+  test("answers 501 with the exact reason — no locations API in this SDK", async () => {
+    const res = await createHandler(deps())(req("/location/%2B12094205037"));
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("spectrum-ts 12.8.0");
+  });
+
+  test("still behind the secret", async () => {
+    const res = await createHandler(deps())(req("/location/%2B1555", { secret: "nope" }));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("inbound debug log (series §3.0 experiment a)", () => {
+  test("an unknown content kind is logged as skipped, not dropped silently", async () => {
+    const built = await buildInbound(fakeSpace, fakeMessage({ content: { type: "contact", user: undefined, raw: "BEGIN:VCARD" } }));
+    expect(built).toBeNull();
+  });
+});

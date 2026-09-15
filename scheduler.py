@@ -507,6 +507,20 @@ def start_scheduler():
     scheduler.add_job(abandon_stale, trigger=_IT2(minutes=30), id="workout_abandon_sweep",
                       replace_existing=True, coalesce=True, max_instances=1)
 
+    # RSF crowd meter (series §2): poll during hours, refresh hours weekly, propose
+    # beats every 15 min, poll open queue tickets every 60s. All flag-gated inside.
+    from apscheduler.triggers.interval import IntervalTrigger as _IT3
+    from integrations.rsf import poll_once as rsf_poll_once, refresh_hours as rsf_refresh_hours
+    from gym_beats import sweep as gym_beats_sweep, poll_open_tickets
+    scheduler.add_job(rsf_poll_once, trigger=_IT3(minutes=config.RSF_POLL_MINUTES), id="rsf_meter_poll",
+                      replace_existing=True, coalesce=True, max_instances=1)
+    scheduler.add_job(rsf_refresh_hours, trigger=CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=ZoneInfo("America/Los_Angeles")),
+                      id="rsf_hours_refresh", replace_existing=True)
+    scheduler.add_job(gym_beats_sweep, trigger=_IT3(minutes=15), id="gym_beats_sweep",
+                      replace_existing=True, coalesce=True, max_instances=1)
+    scheduler.add_job(poll_open_tickets, trigger=_IT3(seconds=60), id="queue_ticket_poll",
+                      replace_existing=True, coalesce=True, max_instances=1)
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell
