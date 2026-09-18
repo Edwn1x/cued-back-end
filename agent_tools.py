@@ -1425,8 +1425,54 @@ def log_web_search_queries(user_id, content, site: str) -> list[str]:
     return queries
 
 
+SET_DAY_RESET_TOOL = {
+    "name": "set_day_reset",
+    "description": (
+        "Shift when THIS user's nutrition day rolls over, ONLY when they explicitly ask "
+        "for it (\"count my after-midnight meals as the day before\", \"my day should "
+        "start at 4am\", \"reset when I wake up around 10\"). Pass `hour` = the local "
+        "hour (0–11) the new day begins; e.g. 4 means the day runs 4am→4am, so a 12:20am "
+        "meal counts for the day that started the previous morning. Default is 0 "
+        "(midnight) — pass 0 to put them back on the standard day. Never call this on "
+        "your own initiative; the user has to state the preference."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"hour": {"type": "integer", "minimum": 0, "maximum": 11}},
+        "required": ["hour"],
+    },
+}
+
+
+def handle_set_day_reset(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Set the user's nutrition-day rollover hour (0–11 local; 0 = midnight). Recomputes
+    today's totals against the new window so the change is reflected immediately."""
+    raw = (tool_input or {}).get("hour")
+    try:
+        hour = int(raw)
+    except (TypeError, ValueError):
+        return f"error: hour must be an integer 0–11, got {raw!r}"
+    if not (0 <= hour <= 11):
+        return f"error: hour must be 0–11 (the early-morning rollover), got {hour}"
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        user.day_reset_hour = hour
+        session.commit()
+    finally:
+        session.close()
+    recompute_daily_totals(user_id)   # re-window today's totals under the new reset
+    logger.info("SET_DAY_RESET user=%s hour=%s", user_id, hour)
+    if hour == 0:
+        return "ok: nutrition day resets at midnight (standard)"
+    return f"ok: nutrition day now resets at {hour}am local — meals before then count for the previous day"
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
+    "set_day_reset": handle_set_day_reset,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,
     "log_workout": handle_log_workout,

@@ -474,6 +474,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_WEIGHT_TOOL_ENABLED:
         from agent_tools import LOG_WEIGHT_TOOL
         tools.append(LOG_WEIGHT_TOOL)
+    if config.SET_DAY_RESET_TOOL_ENABLED:
+        from agent_tools import SET_DAY_RESET_TOOL
+        tools.append(SET_DAY_RESET_TOOL)
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL
         tools.append(START_WORKOUT_SESSION_TOOL)

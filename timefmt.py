@@ -47,15 +47,34 @@ def to_local(dt: datetime, user) -> datetime:
     return _as_aware_utc(dt).astimezone(resolve_tz(user))
 
 
+def day_reset_hour(user) -> int:
+    """The local hour the user's nutrition day rolls over. Default 0 (midnight) — the
+    behavior for everyone unless they explicitly asked to shift it (set_day_reset). A
+    value of e.g. 4 means the day runs 4am→4am, so a 12:20am meal counts for the day
+    that STARTED yesterday morning (founder 2026-09-16: 'clean slate after I sleep').
+    Clamped to 0–11 so a 'day' can't run backwards or skip the actual day."""
+    try:
+        h = int(getattr(user, "day_reset_hour", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return h if 0 <= h <= 11 else 0
+
+
 def local_day_bounds(user, *, now: datetime = None) -> tuple[datetime, datetime]:
-    """[start, end) of the user's LOCAL calendar day, as NAIVE UTC — the window every
-    'today' reader shares (meals, events, totals). `now` is an optional aware/naive-UTC
-    reference instant (defaults to real now); useful for tests and for a fixed clock."""
+    """[start, end) of the user's LOCAL nutrition day, as NAIVE UTC — the window every
+    'today' reader shares (meals, events, totals). Rolls at the user's day_reset_hour
+    (default 0 = midnight). `now` is an optional aware/naive-UTC reference instant
+    (defaults to real now); useful for tests and for a fixed clock."""
     tz = resolve_tz(user)
     ref = _as_aware_utc(now) if now else datetime.now(timezone.utc)
-    midnight = ref.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-    start = midnight.astimezone(timezone.utc).replace(tzinfo=None)
-    end = (midnight + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    ref_local = ref.astimezone(tz)
+    reset_h = day_reset_hour(user)
+    start_local = ref_local.replace(hour=reset_h, minute=0, second=0, microsecond=0)
+    if ref_local.hour < reset_h:
+        # before today's rollover — we're still in the window that started yesterday
+        start_local -= timedelta(days=1)
+    start = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    end = (start_local + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
     return start, end
 
 

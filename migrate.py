@@ -242,6 +242,9 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS targets_source VARCHAR(16)",
     # Adaptive targets (2026-09-14): weigh-in opt-out + the per-cycle audit table.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS weigh_in_opt_out BOOLEAN DEFAULT FALSE",
+    # Per-user nutrition-day rollover hour (local). 0 = midnight default; shifted only
+    # when a user explicitly asks (set_day_reset). timefmt.local_day_bounds reads it.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS day_reset_hour INTEGER DEFAULT 0",
     """CREATE TABLE IF NOT EXISTS target_adjustments (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id),

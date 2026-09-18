@@ -92,6 +92,10 @@ class User(Base):
     carbs_today = Column(Integer, default=0)
     fat_today = Column(Integer, default=0)
     totals_date = Column(String(10), default=None)  # YYYY-MM-DD — the date these totals are for
+    # Nutrition day rollover hour (local). 0 = midnight (default for everyone). A user
+    # who explicitly asks ("count my after-midnight meals as yesterday") gets it shifted
+    # via set_day_reset; timefmt.local_day_bounds is the single reader. Clamped 0–11.
+    day_reset_hour = Column(Integer, default=0)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
@@ -948,20 +952,20 @@ def recompute_daily_totals(user_id: int):
         user = session.get(User, user_id)
         if not user:
             return
-        try:
-            tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-        except Exception:
-            tz = ZoneInfo("America/Los_Angeles")
-        midnight_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
-        start = midnight_local.astimezone(timezone.utc).replace(tzinfo=None)
-        end = (midnight_local + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+        # ONE shared window (timefmt.local_day_bounds), so the cache and the prompt's
+        # TODAY'S TOTALS block agree — including a user's custom day_reset_hour.
+        from timefmt import local_day_bounds, resolve_tz
+        start, end = local_day_bounds(user)
         meals = (active(session, Meal, user_id=user_id)
                  .filter(Meal.eaten_at >= start, Meal.eaten_at < end).all())
         user.calories_today = sum(m.calories or 0 for m in meals)
         user.protein_today = sum(m.protein_g or 0 for m in meals)
         user.carbs_today = sum(m.carbs_g or 0 for m in meals)
         user.fat_today = sum(m.fat_g or 0 for m in meals)
-        user.totals_date = midnight_local.strftime("%Y-%m-%d")
+        # totals_date labels the window by the local date it STARTED (with a shifted
+        # reset, a 1am meal belongs to the day that began the prior morning).
+        user.totals_date = (start.replace(tzinfo=timezone.utc)
+                            .astimezone(resolve_tz(user)).strftime("%Y-%m-%d"))
         session.commit()
     finally:
         session.close()
