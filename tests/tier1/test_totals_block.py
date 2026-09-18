@@ -109,3 +109,33 @@ def test_local_day_windowing_11pm_counts_today_not_tomorrow(db):
     ctx = _ctx(user.id)
     assert "late night snack" in ctx and "calories: 250" in ctx
     assert "tomorrows breakfast" not in ctx, "next local day's meal leaked into today's totals"
+
+
+def test_totals_block_renders_at_zero_on_a_fresh_day(db):
+    """The live 2026-09-17/18 bug: on a new day with nothing (or one meal) logged,
+    the coach carried yesterday's total (still in RECENT CONVERSATION) across midnight.
+    The block must ALWAYS render — even at 0 — so a fresh day reads against 0 and the
+    model has an authoritative number instead of falling back to the conversation."""
+    from tests.factories import make_user
+    user = make_user(db, calorie_target=2450, protein_target=140)
+    ctx = _ctx(user.id)   # no meals logged at all
+    assert "## TODAY'S TOTALS" in ctx, "totals block missing on a fresh day"
+    assert "calories: 0 | protein: 0g" in ctx, ctx
+    assert "authoritative" in ctx and "previous day" in ctx, "anti-carryover instruction missing"
+
+
+def test_totals_block_forbids_carrying_forward(db):
+    """The block must tell the model not to carry/add a total from earlier in the thread."""
+    from tests.factories import make_user
+    user = make_user(db, calorie_target=2450)
+    now = _naive_utcnow()
+    from models import get_session
+    s = get_session()
+    try:
+        s.add(_meal(user.id, 650, 38, at=now, desc="chicken wrap"))
+        s.commit()
+    finally:
+        s.close()
+    ctx = _ctx(user.id)
+    assert "calories: 650" in ctx
+    assert "do NOT carry" in ctx and "previous day" in ctx, ctx

@@ -255,23 +255,30 @@ def build_loop_context(user, session) -> str:
         parts.append("## TODAY'S LOGGED MEALS (already recorded — reference by id; do not "
                      "double-log the same serving; a genuine second serving is fine)\n" + ml)
 
-        # Code-computed totals — the model must NOT re-add these (LLM arithmetic drifts).
-        # Authoritative source: the SUM over these already-fetched active meals (soft-delete
-        # filtered via active(), local-day windowed). Denormalized user.calories_today
-        # counters exist for legacy use but deliberately do NOT reach the prompt.
-        tot_cal = sum(m.calories or 0 for m in meals)
-        tot_pro = sum(m.protein_g or 0 for m in meals)
-        tot_carb = sum(m.carbs_g or 0 for m in meals)
-        tot_fat = sum(m.fat_g or 0 for m in meals)
-        lines = [f"calories: {tot_cal} | protein: {tot_pro}g | carbs: {tot_carb}g | fat: {tot_fat}g"]
-        if user.calorie_target:
-            lines.append(f"calories remaining vs target: {user.calorie_target - tot_cal} "
-                         f"({tot_cal}/{user.calorie_target})")
-        if user.protein_target:
-            lines.append(f"protein remaining vs target: {user.protein_target - tot_pro}g "
-                         f"({tot_pro}/{user.protein_target}g)")
-        parts.append("## TODAY'S TOTALS (computed — quote these exactly, never re-add or "
-                     "re-derive them)\n" + "\n".join(lines))
+    # Code-computed totals — the model must NOT re-add these (LLM arithmetic drifts).
+    # Authoritative source: the SUM over the already-fetched active meals (soft-delete
+    # filtered via active(), local-day windowed). ALWAYS rendered — even at 0 — so the
+    # first meal of a new day reads against 0, and the model never falls back to a stale
+    # running total from earlier in the thread (the live 2026-09-17/18 bug: yesterday's
+    # total, still in RECENT CONVERSATION, got carried across midnight). Denormalized
+    # user.calories_today counters exist for legacy use but deliberately do NOT reach here.
+    tot_cal = sum(m.calories or 0 for m in meals)
+    tot_pro = sum(m.protein_g or 0 for m in meals)
+    tot_carb = sum(m.carbs_g or 0 for m in meals)
+    tot_fat = sum(m.fat_g or 0 for m in meals)
+    lines = [f"calories: {tot_cal} | protein: {tot_pro}g | carbs: {tot_carb}g | fat: {tot_fat}g"]
+    if user.calorie_target:
+        lines.append(f"calories remaining vs target: {user.calorie_target - tot_cal} "
+                     f"({tot_cal}/{user.calorie_target})")
+    if user.protein_target:
+        lines.append(f"protein remaining vs target: {user.protein_target - tot_pro}g "
+                     f"({tot_pro}/{user.protein_target}g)")
+    parts.append(
+        "## TODAY'S TOTALS (authoritative — the ONLY source for today's running total; "
+        "it resets to 0 at local midnight)\n" + "\n".join(lines) +
+        "\nQuote these numbers exactly. Do NOT re-add or re-derive them, and do NOT carry "
+        "forward or add to any calorie/protein total you mentioned earlier in the thread — "
+        "that number may be from a previous day.")
 
     # 8. Recent training log (active only).
     workouts = (active(session, Workout, user_id=user.id)
