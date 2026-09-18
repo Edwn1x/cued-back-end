@@ -187,6 +187,9 @@ ONBOARDING_RUNDOWN_ENABLED = os.getenv("ONBOARDING_RUNDOWN_ENABLED", "true").low
 ONBOARDING_RUNDOWN_DELAY_S = float(os.getenv("ONBOARDING_RUNDOWN_DELAY_S", "4"))
 # Adaptive targets (adaptive_targets.py): log_weight tool + daily cycle sweep.
 LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() == "true"
+# Lets the coach shift a user's nutrition-day rollover hour when they explicitly ask
+# (default day stays midnight for everyone). On — it only acts on an explicit request.
+SET_DAY_RESET_TOOL_ENABLED = os.getenv("SET_DAY_RESET_TOOL_ENABLED", "true").lower() == "true"
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"

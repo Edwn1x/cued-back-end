@@ -203,6 +203,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="right after a log they might want to correct",
     ),
     Capability(
+        id="day_reset",
+        what="if you eat late and count it as the night before, i can roll your day over on your schedule",
+        how="just say it — 'count my after-midnight meals as yesterday' or 'my day starts at 4am'",
+        tools=("set_day_reset",),
+        enabled=lambda u: config.SET_DAY_RESET_TOOL_ENABLED,
+        relevance=lambda u: 3,
+        used=lambda session, u: bool(getattr(u, "day_reset_hour", 0)),
+        reveal_when="they push back that a late-night meal landed on the wrong day",
+    ),
+    Capability(
         id="adjust_targets",
         what="your targets can move a bit if the number doesn't feel doable",
         how="ask for a number within about 15% of what i set and it's yours",
