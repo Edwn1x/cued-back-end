@@ -1,6 +1,6 @@
 # Berkeley-friend first replies — live eval
 
-Generated 2026-09-15 10:50 UTC through the real onboarding path (/webhook → handle_onboarding_reply), model `claude-opus-4-8`, web search on (cap 2/reply).
+Generated 2026-09-18 21:30 UTC through the real onboarding path (/webhook → handle_onboarding_reply), model `claude-opus-4-8`, web search on (cap 2/reply).
 
 Hook the user is replying to: *hey I'm your cued coach, how's your day going?*  
 Clock pinned to Friday, Sep 11, 2026, 2:30pm (Berkeley).
@@ -11,9 +11,9 @@ Founder pass criteria: references the specific thing · reads as a person · at 
 
 **user:** ugh not great, have a 70 quiz at 4 and i'm so behind
 
-**coach:** ugh cs70 quizzes early on are rough, that's probably still the proofs/induction stuff. u got time to cram before 4 or is it kinda a lost cause at this point
+**coach:** oof cs70 quiz on top of being behind is rough, that class moves fast this early. u got time to grind til 4 or is it kinda a lost cause at this point
 
-**searched:** 'UC Berkeley CS70 fall 2026 schedule discrete math probability'
+**searched:** 'Berkeley CS70 fall 2026 schedule syllabus discrete math probability'
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -23,7 +23,7 @@ hand review: _pending_
 
 **user:** pretty good, just ate at crossroads lol
 
-**coach:** crossroads lol the eternal dining hall. what'd u grab, anything decent today
+**coach:** nice, crossroads on a friday. what'd u get, that place is hit or miss ngl
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -33,7 +33,7 @@ hand review: _pending_
 
 **user:** hungover as hell ngl
 
-**coach:** lol rough. friday too so it's only gonna get worse. u eat anything yet or still in bed
+**coach:** lol rough. friday recovery mode it is. u eat anything yet or still in bed
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -43,7 +43,7 @@ hand review: _pending_
 
 **user:** was gonna lift but rsf is packed rn
 
-**coach:** ya it's packed after like 2 on fridays. u usually go around now or is this off ur normal time
+**coach:** yeah friday afternoon rsf is rough, it thins out after like 7 usually. u wanna wait it out or is evening not ur time to lift
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -53,7 +53,7 @@ hand review: _pending_
 
 **user:** idk what to eat
 
-**coach:** lol fair. wyd, cooking or dining hall
+**coach:** lol what sounds good rn, u cooking or is it dining hall
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -63,7 +63,7 @@ hand review: _pending_
 
 **user:** nothing much
 
-**coach:** friday afternoon, makes sense. you got class today or you done for the week?
+**coach:** friday afternoon, nothing much sounds about right. you off classes today or still got stuff to do
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ no search needed
 
@@ -73,9 +73,9 @@ hand review: _pending_
 
 **user:** cs70 midterm is next tues
 
-**coach:** cs70 midterm 1 already, that's the proofs and induction stuff creeping up fast. u locked in studying rn or still got a min before it takes over your week?
+**coach:** cs70 this early is still all the proofs and induction stuff, so at least it's the memorizable part. u got a study spot locked in or you winging it?
 
-**searched:** 'UC Berkeley CS70 fall 2026 midterm schedule discrete math probability'
+**searched:** 'UC Berkeley CS70 fall 2026 schedule midterm discrete math probability'
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ searched
 
@@ -85,9 +85,9 @@ hand review: _pending_
 
 **user:** thinking about going to golden bear cafe rn
 
-**coach:** gbc's got that peet's setup and it's right on sproul, easy call for a friday afternoon. what u thinking, coffee or actual food
+**coach:** gbc's on sproul til 7 so ur good on time. u getting an actual meal there or just a coffee kinda thing
 
-**searched:** 'Golden Bear Cafe Berkeley menu hours 2026'
+**searched:** 'Golden Bear Cafe UC Berkeley hours menu 2026'
 
 mechanical: ✓ one message · ✓ ≤1 question · ✓ no links · ✓ references the thing · ✓ searched
 
@@ -101,9 +101,8 @@ hand review: _pending_
 **user:** lol ok just tell me what you need from me and i'll send it
 
 **coach:** haha nah it's not like that, i'm not running an intake on u
-but ok real talk, wyd tho - u a student, working, both
-
-Actually let me not dump everything on u at once. what's ur day looking like rn
+tell me a bit about urself tho - like how tall, what u weigh, what u do all day and how much u move around outside the gym, how many days u can train and when
+wyd rn
 
 mechanical: ✓ ≤3 bubbles · ✓ big_ask mode · ✓ not a numbered list
 

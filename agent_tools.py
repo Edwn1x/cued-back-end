@@ -684,11 +684,14 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
 
     dated = f", dated {date_str}" if (date_str and not is_today) else ""
     if len(logged) == 1:
-        mid, _desc, cal, pro, saw = logged[0]
-        return f"ok: logged meal id={mid} ({cal}cal/{pro}g{dated})" + (f" [saw_similar={saw}]" if saw else "")
+        mid, desc, cal, pro, saw = logged[0]
+        # Include the description so the reply NAMES what was logged ("logged the chicken
+        # wrap, ~650 cal 38g"), not just macros — the user asked to see what was recorded.
+        return f"ok: logged '{desc}' id={mid} ({cal}cal/{pro}g{dated})" + (f" [saw_similar={saw}]" if saw else "")
+    names = ", ".join(f"'{d}'" for _m, d, _c, _p, _s in logged)
     ids = [m for m, _d, _c, _p, _s in logged]
     total_cal = sum(c for _m, _d, c, _p, _s in logged)
-    return f"ok: logged {len(logged)} items (ids {ids}, {total_cal}cal total)"
+    return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)"
 
 
 LOG_EVENT_TOOL = {

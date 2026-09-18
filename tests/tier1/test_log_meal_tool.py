@@ -103,3 +103,22 @@ def test_log_meal_batch_items_recomputes_once(db):
         assert u.calories_today == 740 and u.protein_today == 45  # summed once from all three
     finally:
         s.close()
+
+
+def test_log_meal_return_names_the_item(db):
+    """The tool result must NAME what was logged (not just macros) so the coach's
+    confirmation can say 'logged the chicken wrap, ~650 cal' — founder feedback
+    2026-09-18: a macros-only confirmation can't be verified without asking."""
+    from tests.factories import make_user
+    from agent_tools import handle_log_meal
+    user = make_user(db)
+    out = handle_log_meal(user.id, {"description": "chicken caesar wrap", "calories": 650, "protein_g": 38})
+    assert "chicken caesar wrap" in out, out
+    assert "650cal" in out
+
+    # batch form names each item too
+    out2 = handle_log_meal(user.id, {"items": [
+        {"description": "banana", "calories": 100, "protein_g": 1},
+        {"description": "greek yogurt", "calories": 150, "protein_g": 15},
+    ]})
+    assert "banana" in out2 and "greek yogurt" in out2, out2
