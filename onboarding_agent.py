@@ -941,10 +941,24 @@ def start_onboarding(user):
     threading.Thread(target=_run, daemon=True).start()
 
 
+# Waitlist (2026-09-19): the one line a pending user gets when they text the line —
+# the "hey cued" opt-in tap from the site, or a curious SMS. Code-owned, sent once
+# from _process_inbound; the model never sees a waitlist user.
+WAITLIST_HOLD_TEXT = "hey {name} — you're on the list. i'll text you right here the second your spot opens."
+
+
+def waitlist_hold_text(name: str | None) -> str:
+    first = (name or "").strip().split(" ")[0]
+    return WAITLIST_HOLD_TEXT.format(name=first) if first else WAITLIST_HOLD_TEXT.replace("hey {name} — ", "hey — ")
+
+
 def awaiting_channel_choice(user) -> bool:
     """A user whose hook was DEFERRED at signup: provisioned (has a link), asked
-    for iMessage, no hook yet, and nothing sent or received on any channel."""
+    for iMessage, no hook yet, and nothing sent or received on any channel.
+    Never a pending waitlister: their first text is held, not hooked."""
     from models import get_session, Message
+    if user.waitlist_status == "pending":
+        return False
     if (user.onboarding_step or 0) >= 1 or not user.photon_user_id:
         return False
     if (user.preferred_channel or "sms") != "imessage":
@@ -971,6 +985,7 @@ def send_fallback_hooks() -> int:
                    .filter(Message.user_id == UserModel.id, Message.direction == "out").exists())
         ids = [u.id for u in (session.query(UserModel)
                               .filter(UserModel.onboarding_step == 0,
+                                      UserModel.waitlist_status.is_(None),  # never a pending waitlister
                                       UserModel.photon_user_id.isnot(None),
                                       UserModel.preferred_channel == "imessage",
                                       UserModel.created_at < cutoff,
