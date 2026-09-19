@@ -24,7 +24,7 @@ from models import get_session, User, Message, WorkoutSession, is_workout_confir
 from sms import send_sms
 import occupancy
 from integrations.rsf import is_open, TZ
-from integrations.waitwell.client import join as queue_join, QueueUnavailable, PUBLIC_URL, open_ticket
+from integrations.waitwell.client import join as queue_join, QueueUnavailable, PUBLIC_URL, JOIN_URL, open_ticket
 
 logger = logging.getLogger("cued.gym_beats")
 
@@ -99,11 +99,13 @@ def _template_for(user) -> str:
 
 
 def d1_text(reading: dict, walk_min: int | None) -> str:
+    """D1: the join FORM link (one tap → name/phone → in). The page has no prefill
+    params (it reads only c/cat/h/qid), so their phone is the one thing they type."""
     pct = reading["pct"]
     if walk_min is not None:
-        return (f"rsf is at {pct}%, line's on. join now → {PUBLIC_URL} — you're ~{walk_min} min out so "
+        return (f"rsf is at {pct}%, line's on. join now → {JOIN_URL} — you're ~{walk_min} min out so "
                 f"you'll clear it about when you get there.")
-    return f"rsf is at {pct}%, line's on. join now → {PUBLIC_URL} — leave in about 10 min and you'll clear it around when you get there."
+    return f"rsf is at {pct}%, line's on. join now → {JOIN_URL} — leave in about 10 min and you'll clear it around when you get there."
 
 
 def d2_text(wait_min: int, now_local, walk_min: int | None) -> str:
@@ -115,6 +117,20 @@ def d2_text(wait_min: int, now_local, walk_min: int | None) -> str:
     leave_in = max(wait_min - DEFAULT_WALK_MIN, 0)
     return (f"line at rsf is {wait_min} min. put you in the virtual queue — you're up at "
             f"{up.strftime('%-I:%M')}, leave in about {leave_in} min.")
+
+
+def _line_beat(user, reading: dict, now_local, walk: int | None) -> Beat | None:
+    """Opted in: join → D2 numbers; join fails for ANY reason → D1 (the link).
+    None only when they already hold an open ticket (nothing new to say)."""
+    if open_ticket(user.id):
+        return None
+    try:
+        t = queue_join(user.id, (user.name or "").split(" ")[0] or "cued", user.phone)
+        wait = t.est_wait_min if t.est_wait_min is not None else (reading.get("est_wait_min") or 25)
+        return Beat("line_d2", d2_text(int(wait), now_local, walk), "gym_line_d2")
+    except QueueUnavailable as e:
+        logger.info("GYM_BEAT_D1_FALLBACK user=%s reason=%s", user.id, e)
+        return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
 
 
 OPTIN_ASK = ("rsf line's on. want me to handle the queue for you from now on when it's packed? "
@@ -138,15 +154,7 @@ def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
 
     if reading["line_on"] and session_within(user, 2.0, now_local):
         if user.queue_opt_in:
-            if open_ticket(user.id):
-                return None
-            try:
-                t = queue_join(user.id, (user.name or "").split(" ")[0] or "cued", user.phone)
-                wait = t.est_wait_min if t.est_wait_min is not None else (reading.get("est_wait_min") or 25)
-                return Beat("line_d2", d2_text(int(wait), now_local, walk), "gym_line_d2")
-            except QueueUnavailable as e:
-                logger.info("GYM_BEAT_D1_FALLBACK user=%s reason=%s", user.id, e)
-                return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
+            return _line_beat(user, reading, now_local, walk)
         if not optin_asked_ever(session, user):
             return Beat("optin_ask", OPTIN_ASK, "gym_optin_ask")
         return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
@@ -216,7 +224,7 @@ def handle_text(user_id: int, text: str) -> str | None:
                 logger.info("QUEUE_OPT_IN user=%s via=ask", user_id)
                 return "bet — i'll handle it from now on. joining you now."
             if NO_RE.match(text):
-                return f"no stress — here's the link when you want it: {PUBLIC_URL}"
+                return f"no stress — here's the link when you want it: {JOIN_URL}"
         if NOT_GOING_RE.match(text):
             t = open_ticket(user_id)
             if t:
@@ -226,6 +234,71 @@ def handle_text(user_id: int, text: str) -> str | None:
     finally:
         session.close()
     return None
+
+
+# ─── 'heading out' → the line link, in code (the one-tap moment) ──────────────
+
+# The WHOLE message is a departure line (optional now/rn/soon, trailing punctuation
+# or emoji). Mixed texts ('heading out, had a bagel') fall through to the model,
+# which gets the same link in its RSF context block (rsf_context_block).
+_DEST = r"(?:the )?(?:gym|rsf|weight ?room)"
+HEADING_OUT_RE = re.compile(
+    r"^\W*(?:"
+    rf"(?:heading|headed|going|walking|bouta|about to|abt to|finna|gonna|tryna|otw|omw|on my way)\b[\w\s']{{0,14}}?(?:to |for |head to |go to |hit |go lift at )?{_DEST}"
+    rf"|leaving (?:now )?(?:for|to) {_DEST}"
+    rf"|(?:heading|headed) out(?: to {_DEST})?"
+    rf"|(?:omw|otw|on my way|leaving now|heading over|walking over)(?: to {_DEST})?"
+    rf"|(?:bouta|about to|abt to|finna|gonna|going to|tryna) (?:go )?(?:lift|hit {_DEST}|head (?:to|over to) {_DEST}|go to {_DEST}|walk to {_DEST})"
+    r")(?:\s+(?:now|rn|right now|soon|in a (?:bit|sec|min)|in \d+(?: ?min)?))?\W*$",
+    re.I,
+)
+_GYM_WORD_RE = re.compile(r"\b(?:gym|rsf|weight ?room|lift)\b", re.I)
+
+
+def heading_out(user_id: int, text: str) -> Beat | None:
+    """Series §2.8. They say they're leaving for the gym; if the line's on right
+    now, answer in code with the join link (opted-in users: try the queue first).
+    Gated on the METER flag, not the beats flag: this is reactive, user-initiated,
+    so the proactive-nudge calibration gate (GATE 2) doesn't apply. None → normal
+    turn (the model still sees the meter line and, when the line's on, the link)."""
+    if not config.RSF_METER_ENABLED or not text or len(text) > 60 or not HEADING_OUT_RE.match(text.strip()):
+        return None
+    now_utc = datetime.now(timezone.utc)
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return None
+        now_local = _local(user, now_utc)
+        if not is_open(now_local):
+            return None
+        # a bare 'heading out' / 'omw' names no destination: only a training day
+        # they haven't trained yet makes it the gym (never send the line to a class run)
+        if not _GYM_WORD_RE.search(text) and (not planned_today(user, session, now_local)
+                                              or is_workout_confirmed_today(user.id)):
+            return None
+        reading = occupancy.now(now_utc.replace(tzinfo=None))
+        if not reading or not reading["line_on"]:
+            return None
+        walk = walk_min_for(user, session)
+        if user.queue_opt_in:
+            return _line_beat(user, reading, now_local, walk)
+        return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
+    finally:
+        session.close()
+
+
+def rsf_context_block(reading: dict | None) -> str:
+    """The model's view of the meter (series §2.4): one line it phrases and never
+    invents a number for; when the line's on, the ONE link it may paste, verbatim."""
+    if not reading:
+        return ""
+    block = ("\n\n## RSF WEIGHT ROOM (live meter — quote it, never invent a number)\n"
+             + occupancy.context_line(reading))
+    if reading["line_on"]:
+        block += (f"\nthe virtual line is ON. if they're heading there now, give them the join link exactly as "
+                  f"written, on its own: {JOIN_URL} — this is the one exception to the no-links rule.")
+    return block
 
 
 def poll_open_tickets() -> int:

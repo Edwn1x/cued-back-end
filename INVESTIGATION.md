@@ -34,10 +34,13 @@ Spec = hypothesis; this is what's actually there.
   Christmas Eve/Day, New Year's Day. Parsed weekly with these as the fallback.
 - **Waitwell.** `https://417804.waitwell.us/` and `/join/48` both answer **403 with a Cloudflare
   JS challenge** (`cf-mitigated: challenge`, `challenges.cloudflare.com`) to any non-browser client,
-  including a mobile Safari User-Agent. The join form cannot be replayed server-side without a
-  headless browser and a challenge solver — which is exactly the case the spec names:
-  **`join` raises `QueueUnavailable` by construction; the beat falls back to D1** (the join-now
-  link with the user's walking time). The FAQ confirms the product rules: line opens at ≥95%, join by
+  including a mobile Safari User-Agent. **Correction (2026-09-19):** that is only the SPA host. The
+  backend it calls, `api.waitwell.us/api/<siteID>/client/...`, is plain AWS, not behind Cloudflare,
+  and answers curl with JSON — but the *join* itself is gated by Turnstile / phone-verify / AWS
+  captcha per site settings (details in `integrations/waitwell/NOTES.md`), so a silent server-side
+  join is still out and the site-token resolution for a read-only status path is unfinished.
+  **`join` raises `QueueUnavailable` by construction; the beat falls back to D1** (the join-form
+  link with the user's walking time). §2.8: "heading to the gym" + line on → D1 in code, reactive. The FAQ confirms the product rules: line opens at ≥95%, join by
   phone or name, SMS updates, 10-minute window after summon, everyone admitted individually.
   D2 is built as a client whose transport is stubbed against a documented fixture, so the day
   Waitwell exposes an API (or RecWell offers one — founder's email) it's a transport swap.

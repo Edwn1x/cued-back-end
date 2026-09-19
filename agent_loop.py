@@ -398,9 +398,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
             try:
                 import occupancy as _occ
-                _line = _occ.context_line(_occ.now())
-                if _line:
-                    context += f"\n\n## RSF WEIGHT ROOM (live meter — quote it, never invent a number)\n{_line}"
+                from gym_beats import rsf_context_block
+                context += rsf_context_block(_occ.now())   # '' when no fresh reading
             except Exception as e:  # noqa: BLE001
                 logger.warning("RSF_CONTEXT_FAILED user=%s err=%s", user.id, e)
     finally:

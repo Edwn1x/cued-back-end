@@ -297,8 +297,10 @@ def test_line_beat_asks_opt_in_once_then_d1_then_d2_on_yes(db, rsf_on, monkeypat
         u = s.get(User, user.id)
         b = gym_beats.propose(u, s, _now_local(15, 30))
         assert b.kind == "optin_ask" and b.text == gym_beats.OPTIN_ASK
+        # pinned to the fixture day: with created_at=now this test rotted once the real
+        # date passed 09-15 (the day-15 propose below saw "a gym beat already sent today")
         s.add(Message(user_id=user.id, direction="out", body=b.text, message_type="gym_optin_ask",
-                      created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+                      created_at=_utc(datetime(2026, 9, 14, 15, 30, tzinfo=TZ))))
         s.commit()
     finally:
         s.close()
@@ -369,3 +371,138 @@ def test_not_going_leaves_the_line_and_the_context_line_appears_when_the_gym_com
     assert ww.open_ticket(user.id) is None
     assert gym_beats.handle_text(user.id, "what should i eat") is None
     assert _gym_mentioned("is rsf busy rn", user) and not _gym_mentioned("what should i eat", user)
+
+
+# ─── 2.8 'heading out' → the link, in code ──────────────────────────────────
+
+@pytest.fixture
+def meter_only(monkeypatch):
+    """The prod shape today: meter on, proactive beats and the queue OFF."""
+    import config
+    monkeypatch.setattr(config, "RSF_METER_ENABLED", True)
+    monkeypatch.setattr(config, "RSF_BEATS_ENABLED", False)
+    monkeypatch.setattr(config, "RSF_QUEUE_ENABLED", False)
+
+
+def _open_now(monkeypatch):
+    import gym_beats
+    monkeypatch.setattr(gym_beats, "is_open", lambda now_local: True)
+
+
+@pytest.mark.parametrize("phrase", ["heading out", "heading to the gym", "omw to rsf", "leaving for the gym now",
+                                    "bouta lift", "Heading to RSF!", "walking to rsf now", "about to go lift"])
+def test_heading_out_with_the_line_on_sends_the_form_link_in_code(db, meter_only, monkeypatch, phrase):
+    import gym_beats
+    from integrations.waitwell import client as ww
+    user = make_user(db, **FOUNDER)
+    _open_now(monkeypatch)
+    _reading(db, 97)
+    b = gym_beats.heading_out(user.id, phrase)
+    assert b is not None and b.kind == "line_d1" and b.message_type == "gym_line_d1"
+    assert b.text.startswith("rsf is at 97%, line's on. join now → ")
+    assert ww.JOIN_URL in b.text and ww.JOIN_URL.endswith("/join/48")     # the FORM, one tap — not the landing page
+    assert "leave in about 10 min" in b.text                                # no location signal → the default framing
+
+
+@pytest.mark.parametrize("phrase", ["heading out, had a bagel", "heading out later tonight after class idk", "is the gym packed",
+                                    "not going to the gym", "leaving the gym", "heading home", "going to the gym tomorrow", "gym was dead"])
+def test_heading_out_ignores_mixed_or_non_departure_texts(db, meter_only, monkeypatch, phrase):
+    import gym_beats
+    user = make_user(db, **FOUNDER)
+    _open_now(monkeypatch)
+    _reading(db, 97)
+    assert gym_beats.heading_out(user.id, phrase) is None
+
+
+def test_bare_heading_out_needs_a_training_day_but_a_gym_word_does_not(db, meter_only, monkeypatch):
+    import gym_beats
+    from integrations.waitwell import client as ww
+    _open_now(monkeypatch)
+    _reading(db, 97)
+    # 'mon' only — on any other weekday a bare 'heading out' is class, errands, anything
+    user = make_user(db, **dict(FOUNDER, confirmed_training_days="mon"))
+    is_monday = gym_beats._local(user).weekday() == 0
+    bare = gym_beats.heading_out(user.id, "heading out")
+    assert (bare is not None) == is_monday
+    assert gym_beats.heading_out(user.id, "omw") is None or is_monday
+    # naming the gym is unambiguous on any day
+    b = gym_beats.heading_out(user.id, "heading to the gym")
+    assert b is not None and ww.JOIN_URL in b.text
+    # FOUNDER trains every day → bare 'heading out' is the gym
+    every = make_user(db, **dict(FOUNDER, phone="+15550003333"))
+    assert gym_beats.heading_out(every.id, "heading out") is not None
+
+
+def test_heading_out_is_silent_unless_the_line_is_on_now(db, meter_only, monkeypatch):
+    import gym_beats, config
+    user = make_user(db, **FOUNDER)
+    _open_now(monkeypatch)
+    assert gym_beats.heading_out(user.id, "heading out") is None            # no reading at all
+    _reading(db, 61)
+    assert gym_beats.heading_out(user.id, "heading out") is None            # busy, no line → the model turn handles it
+    _reading(db, 97, minutes_ago=45)
+    assert gym_beats.heading_out(user.id, "heading out") is None            # stale line reading → never act on it
+    _reading(db, 97)
+    monkeypatch.setattr(gym_beats, "is_open", lambda now_local: False)
+    assert gym_beats.heading_out(user.id, "heading out") is None            # closed
+    _open_now(monkeypatch)
+    monkeypatch.setattr(config, "RSF_METER_ENABLED", False)
+    assert gym_beats.heading_out(user.id, "heading out") is None            # flag off
+
+
+def test_heading_out_opted_in_tries_the_queue_then_falls_back_to_the_link(db, meter_only, monkeypatch):
+    import gym_beats, config
+    from integrations.waitwell import client as ww
+    from models import get_session, User
+    user = make_user(db, **FOUNDER)
+    s = get_session()
+    try:
+        s.get(User, user.id).queue_opt_in = True; s.commit()
+    finally:
+        s.close()
+    _open_now(monkeypatch)
+    _reading(db, 97)
+    # queue flag off (prod today) → join raises by construction → D1
+    b = gym_beats.heading_out(user.id, "heading out")
+    assert b.kind == "line_d1" and ww.JOIN_URL in b.text
+    # queue on but the site challenges → still D1
+    monkeypatch.setattr(config, "RSF_QUEUE_ENABLED", True)
+    monkeypatch.setattr(ww, "transport_post", lambda url, data: _Resp(403, None, {"cf-mitigated": "challenge"}, "Just a moment"))
+    assert gym_beats.heading_out(user.id, "omw to rsf").kind == "line_d1"
+    # a real transport → D2 with the numbers, and a second 'heading out' says nothing new (open ticket)
+    monkeypatch.setattr(ww, "transport_post", lambda url, data: _Resp(200, {"ticket_id": "t-8", "position": 4, "est_wait_min": 20}))
+    b = gym_beats.heading_out(user.id, "heading out")
+    assert b.kind == "line_d2" and b.text.startswith("line at rsf is 20 min. put you in the virtual queue")
+    assert gym_beats.heading_out(user.id, "heading out") is None
+
+
+def test_heading_out_runs_before_the_model_and_counts_as_the_days_gym_beat(db, meter_only, monkeypatch, driver, anthropic_stub, sms_capture):
+    import gym_beats, config
+    from integrations.waitwell import client as ww
+    from models import get_session, User
+    user = make_user(db, **FOUNDER)
+    _open_now(monkeypatch)
+    _reading(db, 97)
+    anthropic_stub.reply_with(lambda kw: (_ for _ in ()).throw(AssertionError("model must not run for 'heading out' with the line on")))
+    driver.send(user, "heading to the gym")
+    assert sms_capture and ww.JOIN_URL in sms_capture[-1][1]
+    # the send was logged as gym_line_d1 → the proactive sweep won't repeat it today
+    monkeypatch.setattr(config, "RSF_BEATS_ENABLED", True)
+    s = get_session()
+    try:
+        assert gym_beats.gym_beat_sent_today(s, s.get(User, user.id), gym_beats._local(s.get(User, user.id)))
+        assert gym_beats.propose(s.get(User, user.id), s) is None
+    finally:
+        s.close()
+
+
+def test_rsf_context_block_carries_the_link_only_when_the_line_is_on(db, meter_only):
+    import gym_beats, occupancy
+    from integrations.waitwell import client as ww
+    assert gym_beats.rsf_context_block(None) == ""
+    _reading(db, 40)
+    blk = gym_beats.rsf_context_block(occupancy.now())
+    assert "rsf weight room: 40% (light)" in blk and ww.JOIN_URL not in blk
+    _reading(db, 96)
+    blk = gym_beats.rsf_context_block(occupancy.now())
+    assert "the virtual line is ON" in blk and ww.JOIN_URL in blk and "one exception to the no-links rule" in blk

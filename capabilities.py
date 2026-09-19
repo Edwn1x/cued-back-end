@@ -153,6 +153,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they say they don't know what to make or are about to order out",
     ),
     Capability(
+        id="rsf_line",
+        what="when rsf's packed and you're heading over, i'll send you the virtual-line link so you're in before you get there",
+        how="just text me 'heading to the gym' — if the line's on you get the link, one tap",
+        tools=(),
+        enabled=lambda u: config.RSF_METER_ENABLED,
+        relevance=lambda u: 6,
+        used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="gym_line_d1").first() is not None,
+        reveal_when="they complain the gym's packed or ask about the crowd",
+    ),
+    Capability(
         id="campus_lookup",
         what="i can look things up for you — gym hours, a place, a class time",
         how="just ask, like 'what time does rsf close'",
