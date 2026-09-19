@@ -145,6 +145,10 @@ class User(Base):
     channel_failed_over = Column(Boolean, default=False)
     channel_failover_at = Column(DateTime, default=None)
     photon_user_id = Column(String(64), default=None)          # id returned by the Spectrum users API (Phase 4C)
+    # Stamped (once) by the inbound pipeline on their first iMessage: the shared-pool
+    # consent gate is open for this number. Waitlist (2026-09-19): written while they
+    # are still pending, so activation goes blue first try; the admin tab reads it.
+    imessage_opted_in_at = Column(DateTime, default=None)
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")
