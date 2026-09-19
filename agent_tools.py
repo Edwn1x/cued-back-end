@@ -1400,6 +1400,12 @@ WEB_SEARCH_TOOL = {
     # without the model having to type "berkeley" into every query.
     "user_location": {"type": "approximate", "city": "Berkeley", "region": "California",
                       "country": "US", "timezone": "America/Los_Angeles"},
+    # Hard-block known SEO-spam / content-farm hosts so they can't reach the model at
+    # all. This is belt-and-suspenders — the general fix is the source-quality rule in
+    # voice.md (prefer the OFFICIAL source, discount content farms). These are the
+    # hijacked proxy/mirror hosts that fed a WRONG "RSF closes at 8pm" (2026-09-18);
+    # add offenders here as they surface, extendable via WEB_SEARCH_BLOCKED_DOMAINS.
+    "blocked_domains": config.WEB_SEARCH_BLOCKED_DOMAINS,
 }
 
 

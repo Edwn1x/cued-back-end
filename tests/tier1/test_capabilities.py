@@ -197,3 +197,11 @@ def test_voice_has_the_one_at_a_time_reveal_rule():
     v = " ".join(_voice_prompt().split())
     assert "Reveal what you can do one moment at a time, never as a list" in v
     assert "A feature you weren't given there doesn't exist for this user" in v
+
+
+def test_web_search_tool_blocks_known_spam_hosts():
+    """Source-quality hardening (2026-09-18 wrong-RSF-hours incident): the web_search
+    tool hard-blocks the SEO-spam proxy hosts that fed a wrong closing time."""
+    from agent_tools import WEB_SEARCH_TOOL
+    blocked = WEB_SEARCH_TOOL.get("blocked_domains") or []
+    assert "phplive-aws.uccs.edu" in blocked and "sbc-hc-proxy.stanford.edu" in blocked

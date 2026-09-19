@@ -142,6 +142,15 @@ WEB_SEARCH_TOOL_ENABLED = os.getenv("WEB_SEARCH_TOOL_ENABLED", "false").lower() 
 # search-every-turn coach feels slow (each search adds seconds). The WEB_SEARCH_QUERY
 # log line (agent_tools.log_web_search_queries) is how we see what it reaches for.
 WEB_SEARCH_MAX_USES = 2
+# Hosts the web_search tool must never return (SEO-spam / content-farm / hijacked
+# proxy mirrors). The general fix for source quality is the voice.md rule (trust the
+# OFFICIAL source); this hard-blocks the specific offenders. The two proxy hosts fed a
+# WRONG "RSF closes at 8pm" on 2026-09-18. Extend via env (comma-separated) without a
+# code change. Base list = known content-farm patterns + those two offenders.
+WEB_SEARCH_BLOCKED_DOMAINS = [d for d in ([
+    "phplive-aws.uccs.edu",       # "CodeForge Hub" spam mirror (wrong RSF hours)
+    "sbc-hc-proxy.stanford.edu",  # proxy gateway serving the same spam
+] + [x.strip() for x in os.getenv("WEB_SEARCH_BLOCKED_DOMAINS_EXTRA", "").split(",")]) if d]
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
