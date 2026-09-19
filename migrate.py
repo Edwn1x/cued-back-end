@@ -377,6 +377,16 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_integrations_user ON integrations (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_integrations_provider_status ON integrations (provider, status)",
+    # Part 1 — synced calendar events reuse the events table. Add display/upsert
+    # columns; the UNIQUE(user_id, source, external_id) is the calendar upsert key
+    # (existing regex/model rows have external_id NULL → never collide). Matches
+    # models.Event.__table_args__ so create_all and migrate agree.
+    "ALTER TABLE events ADD COLUMN IF NOT EXISTS title VARCHAR(300)",
+    "ALTER TABLE events ADD COLUMN IF NOT EXISTS external_id VARCHAR(200)",
+    "ALTER TABLE events ADD COLUMN IF NOT EXISTS all_day BOOLEAN DEFAULT FALSE",
+    # ADD CONSTRAINT has no IF NOT EXISTS in Postgres; already_applied() pre-checks the
+    # constraint name so a current schema skips it WITHOUT taking a lock (deploy hardening).
+    "ALTER TABLE events ADD CONSTRAINT uq_events_user_source_external UNIQUE (user_id, source, external_id)",
 ]
 
 def wait_for_db(retries=10, delay=3):
@@ -411,6 +421,9 @@ LOCK_RETRY_PAUSE_S = 5
 
 _ADD_COLUMN = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", re.I)
 _ALTER_TYPE = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ALTER\s+COLUMN\s+(\w+)\s+TYPE\s+VARCHAR\((\d+)\)", re.I)
+# ADD CONSTRAINT <name> (UNIQUE/CHECK/...) — no IF NOT EXISTS exists for these, so
+# pre-check the constraint name and skip without a lock when it already exists.
+_ADD_CONSTRAINT = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+CONSTRAINT\s+(\w+)\s+", re.I)
 
 
 _FK_CONSTRAINT = re.compile(
@@ -464,6 +477,14 @@ def already_applied(conn, sql: str):
         if row and row[0] is not None and row[0] >= width:
             return f"{table}.{col} already VARCHAR({row[0]})"
         return None
+    m = _ADD_CONSTRAINT.search(sql)
+    if m:
+        table, name = m.group(1), m.group(2)
+        row = conn.execute(text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE table_name=:t AND constraint_name=:n"),
+            {"t": table.lower(), "n": name.lower()}).first()
+        return f"constraint {name} already on {table}" if row else None
     return None
 
 

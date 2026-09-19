@@ -519,14 +519,23 @@ class Event(Base):
     Timestamps are stored as naive UTC (matching quiet_until / session_state).
     """
     __tablename__ = "events"
+    # A synced calendar event is uniquely (user, source, external_id) — the upsert
+    # key so a re-pull updates the row instead of duplicating it. Existing regex/model
+    # events have external_id=NULL; Postgres treats NULLs as distinct, so they never
+    # collide with each other or with this constraint.
+    __table_args__ = (UniqueConstraint("user_id", "source", "external_id",
+                                       name="uq_events_user_source_external"),)
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life
+    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life | scheduled
     occurred_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     ends_at = Column(DateTime, nullable=True)         # e.g. in_class end (naive UTC); None = use default duration
-    source = Column(String(20), default="regex")      # regex | model
+    source = Column(String(20), default="regex")      # regex | model | gcal | bcourses
     raw_text = Column(Text)                            # the message snippet that triggered detection
+    title = Column(String(300))                        # display title (calendar events); regex/model use raw_text
+    external_id = Column(String(200))                  # provider id: "<calendar_id>:<event_id>" for gcal; NULL otherwise
+    all_day = Column(Boolean, default=False)           # a calendar all-day event (date, no time)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
     edits = Column(JSON, default=None)                 # append-only manage_log edit audit
