@@ -144,10 +144,16 @@ def build_loop_context(user, session) -> str:
     _now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _is_all_day(e):
+        if getattr(e, "all_day", False):     # synced calendar all-day events set this
+            return True
         if not e.occurred_at or not e.ends_at:
             return False
         s_l, e_l = to_local(e.occurred_at, user), to_local(e.ends_at, user)
         return (s_l.hour, s_l.minute) == (0, 0) and (e_l.hour, e_l.minute) == (23, 59)
+
+    # Calendar-ish sources (log_event, gcal, bcourses) carry a title in raw_text and
+    # render the same way; only the regex floor (went_to_gym/in_class) uses event_type.
+    _CAL_SRC = ("model", "gcal", "bcourses")
 
     # 3a. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
     # model-logged dated schedule items (log_event) — the latter carry a description
@@ -155,8 +161,8 @@ def build_loop_context(user, session) -> str:
     evs = todays_events(user.id)
     if evs:
         def _fmt_event(e):
-            if e.source == "model":
-                label = (e.raw_text or e.event_type or "").strip()
+            if e.source in _CAL_SRC:
+                label = (e.raw_text or e.title or e.event_type or "").strip()
                 if _is_all_day(e):
                     span = " (all day)"
                 elif e.occurred_at:
@@ -173,7 +179,7 @@ def build_loop_context(user, session) -> str:
             # the same way it can for meals and workouts.
             line = f"[id {e.id}] {label}{span}"
             # A same-day 2:15pm event at 6pm must not read like one at 9pm.
-            if e.source == "model" and e.occurred_at and event_end(e) < _now_utc:
+            if e.source in _CAL_SRC and e.occurred_at and event_end(e) < _now_utc:
                 line += (" — PASSED (already happened; never treat as upcoming, "
                          "at most one natural follow-up)")
             return line
