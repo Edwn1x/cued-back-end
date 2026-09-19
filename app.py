@@ -674,6 +674,21 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # Series §2.8: 'heading to the gym' while the line's on → the join link (or the
+        # queue, if opted in) in code, before any model turn. Meter-gated, not beats-gated.
+        if (user.onboarding_step or 0) >= 3 and not image_url:
+            try:
+                from gym_beats import heading_out as _heading_out
+                hbeat = _heading_out(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("GYM_HEADING_OUT_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                hbeat = None
+            if hbeat:
+                send_sms(user.phone, hbeat.text, user_id=user.id, message_type=hbeat.message_type)
+                logger.info("GYM_HEADING_OUT user=%s kind=%s", user.id, hbeat.kind)
+                typing_stop(user.id)
+                return
+
         # Workout card, Phase 4: with a session open, a terse set ('190 x4',
         # 'only got 3', 'skipped incline') or a close ('done') is handled in code —
         # exactly one line back ('swapped it in.' / the PR line), never a model turn.
