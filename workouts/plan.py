@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from models import get_session, SetLog, WorkoutSession, Workout, active
-from workouts.templates import TEMPLATES, normalize_template_key, slug_for_name, plate_step_for_slug
+from workouts.templates import TEMPLATES, normalize_template_key, slug_for_name, plate_step_for_slug, templates_for
 
 
 def _utcnow():
@@ -44,8 +44,25 @@ def _legacy_baseline(session, user_id: int, exercise: str):
     return None
 
 
+def _next_bodyweight_targets(session, user_id: int, tmpl) -> tuple[float, int, str]:
+    """Bodyweight progression: reps, not plates. Hit every planned rep last time →
+    +rep_step on the last plan; otherwise repeat it. A weight the user typed in
+    (a vest, a backpack) is kept, never invented."""
+    sets = _last_session_sets(session, user_id, tmpl.slug)
+    done = [s for s in sets if s.done and s.actual_reps]
+    if not done:
+        return 0.0, tmpl.reps, "template"
+    base = max(int(s.planned_reps or tmpl.reps) for s in sets)
+    hit_all = all(int(s.actual_reps or 0) >= int(s.planned_reps or tmpl.reps) for s in done) \
+        and len(done) >= len(sets)
+    weight = max(float(s.actual_weight or 0) for s in done)
+    return weight, base + (tmpl.rep_step if hit_all else 0), "history"
+
+
 def next_targets(session, user_id: int, tmpl) -> tuple[float, int, str]:
     """(planned_weight, planned_reps, source) for one exercise."""
+    if tmpl.default_weight == 0 and tmpl.rep_step:
+        return _next_bodyweight_targets(session, user_id, tmpl)
     sets = _last_session_sets(session, user_id, tmpl.slug)
     done = [s for s in sets if s.done and s.actual_weight and s.actual_reps]
     if done:
@@ -71,7 +88,7 @@ def build_session(user, template_key: str, *, now=None) -> WorkoutSession:
         ws = WorkoutSession(user_id=user.id, date=now, template_key=key, status="planned")
         session.add(ws)
         session.flush()
-        for tmpl in TEMPLATES[key]:
+        for tmpl in templates_for(user)[key]:
             weight, reps, _src = next_targets(session, user.id, tmpl)
             for i in range(tmpl.sets):
                 session.add(SetLog(session_id=ws.id, exercise=tmpl.slug, exercise_label=tmpl.label,

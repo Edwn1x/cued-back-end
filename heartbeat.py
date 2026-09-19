@@ -14,13 +14,15 @@ daily cap).
 from __future__ import annotations
 
 import logging
+import math
+import re
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import anthropic
 import config
 from cost_tracking import track
-from models import get_session, User, Message, HeartbeatTick, Workout, active
+from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSession, active
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
 from llm_client import make_client
@@ -75,6 +77,7 @@ STAY SILENT when:
 - a quiet, on-track day with nothing standing, no notable win, and no specific warm material — the honest default (a modest, unremarkable few workouts is NOT a win to text about)
 - the user is mid-conversation — THEIR last message is minutes old (reactive territory: reply in-thread, don't proactively double-text). Judge this ONLY by TIME SINCE THEIR LAST MESSAGE below, never by where the transcript ends: a tick only reaches you at all when their last text is over half an hour old. A question YOU asked that has sat unanswered for HOURS is not a live exchange — it is an open thread, which is SPEAK material (nudge it, or say the next real thing), and "waiting on their reply" copied forward from TICK HISTORY does not become truer with time.
 - you already sent this thought, or recently decided to stay silent on it (see RECENT PROACTIVE MESSAGES / TICK HISTORY below when present) — never send the same nudge twice, and never open like your last few texts. But re-VERIFY a held-over reason against the timestamps below before reusing it: a reason like "mid-conversation" or "waiting on reply" expires as hours pass.
+- NOT because of an OPEN THREAD marked EXPIRED: a question you asked on a previous day is over — it is neither a reason to stay silent ("still their turn") nor something to re-ask. Judge today on today's merits (a TRAINING GAP or a real check-in still speaks); when you do speak, never open by reviving yesterday's detail.
 
 DON'T RATION YOURSELF. The limits on over-texting are enforced in CODE, not by you: at most one unanswered proactive nudge at a time (an anti-stack window) and a hard daily cap. You cannot over-text past those. So do NOT hold back out of fear of nagging — that is already handled. Your only job is the single judgment call: is THIS worth a text right now? Answer that honestly and act on it.
 
@@ -197,12 +200,128 @@ def _recent_win_signal(user, session) -> str | None:
             f"Completed {len(done)} workout(s) in the last 7 days: {types}.")
 
 
+_DAY_ABBR = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _committed_per_week(user) -> int:
+    """Their stated training frequency, as an int: named days ("mon/wed/fri" → 3), a
+    number or range ("3-4" → the LOW end: the commitment they'd defend), default 3."""
+    raw = (user.confirmed_training_days or user.workout_days or "").strip().lower()
+    if not raw:
+        return 3
+    tokens = re.split(r"[\s,/&+]+", raw)
+    named = {t[:3] for t in tokens if t[:3] in _DAY_ABBR}
+    if named:
+        return max(1, min(7, len(named)))
+    nums = [int(n) for n in re.findall(r"\d+", raw)]
+    if nums:
+        return max(1, min(7, min(nums)))
+    return 3
+
+
+def _training_gap_signal(user, session) -> str | None:
+    """ACCOUNTABILITY material, code-computed (the playbook: the model can't do date
+    arithmetic from a transcript). Days since the last COMPLETED workout — or since
+    they joined when there is none — against the frequency they committed to. Live
+    2026-09-14→19 (user 32): five days, zero workouts, and not one training mention
+    from the coach, because no block ever said so. Renders once the gap exceeds the
+    spacing their frequency implies (ceil(7/n)+1 days); None below that."""
+    per_week = _committed_per_week(user)
+    threshold = math.ceil(7 / per_week) + 1
+    now = _naive_utcnow()
+    last_w = (active(session, Workout, user_id=user.id)
+              .filter(Workout.completed.is_(True)).order_by(Workout.date.desc()).first())
+    last_s = (session.query(WorkoutSession)
+              .filter(WorkoutSession.user_id == user.id, WorkoutSession.status == "done")
+              .order_by(WorkoutSession.finished_at.desc().nullslast(), WorkoutSession.date.desc()).first())
+    stamps = [d for d in ((last_w.date if last_w else None),
+                          ((last_s.finished_at or last_s.date) if last_s else None)) if d]
+    if stamps:
+        since = max(stamps)
+        gap_days = (now - since).days
+        basis = f"last completed workout: {gap_days} days ago"
+    else:
+        since = user.activated_at or user.created_at
+        if not since:
+            return None
+        gap_days = (now - since).days
+        basis = f"no completed workout on record — they joined {gap_days} days ago and have never trained with you"
+    if gap_days < threshold:
+        return None
+    card = (session.query(WorkoutSession)
+            .filter(WorkoutSession.user_id == user.id, WorkoutSession.status != "done",
+                    WorkoutSession.date >= since)
+            .order_by(WorkoutSession.date.desc()).first())
+    card_line = ""
+    if card and card.date:
+        card_line = (f" A {card.template_key.replace('_', ' ')} session card was sent "
+                     f"{(now - card.date).days} days ago and never finished.")
+    setup = (user.equipment or "").replace("_", " ").strip()
+    setup_line = f" Their setup: {setup}." if setup else ""
+    return ("## TRAINING GAP (standing condition — code-computed)\n"
+            f"They committed to {per_week} workouts/week. {basis}.{card_line}{setup_line} "
+            "This is accountability material on its own — a warranted nudge here is the job: "
+            "one text, specific to their setup, no lecture, and offer the next session rather "
+            "than an inquest.")
+
+
+_QUESTION_OPENERS = {"how", "what", "which", "when", "where", "who", "why", "did", "do",
+                     "does", "can", "could", "would", "have", "has", "wanna", "want"}
+
+
+def _looks_like_question(body: str) -> bool:
+    b = (body or "").strip().lower()
+    if not b:
+        return False
+    if "?" in b:
+        return True
+    first = re.split(r"[\s,]+", b, maxsplit=1)[0]
+    return first in _QUESTION_OPENERS
+
+
+def _open_thread_signal(user, session) -> str | None:
+    """The coach's own unanswered question, code-dated. Same age → same standing (an
+    hours-old question is an open thread, SPEAK material — the stale-thread anchor);
+    but a question from a PREVIOUS local day is EXPIRED: live 2026-09-18→19 the tick
+    history carried "open mcmuffin question, still her turn" for 20 ticks and the next
+    morning's reply reopened it, ahead of that day's food and training."""
+    from engagement_tracker import _not_reaction
+    last_out = (session.query(Message)
+                .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction())
+                .order_by(Message.created_at.desc()).first())
+    if not last_out or not last_out.created_at or not _looks_like_question(last_out.body):
+        return None
+    answered = (session.query(Message.id)
+                .filter(Message.user_id == user.id, Message.direction == "in",
+                        Message.created_at > last_out.created_at).first())
+    if answered:
+        return None
+    from timefmt import local_day_bounds
+    day_start, _ = local_day_bounds(user)
+    hrs = (_naive_utcnow() - last_out.created_at).total_seconds() / 3600
+    quoted = (last_out.body or "").strip().replace("\n", " ")[:120]
+    if last_out.created_at < day_start:
+        return ("## OPEN THREAD (code-computed)\n"
+                f"Your last message was a question sent ~{hrs:.0f} hours ago, on a PREVIOUS local "
+                f"day, and they never answered: \"{quoted}\". It has EXPIRED with that day — do NOT "
+                "reopen or re-ask it, and it is NOT a reason to stay silent. If you speak, lead with "
+                "today (their day, food, training); if the detail still matters, work with what you have.")
+    return ("## OPEN THREAD (code-computed)\n"
+            f"Your last message was a question sent ~{hrs:.1f} hours ago today and they haven't "
+            f"answered: \"{quoted}\". A question that has sat unanswered for hours is an open "
+            "thread, not a live exchange.")
+
+
 def _proactive_context(user, session) -> str:
     parts = [build_loop_context(user, session)]
 
     win = _recent_win_signal(user, session)
     if win:
         parts.append(win)
+
+    gap = _training_gap_signal(user, session)
+    if gap:
+        parts.append(gap)
 
     # Adaptive targets: a due weigh-in is a standing condition (once a week, mornings).
     if config.ADAPTIVE_TARGETS_ENABLED:
@@ -234,6 +353,10 @@ def _proactive_context(user, session) -> str:
         hrs_in = (datetime.now(timezone.utc) - last_in.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
         parts.append(f"## TIME SINCE THEIR LAST MESSAGE\n~{hrs_in:.1f} hours — judge "
                      "'mid-conversation' by THIS number, not by where the transcript ends.")
+
+    thread = _open_thread_signal(user, session)
+    if thread:
+        parts.append(thread)
 
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)

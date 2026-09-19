@@ -36,10 +36,11 @@ def card_layout(state: dict) -> dict:
     key = (s["template_key"] or "workout").replace("_", " ")
     caption = f"{key} · {s['weekday']}"
     done, total, vol = state["done_count"], state["set_count"], state["volume_lb"]
+    bodyweight = bool(state.get("bodyweight"))  # no load → no "lb" anywhere on the bubble
     if s["status"] == "done":
-        sub = f"done · {vol:,} lb — tap for the log"
+        sub = f"done · {done} sets — tap for the log" if bodyweight else f"done · {vol:,} lb — tap for the log"
     elif done:
-        sub = f"{done}/{total} sets · {vol:,} lb — tap to log"
+        sub = f"{done}/{total} sets — tap to log" if bodyweight else f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
         lead = next((e for e in state["exercises"]), None)
         first = f"{len(lead['sets'])} sets {lead['label']}" if lead else key

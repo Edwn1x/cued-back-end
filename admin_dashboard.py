@@ -854,13 +854,20 @@ async function sendManual(e) {
   const userId = document.getElementById('send-user').value;
   const body = document.getElementById('send-body').value;
   if (!body.trim()) return false;
-  const res = await fetch('/admin/send', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
-  });
-  document.getElementById('send-body').value = '';
-  alert('Sent.');
+  if (window._sendInFlight) return false;   // double-submit guard
+  window._sendInFlight = true;
+  try {
+    const res = await fetch('/admin/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
+    });
+    const j = await res.json().catch(() => ({}));
+    document.getElementById('send-body').value = '';
+    alert(j.status === 'duplicate' ? 'Already sent that (duplicate ignored).' : 'Sent.');
+  } finally {
+    window._sendInFlight = false;
+  }
   return false;
 }
 

@@ -280,6 +280,25 @@ def build_loop_context(user, session) -> str:
         "forward or add to any calorie/protein total you mentioned earlier in the thread — "
         "that number may be from a previous day.")
 
+    # 7b. YESTERDAY's meals — ids for corrections, never for today's math. Live
+    # 2026-09-19: the muffin she disputed was yesterday's row; with only today's ids in
+    # context the coach re-estimated it out loud and had nothing to edit. A past day is
+    # reference-only: its total is stated so it can't be re-summed into today.
+    from datetime import timedelta as _td
+    _ystart = _start - _td(days=1)
+    ymeals = (active(session, Meal, user_id=user.id)
+              .filter(Meal.eaten_at >= _ystart, Meal.eaten_at < _start)
+              .order_by(Meal.eaten_at).all())
+    if ymeals:
+        yl = "\n".join(f"[id {m.id}] {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
+                       for m in ymeals)
+        ycal = sum(m.calories or 0 for m in ymeals)
+        ypro = sum(m.protein_g or 0 for m in ymeals)
+        parts.append("## YESTERDAY'S LOGGED MEALS (a PAST day — reference only; its total was "
+                     f"{ycal}cal/{ypro}g; NEVER add any of these into today's total; if a "
+                     "re-estimate changes one, edit it by id with manage_log before you quote "
+                     "the new number)\n" + yl)
+
     # 8. Recent training log (active only).
     workouts = (active(session, Workout, user_id=user.id)
                 .order_by(Workout.date.desc()).limit(5).all())

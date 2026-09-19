@@ -236,11 +236,22 @@ def handle_log_weight(user_id: int, tool_input: dict, *, message_id=None) -> str
         row = WeightLog(user_id=user_id, weighed_at=when, weight_lbs=round(lbs, 1),
                         notes=(tool_input.get("note") or None))
         session.add(row)
+        session.flush()
+        # Is this their first reading ever? (autoflush means the new row is already
+        # visible to the query below, so "no prior" must exclude it by id.)
+        first_reading = (session.query(WeightLog.id)
+                         .filter(WeightLog.user_id == user_id, WeightLog.id != row.id)
+                         .first()) is None
         # users.weight_lbs follows the LATEST reading (protein is g/lb; profile shows it).
         latest = (session.query(WeightLog.weighed_at).filter(WeightLog.user_id == user_id)
                   .order_by(WeightLog.weighed_at.desc()).first())
         is_latest = latest is None or when >= latest[0]
-        protein_note = ""
+        protein_note, anchor_note = "", ""
+        # First reading ever → this weekday becomes the weigh-in anchor (unless they or
+        # onboarding already picked one). "Same time each week" needs a day to mean it.
+        if first_reading and not (user.weigh_in_day or "").strip():
+            user.weigh_in_day = when.replace(tzinfo=timezone.utc).astimezone(tz).strftime("%A").lower()
+            anchor_note = f"; weigh-in day set to {user.weigh_in_day}"
         if is_latest:
             user.weight_lbs = round(lbs, 1)
             if getattr(user, "targets_source", None) != "user" and user.protein_target:
@@ -249,13 +260,16 @@ def handle_log_weight(user_id: int, tool_input: dict, *, message_id=None) -> str
                 if new_p != user.protein_target:
                     protein_note = f"; protein target {user.protein_target} → {new_p}g (follows weight)"
                     user.protein_target = new_p
+                # the computed pair must follow too — set_targets' 15% band reads it
+                if getattr(user, "protein_target_computed", None) != new_p:
+                    user.protein_target_computed = new_p
         session.commit()
         wid = row.id
     finally:
         session.close()
     logger.info("LOG_WEIGHT user=%s lbs=%s dated=%s latest=%s", user_id, lbs, date_str, is_latest)
     return (f"ok: logged {lbs:g} lb (id={wid}" + (f", dated {date_str}" if date_str else "") + ")"
-            + protein_note + " — quote the trend from context, not this reading")
+            + protein_note + anchor_note + " — quote the trend from context, not this reading")
 
 
 START_WORKOUT_SESSION_TOOL = {
@@ -1166,6 +1180,56 @@ USDA_FOOD_LOOKUP_TOOL = {
 }
 
 
+_LOOKUP_STOPWORDS = {"raw", "cooked", "fresh", "plain", "the", "and", "with", "of", "deli",
+                     "grilled", "boiled", "large", "small", "medium", "whole", "sliced"}
+
+
+def _food_tokens(text: str) -> set:
+    out = set()
+    for w in re.split(r"[^a-z0-9]+", (text or "").lower()):
+        if len(w) < 3 or w in _LOOKUP_STOPWORDS:
+            continue
+        out.add(w[:-1] if w.endswith("s") and len(w) > 3 else w)  # whites → white
+    return out
+
+
+def _logged_rows_overlapping(user_id: int, query: str) -> str:
+    """Affordance-in-tool-result (macro-accuracy lesson): a lookup that lands on an
+    ALREADY-LOGGED item is a correction waiting to be written. Live 2026-09-19 the coach
+    re-estimated yesterday's muffin from two USDA hits, told the user the new number, and
+    never edited the row. Lists today's + yesterday's active meals whose description shares
+    a food word with the query, with ids + current numbers, and says what to do."""
+    qt = _food_tokens(query)
+    if not qt:
+        return ""
+    from timefmt import local_day_bounds
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return ""
+        start, end = local_day_bounds(user)
+        ystart = start - timedelta(days=1)
+        rows = (active(session, Meal, user_id=user_id)
+                .filter(Meal.eaten_at >= ystart, Meal.eaten_at < end)
+                .order_by(Meal.eaten_at).all())
+        hits = []
+        for m in rows:
+            if qt & _food_tokens(m.description):
+                day = "today" if m.eaten_at >= start else "yesterday"
+                hits.append(f"[id {m.id}] ({day}) {m.description} — currently {m.calories or 0}cal/"
+                            f"{m.protein_g or 0}g protein")
+    finally:
+        session.close()
+    if not hits:
+        return ""
+    return ("\nalready logged (overlaps this lookup):\n" + "\n".join(hits) +
+            "\nIf this lookup changes what one of those should be, call manage_log edit "
+            "(entity meal, that id, fields calories/protein_g) BEFORE you quote the new "
+            "number — a re-estimate that isn't written back leaves the day wrong. Then "
+            "quote the total from context, never your own sum.")
+
+
 def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Read-only external lookup. Every failure branch is a clean 'estimate
     normally' answer — the lookup adds information or gets out of the way."""
@@ -1196,7 +1260,7 @@ def handle_usda_food_lookup(user_id: int, tool_input: dict, *, message_id=None) 
                 macros.append(f"{r[field]}g {label}")
         lines.append(f"{r['description']} ({r['data_type']}, per 100g): {'/'.join(macros)}")
     return ("ok: usda entries (per 100g — scale by the portion you estimated):\n"
-            + "\n".join(lines))
+            + "\n".join(lines) + _logged_rows_overlapping(user_id, query))
 
 
 # name -> handler. The loop consults this after checking the tool is enabled.
