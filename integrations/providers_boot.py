@@ -15,7 +15,7 @@ logger = logging.getLogger("cued.integrations.boot")
 # Providers register on import. Wrapped so a broken provider module degrades to
 # "that connection is off" rather than crashing boot.
 _PROVIDER_MODULES: list[str] = [
-    # "integrations.gcal",     # Part 1
+    "integrations.gcal",       # Part 1 — Google Calendar
     # "integrations.strava",   # Part 2
     # "integrations.bcourses", # Part 1.4 (no OAuth, but registers for status)
 ]
