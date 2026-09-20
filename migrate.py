@@ -362,6 +362,8 @@ MIGRATIONS = [
     # Waitlist with a profile + iMessage opt-in up front (2026-09-19): first inbound
     # iMessage stamps the line as open; activation reads it (INVESTIGATION.md §2.3).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS imessage_opted_in_at TIMESTAMP",
+    # 2026-09-20: the sign-up chat collects the full name for us; `name` stays first-only.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200)",
 ]
 
 def wait_for_db(retries=10, delay=3):

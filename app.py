@@ -2070,6 +2070,14 @@ def waitlist_signup():
     # Validation
     if not name or len(name) > 100:
         return jsonify({"status": "error", "message": "Please enter your name."}), 400
+    # The chat asks for the full name (kept in full_name — for us: admin, email).
+    # `name` is what the coach SAYS ("yo {name}…" in the hook, every trigger
+    # prompt, the transcript labels), so it is the first name only — enforced
+    # here, whatever the client sent. Never the full name to the model.
+    full_name = (str(data.get("full_name") or "").strip() or (name if " " in name else "")) or None
+    if full_name and len(full_name) > 200:
+        return jsonify({"status": "error", "message": "That name doesn't look right."}), 400
+    name = name.split()[0]
     try:
         phone = _normalize_phone(raw_phone, strict=True)
     except ValueError as e:
@@ -2139,6 +2147,7 @@ def waitlist_signup():
             # back. waitlist_status='pending' is the sole waitlist marker so
             # User.active can keep its eventual pause/block semantic.
             onboarding_step=0,
+            full_name=full_name,
             **profile,
         )
         session.add(user)
@@ -2578,6 +2587,7 @@ def admin():
                 "joined": joined_str,
                 "timezone": wu.user_timezone or "—",
                 # Profile from the sign-up chat (2026-09-19) + whether Activate goes blue.
+                "full_name": wu.full_name or "—",
                 "age": wu.age if wu.age is not None else "—",
                 "gender": wu.gender or "—",
                 "goal": (wu.goal or "").replace(",", ", ") or "—",

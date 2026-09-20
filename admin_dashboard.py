@@ -422,13 +422,14 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
   <div class="table-wrap">
     <table id="waitlist-table">
       <tr>
-        <th>Name</th><th>Phone</th><th>Channel</th><th>Age</th><th>Gender</th><th>Goals</th>
+        <th>Name</th><th>Full name</th><th>Phone</th><th>Channel</th><th>Age</th><th>Gender</th><th>Goals</th>
         <th>Experience</th><th>Equipment</th><th>Obstacle</th><th>Email</th><th>Source</th>
         <th>Timezone</th><th>Joined Waitlist</th><th></th>
       </tr>
       {% for w in waitlist %}
       <tr data-id="{{ w.id }}">
         <td style="color:var(--text);font-weight:500">{{ w.name }}</td>
+        <td>{{ w.full_name }}</td>
         <td>{{ w.phone_full }}</td>
         <td><span class="badge {{ w.channel[1] }}">{{ w.channel[0] }}</span></td>
         <td>{{ w.age }}</td>

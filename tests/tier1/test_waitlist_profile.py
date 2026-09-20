@@ -119,6 +119,34 @@ def test_waitlist_stores_the_profile_fields(db, client, sms_capture):
     assert _outbound(db, u.id) == [] and sms_capture == [], "a waitlist sign-up never texts"
 
 
+def test_waitlist_keeps_the_full_name_aside_and_addresses_by_first_name(db, client):
+    """The chat asks for the full name (for us). `name` — what every hook template and
+    trigger prompt injects — must be the first name only, whatever the client sent."""
+    from models import User
+    code, _ = _waitlist(client, "5105550308", name="Nate", full_name="Nate Ruiz")
+    assert code == 200
+    u = db.query(User).filter(User.phone == "+15105550308").one()
+    assert (u.name, u.full_name) == ("Nate", "Nate Ruiz")
+
+    # an older client sends the full name AS `name`: split it here, in code
+    code, _ = _waitlist(client, "5105550309", name="  Sam   Okafor ")
+    assert code == 200
+    u = db.query(User).filter(User.phone == "+15105550309").one()
+    assert (u.name, u.full_name) == ("Sam", "Sam   Okafor".strip())
+
+    # a single first name and nothing else: full_name stays empty, nothing invented
+    code, _ = _waitlist(client, "5105550310", name="Priya")
+    assert code == 200
+    u = db.query(User).filter(User.phone == "+15105550310").one()
+    assert (u.name, u.full_name) == ("Priya", None)
+
+
+def test_admin_waitlist_tab_shows_the_full_name(db, client):
+    _pending(db, phone="+15105550311", name="Nate", full_name="Nate Ruiz")
+    html = client.get("/admin").get_data(as_text=True)
+    assert "Nate Ruiz" in html and "Full name" in html
+
+
 def test_waitlist_goal_csv_and_defaults_match_signup(db, client):
     from models import User
     code, _ = _waitlist(client, "5105550302", goal="muscle_building", gender=None, experience="",
