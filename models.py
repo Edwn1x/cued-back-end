@@ -149,6 +149,11 @@ class User(Base):
     # consent gate is open for this number. Waitlist (2026-09-19): written while they
     # are still pending, so activation goes blue first try; the admin tab reads it.
     imessage_opted_in_at = Column(DateTime, default=None)
+    # The sign-up chat asks for the full name (for us — admin, email later). `name`
+    # stays the FIRST name: it's what every hook template, trigger prompt and
+    # transcript label injects, and the coach must never address someone by their
+    # full name. /waitlist enforces the split in code (2026-09-20).
+    full_name = Column(String(200), default=None)
 
     messages = relationship("Message", back_populates="user", order_by="Message.created_at")
     workouts = relationship("Workout", back_populates="user", order_by="Workout.date.desc()")

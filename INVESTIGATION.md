@@ -68,6 +68,12 @@ three-field waitlist modal on `index.html` with the chat sign-up overlay, postin
    channel badge: `iMessage ✓` (opted in), `link sent` (provisioned, not yet texted), `SMS`
    (chose no iPhone), `—` (not provisioned).
 
+8. **Full name, first-name address (2026-09-20).** The chat asks for the full name;
+   `/waitlist` keeps it in `users.full_name` (admin, email later) and stores `name` as
+   the FIRST token only, whatever the client sent — `name` is what the hook template
+   ("yo {name}…"), every trigger prompt, the memory header and the transcript labels
+   inject, and the coach must never address someone by their full name.
+
 ## §3 Why
 
 The founder wants the profile from the first minute ("a running start for the coach")
