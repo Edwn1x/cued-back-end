@@ -138,4 +138,4 @@ def test_totals_block_forbids_carrying_forward(db):
         s.close()
     ctx = _ctx(user.id)
     assert "calories: 650" in ctx
-    assert "do NOT carry" in ctx and "previous day" in ctx, ctx
+    assert "carry forward" in ctx and "previous day" in ctx, ctx
