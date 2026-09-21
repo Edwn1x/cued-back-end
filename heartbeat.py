@@ -120,12 +120,71 @@ def _local_day_start_utc(user):
     return midnight.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def guardrail_reason(user, session) -> str | None:
+_HOUR_RE = re.compile(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.IGNORECASE)
+
+
+def _parse_hour(s) -> int | None:
+    """Best-effort local hour (0–23) from a free-text time field, else None."""
+    if not s:
+        return None
+    m = _HOUR_RE.search(str(s).strip().lower())
+    if not m:
+        return None
+    h, ap = int(m.group(1)), (m.group(3) or "").lower()
+    if ap == "pm" and h < 12:
+        h += 12
+    elif ap == "am" and h == 12:
+        h = 0
+    return h if 0 <= h <= 23 else None
+
+
+def _quiet_window(user) -> tuple[int, int]:
+    """The overnight quiet window (start_evening_hour, end_morning_hour), local. The
+    default 9pm–8am is a FLOOR: a parseable sleep_time earlier than 9pm or a wake_time
+    later than 8am only EXTENDS it (more protective), never shrinks it."""
+    start, end = config.HEARTBEAT_QUIET_START_HOUR, config.HEARTBEAT_QUIET_END_HOUR
+    hs = _parse_hour(getattr(user, "sleep_time", None))
+    hw = _parse_hour(getattr(user, "wake_time", None))
+    if hs is not None and 12 <= hs <= 23 and hs < start:   # sleeps earlier than 9pm
+        start = hs
+    if hw is not None and 0 <= hw <= 11 and hw > end:      # wakes later than 8am
+        end = hw
+    return start, end
+
+
+def _in_standing_quiet_hours(user, *, now=None) -> bool:
+    """True if it's currently the user's overnight quiet window (local). `now` is an
+    optional aware/naive-UTC instant for tests."""
+    if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
+        return False
+    try:
+        tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    ref = now if now is not None else datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    hour = ref.astimezone(tz).hour
+    start, end = _quiet_window(user)
+    # window always spans midnight (start is evening, end is morning)
+    return hour >= start or hour < end
+
+
+def guardrail_reason(user, session, *, now=None) -> str | None:
     """Return the first guardrail that blocks this tick, or None. Runs in code
     before any model call — the model can't talk past these."""
     # allowlist (burn-in: founder number only)
     if config.HEARTBEAT_ALLOWLIST and user.phone not in config.HEARTBEAT_ALLOWLIST:
         return "not_allowlisted"
+    # Waitlisted users are NOT onboarded — never proactively coach them. (They only
+    # ever got the "you're on the list" holding message.) Live 2026-09-21: clearing
+    # the allowlist swept pending accounts (active=true) into the heartbeat.
+    if (getattr(user, "waitlist_status", None) or "") == "pending":
+        return "waitlisted"
+    # Standing overnight quiet hours — no proactive send while they'd be asleep. This
+    # is the always-on floor; quiet_until (a transient goodnight) is checked below too.
+    if _in_standing_quiet_hours(user, now=now):
+        return "quiet_hours_standing"
     # quiet hours (goodnight / quiet_until, naive UTC)
     if user.quiet_until and _naive_utcnow() < user.quiet_until:
         return "quiet_hours"
@@ -542,7 +601,12 @@ def heartbeat_all():
         return
     session = get_session()
     try:
-        q = session.query(User).filter(User.active.is_(True))
+        # Exclude waitlisted (pending) accounts — they're active=true but not
+        # onboarded, so they must never be proactively coached. guardrail_reason
+        # also blocks them (defense in depth); filtering here saves the per-user work.
+        q = (session.query(User)
+             .filter(User.active.is_(True))
+             .filter((User.waitlist_status.is_(None)) | (User.waitlist_status != "pending")))
         if config.HEARTBEAT_ALLOWLIST:
             q = q.filter(User.phone.in_(config.HEARTBEAT_ALLOWLIST))
         user_ids = [u.id for u in q.all()]

@@ -47,6 +47,10 @@ def pytest_configure(config):
     os.environ.setdefault("TWILIO_AUTH_TOKEN", "dummytoken")
     os.environ.setdefault("TWILIO_PHONE_NUMBER", "+15550000000")
     os.environ.setdefault("USER_PROFILE_MEMORY_ENABLED", "true")
+    # Standing overnight quiet-hours gate off by default in tests — existing heartbeat
+    # tests don't control the wall clock, so a night run would otherwise flake them.
+    # The dedicated test_heartbeat_quiet_and_waitlist tests enable it + inject a clock.
+    os.environ.setdefault("HEARTBEAT_STANDING_QUIET_ENABLED", "false")
 
     # CI provides a Postgres 18 service container via CUED_TEST_DATABASE_URL
     # (GitHub runners don't ship the PG18 server binaries). Locally we spin up a

@@ -239,6 +239,15 @@ HEARTBEAT_TICK_MINUTES = int(os.getenv("HEARTBEAT_TICK_MINUTES", "45"))     # du
 HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 0-10 min offset — kills the :00/:30 tell
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
+# Standing overnight quiet window for PROACTIVE sends (heartbeat + gym beats), so a
+# nudge never lands at 1am. Separate from quiet_until (a transient goodnight). Default
+# 9pm–8am LOCAL; a user's parseable sleep_time/wake_time can only EXTEND it (more
+# protective), never shrink below this floor. Live 2026-09-21: clearing the allowlist
+# exposed 1am/5am sends. ON by default in prod; the test harness sets it false so the
+# existing clock-uncontrolled heartbeat tests don't flake.
+HEARTBEAT_STANDING_QUIET_ENABLED = os.getenv("HEARTBEAT_STANDING_QUIET_ENABLED", "true").lower() == "true"
+HEARTBEAT_QUIET_START_HOUR = int(os.getenv("HEARTBEAT_QUIET_START_HOUR", "21"))  # 9pm local
+HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))       # 8am local
 # Decide-call output ceiling — SEPARATE from MAX_RESPONSE_TOKENS (the SMS reply
 # governor). One decide turn spends adaptive-thinking tokens + the send_text/
 # stay_silent tool JSON (message included) + any inline-search reasoning against a
