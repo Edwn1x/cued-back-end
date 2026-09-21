@@ -407,7 +407,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 <div id="page-waitlist" class="page">
   <div class="page-header">
     <h1>Waitlist</h1>
-    <p>Signups from cued.fit waiting for activation. Activate sends the first SMS.</p>
+    <p>Sign-ups from cued.fit waiting for activation, with the profile they gave the sign-up chat. Activate sends the first text now — blue if they've already texted their line (iMessage ✓), otherwise SMS with the opt-in link.</p>
   </div>
 
   <div class="grid grid-3" style="margin-bottom:20px">
@@ -422,13 +422,22 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
   <div class="table-wrap">
     <table id="waitlist-table">
       <tr>
-        <th>Name</th><th>Phone</th><th>Email</th><th>Source</th>
+        <th>Name</th><th>Full name</th><th>Phone</th><th>Channel</th><th>Age</th><th>Gender</th><th>Goals</th>
+        <th>Experience</th><th>Equipment</th><th>Obstacle</th><th>Email</th><th>Source</th>
         <th>Timezone</th><th>Joined Waitlist</th><th></th>
       </tr>
       {% for w in waitlist %}
       <tr data-id="{{ w.id }}">
         <td style="color:var(--text);font-weight:500">{{ w.name }}</td>
+        <td>{{ w.full_name }}</td>
         <td>{{ w.phone_full }}</td>
+        <td><span class="badge {{ w.channel[1] }}">{{ w.channel[0] }}</span></td>
+        <td>{{ w.age }}</td>
+        <td>{{ w.gender }}</td>
+        <td>{{ w.goal }}</td>
+        <td>{{ w.experience }}</td>
+        <td>{{ w.equipment }}</td>
+        <td>{{ w.obstacle }}</td>
         <td>{{ w.email }}</td>
         <td>{{ w.source }}</td>
         <td>{{ w.timezone }}</td>
@@ -827,7 +836,7 @@ async function deleteUser(userId, name) {
 }
 
 async function activateWaitlist(userId, name, btn) {
-  if (!confirm('Activate ' + name + '? This sends them the onboarding SMS now.')) return;
+  if (!confirm('Activate ' + name + '? This sends them their first text now.')) return;
   btn.disabled = true;
   btn.textContent = 'Activating…';
   try {

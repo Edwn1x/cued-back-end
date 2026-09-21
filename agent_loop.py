@@ -276,9 +276,13 @@ def build_loop_context(user, session) -> str:
     parts.append(
         "## TODAY'S TOTALS (authoritative — the ONLY source for today's running total; "
         "it resets to 0 at local midnight)\n" + "\n".join(lines) +
-        "\nQuote these numbers exactly. Do NOT re-add or re-derive them, and do NOT carry "
-        "forward or add to any calorie/protein total you mentioned earlier in the thread — "
-        "that number may be from a previous day.")
+        "\nWhen you state the day's total, use THESE numbers as they are — read them here, "
+        "don't recompute or add meals up yourself, and don't carry forward a total from "
+        "earlier in the thread (it may be a previous day). Just after you log or edit a meal "
+        "THIS turn, the tool result gives you the updated day total — use that number "
+        "instead, since this block was built before the change. State the number plainly, as "
+        "your own knowledge; NEVER say \"quote from context\", \"per the totals\", or "
+        "otherwise announce that you're reading it — that narration is a bug, not a reply.")
 
     # 7b. YESTERDAY's meals — ids for corrections, never for today's math. Live
     # 2026-09-19: the muffin she disputed was yesterday's row; with only today's ids in

@@ -1210,6 +1210,19 @@ def _normalize_phone(raw: str, strict: bool = False) -> str:
     return "+1" + digits
 
 
+def _waitlist_channel_state(u) -> tuple:
+    """(label, badge class) for the admin waitlist tab — a code-owned reading of the
+    channel columns: opted in > chose SMS > link sent (provisioned, not yet texted)
+    > never provisioned. Tells the admin whether Activate will go blue."""
+    if u.imessage_opted_in_at:
+        return ("iMessage ✓", "badge-green")
+    if u.photon_user_id and (u.preferred_channel or "sms") == "sms":
+        return ("SMS", "badge-gray")
+    if u.photon_user_id:
+        return ("link sent", "badge-blue")
+    return ("—", "badge-gray")
+
+
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 def _looks_like_email(s: str) -> bool:
@@ -1290,6 +1303,15 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         session.commit()
         logger.info("IMESSAGE_BREAKER_RESET user_id=%s — inbound iMessage proves the pipe", user.id)
 
+    # Their first inbound iMessage is the proof the shared-pool consent gate is open
+    # for this number. Stamped once, in code; the admin waitlist tab reads it and a
+    # waitlister's activation relies on it (blue first try, no link).
+    if channel == "imessage" and not user.imessage_opted_in_at:
+        from datetime import datetime as _dt_in, timezone as _tz_in  # `datetime` is rebound below
+        user.imessage_opted_in_at = _dt_in.now(_tz_in.utc).replace(tzinfo=None)
+        session.commit()
+        logger.info("IMESSAGE_OPTED_IN user_id=%s", user.id)
+
     # Clear quiet_until if it's passed or if user is texting us
     # quiet_until is stored as naive UTC
     if user.quiet_until:
@@ -1304,6 +1326,23 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # "image came, detail not saved" — the tenders-confabulation gap.
     log_incoming(user.id, body, has_image=image_url is not None,
                      channel=channel, provider_sid=provider_sid)
+
+    # Waitlist gate (2026-09-19): a pending user who texts the line — the "hey cued"
+    # opt-in tap from the site's success screen, or a curious SMS — is held HERE, in
+    # code. One holding line, then silence until the admin activates them: no safety
+    # pass, no buffer, no model, and never the hook (awaiting_channel_choice and
+    # send_fallback_hooks refuse pending users too). Their inbound is logged above and
+    # the opt-in stamp is already written, so activation goes blue first try.
+    if user.waitlist_status == "pending":
+        from models import Message as _Msg
+        from onboarding_agent import waitlist_hold_text
+        held_before = (session.query(_Msg.id)
+                       .filter(_Msg.user_id == user.id, _Msg.direction == "out",
+                               _Msg.message_type == "waitlist_hold").first() is not None)
+        if not held_before:
+            send_sms(user.phone, waitlist_hold_text(user.name), user_id=user.id, message_type="waitlist_hold")
+        logger.info("WAITLIST_INBOUND_HELD user=%s channel=%s replied=%s", user.id, channel, not held_before)
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
     # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
@@ -1860,7 +1899,9 @@ def signup_channel():
     """"I don't have an iPhone" on the success screen: put the user on SMS and send
     the deferred hook now. JSON {phone, channel:"sms"}. Idempotent — a user whose
     hook already went out just has their channel flipped. Phone-keyed like
-    /activate-sms; rate-limited."""
+    /activate-sms; rate-limited. A pending WAITLISTER (the same button on the
+    waitlist success screen) only gets the flip: their hook waits for activation,
+    which then goes straight to SMS."""
     d = request.get_json(silent=True) or {}
     phone = str(d.get("phone") or "").strip()
     channel = str(d.get("channel") or "").strip().lower()
@@ -1876,14 +1917,15 @@ def signup_channel():
         user.preferred_channel = "sms"  # photon_user_id stays: the link still works later
         session.commit()
         uid, step = user.id, (user.onboarding_step or 0)
+        on_waitlist = user.waitlist_status == "pending"
     finally:
         session.close()
     sent = False
-    if step == 0:
+    if step == 0 and not on_waitlist:
         from onboarding_agent import send_onboarding_hook
         sent = send_onboarding_hook(uid, reason="no_iphone")
-    logger.info("SIGNUP_CHANNEL user=%s channel=sms hook_sent=%s", uid, sent)
-    return jsonify({"status": "ok", "channel": "sms", "hook_sent": sent})
+    logger.info("SIGNUP_CHANNEL user=%s channel=sms hook_sent=%s waitlist=%s", uid, sent, on_waitlist)
+    return jsonify({"status": "ok", "channel": "sms", "hook_sent": sent, "waitlist": on_waitlist})
 
 
 # ─── Workout card, Phase 0: static smoke page for the mini-app install test ───
@@ -2011,8 +2053,16 @@ def waitlist_signup():
     Public waitlist signup. JSON-only. CORS-restricted to ALLOWED_ORIGINS
     (must be set to https://cued.fit,https://www.cued.fit in prod env).
     Does NOT send an SMS — admin promotes from waitlist later via
-    /admin/user/<id>/activate-waitlist, which sends the first SMS via
+    /admin/user/<id>/activate-waitlist, which sends the first text via
     start_onboarding.
+
+    2026-09-19: the site's waitlist is the chat sign-up, so the body carries the
+    same profile /signup takes (age, gender, goal, biggest_obstacle, experience,
+    equipment, sms_consent) — stored on the pending row so the coach starts with
+    it. The Photon line is provisioned here too (flag-gated, degrades to no link)
+    and `imessage_link` comes back so the success screen can offer "Text me on
+    iMessage": their tap opens the line while they wait (held by the gate in
+    _process_inbound), and activation then goes blue first try.
     """
     if not request.is_json:
         return jsonify({"status": "error", "message": "Expected JSON body."}), 400
@@ -2027,12 +2077,47 @@ def waitlist_signup():
     # Validation
     if not name or len(name) > 100:
         return jsonify({"status": "error", "message": "Please enter your name."}), 400
+    # The chat asks for the full name (kept in full_name — for us: admin, email).
+    # `name` is what the coach SAYS ("yo {name}…" in the hook, every trigger
+    # prompt, the transcript labels), so it is the first name only — enforced
+    # here, whatever the client sent. Never the full name to the model.
+    full_name = (str(data.get("full_name") or "").strip() or (name if " " in name else "")) or None
+    if full_name and len(full_name) > 200:
+        return jsonify({"status": "error", "message": "That name doesn't look right."}), 400
+    name = name.split()[0]
     try:
         phone = _normalize_phone(raw_phone, strict=True)
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     if raw_email and not _looks_like_email(raw_email):
         return jsonify({"status": "error", "message": "That email doesn't look right."}), 400
+
+    # Consent is the point of the list (we text them when their spot opens).
+    raw_consent = data.get("sms_consent")
+    if not (raw_consent is True or raw_consent == "on"):
+        return jsonify({"status": "error",
+                        "message": "You must agree to receive texts from Cued to join."}), 400
+
+    # Profile — same shapes and defaults as /signup (goal: list or csv). Over-length
+    # values are rejected, never truncated: a silently clipped enum is a wrong fact.
+    goal_raw = data.get("goal")
+    if isinstance(goal_raw, list):
+        goal_str = ",".join(str(g).strip() for g in goal_raw if str(g).strip())
+    else:
+        goal_str = str(goal_raw).strip() if goal_raw else ""
+    profile = {
+        "age": safe_int(data.get("age")),
+        "gender": str(data.get("gender") or "").strip() or "prefer_not_to_say",
+        "goal": goal_str or "general_fitness",
+        "biggest_obstacle": str(data.get("biggest_obstacle") or "").strip() or None,
+        "experience": str(data.get("experience") or "").strip() or "none",
+        "equipment": str(data.get("equipment") or "").strip() or "full_gym",
+    }
+    for col, cap in (("gender", 20), ("goal", 200), ("biggest_obstacle", 50),
+                     ("experience", 20), ("equipment", 100)):
+        if profile[col] and len(profile[col]) > cap:
+            return jsonify({"status": "error",
+                            "message": f"That {col.replace('_', ' ')} doesn't look right."}), 400
 
     session = get_session()
     try:
@@ -2048,8 +2133,12 @@ def waitlist_signup():
                 name, raw_email or "—", source or "—",
             )
             if existing.waitlist_status == "pending":
+                # Still pending: hand back their opt-in link (if provisioned) so a
+                # re-submit can still open the line. The row itself is untouched.
+                import photon
                 return jsonify({"status": "exists",
-                                "message": "You're already on the waitlist."}), 200
+                                "message": "You're already on the waitlist.",
+                                "imessage_link": photon.imessage_link(existing.photon_user_id)}), 200
             return jsonify({"status": "exists",
                             "message": "This number is already signed up."}), 200
 
@@ -2065,14 +2154,29 @@ def waitlist_signup():
             # back. waitlist_status='pending' is the sole waitlist marker so
             # User.active can keep its eventual pause/block semantic.
             onboarding_step=0,
+            full_name=full_name,
+            **profile,
         )
         session.add(user)
         session.commit()
+        uid = user.id
         logger.info(
-            "WAITLIST_NEW phone=%s name=%r source=%r email=%r",
-            phone, name, source or "—", raw_email or "—",
+            "WAITLIST_NEW phone=%s name=%r source=%r email=%r goal=%r experience=%r",
+            phone, name, source or "—", raw_email or "—", profile["goal"], profile["experience"],
         )
-        return jsonify({"status": "ok"}), 200
+        # Provision the Photon line now (flag-gated, never raises) so the success
+        # screen can offer "Text me on iMessage". No hook — that waits for the admin;
+        # a pending user's texts are held by the gate in _process_inbound. A Photon
+        # failure (cap, creds) just means no link; the row is saved either way.
+        imessage_link = None
+        try:
+            import photon
+            if photon.provision_user(uid):
+                imessage_link = photon.imessage_link_for_user(uid)
+        except Exception as e:  # noqa: BLE001 — never block the waitlist on Photon
+            logger.warning("PHOTON_PROVISION_SKIPPED user=%s err=%s", uid, e)
+        logger.info("WAITLIST_PROVISIONED user=%s imessage_link=%s", uid, "yes" if imessage_link else "no")
+        return jsonify({"status": "ok", "imessage_link": imessage_link}), 200
     except Exception as e:
         logger.error(f"/waitlist error: {e}", exc_info=True)
         return jsonify({"status": "error",
@@ -2489,6 +2593,15 @@ def admin():
                 "source": wu.signup_source or "—",
                 "joined": joined_str,
                 "timezone": wu.user_timezone or "—",
+                # Profile from the sign-up chat (2026-09-19) + whether Activate goes blue.
+                "full_name": wu.full_name or "—",
+                "age": wu.age if wu.age is not None else "—",
+                "gender": wu.gender or "—",
+                "goal": (wu.goal or "").replace(",", ", ") or "—",
+                "experience": wu.experience or "—",
+                "equipment": wu.equipment or "—",
+                "obstacle": wu.biggest_obstacle or "—",
+                "channel": _waitlist_channel_state(wu),
             })
 
         return render_template_string(ADMIN_HTML,

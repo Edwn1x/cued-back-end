@@ -634,6 +634,24 @@ LOG_MEAL_TOOL = {
 }
 
 
+def _day_total_suffix(user_id: int) -> str:
+    """The FRESH authoritative day total, read after a recompute, as a tool-result
+    suffix. The context's TODAY'S TOTALS block was built BEFORE this turn's log/edit,
+    so the coach must quote THIS number for the updated running total instead of adding
+    the new meal to a stale block by hand (the live 2026-09-19 protein-drift bug)."""
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u:
+            return ""
+        cal = u.calories_today or 0
+        pro = u.protein_today or 0
+        tgt = f", {u.protein_target - pro}g protein left of {u.protein_target}" if u.protein_target else ""
+        return f" | DAY TOTAL NOW: {cal} cal, {pro}g protein{tgt} — use this exact number"
+    finally:
+        session.close()
+
+
 def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Create Meal(s) (the model already did the read-before-write judgment) and
     recompute today's totals ONCE. Accepts a single meal or an `items` list (a
@@ -688,8 +706,10 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     finally:
         session.close()
 
+    day = ""
     if is_today:
         recompute_daily_totals(user_id)  # once, after all inserts — a past-day meal leaves today alone
+        day = _day_total_suffix(user_id)  # the FRESH post-log total, so the coach quotes it (not head math)
     for mid, desc, _cal, _pro, saw in logged:
         if saw:
             logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
@@ -701,11 +721,12 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         mid, desc, cal, pro, saw = logged[0]
         # Include the description so the reply NAMES what was logged ("logged the chicken
         # wrap, ~650 cal 38g"), not just macros — the user asked to see what was recorded.
-        return f"ok: logged '{desc}' id={mid} ({cal}cal/{pro}g{dated})" + (f" [saw_similar={saw}]" if saw else "")
+        return (f"ok: logged '{desc}' id={mid} ({cal}cal/{pro}g{dated})"
+                + (f" [saw_similar={saw}]" if saw else "") + day)
     names = ", ".join(f"'{d}'" for _m, d, _c, _p, _s in logged)
     ids = [m for m, _d, _c, _p, _s in logged]
     total_cal = sum(c for _m, _d, c, _p, _s in logged)
-    return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)"
+    return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)" + day
 
 
 LOG_EVENT_TOOL = {
@@ -907,11 +928,13 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         if action == "delete":
             row.deleted_at = _naive_utcnow()
             session.commit()
+            day = ""
             if entity == "meal":
                 recompute_daily_totals(user_id)
+                day = _day_total_suffix(user_id)  # fresh total so the coach quotes it, not head math
             note = _rollback_pointer_for_deleted_workout(user_id, row) if entity == "workout" else None
             logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
-            return f"ok: deleted {entity} id={entry_id}" + (f"; {note}" if note else "")
+            return f"ok: deleted {entity} id={entry_id}" + (f"; {note}" if note else "") + day
 
         # edit — field-level, ID-targeted, AUDITED. Only supplied fields change; each
         # change captures its prior value into row.edits (an edited row otherwise silently
@@ -987,10 +1010,12 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         row.edits = audit
         flag_modified(row, "edits")
         session.commit()
+        day = ""
         if entity == "meal":
             recompute_daily_totals(user_id)
+            day = _day_total_suffix(user_id)  # fresh total after the edit, so the coach quotes it
         logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
-        return f"ok: edited {entity} id={entry_id} ({applied})"
+        return f"ok: edited {entity} id={entry_id} ({applied})" + day
     finally:
         session.close()
 

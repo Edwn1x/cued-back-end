@@ -1,60 +1,100 @@
-# Investigation — RSF line, location on request, receipts (2026-09-14)
+# Investigation — waitlist with a full profile + iMessage opt-in up front (2026-09-19)
 
-Per the playbook: read the real code and the real external surfaces before building.
-Spec = hypothesis; this is what's actually there.
+Per the playbook: read the real code before building; spec = hypothesis. This is what's
+there, what it becomes, why, and where. Companion site change: `cued-site` replaces the
+three-field waitlist modal on `index.html` with the chat sign-up overlay, posting here.
 
-## §1 Receipts
+## §1 What's there now
 
-- **What's there now.** A legacy receipt handler exists (`agents/nutrition.handle_receipt_photo`,
-  reached only via the legacy orchestrator when `classify_message` sees a receipt KEYWORD in the
-  caption). The single-agent loop — the live path — sends every image to the model with the
-  meal-estimation prompt and lets the model route in-call (food / calendar / whiteboard / other).
-  There is no image pre-classifier, no `pantry` table, no receipt itemization. The memory layer has
-  a TTL-aged `food_on_hand` category the extractor sometimes routes groceries into.
-- **USDA.** `usda.search_usda(query)` → per-100 g macros (calories, protein_g, carbs_g, fat_g),
-  raises `UsdaUnavailable`; needs `USDA_API_KEY` (set in prod). Good enough to map receipt lines to
-  protein-per-100 g; quantities still need a grams estimate (the model's job, per playbook: the model
-  estimates, code multiplies).
-- **What it becomes.** A cheap pre-classifier on the image turn (haiku, one token), a receipt
-  extractor (JSON), `pantry` upsert + `signals` row, a code-built reply
-  (`got your <store> receipt. logged <3 items> — you're stocked through <weekday>.`), deterministic
-  text depletion/inventory, and a `## PANTRY` context block. Flag `RECEIPTS_ENABLED`, default off.
+- **`POST /waitlist`** (`app.py`) reads name, phone (strict E.164), optional email, source,
+  timezone. Everything else in the body is dropped. Writes a `User` with
+  `waitlist_status='pending'`, `onboarding_step=0`. No SMS, no Photon. Rate-limited 3/min.
+- **`POST /signup`** (the chat overlay's route) reads the full profile — age, gender, goal
+  (list → csv), biggest_obstacle, experience, equipment — requires `sms_consent`, provisions
+  the Photon user synchronously (`photon.provision_user`, flag-gated, never raises), returns
+  `imessage_link`, and DEFERS the hook while a link exists (iMessage-first, 2026-09-14).
+- **Promotion** — `POST /admin/user/<id>/activate-waitlist` clears `waitlist_status`, stamps
+  `activated_at`, calls `start_onboarding` → `send_onboarding_hook` → `provision_user`
+  (idempotent) → `send_sms`. For an un-opted-in shared Photon user the first blue send hits
+  the consent gate and falls over to a Twilio SMS with the opt-in link appended
+  (`sms._with_imessage_invite`, onboarding type only). So promotion already works; the
+  first text is just green, with a "tap this" link.
+- **The gate the site needs before it can ship:** nothing in the inbound pipeline checks
+  `waitlist_status`. A pending user who texts the line today is resolved by phone in
+  `/webhook` or `/internal/inbound`, dispatched into `_process_inbound`, buffered, and
+  reaches `process_buffered_message` → the model coaches them. Worse, if they were
+  provisioned (`photon_user_id` set, `preferred_channel='imessage'`, step 0, no outbound),
+  `awaiting_channel_choice` is True and their first text SENDS THE HOOK — onboarding starts
+  from the waitlist. `send_fallback_hooks` (scheduler) has the same hole: the same shape
+  older than `ONBOARDING_HOOK_FALLBACK_MINUTES` gets the hook by SMS.
+- **`/signup/channel`** ("I don't have an iPhone") flips `preferred_channel='sms'` and sends
+  the hook if step 0 — again, it would start a pending user.
+- **Admin waitlist tab** (`admin_dashboard.py`) shows name / phone / email / source / tz /
+  joined + Activate. No profile columns, no channel state.
+- **Model** has every profile column already (`User.age … equipment`). No column records
+  that a number has texted its line (opt-in is only inferable from an inbound `Message`
+  with `channel='imessage'`).
+- **Tests**: `tests/tier1/test_imessage_first_signup.py` is the pattern (fixtures
+  `photon_on`, `imessage_on`, `sidecar_ok`, `_post_imessage`). Baseline on this worktree:
+  668 passed, 67 skipped, 1 failing — `test_manage_log_edit.py::
+  test_event_edit_start_time_local_and_reflected_in_context`, which passes in isolation
+  (order/time-dependent, pre-existing, untouched here).
 
-## §2 RSF crowd meter + virtual line
+## §2 What it becomes
 
-- **Crowd meter.** The recwell page embeds
-  `https://safe.density.io/#/displays/dsp_956223069054042646?token=shr_…` (weight room) and a second
-  display for CMS. The scrapers (mashimar5/rsf-dashboard `density.py`) document the exchange:
-  `POST https://identity.density.io/oauth/wayfinding/exchange` with `Authorization: Bearer <share
-  token>` → `{access_token}`; then `GET https://api.density.io/app/v2/safe-display-core/displays/
-  dsp_956223069054042646` with the access token → `dedicated_space.current_count / capacity`.
-  Verified live today (see the probe output in the PR). Cap is 140. The count drifts through the day
-  and resets overnight (sensor error). Public page updates ~every 10 min; we poll every 5 during hours.
-- **Hours.** RSF hours page: Mon–Fri 7am–11pm, Sat 8am–6pm, Sun 8am–11pm; closed Thanksgiving,
-  Christmas Eve/Day, New Year's Day. Parsed weekly with these as the fallback.
-- **Waitwell.** `https://417804.waitwell.us/` and `/join/48` both answer **403 with a Cloudflare
-  JS challenge** (`cf-mitigated: challenge`, `challenges.cloudflare.com`) to any non-browser client,
-  including a mobile Safari User-Agent. **Correction (2026-09-19):** that is only the SPA host. The
-  backend it calls, `api.waitwell.us/api/<siteID>/client/...`, is plain AWS, not behind Cloudflare,
-  and answers curl with JSON — but the *join* itself is gated by Turnstile / phone-verify / AWS
-  captcha per site settings (details in `integrations/waitwell/NOTES.md`), so a silent server-side
-  join is still out and the site-token resolution for a read-only status path is unfinished.
-  **`join` raises `QueueUnavailable` by construction; the beat falls back to D1** (the join-form
-  link with the user's walking time). §2.8: "heading to the gym" + line on → D1 in code, reactive. The FAQ confirms the product rules: line opens at ≥95%, join by
-  phone or name, SMS updates, 10-minute window after summon, everyone admitted individually.
-  D2 is built as a client whose transport is stubbed against a documented fixture, so the day
-  Waitwell exposes an API (or RecWell offers one — founder's email) it's a transport swap.
+1. **`/waitlist` stores the profile and provisions the line.** Accepts the same body the
+   chat overlay sends `/signup`: `age, gender, goal (list|csv), biggest_obstacle,
+   experience, equipment, sms_consent` on top of the existing fields. `sms_consent` must be
+   `true` (400 otherwise — the whole point is to text them). Over-length enum strings are
+   rejected 400, never truncated silently. Same defaults as `/signup`. Then
+   `photon.provision_user` (flag-gated, degrades to no link) and the response gains
+   `imessage_link` (str|null). Still no hook, still `waitlist_status='pending'`.
+2. **Waitlist gate in `_process_inbound`.** Right after the inbound is logged (and the
+   breaker reset), a pending user gets a code-owned holding line — once — and the turn
+   ends: no safety pass, no buffer, no model. `WAITLIST_HOLD_TEXT` lives in
+   `onboarding_agent.py`; sent through `send_sms` (routes blue if they just texted the
+   line). Second and later texts are logged and left silent (`WAITLIST_INBOUND_HELD`).
+3. **`imessage_opted_in_at`** — new nullable `users` column, stamped in `_process_inbound`
+   the first time an inbound arrives on `channel='imessage'` (any user, not only waitlist).
+   Deterministic state for "their line is open"; the admin tab reads it.
+4. **`awaiting_channel_choice`** returns False for a pending user; **`send_fallback_hooks`**
+   filters `waitlist_status IS NULL`. Belt and braces around §2 — the hook can only ever
+   go to an activated user.
+5. **`/signup/channel`** on a pending user flips the channel and sends nothing
+   (`hook_sent:false, waitlist:true`). The site uses one route for both flows.
+6. **Activation unchanged in code.** Opted in → `start_onboarding` goes blue first try.
+   Never tapped → today's SMS + link fallover. Chose SMS → SMS directly.
+7. **Admin tab** gains age / gender / goals / experience / equipment / obstacle and a
+   channel badge: `iMessage ✓` (opted in), `link sent` (provisioned, not yet texted), `SMS`
+   (chose no iPhone), `—` (not provisioned).
 
-## §3 Location
+8. **Full name, first-name address (2026-09-20).** The chat asks for the full name;
+   `/waitlist` keeps it in `users.full_name` (admin, email later) and stores `name` as
+   the FIRST token only, whatever the client sent — `name` is what the hook template
+   ("yo {name}…"), every trigger prompt, the memory header and the transcript labels
+   inject, and the coach must never address someone by their full name.
 
-- **SDK.** spectrum-ts 12.8.0 (installed = latest on npm as of today). Neither the installed
-  `@spectrum-ts/imessage` typings nor the newest on unpkg contain any `locations` API, and Photon's
-  llms-full.txt has no location section. `imessage(app).locations.get(address)` **does not exist**
-  in this SDK. Photon's pricing page lists "location sharing" as a feature, so it may be a
-  dashboard/cloud capability not yet in the SDK.
-- **Pins.** Unknown until the experiment: a Messages location pin is, on the wire, a vCard-ish
-  attachment (`.loc.vcf`) or a Maps URL. The SDK converts vCard mime types to `contact` content —
-  which our sidecar currently drops. The experiment logs the full inbound payload for the next
-  message so we see the real shape.
-- **Plan.** 3.0 only: sidecar `GET /location/:phone` returns the honest error (no SDK API) and the
-  next inbound is logged in full. HARD STOP until Nau sends a pin.
+## §3 Why
+
+The founder wants the profile from the first minute ("a running start for the coach")
+and wants the waitlist → active transition to not depend on a link tap at the moment of
+activation. Capturing the opt-in at waitlist time makes activation one click. The gate
+(§2.2) is the load-bearing piece: without it the site change would start coaching pending
+users. Every decision here is state in code, no model involvement.
+
+## §4 Where
+
+- `app.py`: `/waitlist`, `_process_inbound` (gate + opt-in stamp), `/signup/channel`,
+  admin `waitlist_data`.
+- `onboarding_agent.py`: `WAITLIST_HOLD_TEXT`, `awaiting_channel_choice`,
+  `send_fallback_hooks`.
+- `models.py` + `migrate.py`: `imessage_opted_in_at`.
+- `admin_dashboard.py`: waitlist table columns + badge.
+- `tests/tier1/test_waitlist_profile.py` (new, red first), `test_migrations.py`.
+
+## §5 Out of scope (candidates, not built)
+
+- A `sms_consent_at` audit column (neither route stores consent today).
+- Enum validation of gender/experience/equipment values (`/signup` doesn't either).
+- The Photon free-tier user cap: every waitlister now takes a slot at sign-up. Provisioning
+  failure degrades to "no link" — the row is still saved — but the cap size is unverified.

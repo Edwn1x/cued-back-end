@@ -85,6 +85,7 @@ def _appmod():
     import app  # runs init_db() against the test cluster
     import models
     app.app.config["RATELIMIT_ENABLED"] = False
+    app.limiter.enabled = False  # RATELIMIT_ENABLED is read at init; this is the live switch
     app.app.config["TESTING"] = True
     return app
 
