@@ -321,6 +321,7 @@ Action semantics:
 
 Rules:
   - Each fact is one concise sentence written as a statement about the user.
+  - NO GENDERED PRONOUNS. Write "their app", "them", "themself" — never his/her/him. The profile already carries gender; a guessed pronoun is wrong half the time and reads back to the user as a stranger's description of them.
   - A FACT IS A COMPLETE STATEMENT, never a clipped phrase. "my gym schedule is all messed up" is NOT the fact "messed up" — it is either "gym schedule is irregular because of a stacked class schedule" or nothing. If you can't write it as a full sentence about the user, skip it.
   - AN ANECDOTE IS NOT A PATTERN. One workout, one meal, one late night, one skipped session says nothing durable ("went to the gym 9-11pm last night" is not a training preference) — unless the user says it's how they usually do things, or the SAME thing has now come up more than once.
   - DIRECT IDENTITY STATEMENTS ALWAYS COUNT: "im cs", "i'm a junior", "i live at the frat", "my roommate lifts too" → identity. Don't skip a plain statement of who they are because it was short.
@@ -1736,6 +1737,9 @@ def internal_inbound():
         session.close()
 
 
+_LIFT_KEYWORDS_RE = re.compile(r"\b(hit|lifted|sets?|reps|bench|squat|deadlift|press)\b")
+
+
 def classify_message(body: str, has_image: bool = False) -> str:
     """Simple heuristic to classify incoming message type."""
     body_lower = body.lower().strip()
@@ -1768,7 +1772,10 @@ def classify_message(body: str, has_image: bool = False) -> str:
         return "meal_swap"
     if body_lower in ("1", "2", "3", "4", "5"):
         return "rating"
-    if any(kw in body_lower for kw in ["hit", "lifted", "set", "reps", "bench", "squat", "deadlift", "press"]):
+    # Whole words only. Live 2026-09-18/19 (user 32): "egg whITes" and "egg whITe"
+    # matched "hit" as a substring, so a meal text became workout_log (at_gym state,
+    # workout_confirmed on the day). "upSET", "imPRESSive" are the same class.
+    if _LIFT_KEYWORDS_RE.search(body_lower):
         return "workout_log"
     return "freeform"
 
@@ -2658,6 +2665,26 @@ def admin():
 
 
 # ─── Manual Send (admin override) ───────────────────
+# Double-submit guard: live 2026-09-18 two identical "hey, just checking in" bubbles
+# landed 1 ms apart from two POSTs (a double click / double form handler). The same
+# (user, body) inside ADMIN_SEND_DEDUPE_SECONDS is a no-op, not a second text.
+ADMIN_SEND_DEDUPE_SECONDS = 10
+_admin_send_recent: dict = {}   # (user_id, body) -> monotonic seconds
+
+
+def _admin_send_is_duplicate(user_id: int, body: str) -> bool:
+    import time as _time
+    now = _time.monotonic()
+    for k, ts in list(_admin_send_recent.items()):
+        if now - ts > ADMIN_SEND_DEDUPE_SECONDS:
+            _admin_send_recent.pop(k, None)
+    key = (user_id, body)
+    if key in _admin_send_recent:
+        return True
+    _admin_send_recent[key] = now
+    return False
+
+
 @app.route("/admin/send", methods=["POST"])
 def admin_send():
     """Manually send a message to a user (admin override for when AI messes up)."""
@@ -2667,6 +2694,10 @@ def admin_send():
         body = request.form.get("body", "").strip()
         user = session.get(User, user_id)
         if user and body:
+            if _admin_send_is_duplicate(user.id, body):
+                logger.info("ADMIN_SEND_DUPLICATE user=%s body=%r (within %ss — not resent)",
+                            user.id, body[:40], ADMIN_SEND_DEDUPE_SECONDS)
+                return jsonify({"status": "duplicate"})
             send_sms(user.phone, body, user_id=user.id, message_type="admin")
             return jsonify({"status": "ok"})
         return jsonify({"status": "error"}), 400
@@ -3272,13 +3303,19 @@ function showTab(name) {
 async function sendMsg() {
   const body = document.getElementById('msg-body').value.trim();
   if (!body) return;
-  await fetch('/admin/send', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
-  });
-  document.getElementById('msg-body').value = '';
-  location.reload();
+  if (window._sendInFlight) return;   // double-click / double-handler guard
+  window._sendInFlight = true;
+  try {
+    await fetch('/admin/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
+    });
+    document.getElementById('msg-body').value = '';
+    location.reload();
+  } finally {
+    window._sendInFlight = false;
+  }
 }
 
 // Build heatmap
@@ -3578,13 +3615,19 @@ _UNUSED_OLD_ADMIN_HTML = """
     async function adminSend(e, userId) {
         e.preventDefault();
         const body = e.target.body.value;
-        await fetch('/admin/send', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
-        });
-        e.target.body.value = '';
-        location.reload();
+        if (!body.trim() || window._sendInFlight) return false;   // double-submit guard
+        window._sendInFlight = true;
+        try {
+            await fetch('/admin/send', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
+            });
+            e.target.body.value = '';
+            location.reload();
+        } finally {
+            window._sendInFlight = false;
+        }
         return false;
     }
     </script>

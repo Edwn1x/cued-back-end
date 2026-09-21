@@ -105,7 +105,9 @@ def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: di
         if not sets:
             continue
         w, r = sets[0]["planned_weight"], sets[0]["planned_reps"]
-        text = f"{ex['label']} · {_fmt(w)} × {r} × {len(sets)}"
+        # bodyweight: "pushup · 10 × 3" (reps × sets) — never "0 × 10 × 3"
+        text = (f"{ex['label']} · {r} × {len(sets)}" if not (w or 0)
+                else f"{ex['label']} · {_fmt(w)} × {r} × {len(sets)}")
         sid = send_sms(phone, text, user_id=user_id, message_type="workout_exercise")
         if sid:
             session = get_session()

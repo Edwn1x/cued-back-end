@@ -40,8 +40,11 @@ def session_prs(session, ws: WorkoutSession, sets: list[SetLog]) -> list:
 def summarize(session, ws: WorkoutSession) -> dict:
     sets = (session.query(SetLog).filter(SetLog.session_id == ws.id)
             .order_by(SetLog.id).all())
-    done = [s for s in sets if s.done and s.actual_weight and s.actual_reps]
-    volume = int(round(sum(float(s.actual_weight) * int(s.actual_reps) for s in done)))
+    # A done set is a done set: bodyweight rows carry weight 0 and must still count
+    # (live 2026-09: the `and s.actual_weight` gate made a bodyweight session read as
+    # 0 sets done). Volume only sums loaded sets.
+    done = [s for s in sets if s.done and s.actual_reps]
+    volume = int(round(sum(float(s.actual_weight or 0) * int(s.actual_reps) for s in done)))
     lines, seen = [], []
     for s in sets:
         if s.exercise not in seen:
@@ -51,7 +54,9 @@ def summarize(session, ws: WorkoutSession) -> dict:
         if not ex_done:
             continue
         label = next(s.exercise_label for s in sets if s.exercise == ex)
-        lines.append(f"{label} — " + " · ".join(f"{_fmt(s.actual_weight)}×{s.actual_reps}" for s in ex_done))
+        lines.append(f"{label} — " + " · ".join(
+            f"{_fmt(s.actual_weight)}×{s.actual_reps}" if (s.actual_weight or 0) else f"{s.actual_reps}"
+            for s in ex_done))
     prs = session_prs(session, ws, done)
     start, end = ws.started_at or ws.date, ws.finished_at or _utcnow()
     minutes = max(int(round((end - start).total_seconds() / 60)), 0) if start else 0
@@ -72,7 +77,11 @@ def format_summary(s: dict) -> str:
         9,240 lb total · 1 PR
     """
     head = f"{s['template_key'].replace('_', ' ')} · {s['weekday']}" + (f" · {s['minutes']} min" if s["minutes"] else "")
-    tail = f"{s['volume_lb']:,} lb total · {s['pr_count']} PR" + ("s" if s["pr_count"] != 1 else "")
+    prs = f"{s['pr_count']} PR" + ("s" if s["pr_count"] != 1 else "")
+    if s["volume_lb"]:
+        tail = f"{s['volume_lb']:,} lb total · {prs}"
+    else:  # bodyweight session: sets are the story, there is no load to total
+        tail = f"{s['sets_done']} sets" + (f" · {prs}" if s["pr_count"] else "")
     return "\n".join([head, *s["lines"], tail])
 
 

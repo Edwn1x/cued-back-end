@@ -525,6 +525,26 @@ _STATING_VERBS = {
 }
 
 
+# Gendered third-person pronouns → neutral. Live 2026-09-15: the extractor wrote "his
+# calorie-counting app" for a user whose profile says female. Deterministic floor under
+# the prompt rule; subject pronouns (he/she) are left alone — facts are written without
+# a subject, and "they is" would be worse than the miss. Order matters: -self forms
+# and "hers" before "her"/"his".
+_PRONOUN_SUBS = (
+    (re.compile(r"\b(himself|herself)\b", re.I), "themself"),
+    (re.compile(r"\bhers\b", re.I), "theirs"),
+    (re.compile(r"\b(his|her)\b", re.I), "their"),
+    (re.compile(r"\bhim\b", re.I), "them"),
+)
+
+
+def neutralize_pronouns(text: str) -> str:
+    out = text or ""
+    for rx, rep in _PRONOUN_SUBS:
+        out = rx.sub(rep, out)
+    return out
+
+
 def sanitize_facts(facts, *, user_id=None) -> tuple:
     """Deterministic floor under the memory extractor, whatever model runs it.
     Returns (kept_facts, rejected_count). Rejects — and logs MEMORY_FACT_REJECTED
@@ -569,6 +589,10 @@ def sanitize_facts(facts, *, user_id=None) -> tuple:
             logger.warning("MEMORY_FACT_REJECTED user_id=%s reason=date_mismatch text=%r", user_id, text)
             rejected += 1
             continue
+        neutral = neutralize_pronouns(text)
+        if neutral != text:
+            logger.info("MEMORY_FACT_NEUTRALIZED user_id=%s text=%r -> %r", user_id, text, neutral)
+            f = dict(f, text=neutral)
         kept.append(f)
     return kept, rejected
 

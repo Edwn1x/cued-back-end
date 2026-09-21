@@ -132,10 +132,11 @@ def build_state(session, ws: WorkoutSession) -> dict:
         edited = bool(s.done and s.actual_weight is not None and s.actual_reps is not None
                       and (float(s.actual_weight) != float(s.planned_weight or 0) or int(s.actual_reps) != int(s.planned_reps or 0)))
         pr = None
+        if s.done and s.actual_reps:
+            done_count += 1  # bodyweight (weight 0) done sets are done
         if s.done and s.actual_weight and s.actual_reps:
             w, r = float(s.actual_weight), int(s.actual_reps)
             volume += int(round(w * r))
-            done_count += 1
             pr = pr_for_set(prior.get(s.exercise, []), best_so_far.get(s.exercise), w, r)
             if best_so_far.get(s.exercise) is None or (w, r) > best_so_far[s.exercise]:
                 best_so_far[s.exercise] = (w, r)
@@ -145,12 +146,18 @@ def build_state(session, ws: WorkoutSession) -> dict:
             "actual_weight": s.actual_weight, "actual_reps": s.actual_reps,
             "done": bool(s.done), "edited": edited, "source": s.source, "pr": pr,
         })
+    # Reps-only contract for the site card: an exercise is bodyweight when no set
+    # carries a planned load; the session is bodyweight when every exercise is. The
+    # card hides the weight column on these (site follow-up reads this flag).
+    for ex in exercises.values():
+        ex["bodyweight"] = bool(ex["sets"]) and all(not (st["planned_weight"] or 0) for st in ex["sets"])
     when = ws.date or ws.started_at or _utcnow()
     return {
         "session": {"id": ws.id, "template_key": ws.template_key, "status": ws.status,
                     "weekday": when.strftime("%a").lower(), "started_at": ws.started_at.isoformat() if ws.started_at else None,
                     "finished_at": ws.finished_at.isoformat() if ws.finished_at else None},
         "exercises": [exercises[k] for k in order],
+        "bodyweight": bool(order) and all(exercises[k]["bodyweight"] for k in order),
         "volume_lb": volume, "done_count": done_count, "set_count": len(sets),
         "updated_at": _utcnow().isoformat(),
     }

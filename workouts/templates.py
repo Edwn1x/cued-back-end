@@ -18,10 +18,16 @@ class ExerciseTemplate:
     reps: int
     default_weight: float
     plate_step: float    # 5 upper / 10 lower
+    rep_step: int = 0    # bodyweight progression: +reps when every planned rep was hit
 
 
 def _ex(slug, label, sets, reps, weight, step):
     return ExerciseTemplate(slug, label, sets, reps, float(weight), float(step))
+
+
+def _bw(slug, label, sets, reps, rep_step=2):
+    """A bodyweight movement: no load, no plate step; progression is reps."""
+    return ExerciseTemplate(slug, label, sets, reps, 0.0, 0.0, rep_step)
 
 
 TEMPLATES: dict[str, list[ExerciseTemplate]] = {
@@ -69,12 +75,80 @@ TEMPLATES: dict[str, list[ExerciseTemplate]] = {
     ],
 }
 
+# Bodyweight-only users (signup radio `equipment=bodyweight` — "in my room, no gym").
+# Same split keys, so the split pointer / infer_template work unchanged; every set is
+# reps-only (default_weight 0). Live 2026-09-14: a bodyweight 16-year-old got the
+# barbell full-body card (squat/bench/row/OHP/RDL) and never touched it.
+BODYWEIGHT_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
+    "push": [
+        _bw("pushup", "pushup", 4, 10),
+        _bw("pike_pushup", "pike pushup", 3, 8),
+        _bw("chair_dip", "chair dip", 3, 10),
+        _bw("diamond_pushup", "diamond pushup", 2, 8),
+    ],
+    "pull": [
+        _bw("inverted_row", "inverted row (table or towel)", 4, 10),
+        _bw("superman", "superman", 3, 12),
+        _bw("reverse_snow_angel", "reverse snow angel", 3, 12),
+        _bw("plank", "plank (sec)", 3, 30, 10),
+    ],
+    "legs": [
+        _bw("air_squat", "air squat", 4, 15),
+        _bw("reverse_lunge", "reverse lunge (each leg)", 3, 10),
+        _bw("glute_bridge", "glute bridge", 3, 15),
+        _bw("wall_sit", "wall sit (sec)", 3, 30, 10),
+        _bw("bodyweight_calf_raise", "calf raise", 3, 20, 5),
+    ],
+    "upper": [
+        _bw("pushup", "pushup", 4, 10),
+        _bw("inverted_row", "inverted row (table or towel)", 4, 10),
+        _bw("pike_pushup", "pike pushup", 3, 8),
+        _bw("chair_dip", "chair dip", 3, 10),
+    ],
+    "lower": [
+        _bw("air_squat", "air squat", 4, 15),
+        _bw("reverse_lunge", "reverse lunge (each leg)", 3, 10),
+        _bw("glute_bridge", "glute bridge", 3, 15),
+        _bw("wall_sit", "wall sit (sec)", 3, 30, 10),
+        _bw("bodyweight_calf_raise", "calf raise", 3, 20, 5),
+    ],
+    "full_body": [
+        _bw("air_squat", "air squat", 3, 15),
+        _bw("pushup", "pushup", 3, 10),
+        _bw("reverse_lunge", "reverse lunge (each leg)", 3, 10),
+        _bw("glute_bridge", "glute bridge", 3, 15),
+        _bw("plank", "plank (sec)", 3, 30, 10),
+    ],
+}
+
+BODYWEIGHT_EQUIPMENT = {"bodyweight", "none", "no_equipment"}
+
+
+def templates_for(user) -> dict[str, list[ExerciseTemplate]]:
+    """The template set for THIS user, by the typed equipment column (code decides,
+    never the model): bodyweight → BODYWEIGHT_TEMPLATES, everything else → TEMPLATES."""
+    eq = (getattr(user, "equipment", None) or "").strip().lower()
+    return BODYWEIGHT_TEMPLATES if eq in BODYWEIGHT_EQUIPMENT else TEMPLATES
+
+
+def _all_templates():
+    yield from TEMPLATES.values()
+    yield from BODYWEIGHT_TEMPLATES.values()
+
+
 # Aliases the split pointer / a user might use.
 ALIASES = {"chest_back": "upper", "shoulders_arms": "upper", "leg": "legs", "fullbody": "full_body"}
 
 # Loose name matching for legacy `Workout.exercises` rows and typed text ("bench",
 # "incline", "flys"). First match wins; keys are lowercase substrings.
 NAME_HINTS: list[tuple[str, str]] = [
+    # bodyweight first — longer hints win in slug_for_name ("air squat" beats "squat",
+    # "inverted row" beats "row")
+    ("push up", "pushup"), ("pushup", "pushup"), ("push-up", "pushup"),
+    ("pike", "pike_pushup"), ("diamond", "diamond_pushup"), ("dip", "chair_dip"),
+    ("inverted row", "inverted_row"), ("superman", "superman"), ("snow angel", "reverse_snow_angel"),
+    ("plank", "plank"), ("air squat", "air_squat"), ("lunge", "reverse_lunge"),
+    ("glute bridge", "glute_bridge"), ("bridge", "glute_bridge"), ("wall sit", "wall_sit"),
     ("incline", "incline_db_press"), ("bench", "bench_press"), ("fly", "cable_fly"),
     ("pushdown", "tricep_pushdown"), ("tricep", "tricep_pushdown"),
     ("romanian", "romanian_deadlift"), ("rdl", "romanian_deadlift"), ("deadlift", "deadlift"),
@@ -106,7 +180,7 @@ def slug_for_name(name: str | None) -> str | None:
 
 
 def label_for_slug(slug: str) -> str:
-    for exs in TEMPLATES.values():
+    for exs in _all_templates():
         for e in exs:
             if e.slug == slug:
                 return e.label
@@ -114,8 +188,12 @@ def label_for_slug(slug: str) -> str:
 
 
 def plate_step_for_slug(slug: str) -> float:
-    for exs in TEMPLATES.values():
+    for exs in _all_templates():
         for e in exs:
             if e.slug == slug:
                 return e.plate_step
     return 5.0
+
+
+def is_bodyweight_slug(slug: str) -> bool:
+    return any(e.slug == slug for exs in BODYWEIGHT_TEMPLATES.values() for e in exs)
