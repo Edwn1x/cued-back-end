@@ -8,7 +8,7 @@ Spec: `SPEC.md` in this directory. Source: user 32's live log, Sept 14 → 19.
 |---|---|---|---|
 | 1 | Bodyweight user got the barbell full-body card; weight-0 done sets were invisible | `BODYWEIGHT_TEMPLATES` (same split keys, reps progression via `rep_step`), `templates_for(user)` by the typed `equipment` column; done-count / summary lines / SMS texts / bubble caption all reps-only; `build_state` carries `bodyweight` flags for the site card | `workouts/templates.py`, `plan.py`, `start.py`, `card.py`, `summary.py`, `card_page.py` |
 | 2 | 5 days, zero training mentions from the coach | `_training_gap_signal`: code-computed days since last completed workout (or since joining) vs committed frequency (`workout_days` → int; low end of a range); names an unfinished card; renders at ≥ ceil(7/n)+1 days | `heartbeat.py` |
-| 3 | Coach re-estimated the muffin via USDA, said the new number, never edited the row | USDA result names overlapping logged rows (today + yesterday) with ids and says to `manage_log edit` first; `## YESTERDAY'S LOGGED MEALS` block (ids, past-day, never summed into today); voice rule "a re-estimate IS a correction" + explain a gap in the direction it runs | `agent_tools.py`, `agent_loop.py`, `prompts/voice.md` |
+| 3 | Coach re-estimated the muffin via USDA, said the new number, never edited the row | USDA result names overlapping logged rows (today + yesterday) with ids and says to `manage_log edit` first; `## YESTERDAY'S LOGGED MEALS` block (ids, past-day, never summed into today); voice rule "a re-estimate IS a correction" + explain a gap in the direction it runs. **Code guard** (added after the live anchor came in 4/5): the affordance records the row ids in turn state; if the reply quotes a macro number and no edit landed, the loop sends ONE `[code check]` follow-up (`AGENT_LOOP_WRITEBACK_NUDGE`), never loops. Live anchor 3/3 after. | `agent_tools.py`, `agent_loop.py`, `prompts/voice.md` |
 | 4 | "open mcmuffin question, still her turn" for 20 ticks, reopened next morning | `_open_thread_signal`: last outbound is a question with no inbound after → OPEN THREAD; from a previous local day → EXPIRED (don't reopen, not a reason for silence); HEARTBEAT_PROMPT + voice rule | `heartbeat.py`, `prompts/voice.md` |
 | 5 | "egg wHITes" → `workout_log` (at_gym, workout_confirmed), twice | Word-boundary regex for the lift keywords | `app.py` |
 | 6 | Two identical admin bubbles 1 ms apart | Server: same (user, body) within 10 s → `status: duplicate`, no send; client: `_sendInFlight` guard on all three forms | `app.py`, `admin_dashboard.py` |
@@ -18,7 +18,7 @@ Spec: `SPEC.md` in this directory. Source: user 32's live log, Sept 14 → 19.
 
 ## Tests
 
-- **Tier-1** (`tests/tier1/test_aislinn_burn_in.py`, 33 tests, red-first → green): templates/plan/
+- **Tier-1** (`tests/tier1/test_aislinn_burn_in.py`, 35 tests, red-first → green; incl. the write-back guard: forced once, never loops, skipped when edited or numberless): templates/plan/
   progression/state/summary/SMS text for bodyweight; training-gap thresholds per frequency
   (parametrized), card naming, proactive-context wiring; open-thread today vs expired vs answered;
   USDA affordance (overlap, no overlap, soft-deleted); yesterday block vs today's totals; classifier
@@ -50,3 +50,10 @@ Spec: `SPEC.md` in this directory. Source: user 32's live log, Sept 14 → 19.
 - cued-site card: hide the weight column when `bodyweight` is set.
 - `home_gym` / `limited_gym` template sets.
 - Reactive-loop training nudge (the heartbeat owns proactive; the reply path sees RECENT WORKOUTS).
+
+## Merge notes (2026-09-20)
+
+Merged main (#78, #80, #81) before shipping; one conflict in voice.md (the DAY TOTAL NOW rule from
+#81 next to the expired-question rule) resolved by keeping both. Post-merge: tier-1 721 passed
+(one pre-existing near-midnight flake in test_event_lifecycle, unrelated); tier-2 gap 3/3,
+no-revive 3/3, write-back 3/3 with the guard.

@@ -931,6 +931,7 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             day = ""
             if entity == "meal":
                 recompute_daily_totals(user_id)
+                _clear_pending_writeback(user_id, entry_id)
                 day = _day_total_suffix(user_id)  # fresh total so the coach quotes it, not head math
             note = _rollback_pointer_for_deleted_workout(user_id, row) if entity == "workout" else None
             logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
@@ -1013,6 +1014,7 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         day = ""
         if entity == "meal":
             recompute_daily_totals(user_id)
+            _clear_pending_writeback(user_id, entry_id)
             day = _day_total_suffix(user_id)  # fresh total after the edit, so the coach quotes it
         logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
         return f"ok: edited {entity} id={entry_id} ({applied})" + day
@@ -1238,16 +1240,21 @@ def _logged_rows_overlapping(user_id: int, query: str) -> str:
         rows = (active(session, Meal, user_id=user_id)
                 .filter(Meal.eaten_at >= ystart, Meal.eaten_at < end)
                 .order_by(Meal.eaten_at).all())
-        hits = []
+        hits, pending = [], {}
         for m in rows:
             if qt & _food_tokens(m.description):
                 day = "today" if m.eaten_at >= start else "yesterday"
                 hits.append(f"[id {m.id}] ({day}) {m.description} — currently {m.calories or 0}cal/"
                             f"{m.protein_g or 0}g protein")
+                pending[int(m.id)] = f"{m.description} — {m.calories or 0}cal/{m.protein_g or 0}g"
     finally:
         session.close()
     if not hits:
         return ""
+    # The loop's terminal check reads this: a reply that quotes a number for one of
+    # these rows without an edit gets ONE code-forced follow-up (see agent_loop).
+    _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None}) \
+        .setdefault("pending_writeback", {}).update(pending)
     return ("\nalready logged (overlaps this lookup):\n" + "\n".join(hits) +
             "\nIf this lookup changes what one of those should be, call manage_log edit "
             "(entity meal, that id, fields calories/protein_g) BEFORE you quote the new "
@@ -1413,6 +1420,16 @@ def pop_turn_state(user_id: int) -> dict:
 
 def peek_turn_state(user_id: int) -> dict:
     return _TURN_STATE.get(user_id, {"reacted": False, "reply_to": None})
+
+
+def _clear_pending_writeback(user_id: int, entry_id) -> None:
+    """A meal row was edited/deleted this turn — it no longer needs a write-back."""
+    pend = _TURN_STATE.get(user_id, {}).get("pending_writeback")
+    if pend:
+        try:
+            pend.pop(int(entry_id), None)
+        except (TypeError, ValueError):
+            pass
 
 
 def _resolve_message_ref(user_id: int, ref: str, *, with_body: bool = False):

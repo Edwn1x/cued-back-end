@@ -458,3 +458,121 @@ def test_weigh_in_day_preset_is_respected(db):
         assert s.get(User, user.id).weigh_in_day == "monday"
     finally:
         s.close()
+
+
+# ─── 3b. write-back guard: quoting a re-estimate without editing → one forced follow-up ──
+
+def _loop_flags(monkeypatch):
+    import config
+    for f in ("SINGLE_AGENT_LOOP_ENABLED", "LOG_MEAL_TOOL_ENABLED", "MANAGE_LOG_TOOL_ENABLED",
+              "USDA_LOOKUP_TOOL_ENABLED"):
+        monkeypatch.setattr(config, f, True)
+
+
+def test_writeback_guard_forces_the_edit_once(db, monkeypatch, anthropic_stub):
+    """usda named the logged row; the model replies with a new number and no edit →
+    the loop sends ONE code-check message; the model then edits and replies."""
+    from tests._fake_anthropic import ToolUse
+    from agent_loop import run_agent_loop
+    from models import get_session, User, Meal
+    from timefmt import local_day_bounds
+    _loop_flags(monkeypatch); _usda_stub(monkeypatch)
+    user = make_user(db, **AISLINN)
+    start, _ = local_day_bounds(user)
+    mid = _seed_meal(db, user.id, "homemade McMuffin, ham + egg whites", 260, 22, start - timedelta(hours=7))
+
+    loop_calls = []
+
+    def handler(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        loop_calls.append(kw["messages"][-1])   # snapshot: the loop mutates `messages` in place
+        n = len(loop_calls)
+        if n == 1:
+            return ToolUse("usda_food_lookup", {"query": "egg white raw"})
+        if n == 2:
+            return "comes out ~240 cal, 24g protein. where'd 77 come from"   # number, no edit
+        if n == 3:
+            return ToolUse("manage_log", {"action": "edit", "entity": "meal", "id": mid,
+                                          "fields": {"calories": 240, "protein_g": 24}})
+        return "updated it, 240 cal 24g"
+
+    anthropic_stub.reply_with(handler)
+    s = get_session()
+    try:
+        reply = run_agent_loop(s.get(User, user.id), "90g egg white and 55g of turkey breast", "freeform")
+    finally:
+        s.close()
+    assert reply == "updated it, 240 cal 24g"
+    assert len(loop_calls) == 4
+    nudge = loop_calls[2]["content"]
+    assert isinstance(nudge, str) and "code check" in nudge and f"id {mid}" in nudge and "manage_log" in nudge
+    s = get_session()
+    try:
+        row = s.get(Meal, mid)
+        assert row.calories == 240 and row.protein_g == 24 and row.edits
+    finally:
+        s.close()
+
+
+def test_writeback_guard_never_loops_and_skips_when_edited_or_numberless(db, monkeypatch, anthropic_stub):
+    from tests._fake_anthropic import ToolUse
+    from agent_loop import run_agent_loop
+    from models import get_session, User
+    from timefmt import local_day_bounds
+    _loop_flags(monkeypatch); _usda_stub(monkeypatch)
+    user = make_user(db, **AISLINN)
+    start, _ = local_day_bounds(user)
+    mid = _seed_meal(db, user.id, "homemade McMuffin, ham + egg whites", 260, 22, start - timedelta(hours=7))
+
+    # (a) the model ignores the nudge and restates the number: ONE nudge, then the reply goes out
+    calls = []
+
+    def stubborn(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        calls.append(kw)
+        return ToolUse("usda_food_lookup", {"query": "egg white raw"}) if len(calls) == 1 else "~240 cal, 24g"
+    anthropic_stub.reply_with(stubborn)
+    s = get_session()
+    try:
+        reply = run_agent_loop(s.get(User, user.id), "90g egg white", "freeform")
+    finally:
+        s.close()
+    assert reply == "~240 cal, 24g" and len(calls) == 3, "exactly one forced follow-up, never a loop"
+
+    # (b) edited first → no nudge at all
+    calls.clear()
+
+    def diligent(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        calls.append(kw)
+        if len(calls) == 1:
+            return ToolUse("usda_food_lookup", {"query": "egg white raw"})
+        if len(calls) == 2:
+            return ToolUse("manage_log", {"action": "edit", "entity": "meal", "id": mid, "fields": {"protein_g": 24}})
+        return "updated, 24g"
+    anthropic_stub.reply_with(diligent)
+    s = get_session()
+    try:
+        reply = run_agent_loop(s.get(User, user.id), "90g egg white", "freeform")
+    finally:
+        s.close()
+    assert reply == "updated, 24g" and len(calls) == 3
+
+    # (c) no number in the reply → nothing to write back, no nudge
+    calls.clear()
+
+    def numberless(kw):
+        if not kw.get("tools"):
+            return "freeform"
+        calls.append(kw)
+        return ToolUse("usda_food_lookup", {"query": "egg white raw"}) if len(calls) == 1 else "how much turkey was it"
+    anthropic_stub.reply_with(numberless)
+    s = get_session()
+    try:
+        reply = run_agent_loop(s.get(User, user.id), "90g egg white", "freeform")
+    finally:
+        s.close()
+    assert reply == "how much turkey was it" and len(calls) == 2
