@@ -122,3 +122,28 @@ def test_log_meal_return_names_the_item(db):
         {"description": "greek yogurt", "calories": 150, "protein_g": 15},
     ]})
     assert "banana" in out2 and "greek yogurt" in out2, out2
+
+
+def test_log_meal_returns_fresh_day_total(db):
+    """The tool result must hand back the recomputed DAY TOTAL NOW so the coach quotes
+    it instead of hand-adding to the (turn-start-stale) totals block — the 2026-09-19
+    protein-drift fix. A running sequence must reflect the cumulative total."""
+    from tests.factories import make_user
+    from agent_tools import handle_log_meal
+    user = make_user(db, protein_target=140)
+    out1 = handle_log_meal(user.id, {"description": "eggs", "calories": 300, "protein_g": 20})
+    assert "DAY TOTAL NOW: 300 cal, 20g protein" in out1, out1
+    out2 = handle_log_meal(user.id, {"description": "chicken", "calories": 500, "protein_g": 45})
+    assert "DAY TOTAL NOW: 800 cal, 65g protein" in out2, out2   # cumulative, not just this meal
+    assert "75g protein left of 140" in out2, out2
+
+
+def test_manage_log_edit_meal_returns_fresh_day_total(db):
+    from tests.factories import make_user
+    from agent_tools import handle_log_meal, handle_manage_log
+    user = make_user(db)
+    out = handle_log_meal(user.id, {"description": "bowl", "calories": 600, "protein_g": 45})
+    mid = int(out.split("id=")[1].split(" ")[0])
+    edited = handle_manage_log(user.id, {"action": "edit", "entity": "meal", "id": mid,
+                                         "fields": {"calories": 400, "protein_g": 30}})
+    assert "DAY TOTAL NOW: 400 cal, 30g protein" in edited, edited
