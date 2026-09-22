@@ -68,6 +68,11 @@ def _meals_logged(session, user):
     return active(session, Meal, user_id=user.id).first() is not None
 
 
+def _app_meals_logged(session, user):
+    from models import Meal, active
+    return active(session, Meal, user_id=user.id).filter(Meal.source == "app").first() is not None
+
+
 def _workouts_logged(session, user):
     from models import Workout, active
     return active(session, Workout, user_id=user.id).first() is not None
@@ -281,6 +286,28 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 3,
         used=None,
         reveal_when="they ask what you know about them",
+    ),
+    # Logger bridge (food_logger.py) — the two user-facing halves.
+    Capability(
+        id="app_screenshot_logging",
+        what="still on mfp or mynetdiary? screenshot your day and i take the numbers straight off it",
+        how="send a screenshot of the diary — no re-typing, i read the printed numbers",
+        tools=(),  # rides on log_meal / manage_log with from_app
+        enabled=lambda u: config.FOOD_LOGGER_BRIDGE_ENABLED and config.LOG_MEAL_TOOL_ENABLED
+                          and getattr(config, "READ_IMAGE_ENABLED", True),
+        relevance=lambda u: 9 if getattr(u, "food_logger", None) else 3,
+        used=_app_meals_logged,
+        reveal_when="they mention another food app, or ask to connect one",
+    ),
+    Capability(
+        id="food_logger_state",
+        what="if you keep another food app for now that's fine — i track around it until you drop it",
+        how="tell me you're still using it, or that you've switched",
+        tools=("set_food_logger",),
+        enabled=lambda u: config.SET_FOOD_LOGGER_TOOL_ENABLED,
+        relevance=lambda u: 6 if getattr(u, "food_logger", None) else 1,
+        used=lambda s, u: bool(getattr(u, "food_logger_status", None)),
+        reveal_when="they say they still log elsewhere, or that they deleted the other app",
     ),
 ]
 

@@ -873,6 +873,11 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     tail = day
     if from_app:
         tail += f" | source: their {from_app} screenshot"
+        if config.FOOD_LOGGER_BRIDGE_ENABLED:
+            # Logger bridge: a screenshot-sourced write is the strongest evidence they still
+            # use the app — record the coexist (no-op when state already exists).
+            from food_logger import app_write_side_effects
+            app_write_side_effects(user_id, app=from_app)
     if guessed:
         # §1 affordance-in-tool-result: the reply names EVERY guess in one line so the
         # user corrects all of them at once (Sep 22: asked about two of four, three turns).
@@ -1311,9 +1316,47 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             _clear_pending_writeback(user_id, entry_id)
             day = _day_total_suffix(user_id)  # fresh total after the edit, so the coach quotes it
         logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
+        if from_app and config.FOOD_LOGGER_BRIDGE_ENABLED:
+            from food_logger import app_write_side_effects
+            app_write_side_effects(user_id, app=from_app)
         return f"ok: edited {entity} id={entry_id} ({applied})" + day + parity
     finally:
         session.close()
+
+
+SET_FOOD_LOGGER_TOOL = {
+    "name": "set_food_logger",
+    "description": (
+        "Record whether the user still logs food in ANOTHER app (MyFitnessPal, MyNetDiary, "
+        "Cronometer, Lose It) alongside you. This is state, not memory — never `remember` it. "
+        "'im gonna keep using mfp for now' / 'i still log in mynetdiary' → status 'coexist' with "
+        "the app. 'deleted mfp' / 'just using u now' → status 'switched'. While coexisting, an "
+        "empty day here is NOT an unlogged day; ask for a screenshot of their day, not a re-type. "
+        "Returns 'ok: …' — only describe the state after 'ok'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "app": {"type": "string", "description": "the app, in their words (mfp, my net diary, cronometer…)"},
+            "status": {"type": "string", "enum": ["coexist", "switched"]},
+        },
+        "required": ["status"],
+    },
+}
+
+
+def handle_set_food_logger(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from food_logger import set_food_logger, app_label, _remember_switch, STATUS_SWITCHED
+    r = set_food_logger(user_id, tool_input.get("app"), (tool_input.get("status") or "").lower(), source="tool")
+    if "error" in r:
+        return f"error: {r['error']}"
+    if r["status"] == STATUS_SWITCHED and r["changed"]:
+        _remember_switch(user_id, r["app"])
+        return f"ok: they've switched to cued from {app_label(r['app'])} — the other-logger rules no longer apply"
+    if r["status"] == STATUS_SWITCHED:
+        return f"ok: already recorded as switched from {app_label(r['app'])}"
+    return (f"ok: coexisting with {app_label(r['app'])} — an empty day here may be in their app; "
+            f"ask for a screenshot of the day rather than a re-type")
 
 
 GET_DINING_MENU_TOOL = {
@@ -1884,6 +1927,7 @@ _HANDLERS = {
     "log_workout": handle_log_workout,
     "manage_log": handle_manage_log,
     "log_meal": handle_log_meal,
+    "set_food_logger": handle_set_food_logger,
     "set_targets": lambda user_id, tool_input, **kw: handle_set_targets(user_id, tool_input, **kw),
     "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),

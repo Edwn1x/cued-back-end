@@ -105,7 +105,13 @@ class User(Base):
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
-    tools_decision = Column(String(20), default=None)  # "migrate", "coexist", or "none"
+    tools_decision = Column(String(20), default=None)  # "integrate" | "acknowledged" | "none" (onboarding extractor vocabulary)
+    # Logger bridge (food_logger.py): the food app they still log in, and whether they
+    # are coexisting with it or have switched. Source of truth over any memory fact.
+    food_logger = Column(String(30), default=None)         # myfitnesspal | mynetdiary | cronometer | loseit | macrofactor | other
+    food_logger_status = Column(String(12), default=None)  # coexist | switched | None
+    food_logger_since = Column(DateTime, default=None)     # when the current coexist spell began
+    parity_suggested_at = Column(DateTime, default=None)   # the once-only "you can drop the app" line was rendered
     avg_steps = Column(Integer, default=None)  # average daily step count from onboarding
     current_split = Column(String(50), default=None)  # "ppl", "upper_lower", "full_body", "bro_split", "custom", "none"
     # Phase 1 split pointer: two facts + provenance. The last COMPLETED split day
@@ -299,8 +305,8 @@ class Meal(Base):
     protein_g = Column(Integer)
     carbs_g = Column(Integer)
     fat_g = Column(Integer)
-    source = Column(String(20))  # "text", "photo"
-    log_type = Column(String(30))  # "user_reported", "confirmed_suggestion"
+    source = Column(String(20))  # "text" | "photo" | "app" (a diary screenshot from another logger — printed numbers)
+    log_type = Column(String(30))  # "user_reported", "confirmed_suggestion", "app_reported"
     confidence = Column(String(10))  # "high", "medium", "low"
     notes = Column(Text)  # any clarifying details
     deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()

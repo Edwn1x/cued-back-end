@@ -191,6 +191,12 @@ LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() ==
 # 60s firing sweep. Ships ON (founder rule: capabilities ship on + budgeted + instrumented);
 # one flag covers all three so a revert is one var.
 REMINDERS_ENABLED = os.getenv("REMINDERS_ENABLED", "true").lower() == "true"
+# Logger bridge (rewrite/logger-bridge): a user still logging food in another app.
+# Gates the OTHER FOOD LOGGER context block, the diary-screenshot rules, parity
+# lines and nightly graduation. Live 2026-09-19: user 32's MyNetDiary screenshot
+# was double-logged beside its photo estimate. Off until flipped for the founder.
+FOOD_LOGGER_BRIDGE_ENABLED = os.getenv("FOOD_LOGGER_BRIDGE_ENABLED", "false").lower() == "true"
+SET_FOOD_LOGGER_TOOL_ENABLED = os.getenv("SET_FOOD_LOGGER_TOOL_ENABLED", "false").lower() == "true"
 # Bounded target override on the coach loop (set_targets: ±15% of computed). Defaults ON —
 # the same rule runs deterministically in onboarding; this just extends it past day one.
 SET_TARGETS_TOOL_ENABLED = os.getenv("SET_TARGETS_TOOL_ENABLED", "true").lower() == "true"

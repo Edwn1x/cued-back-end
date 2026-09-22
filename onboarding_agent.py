@@ -505,6 +505,7 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "sleep_time": "HH:MM in 24h format" or null,
   "existing_tools": "comma separated app/device names" or "none" or null,
   "tools_decision": "integrate" or "acknowledged" or "none" or null,
+  "food_logger": "myfitnesspal" or "mynetdiary" or "cronometer" or "loseit" or "macrofactor" or "other" or null,
   "avg_steps": integer (daily step count) or null,
   "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null,
   "split_days": ["chest and biceps", "back and triceps", "legs and shoulders"] (their training days IN THE ORDER they run them, one entry per day, in their own words) or null,
@@ -517,6 +518,13 @@ year / meal_plan_status rules (Berkeley context — bonus facts, only when clear
 - "I don't have a meal plan" / "no dining hall pass" / "not on the meal plan" → meal_plan_status="no_meal_plan"
 - "I'm on the meal plan" / "I have swipes" / "dining hall pass" → meal_plan_status="on_meal_plan"
 - Eating AT a dining hall once says nothing about meal_plan_status → null
+
+food_logger rules (the FOOD-logging app they currently use, canonical id):
+- "mfp" / "my fitness pal" / "MyFitnessPal" → "myfitnesspal"
+- "mynetdiary" / "my net diary" / "net diary" / "net dairy" (a common typo) → "mynetdiary"
+- "cronometer" → "cronometer"; "lose it" → "loseit"; "macrofactor" → "macrofactor"
+- some other calorie/food app named or implied ("I have an app I count calories in") → "other"
+- a wearable or workout app only (Strava, Apple Watch, Nike Run Club) → null
 
 tools_decision rules:
 - "none" → user has no tools (existing_tools="none")
@@ -561,6 +569,8 @@ Examples:
 "been lifting like 3 years, tryna cut for summer" → {{"experience": "advanced", "goal": "fat_loss", ...rest null}}
 "I do push pull legs" (no statement about how long) → {{"current_split": "ppl", ...rest null}}  (experience stays null)
 "I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", "tools_decision": "acknowledged", ...rest null}}
+"Oh yeah I have an app, my net dairy" → {{"existing_tools": "mynetdiary", "tools_decision": "acknowledged", "food_logger": "mynetdiary", ...rest null}}
+"I count calories in mfp" → {{"existing_tools": "myfitnesspal", "tools_decision": "acknowledged", "food_logger": "myfitnesspal", ...rest null}}
 "Does Nike Run Club count?" → {{"existing_tools": "nike_run_club", "tools_decision": "acknowledged", ...rest null}}
 "nah I don't use anything" → {{"existing_tools": "none", "tools_decision": "none", ...rest null}}
 "idk" → {{all null}}
@@ -684,6 +694,16 @@ def _store_extracted_data(user_id: int, data: dict):
             _set("workout_time", wt)
         if data.get("avg_steps") is not None:
             _set("avg_steps", int(data["avg_steps"]))
+        if data.get("food_logger"):
+            # Logger bridge: the food app they still use → coexist from day one, so the
+            # coach never treats an empty day as an unlogged day (food_logger.py).
+            from food_logger import normalize_app
+            _app = normalize_app(data["food_logger"])
+            if _app:
+                _set("food_logger", _app)
+                _set("food_logger_status", "coexist")
+                from datetime import datetime as _dt, timezone as _tz
+                _set("food_logger_since", _dt.now(_tz.utc).replace(tzinfo=None))
         # Foods they won't eat → the typed restrictions column (the coach prompt and
         # the nutrition agent both read it; memory is told NOT to store these).
         if data.get("food_dislikes"):
