@@ -726,13 +726,17 @@ def _extract_target_request(message: str, user) -> dict:
     only. A number that is a fact (weight, age, days) is NOT a target."""
     prompt = (
         "The user is reacting to proposed daily targets during onboarding. Return ONLY JSON: "
-        '{"calories": <int or null>, "protein": <int or null>} with the values they are ASKING '
-        "FOR as their targets. null when they didn't name one. Examples:\n"
-        '"how about 2200 and we up the protein to like 150g?" → {"calories": 2200, "protein": 150}\n'
-        '"can we do 2k" → {"calories": 2000, "protein": null}\n'
-        '"150 protein sounds better" → {"calories": null, "protein": 150}\n'
-        '"thats too much food" → {"calories": null, "protein": null}\n'
-        '"actually im 145 lbs not 139" → {"calories": null, "protein": null}\n\n'
+        '{"calories": <int or null>, "protein": <int or null>, "maintenance": <int or null>} with '
+        "the values they are ASKING FOR as their targets, and `maintenance` ONLY when they cite a "
+        "maintenance/TDEE number from their own app or prior tracking. null when they didn't name "
+        "one. Examples:\n"
+        '"how about 2200 and we up the protein to like 150g?" → {"calories": 2200, "protein": 150, "maintenance": null}\n'
+        '"can we do 2k" → {"calories": 2000, "protein": null, "maintenance": null}\n'
+        '"150 protein sounds better" → {"calories": null, "protein": 150, "maintenance": null}\n'
+        '"my app says i maintain at like 2200 so 1700 makes more sense" → {"calories": 1700, "protein": null, "maintenance": 2200}\n'
+        '"mynetdiary has my tdee at 2150" → {"calories": null, "protein": null, "maintenance": 2150}\n'
+        '"thats too much food" → {"calories": null, "protein": null, "maintenance": null}\n'
+        '"actually im 145 lbs not 139" → {"calories": null, "protein": null, "maintenance": null}\n\n'
         f'Message: "{message}"'
     )
     try:
@@ -746,7 +750,7 @@ def _extract_target_request(message: str, user) -> dict:
             text = text[text.index("{"):text.rindex("}") + 1]
         data = json.loads(text)
         out = {}
-        for k in ("calories", "protein"):
+        for k in ("calories", "protein", "maintenance"):
             v = data.get(k) if isinstance(data, dict) else None
             if isinstance(v, (int, float)) and v > 0:
                 out[k] = int(v)
@@ -1397,7 +1401,8 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         if asked:
             from macro_calculator import apply_target_override
             r = apply_target_override(user_row.id, calories=asked.get("calories"),
-                                      protein=asked.get("protein"), note=incoming_message[:120])
+                                      protein=asked.get("protein"), note=incoming_message[:120],
+                                      maintenance=asked.get("maintenance"))
             session = get_session()
             try:
                 user_row = session.get(UserModel, user.id)
@@ -1405,6 +1410,16 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                 session.close()
             summary = _build_confirmation_summary(user_row)
             lines = []
+            m = r.get("maintenance")
+            if m and m.get("accepted"):
+                lines.append(f"- maintenance: they reported {m['reported']} from their own tracking → "
+                             f"NOTED (computed estimate was {m['computed_tdee']}); the calorie band now "
+                             f"centres on {m['basis_calories']}. Say their number is what we'll go on.")
+            elif m and "min" in m:
+                lines.append(f"- maintenance: they reported {m['reported']} → too far from the computed "
+                             f"{m['computed_tdee']} to use (would accept {m['min']}–{m['max']}); say "
+                             f"you're going on the estimate for now and the biweekly weigh-in cycle "
+                             f"will correct it from real data.")
             for field, val in r.get("accepted", {}).items():
                 lines.append(f"- {field}: they asked for {val} → ACCEPTED and now set (computed was "
                              f"{r['computed'][field]}). It's their pick; say so, and that you'd have "
@@ -1527,7 +1542,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         _finalize_onboarding_profile(user_row)
 
         session.commit()
-        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
+        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
 
         try:
             schedule_user(user_row)

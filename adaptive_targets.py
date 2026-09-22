@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from models import get_session, User, Meal, WeightLog, TargetAdjustment, active
-from macro_calculator import calculate_targets, apply_goal, override_bounds
+from macro_calculator import calculate_targets, apply_goal, goal_profile, override_bounds
 
 logger = logging.getLogger("cued.adaptive")
 
@@ -130,10 +130,12 @@ def evaluate(user, session, now: datetime | None = None) -> dict:
     base["est_expenditure"] = est
 
     # ── current maintenance (what the goal rule was applied to) ──
+    # A maintenance they reported from their own tracking (users.reported_maintenance,
+    # bounded on the way in) is the better prior than the equation when present.
     computed = calculate_targets(user)
-    cur_maint = int(computed["tdee"])
+    cur_maint = int(getattr(user, "reported_maintenance", None) or computed["tdee"])
     new_maint = int(round(DAMP * est + (1 - DAMP) * cur_maint))
-    proposed = apply_goal(new_maint, user.goal or "")["calories"]
+    proposed = apply_goal(new_maint, user.goal or "", **goal_profile(user))["calories"]
 
     # ── direction check against the goal ──
     goal = user.goal or ""
@@ -240,6 +242,14 @@ def todays_adjustment_context(user, session) -> str:
            .order_by(TargetAdjustment.at.desc()).first())
     if not row:
         return ""
+    if row.changed and (row.reason or "").startswith("calculator update"):
+        return (f"## TARGET CHANGED TODAY (a fix on our side, not the scale)\n"
+                f"{row.old_target} → {row.new_target} cal. Detail: {row.reason}. "
+                "Tell them ONCE, plainly and in your words, that you re-ran their numbers with a "
+                "better formula and this is where they land now — say the new calorie AND protein "
+                "targets, and that the old protein number was too high for the budget. Own it (\"my "
+                "numbers were off\"), no apology spiral, no lecture. If they push back, set_targets "
+                "still allows their pick within 15%. Never call it a diet, deficit or cut with a minor.")
     if row.changed:
         return (f"## TARGET CHANGED TODAY\n{row.old_target} → {row.new_target} cal. Reason: {row.reason}. "
                 "Mention it ONCE, in your words, no lecture — it's the scale talking, not you. If they "
