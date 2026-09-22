@@ -15,6 +15,7 @@ import threading
 
 from models import get_session, User, WorkoutSession, Message
 from card_page import card_url, build_state
+from workouts.templates import day_label
 
 logger = logging.getLogger("cued.workouts")
 
@@ -33,7 +34,7 @@ def card_layout(state: dict) -> dict:
     caption rendered glued to the title ('push · mon7,085 lb'), so progress lives
     in the subcaption. Always at least a caption (the SDK refuses an empty layout)."""
     s = state["session"]
-    key = (s["template_key"] or "workout").replace("_", " ")
+    key = day_label(s["template_key"])
     caption = f"{key} · {s['weekday']}"
     done, total, vol = state["done_count"], state["set_count"], state["volume_lb"]
     bodyweight = bool(state.get("bodyweight"))  # no load → no "lb" anywhere on the bubble

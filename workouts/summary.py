@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from models import get_session, SetLog, WorkoutSession
 from workouts.prs import check_pr
+from workouts.templates import day_label
 
 
 def _utcnow():
@@ -76,7 +77,7 @@ def format_summary(s: dict) -> str:
         …
         9,240 lb total · 1 PR
     """
-    head = f"{s['template_key'].replace('_', ' ')} · {s['weekday']}" + (f" · {s['minutes']} min" if s["minutes"] else "")
+    head = f"{day_label(s['template_key'])} · {s['weekday']}" + (f" · {s['minutes']} min" if s["minutes"] else "")
     prs = f"{s['pr_count']} PR" + ("s" if s["pr_count"] != 1 else "")
     if s["volume_lb"]:
         tail = f"{s['volume_lb']:,} lb total · {prs}"

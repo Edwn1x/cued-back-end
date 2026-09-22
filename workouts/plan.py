@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from models import get_session, SetLog, WorkoutSession, Workout, active
-from workouts.templates import TEMPLATES, normalize_template_key, slug_for_name, plate_step_for_slug, templates_for
+from workouts.templates import TEMPLATES, normalize_template_key, slug_for_name, plate_step_for_slug, templates_for, day_template
 
 
 def _utcnow():
@@ -88,7 +88,7 @@ def build_session(user, template_key: str, *, now=None) -> WorkoutSession:
         ws = WorkoutSession(user_id=user.id, date=now, template_key=key, status="planned")
         session.add(ws)
         session.flush()
-        for tmpl in templates_for(user)[key]:
+        for tmpl in day_template(user, key):
             weight, reps, _src = next_targets(session, user.id, tmpl)
             for i in range(tmpl.sets):
                 session.add(SetLog(session_id=ws.id, exercise=tmpl.slug, exercise_label=tmpl.label,

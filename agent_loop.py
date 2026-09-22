@@ -196,11 +196,29 @@ def build_loop_context(user, session) -> str:
                      + "\n".join(f"[id {e.id}] {(e.raw_text or e.event_type or '').strip()}"
                                  f" — {_d(e.occurred_at)}" for e in passed))
 
-    # 4. Split pointer WITH provenance — the model hedges on inferred days.
+    # 4. Their split as a day cycle (their own grouping when they gave one), then the
+    # pointer WITH provenance — the model hedges on inferred days. Live 2026-09-22
+    # (user 43): the loop never saw the split at all, so "bro split" was invisible.
+    from split_pointer import cycle_for
+    from workouts.templates import day_label
+    cycle = cycle_for(user)
+    split_label = (user.current_split or user.confirmed_training_split or "").strip()
+    if cycle:
+        parts.append(
+            f"## SPLIT\n{split_label or 'their days'}: " + " → ".join(day_label(d) for d in cycle)
+            + ". start_workout_session picks the next day in this order unless they name one "
+              "(template_key accepts these day keys: " + ", ".join(cycle) + ")."
+        )
+    elif split_label and split_label.lower() not in ("none",):
+        parts.append(
+            f"## SPLIT\n{split_label} — but WHICH days they run isn't saved, so the card can't "
+            f"be built. When they mention their days (\"chest and bis, back and tris, legs\"), "
+            f"call save_routine with split_days."
+        )
     p = get_split_pointer(user.id)
     if p:
         parts.append(
-            f"## SPLIT POINTER\nlast completed: {p['day']} ({p['source']}). "
+            f"## SPLIT POINTER\nlast completed: {day_label(p['day'])} ({p['source']}). "
             f"Derive today's likely day from this and the split; if the source is "
             f"'inferred', hedge (ask/confirm) rather than assert."
         )

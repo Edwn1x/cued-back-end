@@ -38,6 +38,7 @@ from config import ANTHROPIC_API_KEY, COACH_MODEL
 from sms import send_sms
 from profile_page import profile_url
 from macro_calculator import calculate_targets
+from workouts.templates import day_label as _day_label
 from cost_tracking import track as track_usage
 from llm_client import make_client
 
@@ -167,6 +168,11 @@ def _get_missing_fields(user) -> list:
             missing.append(("workout_days", "how many days per week they can train"))
         if not user.workout_time:
             missing.append(("workout_time", "what time they prefer to work out"))
+        # A split label without its days can't become a card (user 43's bro split →
+        # full_body). Ask for the grouping when the label leaves it open.
+        if (user.current_split in ("bro_split", "bro", "custom") and not (getattr(user, "split_days", None) or [])
+                and len(getattr(user, "custom_templates", None) or {}) < 2):
+            missing.append(("split_days", "which days they group together and in what order — e.g. chest+bis / back+tris / legs+shoulders, or chest / back / shoulders / arms / legs"))
         if user.current_split is None:
             if user.experience == "none":
                 _auto_fill_current_split_none(user)
@@ -312,6 +318,8 @@ def _build_system_prompt(user) -> str:
         f"Workout days: {user.workout_days}" if user.workout_days else None,
         f"Workout time: {user.workout_time}" if user.workout_time else None,
         f"Current split: {user.current_split}" if user.current_split else None,
+        (f"Their days, in order: " + " → ".join(_day_label(d) for d in user.split_days)
+         if getattr(user, "split_days", None) else None),
         f"Diet: {user.diet}" if user.diet else None,
         f"Won't eat / restrictions: {user.restrictions}" if getattr(user, "restrictions", None) else None,
         f"Cooking: {user.cooking_situation}" if user.cooking_situation else None,
@@ -499,6 +507,7 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "tools_decision": "integrate" or "acknowledged" or "none" or null,
   "avg_steps": integer (daily step count) or null,
   "current_split": "ppl" or "upper_lower" or "full_body" or "bro_split" or "custom" or "none" or null,
+  "split_days": ["chest and biceps", "back and triceps", "legs and shoulders"] (their training days IN THE ORDER they run them, one entry per day, in their own words) or null,
   "year": "freshman" or "sophomore" or "junior" or "senior" or "grad" or "transfer" or null,
   "meal_plan_status": "on_meal_plan" or "no_meal_plan" or null
 }}
@@ -530,6 +539,13 @@ current_split rules:
 - "yeah I have a routine" / "I follow [specific program name]" → "custom"
 - "no" / "nah" / "I need one" / "build me one" → "none"
 - null → user didn't answer this question in this message
+
+split_days rules (the days themselves — code builds their workout cards from this, so a stated split that isn't captured here gets them the WRONG card):
+- Whenever they list what they train on each day, give every day as its own entry, in order, in their words: "chest and biceps, back and triceps and legs and shoulders" → ["chest and biceps", "back and triceps", "legs and shoulders"] (and current_split="bro_split")
+- "push pull legs" → ["push", "pull", "legs"]; "upper lower" → ["upper", "lower"]; "chest, back, shoulders, arms, legs" → one entry each
+- "chest/tris, back/bis, legs" → ["chest and triceps", "back and biceps", "legs"]
+- A label alone ("bro split", "ppl") with no days listed → split_days=null
+- A single day they did today ("hit chest today") is NOT their split → null
 
 Examples:
 "I'm 5'7 and 145 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 145, ...rest null}}
@@ -648,6 +664,16 @@ def _store_extracted_data(user_id: int, data: dict):
                 if key == "weight_lbs" and not val:
                     continue
                 _set(key, val)
+        if isinstance(data.get("split_days"), list) and data["split_days"]:
+            from workouts.routine import split_days_from_phrases, _split_for
+            keys = split_days_from_phrases([str(d) for d in data["split_days"]])
+            if keys and keys != (user.split_days or None):
+                user.split_days = keys
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(user, "split_days")
+                changed = True
+                if not user.current_split or user.current_split in ("none", "custom"):
+                    user.current_split = _split_for(keys) or user.current_split
         if data.get("workout_days"):
             _set("workout_days", str(data["workout_days"]))
         if data.get("workout_time"):
@@ -922,6 +948,8 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         from workouts.routine import describe_routine
         if describe_routine(getattr(user, "custom_templates", None)):
             routine_bit = " Your own routine is on your workout cards. "
+        elif getattr(user, "split_days", None):
+            routine_bit = " Split is " + " / ".join(_day_label(d) for d in user.split_days) + ". "
     except Exception:  # noqa: BLE001
         routine_bit = ""
     return (
@@ -1307,6 +1335,24 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                 session.close()
     except Exception as e:  # noqa: BLE001 — never block the reply on it
         logger.warning("ROUTINE_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
+
+    # A message that IS a day list ("chest and biceps, back and triceps, legs and
+    # shoulders") is their split whether or not the extractor caught it. Live
+    # 2026-09-22 (user 43): this exact message survived only as "bro_split" → the
+    # card fell to full_body. Code parses; nothing is guessed from partial matches.
+    try:
+        if not (user_row.split_days or []):
+            from workouts.routine import maybe_capture_split_days
+            r = maybe_capture_split_days(user_row.id, incoming_message, source="onboarding")
+            if r:
+                logger.info("SPLIT_DAYS_ONBOARDING user=%s result=%s", user_row.id, r)
+                session = get_session()
+                try:
+                    user_row = session.get(UserModel, user.id)
+                finally:
+                    session.close()
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("SPLIT_DAYS_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
 
     # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
     # small extraction sets (or corrects) the reminder in code and the prompt shows it.

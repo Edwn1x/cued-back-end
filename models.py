@@ -126,6 +126,11 @@ class User(Base):
     # Live 2026-09-22 (user 42): a pasted six-day PPL survived only as "follows PPL" —
     # the card would have shown the generic bench/incline/fly day. See workouts/templates.py.
     custom_templates = Column(JSON, default=None)
+    # The user's OWN split as an ordered list of day keys — ["chest_biceps",
+    # "back_triceps", "legs_shoulders"] — the cycle the card and the split pointer
+    # walk. Live 2026-09-22 (user 43): a stated bro split survived only as the label
+    # "bro_split", which mapped to nothing, so the card fell to full_body.
+    split_days = Column(JSON, default=None)
 
     # Berkeley-specific profile fields
     which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus
