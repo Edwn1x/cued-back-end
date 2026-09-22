@@ -96,6 +96,11 @@ class User(Base):
     # who explicitly asks ("count my after-midnight meals as yesterday") gets it shifted
     # via set_day_reset; timefmt.local_day_bounds is the single reader. Clamped 0–11.
     day_reset_hour = Column(Integer, default=0)
+    # STOP opt-out (optout.py). opted_out = fully unsubscribed (no sends until any inbound
+    # resumes them). pending_optout_confirm = they sent the exact "STOP." trigger and we're
+    # awaiting their confirm (a second "STOP." opts out; "pause" pauses; anything else stays).
+    opted_out = Column(Boolean, default=False)
+    pending_optout_confirm = Column(Boolean, default=False)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"

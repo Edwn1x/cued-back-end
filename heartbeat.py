@@ -181,6 +181,9 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     # the allowlist swept pending accounts (active=true) into the heartbeat.
     if (getattr(user, "waitlist_status", None) or "") == "pending":
         return "waitlisted"
+    # Opted out — no proactive contact until they resume with any inbound.
+    if config.STOP_OPTOUT_ENABLED and getattr(user, "opted_out", False):
+        return "opted_out"
     # Standing overnight quiet hours — no proactive send while they'd be asleep. This
     # is the always-on floor; quiet_until (a transient goodnight) is checked below too.
     if _in_standing_quiet_hours(user, now=now):

@@ -248,6 +248,14 @@ HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre
 HEARTBEAT_STANDING_QUIET_ENABLED = os.getenv("HEARTBEAT_STANDING_QUIET_ENABLED", "true").lower() == "true"
 HEARTBEAT_QUIET_START_HOUR = int(os.getenv("HEARTBEAT_QUIET_START_HOUR", "21"))  # 9pm local
 HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))       # 8am local
+
+# STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
+# avoid ACCIDENTAL opt-outs losing a user: the trigger is an EXACT "STOP." or "UNSUBSCRIBE."
+# (all caps, period required, whole message), which then sends a confirmation; only a
+# second "STOP." actually opts out. "pause" takes a few days off instead. Any inbound
+# resumes an opted-out or paused user. Ships flag-gated OFF. See optout.py.
+STOP_OPTOUT_ENABLED = os.getenv("STOP_OPTOUT_ENABLED", "false").lower() == "true"
+STOP_PAUSE_DAYS = int(os.getenv("STOP_PAUSE_DAYS", "4"))
 # Decide-call output ceiling — SEPARATE from MAX_RESPONSE_TOKENS (the SMS reply
 # governor). One decide turn spends adaptive-thinking tokens + the send_text/
 # stay_silent tool JSON (message included) + any inline-search reasoning against a
