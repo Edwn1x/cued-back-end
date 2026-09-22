@@ -88,6 +88,11 @@ def _weighed_in(session, user):
     return session.query(WeightLog.id).filter(WeightLog.user_id == user.id).first() is not None
 
 
+def _app_meal_logged(session, user):
+    from models import Meal, active
+    return active(session, Meal, user_id=user.id).filter(Meal.source == "app").first() is not None
+
+
 def _sent_a_photo(session, user):
     from models import Message
     from sms import IMAGE_MARKER
@@ -116,6 +121,16 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 7,
         used=_sent_a_photo,
         reveal_when="they describe a plate in words when a photo would be quicker",
+    ),
+    Capability(
+        id="app_screenshot",
+        what="still logging in myfitnesspal or another app? screenshot the meal or the day and i take the numbers as printed",
+        how="send the screenshot of your app's diary — no re-typing, no connection needed",
+        tools=(),  # rides on log_meals (from_app) + vision
+        enabled=lambda u: config.LOG_MEAL_TOOL_ENABLED and getattr(config, "READ_IMAGE_ENABLED", True),
+        relevance=lambda u: 6,
+        used=_app_meal_logged,
+        reveal_when="they mention another food app, or ask to connect one",
     ),
     Capability(
         id="log_workouts",

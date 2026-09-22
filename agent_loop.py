@@ -249,8 +249,14 @@ def build_loop_context(user, session) -> str:
              .filter(Meal.eaten_at >= _start, Meal.eaten_at < _end)
              .order_by(Meal.eaten_at).all())
     if meals:
+        # Provenance markers: a guessed portion is the row a correction lands on; an
+        # app-sourced row is printed truth a screenshot re-send edits, never re-adds.
+        def _prov(m):
+            if m.source == "app":
+                return " (from their app)"
+            return " (portion guessed)" if m.confidence == "low" else ""
         ml = "\n".join(
-            f"[id {m.id}] {_t(m.eaten_at)} {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein"
+            f"[id {m.id}] {_t(m.eaten_at)} {m.description} — {m.calories or 0}cal/{m.protein_g or 0}g protein{_prov(m)}"
             for m in meals)
         parts.append("## TODAY'S LOGGED MEALS (already recorded — reference by id; do not "
                      "double-log the same serving; a genuine second serving is fine)\n" + ml)
@@ -542,6 +548,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
 
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
+    # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.
+    peek_turn_state(user.id)["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
 
     messages = [{"role": "user", "content": user_content}]
     last_text = ""

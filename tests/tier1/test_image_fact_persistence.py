@@ -168,7 +168,7 @@ def test_food_photo_still_routes_to_log_meal(db, monkeypatch, anthropic_stub):
     monkeypatch.setattr(config, "LOG_MEAL_TOOL_ENABLED", True)
 
     anthropic_stub.push(
-        ToolUse("log_meal", {"description": "chicken bowl", "calories": 650, "protein_g": 48}),
+        ToolUse("log_meal", {"description": "chicken bowl", "calories": 650, "protein_g": 48, "carbs_g": 0, "fat_g": 0}),
         "logged — 650 cal, 48g protein",
     )
     user = make_user(db)

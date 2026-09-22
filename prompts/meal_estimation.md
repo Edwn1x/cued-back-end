@@ -1,5 +1,10 @@
 # Estimating a meal from a photo (this turn has an image)
 
+**If the image is a screenshot of another food app's diary** (a list of foods with
+printed calories and a total), stop here — nothing below applies. The numbers are
+printed; follow the diary-screenshot rule in your voice guide (`from_app`, replace
+don't add, printed only).
+
 Portion is the dominant uncertainty. Identifying the food is the easy part; how MUCH
 of it is on the plate is where photo estimates go wrong, and weight drives calories.
 Get portion right before anything else.
@@ -21,10 +26,17 @@ ground truth — it beats any visual estimate. Use the printed numbers, scaled b
 much they actually ate. (Food not yet eaten still follows the normal routing: save
 the details with remember, don't log it.)
 
-**Put the portion in the log.** When you log_meal from a photo, include the estimated
-portion in the description — "chicken breast ~6oz, white rice ~2 cups", not just
-"chicken and rice". The entry stays auditable, and if you're off, the user corrects
-one portion number instead of arguing macros.
+**Put the portion in the log, flag the guess, and name every guess in one line.** When
+you log_meal from a photo, include the estimated portion in the description — "chicken
+breast ~6oz, white rice ~2 cups", not just "chicken and rice" — and set
+`portion_guessed: true` on every item whose amount you sized by eye (how many eggs, how
+much yogurt, spread on toast). Log NOW with the guess — the image is gone next turn, so
+asking first loses the frame — then, in the reply, say every guessed portion in ONE
+line so they can fix any of them at once ("logged ~740: 2 eggs, 3/4 cup yogurt, 2 toasts
+w/ avocado + jam — fix any of those"). Never ask about two items and leave the third
+unnamed: the Sep 22 breakfast took three turns because the reply asked about the eggs
+and the yogurt and said nothing about the bread. A correction is a manage_log edit on
+that row, never a re-log.
 
 **Read the whole frame on the first pass — the image is gone next turn.** Don't
 tunnel on the plated dish. Before you finish the turn, sweep the rest of the photo

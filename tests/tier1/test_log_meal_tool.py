@@ -22,7 +22,7 @@ def test_log_meal_creates_and_recomputes(db):
     from models import get_session, User
 
     user = make_user(db)
-    out = handle_log_meal(user.id, {"description": "chicken bowl", "calories": 600, "protein_g": 45})
+    out = handle_log_meal(user.id, {"description": "chicken bowl", "calories": 600, "protein_g": 45, "carbs_g": 0, "fat_g": 0})
     assert out.startswith("ok"), out
 
     s = get_session()
@@ -40,12 +40,12 @@ def test_log_meal_legit_second_serving_records_saw_similar(db):
     from models import get_session, User
 
     user = make_user(db)
-    handle_log_meal(user.id, {"description": "protein shake", "calories": 300, "protein_g": 30})
+    handle_log_meal(user.id, {"description": "protein shake", "calories": 300, "protein_g": 30, "carbs_g": 0, "fat_g": 0})
     first_id = _active_meals(user.id)[0].id
 
     # model saw the first shake and judged this a distinct second serving
     out = handle_log_meal(user.id, {"description": "protein shake", "calories": 300,
-                                    "protein_g": 30, "saw_similar": [first_id]})
+                                    "protein_g": 30, "carbs_g": 0, "fat_g": 0, "saw_similar": [first_id]})
     assert "saw_similar" in out, out
 
     meals = _active_meals(user.id)
@@ -74,7 +74,7 @@ def test_log_meal_via_loop(db, driver, monkeypatch, anthropic_stub):
         loop_calls.append(1)
         if len(loop_calls) == 1:
             return ToolUse("log_meal", {"description": "chipotle burrito bowl",
-                                        "calories": 700, "protein_g": 50})
+                                        "calories": 700, "protein_g": 50, "carbs_g": 0, "fat_g": 0})
         return "logged, that's 700 cal / 50g — solid lunch"
 
     anthropic_stub.reply_with(handler)
@@ -91,9 +91,9 @@ def test_log_meal_batch_items_recomputes_once(db):
 
     user = make_user(db)
     out = handle_log_meal(user.id, {"items": [
-        {"description": "chicken", "calories": 400, "protein_g": 40},
-        {"description": "rice", "calories": 200, "protein_g": 5},
-        {"description": "coke", "calories": 140, "protein_g": 0},
+        {"description": "chicken", "calories": 400, "protein_g": 40, "carbs_g": 0, "fat_g": 0},
+        {"description": "rice", "calories": 200, "protein_g": 5, "carbs_g": 0, "fat_g": 0},
+        {"description": "coke", "calories": 140, "protein_g": 0, "carbs_g": 0, "fat_g": 0},
     ]})
     assert out.startswith("ok") and "3 items" in out, out
     assert len(_active_meals(user.id)) == 3
@@ -112,14 +112,14 @@ def test_log_meal_return_names_the_item(db):
     from tests.factories import make_user
     from agent_tools import handle_log_meal
     user = make_user(db)
-    out = handle_log_meal(user.id, {"description": "chicken caesar wrap", "calories": 650, "protein_g": 38})
+    out = handle_log_meal(user.id, {"description": "chicken caesar wrap", "calories": 650, "protein_g": 38, "carbs_g": 0, "fat_g": 0})
     assert "chicken caesar wrap" in out, out
     assert "650cal" in out
 
     # batch form names each item too
     out2 = handle_log_meal(user.id, {"items": [
-        {"description": "banana", "calories": 100, "protein_g": 1},
-        {"description": "greek yogurt", "calories": 150, "protein_g": 15},
+        {"description": "banana", "calories": 100, "protein_g": 1, "carbs_g": 0, "fat_g": 0},
+        {"description": "greek yogurt", "calories": 150, "protein_g": 15, "carbs_g": 0, "fat_g": 0},
     ]})
     assert "banana" in out2 and "greek yogurt" in out2, out2
 
@@ -131,9 +131,9 @@ def test_log_meal_returns_fresh_day_total(db):
     from tests.factories import make_user
     from agent_tools import handle_log_meal
     user = make_user(db, protein_target=140)
-    out1 = handle_log_meal(user.id, {"description": "eggs", "calories": 300, "protein_g": 20})
+    out1 = handle_log_meal(user.id, {"description": "eggs", "calories": 300, "protein_g": 20, "carbs_g": 0, "fat_g": 0})
     assert "DAY TOTAL NOW: 300 cal, 20g protein" in out1, out1
-    out2 = handle_log_meal(user.id, {"description": "chicken", "calories": 500, "protein_g": 45})
+    out2 = handle_log_meal(user.id, {"description": "chicken", "calories": 500, "protein_g": 45, "carbs_g": 0, "fat_g": 0})
     assert "DAY TOTAL NOW: 800 cal, 65g protein" in out2, out2   # cumulative, not just this meal
     assert "75g protein left of 140" in out2, out2
 
@@ -142,8 +142,8 @@ def test_manage_log_edit_meal_returns_fresh_day_total(db):
     from tests.factories import make_user
     from agent_tools import handle_log_meal, handle_manage_log
     user = make_user(db)
-    out = handle_log_meal(user.id, {"description": "bowl", "calories": 600, "protein_g": 45})
+    out = handle_log_meal(user.id, {"description": "bowl", "calories": 600, "protein_g": 45, "carbs_g": 0, "fat_g": 0})
     mid = int(out.split("id=")[1].split(" ")[0])
     edited = handle_manage_log(user.id, {"action": "edit", "entity": "meal", "id": mid,
-                                         "fields": {"calories": 400, "protein_g": 30}})
+                                         "fields": {"calories": 400, "protein_g": 30, "carbs_g": 0, "fat_g": 0}})
     assert "DAY TOTAL NOW: 400 cal, 30g protein" in edited, edited

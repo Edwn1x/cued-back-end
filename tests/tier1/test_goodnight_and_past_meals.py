@@ -78,7 +78,7 @@ def test_log_meal_dated_yesterday_lands_on_that_day_and_leaves_today_alone(db):
     tz = ZoneInfo("America/Los_Angeles")
     yday = datetime.now(tz).date() - timedelta(days=1)
 
-    out = handle_log_meal(user.id, {"description": "margherita pizza in SF", "calories": 850, "protein_g": 30, "date": "yesterday"})
+    out = handle_log_meal(user.id, {"description": "margherita pizza in SF", "calories": 850, "protein_g": 30, "carbs_g": 0, "fat_g": 0, "date": "yesterday"})
     assert out.startswith("ok:") and "dated yesterday" in out
     db.expire_all()
     m = db.query(Meal).filter(Meal.user_id == user.id).one()
@@ -88,7 +88,7 @@ def test_log_meal_dated_yesterday_lands_on_that_day_and_leaves_today_alone(db):
     assert (u.calories_today or 0) == 0, "yesterday's dinner must not eat into today's remaining"
 
     # no date → today, and today's totals move
-    handle_log_meal(user.id, {"description": "eggs", "calories": 300, "protein_g": 20})
+    handle_log_meal(user.id, {"description": "eggs", "calories": 300, "protein_g": 20, "carbs_g": 0, "fat_g": 0})
     db.expire_all()
     assert db.get(User, user.id).calories_today == 300
 
@@ -97,7 +97,7 @@ def test_log_meal_bad_date_falls_back_to_today_never_drops_the_meal(db):
     from agent_tools import handle_log_meal
     from models import Meal
     user = make_user(db, name="Nau", onboarding_step=3)
-    out = handle_log_meal(user.id, {"description": "toast", "calories": 200, "date": "sometime last week ish"})
+    out = handle_log_meal(user.id, {"description": "toast", "calories": 200, "protein_g": 6, "carbs_g": 36, "fat_g": 2, "date": "sometime last week ish"})
     assert out.startswith("ok:") and "dated" not in out
     db.expire_all()
     assert db.query(Meal).filter(Meal.user_id == user.id).count() == 1

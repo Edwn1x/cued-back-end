@@ -38,7 +38,7 @@ def test_seen_not_eaten_routes_to_food_on_hand_never_meals_or_totals(db, monkeyp
         steps.append(1)
         if len(steps) == 1:
             return ToolUse("log_meal", {"description": "scrambled eggs ~3 eggs",
-                                        "calories": 320, "protein_g": 24})
+                                        "calories": 320, "protein_g": 24, "carbs_g": 0, "fat_g": 0})
         if len(steps) == 2:
             return ToolUse("remember", {
                 "action": "add", "category": "food_on_hand",
