@@ -55,6 +55,15 @@ No schema change, no new flag: rides on `LOG_MEAL_TOOL_ENABLED` / `MANAGE_LOG_TO
     screenshot the app"; regex hit "29g total"); assertions were loosened to the semantic
     property per the plain-voice lesson, behavior was already right.
 
+- Existing live regressions re-run on this branch: test_meal_dup_judgment (2/2),
+  test_meal_estimation, test_aislinn_burn_in_live write-back anchor, test_vision_thoroughness
+  — 8 passed, 1 failed: `test_multi_item_scene_first_pass_captures_plate_and_surroundings`
+  ("egg white" in the plate description). Baselined on clean origin/main in a temp
+  worktree: 1 pass / 1 fail with the identical description ("scrambled eggs from liquid egg
+  whites"), so it is a pre-existing flake of that fixture (egg-white carton beside a plate
+  of scrambled eggs; the model sometimes infers the scramble is egg whites; calories are not
+  inflated). Not touched here.
+
 ## Judgment calls (reversible)
 
 - Slot refusal applies to ANY row in the slot (including an earlier app row), bypassed
