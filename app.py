@@ -1387,7 +1387,10 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # pre-pass (Fix 5) already ran above. We just need to cancel the
     # buffer and return empty TwiML. This breaks the wind-down loop
     # and skips a Sonnet call.
-    if (user.onboarding_step or 0) >= 3 and should_suppress_ack(user.id, body):
+    # Daily rhythm: "drank" / "done" / 👍 right after a water ping is the same closure
+    # (reminders.is_water_ack) and rides this SAME branch — no second handler.
+    from reminders import is_water_ack
+    if (user.onboarding_step or 0) >= 3 and (should_suppress_ack(user.id, body) or is_water_ack(user.id, body)):
         from message_buffer import cancel_buffer
         cancel_buffer(from_number)
         # Rule 1 of reactions, deterministically: a standalone "ok" never reaches the

@@ -259,6 +259,19 @@ HEARTBEAT_STANDING_QUIET_ENABLED = os.getenv("HEARTBEAT_STANDING_QUIET_ENABLED",
 HEARTBEAT_QUIET_START_HOUR = int(os.getenv("HEARTBEAT_QUIET_START_HOUR", "21"))  # 9pm local
 HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))       # 8am local
 
+# Daily rhythm (rewrite/daily-rhythm/CHANGESPEC.md) — user 32: "check-ups are way too far
+# apart". All five default OFF; flipped in prod after the deploy.
+# MEAL GAP standing condition: an unlogged lunch at 2pm was never a reason to speak.
+HEARTBEAT_MEAL_GAP_ENABLED = os.getenv("HEARTBEAT_MEAL_GAP_ENABLED", "false").lower() == "true"
+# Gates only the every_hours affordance on set_reminder (water); the engine is inert without rows.
+WATER_REMINDERS_ENABLED = os.getenv("WATER_REMINDERS_ENABLED", "false").lower() == "true"
+# Quiet = sleep-30min .. wake+15min from the user's own 'HH:MM' profile times, else the global window.
+QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED", "false").lower() == "true"
+# MORNING OPEN / EVENING CLOSE standing conditions: the rhythm the disabled legacy briefings left behind.
+HEARTBEAT_RHYTHM_ENABLED = os.getenv("HEARTBEAT_RHYTHM_ENABLED", "false").lower() == "true"
+# set_checkin_level tool: "text me more" / "chill with the texts" becomes a code-enforced cap, not a said ok.
+SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "false").lower() == "true"
+
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
 # avoid ACCIDENTAL opt-outs losing a user: the trigger is an EXACT "STOP." or "UNSUBSCRIBE."
 # (all caps, period required, whole message), which then sends a confirmation; only a

@@ -146,37 +146,126 @@ def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after
     return cand.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def create_reminder(user_id: int, text: str, local_time: str, *, days=None, date_str: str | None = None,
-                    source: str = "model", replace_id: int | None = None) -> dict:
+# ─── interval recurrence (daily rhythm: water) ───────────────────────────────
+# One row = "every N hours between window_start and window_end, every day". Slots
+# anchor at the window start (07:00, 09:00, ...); past the window end the next slot
+# is tomorrow's start. A null window follows the user's wake/sleep at fire time.
+
+INTERVAL_MAX_HOURS = 12
+_DEFAULT_WINDOW = ("08:00", "22:00")   # when neither the row nor the profile gives a parseable time
+
+
+def _norm_hhmm(value) -> str | None:
+    p = parse_local_time(value)
+    return f"{p[0]:02d}:{p[1]:02d}" if p else None
+
+
+def interval_window(user, row=None) -> tuple[str, str]:
+    """('HH:MM', 'HH:MM') for an interval row: the row's own window when set, else the
+    user's wake/sleep when they parse, else 08:00–22:00."""
+    ws = (_norm_hhmm(getattr(row, "window_start", None)) or _norm_hhmm(getattr(user, "wake_time", None))
+          or _DEFAULT_WINDOW[0])
+    we = (_norm_hhmm(getattr(row, "window_end", None)) or _norm_hhmm(getattr(user, "sleep_time", None))
+          or _DEFAULT_WINDOW[1])
+    return ws, we
+
+
+def next_interval_fire_at(tz: ZoneInfo, every_hours, window_start: str, window_end: str, *,
+                          after: datetime | None = None) -> datetime | None:
+    """Naive-UTC instant of the next interval slot strictly after `after` (default now).
+    Slots: window_start + k*every_hours while <= window_end (a window whose end is
+    earlier than its start crosses midnight). Past the last slot → the next day's start."""
+    try:
+        n = int(every_hours)
+    except (TypeError, ValueError):
+        return None
+    if not (1 <= n <= INTERVAL_MAX_HOURS):
+        return None
+    ps, pe = parse_local_time(window_start), parse_local_time(window_end)
+    if not ps or not pe:
+        return None
+    after_utc = (after or _naive_utcnow()).replace(tzinfo=timezone.utc)
+    now_local = after_utc.astimezone(tz)
+    # A crossing window (10:00–01:00) may still be open from YESTERDAY's start at 00:30.
+    for offset in (-1, 0, 1, 2):
+        d = (now_local + timedelta(days=offset)).date()
+        start = datetime(d.year, d.month, d.day, ps[0], ps[1], tzinfo=tz)
+        end = datetime(d.year, d.month, d.day, pe[0], pe[1], tzinfo=tz)
+        if end <= start:
+            end += timedelta(days=1)
+        t = start
+        while t <= end:
+            if t > now_local:
+                return t.astimezone(timezone.utc).replace(tzinfo=None)
+            t += timedelta(hours=n)
+    return None
+
+
+def _next_for_row(user, row: Reminder, tz: ZoneInfo, *, after: datetime | None = None) -> datetime | None:
+    """Re-arm helper: the right next instant for any recurring row (interval or weekly)."""
+    if row.every_hours:
+        ws, we = interval_window(user, row)
+        return next_interval_fire_at(tz, row.every_hours, ws, we, after=after)
+    if row.recur_days:
+        return next_fire_at(tz, row.local_time, row.recur_days, after=after)
+    return None
+
+
+def create_reminder(user_id: int, text: str, local_time: str | None = None, *, days=None,
+                    date_str: str | None = None, source: str = "model", replace_id: int | None = None,
+                    every_hours=None, window_start: str | None = None, window_end: str | None = None) -> dict:
     """Create (or, with replace_id, rewrite) a reminder. Returns {"id", "fire_at", "local_time",
-    "recur_days"} or {"error": ...}. Never raises on bad input."""
+    "recur_days", "every_hours"} or {"error": ...}. Never raises on bad input. With
+    every_hours the row is an interval reminder: local_time is optional (it records the
+    window start) and days/date are ignored."""
     text = (text or "").strip()
     if not text:
         return {"error": "text required"}
-    if parse_local_time(local_time) is None:
+    interval = None
+    if every_hours is not None and every_hours != "":
+        try:
+            interval = int(every_hours)
+        except (TypeError, ValueError):
+            return {"error": f"every_hours {every_hours!r} must be a whole number of hours (1–{INTERVAL_MAX_HOURS})"}
+        if not (1 <= interval <= INTERVAL_MAX_HOURS):
+            return {"error": f"every_hours must be 1–{INTERVAL_MAX_HOURS}, got {interval}"}
+        for label, v in (("window_start", window_start), ("window_end", window_end)):
+            if v not in (None, "") and parse_local_time(v) is None:
+                return {"error": f"{label} {v!r} not understood — use local 'HH:MM' (24h)"}
+    elif parse_local_time(local_time) is None:
         return {"error": f"time {local_time!r} not understood — use local 'HH:MM' (24h)"}
-    recur = parse_days(days)
+    recur = None if interval else parse_days(days)
     session = get_session()
     try:
         user = session.get(User, user_id)
         if not user:
             return {"error": "user not found"}
         tz = _tz(user.user_timezone)
-        h, mm = parse_local_time(local_time)
-        local_norm = f"{h:02d}:{mm:02d}"
-        fire = next_fire_at(tz, local_norm, recur, date_str=date_str)
-        if fire is None:
-            return {"error": "could not compute a next time"}
         row = session.get(Reminder, replace_id) if replace_id else None
         if row is None or row.user_id != user_id:
             row = Reminder(user_id=user_id, source=source)
             session.add(row)
+        if interval:
+            row.every_hours = interval
+            row.window_start = _norm_hhmm(window_start) if window_start else None
+            row.window_end = _norm_hhmm(window_end) if window_end else None
+            ws, we = interval_window(user, row)
+            local_norm = ws
+            fire = next_interval_fire_at(tz, interval, ws, we)
+        else:
+            row.every_hours = row.window_start = row.window_end = None
+            h, mm = parse_local_time(local_time)
+            local_norm = f"{h:02d}:{mm:02d}"
+            fire = next_fire_at(tz, local_norm, recur, date_str=date_str)
+        if fire is None:
+            return {"error": "could not compute a next time"}
         row.text, row.local_time, row.recur_days, row.fire_at, row.active = text[:300], local_norm, recur, fire, True
         row.cancelled_at = None
         session.commit()
-        logger.info("REMINDER_SET user=%s id=%s text=%r at=%s days=%s fire_at=%s source=%s",
-                    user_id, row.id, text[:60], local_norm, recur, fire, source)
-        return {"id": row.id, "fire_at": fire, "local_time": local_norm, "recur_days": recur}
+        logger.info("REMINDER_SET user=%s id=%s text=%r at=%s days=%s every_hours=%s fire_at=%s source=%s",
+                    user_id, row.id, text[:60], local_norm, recur, interval, fire, source)
+        return {"id": row.id, "fire_at": fire, "local_time": local_norm, "recur_days": recur,
+                "every_hours": interval}
     finally:
         session.close()
 
@@ -219,9 +308,20 @@ def _fmt_time(local_time: str) -> str:
     return d.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm")
 
 
-def describe(row: Reminder, tz: ZoneInfo) -> str:
-    when = f"{row.recur_days.replace(',', '/')} {_fmt_time(row.local_time)}" if row.recur_days \
-        else _fmt_local(row.fire_at, tz)
+def describe(row: Reminder, tz: ZoneInfo, user=None) -> str:
+    if row.every_hours:
+        if user is None:   # a null window follows the profile — resolve it the same way firing does
+            s = get_session()
+            try:
+                user = s.get(User, row.user_id)
+            finally:
+                s.close()
+        ws, we = interval_window(user, row)
+        when = f"every {row.every_hours}h {_fmt_time(ws)}–{_fmt_time(we)} daily"
+    elif row.recur_days:
+        when = f"{row.recur_days.replace(',', '/')} {_fmt_time(row.local_time)}"
+    else:
+        when = _fmt_local(row.fire_at, tz)
     return f"'{row.text}' — {when} (next: {_fmt_local(row.fire_at, tz)}, id={row.id})"
 
 
@@ -240,7 +340,7 @@ def context_block(user, session) -> str | None:
         return None
     lines = ["## REMINDERS (code sends these at the named time — do NOT pre-empt or duplicate them)"]
     for r in rows:
-        lines.append(f"- pending: {describe(r, tz)}")
+        lines.append(f"- pending: {describe(r, tz, user)}")
     for r in sent:
         lines.append(f"- sent {_fmt_local(r.last_sent_at, tz)}: '{r.text}'")
     return "\n".join(lines)
@@ -269,6 +369,11 @@ def _compose(user, row: Reminder) -> str:
             f"explanation of why you're texting, no greeting, no question unless it's the natural "
             f"way to say it. Under 20 words."
         )
+        if row.every_hours:
+            instruction += (
+                f" This one is a standing ping they get every {row.every_hours} hours, not a one-off: "
+                f"a few words, no question, no explanation, and not the same wording every time."
+            )
         client = make_client()
         resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=300,
                                       system=system, messages=[{"role": "user", "content": instruction}])
@@ -323,7 +428,7 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # rather than send a reminder about a moment that's long gone.
         if now - row.fire_at > timedelta(hours=24):
             logger.warning("REMINDER_STALE_SKIPPED id=%s user=%s fire_at=%s", rid, row.user_id, row.fire_at)
-            nxt = next_fire_at(tz, row.local_time, row.recur_days, after=now) if row.recur_days else None
+            nxt = _next_for_row(user, row, tz, after=now)
             row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
             session.commit()
             return False
@@ -337,14 +442,52 @@ def _fire_one(rid: int, now: datetime) -> bool:
         send_sms(user.phone, text, user_id=user.id, message_type="reminder")
         row.last_sent_at = now
         row.sent_count = (row.sent_count or 0) + 1
-        if row.recur_days:
-            row.fire_at = next_fire_at(tz, row.local_time, row.recur_days, after=now) or row.fire_at
+        if row.every_hours or row.recur_days:
+            row.fire_at = _next_for_row(user, row, tz, after=now) or row.fire_at
         else:
             row.active = False
         session.commit()
         logger.info("REMINDER_SENT user=%s id=%s text=%r next=%s", user.id, rid, text[:80],
                     row.fire_at if row.active else None)
         return True
+    finally:
+        session.close()
+
+
+# ─── water ack ────────────────────────────────────────────────────────────────
+# "drank" / "done" / 👍 right after an interval (water) ping is closure, not coaching
+# input. app.py routes it through the existing closing-ack branch (no model call, a 👍
+# tapback on iMessage) when this says so — never a second handler.
+
+_WATER_ACK_RE = re.compile(
+    r"^(?:(?:ok|okay|k|yes|yep|yup|ya|yea|yeah|bet|done|did|drank|drinking|drank it|drank some|"
+    r"on it|just did|chugged|chugging|got it|gotchu|👍|💧|💪|🙏|✅)[\s.!,]*){1,4}$",
+    re.IGNORECASE,
+)
+WATER_ACK_WINDOW_MINUTES = 90
+
+
+def is_water_ack(user_id: int, body: str) -> bool:
+    """True when the inbound is a short ack and the most recent outbound was a reminder
+    sent within WATER_ACK_WINDOW_MINUTES for a user who has an active interval reminder."""
+    b = (body or "").strip().lower()
+    if not b or len(b) > 40 or not _WATER_ACK_RE.match(b):
+        return False
+    from models import Message
+    session = get_session()
+    try:
+        has_interval = (session.query(Reminder.id)
+                        .filter(Reminder.user_id == user_id, Reminder.active.is_(True),
+                                Reminder.every_hours.isnot(None)).first()) is not None
+        if not has_interval:
+            return False
+        last_out = (session.query(Message)
+                    .filter(Message.user_id == user_id, Message.direction == "out")
+                    .order_by(Message.created_at.desc()).first())
+        if not last_out or not last_out.created_at or last_out.message_type != "reminder":
+            return False
+        age = _naive_utcnow() - last_out.created_at.replace(tzinfo=None)
+        return age <= timedelta(minutes=WATER_ACK_WINDOW_MINUTES)
     finally:
         session.close()
 
