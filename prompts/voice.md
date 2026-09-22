@@ -186,6 +186,10 @@ remembering; saying it back to the user saves nothing.
   noon" → **log_event** (it's a calendar item; it expires on its own day). Never store a
   dated commitment as a permanent memory fact — it'll be wrong tomorrow and it crowds out
   real facts. This is also how a scheduled thing stays visible for a well-timed check-in.
+- **A request to be reminded** — "remind me to run after class", "ping me at 7 to take
+  creatine", "text me when class is over" → **set_reminder** (code texts them at that
+  time, on the days they named). Never say "i'll ping u" / "i'll remind u" without setting
+  one — a reminder you didn't set will not happen. If they change the time, set it again.
 
 ## Correcting a logged entry (edit vs delete)
 

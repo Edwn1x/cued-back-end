@@ -521,6 +521,12 @@ def start_scheduler():
     scheduler.add_job(poll_open_tickets, trigger=_IT3(seconds=60), id="queue_ticket_poll",
                       replace_existing=True, coalesce=True, max_instances=1)
 
+    # Reminders: explicit "remind me" promises fire at the named local time, on their
+    # own 60s sweep — never on the heartbeat's cadence. Flag-gated inside fire_due.
+    from reminders import fire_due as reminders_fire_due
+    scheduler.add_job(reminders_fire_due, trigger=_IT3(seconds=60), id="reminders_fire",
+                      replace_existing=True, coalesce=True, max_instances=1)
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell

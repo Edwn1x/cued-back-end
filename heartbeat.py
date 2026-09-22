@@ -183,6 +183,13 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     # the allowlist swept pending accounts (active=true) into the heartbeat.
     if (getattr(user, "waitlist_status", None) or "") == "pending":
         return "waitlisted"
+    # Still onboarding — the profile isn't confirmed and every inbound routes to the
+    # onboarding handler, so a proactive text here lands mid-intake and its reply gets
+    # treated as an intake answer (live 2026-09-22, user 42: parked at step 2 for an
+    # hour with the summary pending). Reminders they explicitly asked for still fire
+    # (reminders.py) — those aren't the heartbeat's call.
+    if (user.onboarding_step or 0) < 3:
+        return "onboarding"
     # Opted out — no proactive contact until they resume with any inbound.
     if config.STOP_OPTOUT_ENABLED and getattr(user, "opted_out", False):
         return "opted_out"
@@ -422,6 +429,14 @@ def _proactive_context(user, session) -> str:
     if thread:
         parts.append(thread)
 
+    try:
+        from reminders import context_block
+        rb = context_block(user, session)
+        if rb:
+            parts.append(rb)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REMINDER_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)
                   .filter(Message.user_id == user.id, Message.direction == "out",
@@ -611,7 +626,8 @@ def heartbeat_all():
         # also blocks them (defense in depth); filtering here saves the per-user work.
         q = (session.query(User)
              .filter(User.active.is_(True))
-             .filter((User.waitlist_status.is_(None)) | (User.waitlist_status != "pending")))
+             .filter((User.waitlist_status.is_(None)) | (User.waitlist_status != "pending"))
+             .filter(User.onboarding_step >= 3))
         if config.HEARTBEAT_ALLOWLIST:
             q = q.filter(User.phone.in_(config.HEARTBEAT_ALLOWLIST))
         user_ids = [u.id for u in q.all()]

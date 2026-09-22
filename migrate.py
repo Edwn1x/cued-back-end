@@ -369,6 +369,23 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200)",
     # Per-user routine override for the workout card (user 42's pasted PPL, 2026-09-22)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_templates JSON",
+    # Reminders: explicit "remind me" promises fired by code at the named local time (2026-09-22)
+    """CREATE TABLE IF NOT EXISTS reminders (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        text VARCHAR(300) NOT NULL,
+        local_time VARCHAR(5) NOT NULL,
+        recur_days VARCHAR(30),
+        fire_at TIMESTAMP NOT NULL,
+        source VARCHAR(20) DEFAULT 'model',
+        active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        last_sent_at TIMESTAMP,
+        sent_count INTEGER DEFAULT 0,
+        cancelled_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (active, fire_at)",
+    "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id)",
 ]
 
 def wait_for_db(retries=10, delay=3):

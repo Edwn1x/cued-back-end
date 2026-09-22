@@ -323,6 +323,16 @@ def _build_system_prompt(user) -> str:
         f"Existing tools: {user.existing_tools}" if user.existing_tools else None,
     ]
     profile = "\n".join(p for p in profile_parts if p)
+    try:
+        from reminders import active_reminders, describe, _tz
+        rows = active_reminders(user.id) if getattr(user, "id", None) else []
+        if rows:
+            tz = _tz(user.user_timezone)
+            profile += ("\n\nReminders you've set (code sends these at that time — you can say "
+                        "you'll ping them; never promise one that isn't listed here):\n"
+                        + "\n".join(f"- {describe(r, tz)}" for r in rows))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REMINDER_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
 
     now_local = _now_local(user.user_timezone)
     now_line = (now_local.strftime("%A, %b %-d, %Y, %-I:%M%p")
@@ -1249,6 +1259,14 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             user_row = session.get(UserModel, user.id)
         finally:
             session.close()
+
+    # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
+    # small extraction sets (or corrects) the reminder in code and the prompt shows it.
+    try:
+        from reminders import maybe_capture_onboarding_reminder
+        maybe_capture_onboarding_reminder(user_row.id, incoming_message, _conversation_so_far(user_row.id))
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
 
     missing_after = _get_missing_fields(user_row)
     system_prompt = _build_system_prompt(user_row)
