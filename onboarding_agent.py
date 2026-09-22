@@ -324,6 +324,13 @@ def _build_system_prompt(user) -> str:
     ]
     profile = "\n".join(p for p in profile_parts if p)
     try:
+        from workouts.routine import describe_routine
+        rd = describe_routine(getattr(user, "custom_templates", None))
+        if rd:
+            profile += "\n\nTheir own routine (already on their workout cards — never ask for it again):\n" + rd
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ROUTINE_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    try:
         from reminders import active_reminders, describe, _tz
         rows = active_reminders(user.id) if getattr(user, "id", None) else []
         if rows:
@@ -478,6 +485,8 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "workout_time": "HH:MM in 24h format" or "description like afternoon, morning" or null,
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
   "food_dislikes": "comma-separated foods they say they don't/won't eat (mushrooms, tofu, raw fish)" or null,
+  "experience": "none" (never trained) | "beginner" (under 6 months) | "intermediate" (6 months–2 years) | "advanced" (2+ years) or null — ONLY from an explicit statement about how long they've trained ("been lifting 3 years", "never really trained"); a detailed routine is NOT a statement,
+  "goal": "fat_loss" | "muscle_building" | "fat_loss,muscle_building" (recomp) | "strength" | "endurance" | "general_fitness" or null — ONLY when they say what they're going for ("tryna cut", "want to put on size", "training for a half"),
   "calorie_target": integer or null (ONLY a daily calorie number THEY say they aim for or track to — "staying under 2000 cals" → 2000; never a number the coach said),
   "protein_target": integer or null (same rule — grams of protein per day THEY track to),
   "cooking_situation": "cook_myself, dining_hall, mostly_eat_out, mix" or null,
@@ -533,6 +542,8 @@ Examples:
 "I have no allergies and eat mostly chicken and protein pasta" → {{"diet": "omnivore", ...rest null}}
 "I don't eat mushrooms tofu and raw fish" → {{"diet": "omnivore", "food_dislikes": "mushrooms, tofu, raw fish", ...rest null}}
 "I count my macros staying under 2000 cals and 155 grams of protein" → {{"calorie_target": 2000, "protein_target": 155, ...rest null}}
+"been lifting like 3 years, tryna cut for summer" → {{"experience": "advanced", "goal": "fat_loss", ...rest null}}
+"I do push pull legs" (no statement about how long) → {{"current_split": "ppl", ...rest null}}  (experience stays null)
 "I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", "tools_decision": "acknowledged", ...rest null}}
 "Does Nike Run Club count?" → {{"existing_tools": "nike_run_club", "tools_decision": "acknowledged", ...rest null}}
 "nah I don't use anything" → {{"existing_tools": "none", "tools_decision": "none", ...rest null}}
@@ -621,6 +632,13 @@ def _store_extracted_data(user_id: int, data: dict):
                 setattr(user, attr, value)
                 changed = True
 
+        _EXPERIENCE = {"none", "beginner", "intermediate", "advanced"}
+        _GOALS = {"fat_loss", "muscle_building", "fat_loss,muscle_building", "muscle_building,fat_loss",
+                  "strength", "endurance", "general_fitness"}
+        if data.get("experience") in _EXPERIENCE:
+            _set("experience", data["experience"])
+        if isinstance(data.get("goal"), str) and data["goal"].strip().lower() in _GOALS:
+            _set("goal", data["goal"].strip().lower())
         for key in ("height_ft", "height_in", "weight_lbs", "occupation", "diet",
                     "cooking_situation", "injuries", "wake_time", "wake_time_alt",
                     "wake_days_alt", "sleep_time", "existing_tools", "tools_decision",
@@ -892,9 +910,20 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
     who = f"{height_str}, {int(user.weight_lbs)} lbs" if user.weight_lbs else height_str
     if user.age:
         who += f", {user.age}"
+    exp_map = {"none": "just starting out", "beginner": "under 6 months of training",
+               "intermediate": "6 months to 2 years of training", "advanced": "2+ years of training"}
+    exp_bit = f", {exp_map[user.experience]}" if getattr(user, "experience", None) in exp_map else ""
+    routine_bit = ""
+    try:
+        from workouts.routine import describe_routine
+        if describe_routine(getattr(user, "custom_templates", None)):
+            routine_bit = " Your own routine is on your workout cards. "
+    except Exception:  # noqa: BLE001
+        routine_bit = ""
     return (
         f"Here's what I'm working with: {who}. "
-        f"Goal is {goal_label}. Training {user.workout_days} days/week around {user.workout_time}."
+        f"Goal is {goal_label}{exp_bit}. Training {user.workout_days} days/week around {user.workout_time}."
+        f"{routine_bit}"
         f"{sleep_bit} "
         f"{targets_bit}"
         f"Sound right?"
@@ -1259,6 +1288,21 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             user_row = session.get(UserModel, user.id)
         finally:
             session.close()
+
+    # A pasted routine (several "3x10" lines) becomes their own card templates — the
+    # extractor only keeps "ppl"; the exercises would be lost once history scrolls.
+    try:
+        from workouts.routine import looks_like_routine, save_routine
+        if looks_like_routine(incoming_message):
+            r = save_routine(user_row.id, incoming_message, source="onboarding")
+            logger.info("ROUTINE_ONBOARDING user=%s result=%s", user_row.id, r)
+            session = get_session()
+            try:
+                user_row = session.get(UserModel, user.id)
+            finally:
+                session.close()
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("ROUTINE_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
 
     # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
     # small extraction sets (or corrects) the reminder in code and the prompt shows it.

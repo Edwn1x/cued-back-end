@@ -504,8 +504,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import SET_DAY_RESET_TOOL
         tools.append(SET_DAY_RESET_TOOL)
     if config.START_WORKOUT_TOOL_ENABLED:
-        from agent_tools import START_WORKOUT_SESSION_TOOL
-        tools.append(START_WORKOUT_SESSION_TOOL)
+        from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL
+        tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL])
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)
