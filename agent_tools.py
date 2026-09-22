@@ -787,6 +787,21 @@ SET_REMINDER_TOOL = {
     },
 }
 
+SAVE_ROUTINE_TOOL = {
+    "name": "save_routine",
+    "description": (
+        "They pasted or described THEIR OWN routine — a program with days and exercises "
+        "(\"Mon push: incline db press 3x10, shoulder press 3x10 …\"). Save it so their "
+        "workout cards show THEIR exercises, not the default template. Pass the routine "
+        "text as they gave it (all days at once). Days they didn't give keep the default. "
+        "Card weights start as placeholders and update from their first logged sets — say "
+        "so. Not for a single session they just did (that's log_workout)."
+    ),
+    "input_schema": {"type": "object", "properties": {
+        "routine_text": {"type": "string", "description": "the routine as written, all days"}},
+        "required": ["routine_text"]},
+}
+
 CANCEL_REMINDER_TOOL = {
     "name": "cancel_reminder",
     "description": "Cancel a reminder they no longer want (ids are in the REMINDERS block of your context).",
@@ -809,6 +824,19 @@ def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> s
         return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None))}"
     finally:
         session.close()
+
+
+def handle_save_routine(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.routine import save_routine
+    text = (tool_input.get("routine_text") or "").strip()
+    if len(text) < 20:
+        return "error: routine_text required (the whole routine as they gave it)"
+    r = save_routine(user_id, text, source="model")
+    if "error" in r:
+        return f"error: {r['error']}"
+    days = ", ".join(f"{k} ({n} exercises)" for k, n in r["days"].items())
+    return (f"ok: routine saved to their cards — {days}; split={r['split']}. Weights are placeholders "
+            f"until they log real sets — tell them that.")
 
 
 def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
@@ -1652,6 +1680,7 @@ _HANDLERS = {
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
     "log_event": handle_log_event,
     "set_reminder": handle_set_reminder,
+    "save_routine": handle_save_routine,
     "cancel_reminder": handle_cancel_reminder,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
