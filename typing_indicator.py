@@ -2,11 +2,12 @@
 iMessage typing indicator ("Cued is typing…").
 
 The Spectrum cloud provider exposes startTyping/stopTyping on the DM; the sidecar
-wraps it as POST /typing {phone, state}. Flask fires "start" the moment it begins
-GENERATING a reply for an iMessage user — after the read-buffer, never during it
-(a friend reads for a bit, then the dots appear, then the text) — and "stop" on
-any path where no iMessage reply will follow (exception, SMS failover). The
-bubble also clears itself when the reply lands (/send stops it too).
+wraps it as POST /typing {phone, state}. Flask fires "start" the moment an
+iMessage inbound is buffered — right after "Read", since a reply is now coming
+(founder 2026-09-22) — re-asserts it when generation begins (a long buffer can
+outlive the client's indicator), and fires "stop" on any path where no iMessage
+reply will follow (exception, SMS failover). The bubble also clears itself when
+the reply lands (/send stops it too).
 
 Everything here is fire-and-forget and best-effort: a typing signal must never
 delay, block, or fail a reply. Twilio has no equivalent, so SMS users get nothing.

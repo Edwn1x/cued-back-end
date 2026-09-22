@@ -354,8 +354,9 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
-# iMessage typing bubble while a reply is being generated (typing_indicator.py).
-# ON by default (ships on + instrumented: grep TYPING_SIGNAL); reactive replies only.
+# iMessage typing bubble from the moment an inbound is buffered until the reply lands
+# (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
+# reactive replies only.
 # The heartbeat is separate and OFF: decide() may choose silence, and a bubble that
 # appears and then nothing arrives reads as a glitch — founder's call after feeling it.
 TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower() == "true"
@@ -364,8 +365,8 @@ TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower()
 # The WHEN rules live in voice.md; the never-a-strike rule in engagement_tracker.
 IMESSAGE_REACTIONS_ENABLED = os.getenv("IMESSAGE_REACTIONS_ENABLED", "true").lower() == "true"
 TYPING_INDICATOR_HEARTBEAT = os.getenv("TYPING_INDICATOR_HEARTBEAT", "false").lower() == "true"
-# "Read 11:04" on the user's message when reply generation begins (read_receipts.py).
-# ON by default; reactive replies + the suppressed-ack thumbs-up. Never on arrival.
+# "Read 11:04" on the user's message the moment it is logged (read_receipts.py),
+# re-asserted when generation begins. ON by default; every reactive path incl. the ack 👍.
 READ_RECEIPTS_ENABLED = os.getenv("READ_RECEIPTS_ENABLED", "true").lower() == "true"
 
 SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
