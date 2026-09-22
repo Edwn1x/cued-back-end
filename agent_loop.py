@@ -551,8 +551,13 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)
     if config.REMINDERS_ENABLED:
-        from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL
-        tools.extend([SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL])
+        from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL, set_reminder_tool  # noqa: F401
+        # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance
+        # when WATER_REMINDERS_ENABLED.
+        tools.extend([set_reminder_tool(), CANCEL_REMINDER_TOOL])
+    if config.SET_CHECKIN_LEVEL_TOOL_ENABLED:
+        from agent_tools import SET_CHECKIN_LEVEL_TOOL
+        tools.append(SET_CHECKIN_LEVEL_TOOL)
     if config.GET_DINING_MENU_TOOL_ENABLED:
         from agent_tools import GET_DINING_MENU_TOOL
         tools.append(GET_DINING_MENU_TOOL)

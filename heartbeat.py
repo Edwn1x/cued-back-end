@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 import config
 from cost_tracking import track
-from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSession, active
+from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSession, Meal, Event, active
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
 from llm_client import make_client
@@ -64,12 +64,14 @@ A HEARTBEAT HAS NO NEW MESSAGE — that is what makes it proactive. Do NOT wait 
 
 SPEAK when — accountability (the core wedge, non-negotiable):
 - a multi-day skip or broken pattern for someone working toward consistency, or who asked to be called out / held accountable — an obvious yes
+- a MEAL GAP block (when present): an unlogged stretch of their day is a valid reason to speak on its own — once per gap, one short line about food, never a second ask for the same gap
 
 SPEAK when — warmth & presence (a friend, not a nag):
 - a GENUINE win worth marking — a real, specific streak or goal hit (see MOMENTUM when present): "5 sessions this week, that's the consistency that actually sticks." Real progress, never participation-trophy praise.
 - a RELEVANT bit of their world — something tied to their known goals, schedule, or interests that a friend would actually pass along. Grounded in what you remember about them.
 - a TIMELY check-in — following up on something THEY mentioned (an event, a hard week, a stated intention): "how'd the summit go." BEFORE a known event counts the same: "how's the pitch prep going" / "good luck tomorrow." An upcoming real event you haven't acknowledged yet is check-in material NOW, not "closer to the day" — you cannot schedule a future text, so a deferred check-in is one that mostly never happens. Only where X is real and known.
 - LEVITY or ease on a hard day — when the context shows a rough stretch, a friend lightens or backs off, doesn't pile on.
+- a MORNING OPEN or EVENING CLOSE block (when present): one short line — a friend's morning text or evening check, never a briefing; once per day each
 
 THE BAR FOR WARMTH IS HIGHER, NOT LOWER. A warranted accountability nudge is almost never unwelcome; generic warmth is exactly how proactive bots become insufferable ("hope you're having a great day!", "fun fact: bananas are berries"). So reach for a warm text ONLY when there is specific, real material about THIS person to make it land — their win, their event, their week, grounded in memory. If all you have is a generic pleasantry with nothing specific behind it, STAY SILENT. "How'd the summit go" (grounded in a known event) speaks; "hope your day's going well" (grounded in nothing) does not.
 
@@ -155,22 +157,116 @@ def _quiet_window(user) -> tuple[int, int]:
     return start, end
 
 
+def _now_aware() -> datetime:
+    """The heartbeat's clock (aware UTC). Patched in tests to pin a local wall time."""
+    return datetime.now(timezone.utc)
+
+
+def _ref(now) -> datetime:
+    """An aware-UTC reference instant: `now` (aware or naive-UTC) when given, else the clock."""
+    if now is None:
+        return _now_aware()
+    return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+
+
+def _user_tz(user) -> ZoneInfo:
+    try:
+        return ZoneInfo(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        return ZoneInfo("America/Los_Angeles")
+
+
+_HHMM_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+
+def _parse_hhmm(s) -> tuple[int, int] | None:
+    """STRICT 'HH:MM' → (h, m); a free phrase ('around 7', 'late') is None. The daily-rhythm
+    pieces only trust a time the extractor stored as a clock value."""
+    m = _HHMM_RE.match(str(s or ""))
+    if not m:
+        return None
+    h, mm = int(m.group(1)), int(m.group(2))
+    return (h, mm) if 0 <= h <= 23 and 0 <= mm <= 59 else None
+
+
+def _wake_hhmm_for(user, local_date) -> tuple[int, int] | None:
+    """Their wake (h, m) on this weekday: wake_time_alt when the day is in wake_days_alt."""
+    alt = _parse_hhmm(getattr(user, "wake_time_alt", None))
+    days = (getattr(user, "wake_days_alt", None) or "").strip().lower()
+    if alt and days:
+        tokens = [t[:3] for t in re.split(r"[\s,/]+", days) if t]
+        if _DAY_ABBR[local_date.weekday()] in tokens:
+            return alt
+    return _parse_hhmm(getattr(user, "wake_time", None))
+
+
+def _sleep_hhmm(user) -> tuple[int, int] | None:
+    return _parse_hhmm(getattr(user, "sleep_time", None))
+
+
+QUIET_BEFORE_SLEEP_MIN = 30
+QUIET_AFTER_WAKE_MIN = 15
+
+
+def _profile_quiet_window(user, local) -> tuple[int, int] | None:
+    """(start, end) minutes-of-day: sleep−30min .. wake+15min (alt wake honoured for the
+    local date's weekday). None unless BOTH profile times are strict 'HH:MM'."""
+    wake = _wake_hhmm_for(user, local.date())
+    sleep = _sleep_hhmm(user)
+    if not wake or not sleep:
+        return None
+    start = (sleep[0] * 60 + sleep[1] - QUIET_BEFORE_SLEEP_MIN) % 1440
+    end = (wake[0] * 60 + wake[1] + QUIET_AFTER_WAKE_MIN) % 1440
+    return start, end
+
+
 def _in_standing_quiet_hours(user, *, now=None) -> bool:
     """True if it's currently the user's overnight quiet window (local). `now` is an
-    optional aware/naive-UTC instant for tests."""
+    optional aware/naive-UTC instant for tests. With QUIET_HOURS_FROM_PROFILE_ENABLED the
+    window is THEIRS (sleep−30 .. wake+15) whenever both profile times parse; otherwise
+    the global floor window (extended, never shrunk, by a parseable profile time)."""
     if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
         return False
-    try:
-        tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
-    except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
-    ref = now if now is not None else datetime.now(timezone.utc)
-    if ref.tzinfo is None:
-        ref = ref.replace(tzinfo=timezone.utc)
-    hour = ref.astimezone(tz).hour
+    local = _ref(now).astimezone(_user_tz(user))
+    if config.QUIET_HOURS_FROM_PROFILE_ENABLED:
+        win = _profile_quiet_window(user, local)
+        if win:
+            start, end = win
+            m = local.hour * 60 + local.minute
+            if start == end:
+                return False
+            if start > end:                     # spans midnight (the normal case)
+                return m >= start or m < end
+            return start <= m < end             # e.g. sleeps 01:00, wakes 09:00
+    hour = local.hour
     start, end = _quiet_window(user)
     # window always spans midnight (start is evening, end is morning)
     return hour >= start or hour < end
+
+
+# ─── check-in level (daily rhythm §5) ────────────────────────────────────────
+# users.checkin_level is the user's own ask ("text me more" / "chill with the texts"),
+# written by the set_checkin_level tool. The column is the contract: its effect on the
+# cap and on which rhythm conditions render does not depend on the tool flag.
+
+CHECKIN_LEVELS = ("more", "normal", "less")
+CHECKIN_CAP_MORE = 8
+CHECKIN_CAP_LESS = 2
+
+
+def _checkin_level(user) -> str:
+    v = (getattr(user, "checkin_level", None) or "").strip().lower()
+    return v if v in CHECKIN_LEVELS else "normal"
+
+
+def _max_per_day(user) -> int:
+    """The daily proactive cap for THIS user: 'more' → 8, 'less' → 2, else the global cap."""
+    level = _checkin_level(user)
+    if level == "more":
+        return max(config.HEARTBEAT_MAX_PER_DAY, CHECKIN_CAP_MORE)
+    if level == "less":
+        return min(config.HEARTBEAT_MAX_PER_DAY, CHECKIN_CAP_LESS)
+    return config.HEARTBEAT_MAX_PER_DAY
 
 
 def guardrail_reason(user, session, *, now=None) -> str | None:
@@ -206,7 +302,7 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     spoke_today = (session.query(HeartbeatTick)
                    .filter(HeartbeatTick.user_id == user.id, HeartbeatTick.spoke.is_(True),
                            HeartbeatTick.decided_at >= day_start).count())
-    if spoke_today >= config.HEARTBEAT_MAX_PER_DAY:
+    if spoke_today >= _max_per_day(user):   # per-user check-in level (more 8 / less 2)
         return "daily_budget"
     # obvious-silence pre-gate: a recent inbound means an active conversation
     last_in = (session.query(Message)
@@ -384,6 +480,241 @@ def _open_thread_signal(user, session) -> str | None:
             "thread, not a live exchange.")
 
 
+# ─── daily rhythm standing conditions (§1 meal gap, §4 morning open / evening close) ──
+# All code-computed in the user's LOCAL time from the profile clock values; the model
+# gets hours and counts, never a transcript to do date arithmetic on. Every function
+# takes `now=` (aware/naive UTC) so a test can pin the wall clock.
+
+MEAL_GAP_FIRST_MEAL_HOURS = 5        # nothing logged by wake+5h → "no breakfast/lunch yet"
+MEAL_GAP_LONG_HOURS = 6              # ≥6h since the last logged meal during waking hours
+MEAL_GAP_EVENING_HOURS = 2           # the evening-close window before sleep_time
+MEAL_GAP_EVENING_MIN_SINCE_LAST = 3  # ...and the last meal is at least this old
+RHYTHM_MORNING_MINUTES = 90          # MORNING OPEN: within 90 min after wake
+RHYTHM_EVENING_HOURS = 2             # EVENING CLOSE: within 2h before sleep
+RHYTHM_EVENING_REF_HOUR = 17         # ...and no outbound since 5pm local
+_DEFAULT_WAKE = (8, 0)
+_DEFAULT_SLEEP = (23, 0)
+
+
+def _clock(local) -> str:
+    return local.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm")
+
+
+def _clock_hm(hm) -> str:
+    return _clock(datetime(2000, 1, 1, hm[0], hm[1]))
+
+
+def _naive(local) -> datetime:
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _expected_meals(user) -> int:
+    """meals_per_day ('1-2' → 2, '3' → 3, '4+' → 4); default 3."""
+    nums = re.findall(r"\d+", str(getattr(user, "meals_per_day", "") or ""))
+    return max(1, min(6, int(nums[-1]))) if nums else 3
+
+
+def _waking_bounds(user, local) -> tuple[datetime, datetime]:
+    """(wake, sleep) aware-local instants of the waking day that contains `local` — or the
+    one about to start — from the profile clock values (alt wake by weekday), defaulting
+    to 08:00 / 23:00 when they don't parse. A sleep at/before the wake hour (00:00,
+    01:00) means bed is after midnight, so the waking day runs into the next date."""
+    def _for(date):
+        wake = _wake_hhmm_for(user, date) or _DEFAULT_WAKE
+        sleep = _sleep_hhmm(user) or _DEFAULT_SLEEP
+        w = local.replace(year=date.year, month=date.month, day=date.day, hour=wake[0], minute=wake[1],
+                          second=0, microsecond=0)
+        s = local.replace(year=date.year, month=date.month, day=date.day, hour=sleep[0], minute=sleep[1],
+                          second=0, microsecond=0)
+        if s <= w:
+            s += timedelta(days=1)
+        return w, s
+    w, s = _for(local.date())
+    if local < w:   # after midnight: still yesterday's waking day if it runs past midnight
+        yw, ys = _for((local - timedelta(days=1)).date())
+        if local < ys:
+            return yw, ys
+    return w, s
+
+
+def _meal_gap_signal(user, session, *, now=None) -> str | None:
+    """§1 MEAL GAP, code-computed. Renders when (a) nothing is logged by wake+5h, (b) ≥6h
+    have passed since the last logged meal during waking hours, or (c) it's the last 2h
+    before bed with fewer meals than they said they eat and ≥3h since the last one.
+    Carries hours since the last meal, today's count vs expected, and whether a proactive
+    text already went out during THIS gap (once per gap). Softer branch for a user who
+    logs in their own app (food_logger_status == 'coexist'). None outside waking hours,
+    with the flag off, or for a 'less' check-in level."""
+    if not config.HEARTBEAT_MEAL_GAP_ENABLED or _checkin_level(user) == "less":
+        return None
+    local = _ref(now).astimezone(_user_tz(user))
+    wake_dt, sleep_dt = _waking_bounds(user, local)
+    if local < wake_dt or local >= sleep_dt:
+        return None
+    wake_utc, now_utc = _naive(wake_dt), _naive(local)
+    today = (active(session, Meal, user_id=user.id)
+             .filter(Meal.eaten_at >= wake_utc, Meal.eaten_at <= now_utc)
+             .order_by(Meal.eaten_at).all())
+    last = (active(session, Meal, user_id=user.id)
+            .filter(Meal.eaten_at <= now_utc).order_by(Meal.eaten_at.desc()).first())
+    hrs_last = (now_utc - last.eaten_at).total_seconds() / 3600 if last and last.eaten_at else None
+    hrs_wake = (local - wake_dt).total_seconds() / 3600
+    count, expected = len(today), _expected_meals(user)
+    last_desc = (last.description or "").strip().replace("\n", " ")[:60] if last else ""
+
+    kind = None
+    if (local >= sleep_dt - timedelta(hours=MEAL_GAP_EVENING_HOURS) and count < expected
+            and (hrs_last is None or hrs_last >= MEAL_GAP_EVENING_MIN_SINCE_LAST)):
+        kind = "evening"
+    elif count == 0 and hrs_wake >= MEAL_GAP_FIRST_MEAL_HOURS:
+        kind = "first"
+    elif count > 0 and hrs_last is not None and hrs_last >= MEAL_GAP_LONG_HOURS:
+        kind = "gap"
+    if not kind:
+        return None
+
+    if kind == "first":
+        lead = (f"Nothing logged since they woke (~{_clock(wake_dt)}, {hrs_wake:.1f}h ago) — no breakfast "
+                f"or lunch on record.")
+    elif kind == "gap":
+        lead = f"Last logged meal was {hrs_last:.1f}h ago ({last_desc}), during waking hours."
+    else:
+        since = f"{hrs_last:.1f}h since the last logged meal ({last_desc})" if hrs_last is not None \
+            else "nothing logged at all"
+        lead = (f"Evening close — bed at ~{_clock(sleep_dt)}, {since}, and the day is short of what they "
+                f"usually eat: anything they ate and didn't log?")
+    tail = ""
+    if kind == "first" and last is not None:
+        tail = f"; last logged meal {hrs_last:.1f}h ago"
+    elif kind == "first":
+        tail = "; no meal logged yet since they joined"
+    counts = f"Logged since they woke: {count} of ~{expected} meals{tail}."
+
+    # once per gap, code-dated: a proactive text already sent since the later of wake /
+    # the last meal means this gap has been raised.
+    since = max([wake_utc] + ([last.eaten_at] if last and last.eaten_at else []))
+    spoke_since = (session.query(HeartbeatTick)
+                   .filter(HeartbeatTick.user_id == user.id, HeartbeatTick.spoke.is_(True),
+                           HeartbeatTick.decided_at >= since, HeartbeatTick.decided_at <= now_utc).count())
+    repeat = ("No proactive text yet during this gap." if not spoke_since else
+              "You ALREADY sent a proactive text during this gap — do not ask again; this block is "
+              "not a reason to speak twice.")
+
+    if (getattr(user, "food_logger_status", None) or "") == "coexist":
+        guidance = ("They log food in their own app (coexist), so it's probably logged there, not here. "
+                    "Once per gap: if you speak, ask for a screenshot of their day so far — never a re-type "
+                    "of what they ate.")
+    else:
+        guidance = ("An unlogged stretch is a valid reason to speak on its own, once per gap: one short "
+                    "line asking what they've eaten or whether they ate — not a lecture, not a macro rundown.")
+    return ("## MEAL GAP (standing condition — code-computed)\n"
+            f"It's {_clock(local)} their time. {lead} {counts} {repeat}\n{guidance}")
+
+
+def _training_days(user) -> set:
+    raw = (getattr(user, "confirmed_training_days", None) or getattr(user, "workout_days", None) or "").lower()
+    return {t[:3] for t in re.split(r"[\s,/&+]+", raw) if t} & set(_DAY_ABBR)
+
+
+def _morning_open_signal(user, session, *, now=None) -> str | None:
+    """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after a parseable wake (alt honoured)
+    and no non-reaction message either way since they woke. One line of material: the
+    weekday, workout/rest day per their split, today's logged events."""
+    if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
+        return None
+    local = _ref(now).astimezone(_user_tz(user))
+    wake = _wake_hhmm_for(user, local.date())
+    if not wake:
+        return None
+    wake_dt = local.replace(hour=wake[0], minute=wake[1], second=0, microsecond=0)
+    if not (wake_dt <= local < wake_dt + timedelta(minutes=RHYTHM_MORNING_MINUTES)):
+        return None
+    from engagement_tracker import _not_reaction
+    talked = (session.query(Message.id)
+              .filter(Message.user_id == user.id, Message.created_at >= _naive(wake_dt), _not_reaction())
+              .first())
+    if talked:
+        return None
+    days = _training_days(user)
+    today_abbr = _DAY_ABBR[local.weekday()]
+    if days:
+        plan = ("a workout day" if today_abbr in days else "a rest day") + \
+               f" (they train {'/'.join(d for d in _DAY_ABBR if d in days)})"
+    else:
+        plan = "no fixed training days on file"
+    from timefmt import local_day_bounds, to_local
+    d0, d1 = local_day_bounds(user, now=_ref(now))
+    evs = (active(session, Event, user_id=user.id)
+           .filter(Event.occurred_at >= d0, Event.occurred_at < d1).order_by(Event.occurred_at).all())
+    ev_txt = ", ".join(f"{(e.raw_text or e.event_type or 'event').strip()[:40]} at "
+                       f"{_clock(to_local(e.occurred_at, user))}" for e in evs) or "none logged"
+    mins = int((local - wake_dt).total_seconds() // 60)
+    return ("## MORNING OPEN (standing condition — code-computed)\n"
+            f"It's {_clock(local)} {local.strftime('%A')}, ~{mins} min after their {_clock_hm(wake)} wake, and "
+            f"nobody has texted since they woke. Today: {plan}; events today: {ev_txt}.\n"
+            "One short line — a friend's morning text, not a briefing: no plan dump, no totals, no "
+            "question stack. Once — if TICK HISTORY / RECENT PROACTIVE MESSAGES show a morning text "
+            "already today, this is not a reason to speak.")
+
+
+def _evening_close_signal(user, session, *, now=None) -> str | None:
+    """§4 EVENING CLOSE: within RHYTHM_EVENING_HOURS before a parseable sleep_time and no
+    non-reaction outbound since 5pm local (the 5pm of the evening that precedes bed, so an
+    after-midnight sleeper's 12:15am still counts last evening). One line of material:
+    today's totals vs targets, workouts completed, meals logged."""
+    if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
+        return None
+    local = _ref(now).astimezone(_user_tz(user))
+    sleep = _sleep_hhmm(user)
+    if not sleep:
+        return None
+    bed = local.replace(hour=sleep[0], minute=sleep[1], second=0, microsecond=0)
+    if bed <= local:
+        bed += timedelta(days=1)
+    if local < bed - timedelta(hours=RHYTHM_EVENING_HOURS):
+        return None
+    five = bed.replace(hour=RHYTHM_EVENING_REF_HOUR, minute=0)
+    if five >= bed:
+        five -= timedelta(days=1)
+    from engagement_tracker import _not_reaction
+    out = (session.query(Message.id)
+           .filter(Message.user_id == user.id, Message.direction == "out",
+                   Message.created_at >= _naive(five), _not_reaction())
+           .first())
+    if out:
+        return None
+    from timefmt import local_day_bounds
+    d0, d1 = local_day_bounds(user, now=_ref(now))
+    meals = (active(session, Meal, user_id=user.id)
+             .filter(Meal.eaten_at >= d0, Meal.eaten_at < d1).all())
+    cal = sum(m.calories or 0 for m in meals)
+    pro = sum(m.protein_g or 0 for m in meals)
+    targets = ""
+    if user.calorie_target or user.protein_target:
+        targets = f" vs targets {user.calorie_target or '?'} cal / {user.protein_target or '?'}g"
+    n_w = (active(session, Workout, user_id=user.id)
+           .filter(Workout.completed.is_(True), Workout.date >= d0, Workout.date < d1).count())
+    mins = int((bed - local).total_seconds() // 60)
+    return ("## EVENING CLOSE (standing condition — code-computed)\n"
+            f"It's {_clock(local)}, ~{mins} min before their {_clock_hm(sleep)} bedtime, and you haven't "
+            f"texted since 5pm. Today: {cal} cal / {pro}g protein logged across {len(meals)} meal(s){targets}; "
+            f"{n_w} workout{'s' if n_w != 1 else ''} completed.\n"
+            "One short line — a friend's evening check, not a briefing: no totals recap unless it's the "
+            "one thing worth saying, no tomorrow's plan, no question stack. Once — if TICK HISTORY / "
+            "RECENT PROACTIVE MESSAGES show an evening text already, this is not a reason to speak.")
+
+
+def _checkin_level_block(user) -> str | None:
+    if not config.SET_CHECKIN_LEVEL_TOOL_ENABLED and not getattr(user, "checkin_level", None):
+        return None
+    level = _checkin_level(user)
+    return ("## CHECK-IN LEVEL (their choice — code enforces the cap)\n"
+            f"{level} — daily proactive cap {_max_per_day(user)}/day. 'more' = they asked to hear from you "
+            "more (the rhythm check-ins are on); 'less' = they asked you to chill (only training gaps, open "
+            "threads and real wins — no meal-gap / morning / evening check-ins, and keep it short); "
+            "'normal' = as designed.")
+
+
 def _proactive_context(user, session) -> str:
     parts = [build_loop_context(user, session)]
 
@@ -394,6 +725,19 @@ def _proactive_context(user, session) -> str:
     gap = _training_gap_signal(user, session)
     if gap:
         parts.append(gap)
+
+    # Daily rhythm standing conditions (each flag-gated inside; a failure never kills the tick).
+    for fn in (_meal_gap_signal, _morning_open_signal, _evening_close_signal):
+        try:
+            blk = fn(user, session)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("RHYTHM_SIGNAL_FAILED fn=%s user=%s err=%s", fn.__name__, user.id, e)
+            blk = None
+        if blk:
+            parts.append(blk)
+    lvl = _checkin_level_block(user)
+    if lvl:
+        parts.append(lvl)
 
     # Adaptive targets: a due weigh-in is a standing condition (once a week, mornings).
     if config.ADAPTIVE_TARGETS_ENABLED:

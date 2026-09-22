@@ -11,6 +11,7 @@ retired.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 
@@ -957,6 +958,72 @@ SET_REMINDER_TOOL = {
     },
 }
 
+
+def set_reminder_tool() -> dict:
+    """The set_reminder tool as offered THIS turn. With WATER_REMINDERS_ENABLED it gains
+    `every_hours` (an interval reminder between their wake and sleep, every day) and
+    names hydration as the canonical use; `time` becomes optional for that shape. Flag
+    off → exactly SET_REMINDER_TOOL. The engine accepts every_hours either way."""
+    if not config.WATER_REMINDERS_ENABLED:
+        return SET_REMINDER_TOOL
+    tool = copy.deepcopy(SET_REMINDER_TOOL)
+    tool["description"] += (
+        " For a STANDING every-few-hours ask — water / hydration is the canonical one ('remind me "
+        "to drink water', 'keep me on my water') — pass `every_hours` (2–3 for water) and NO `time`: "
+        "code pings them every N hours between their wake and sleep, every day, and stops when "
+        "they cancel it. Never set a one-off or a fixed daily time for a hydration ask."
+    )
+    tool["input_schema"]["properties"]["every_hours"] = {
+        "type": "integer",
+        "description": "standing interval in hours (1–12), e.g. 2 for water; omit for a timed reminder",
+    }
+    tool["input_schema"]["properties"]["time"]["description"] = \
+        "local time 'HH:MM' (24h); omit when every_hours is given"
+    tool["input_schema"]["required"] = ["text"]
+    return tool
+
+
+SET_CHECKIN_LEVEL_TOOL = {
+    "name": "set_checkin_level",
+    "description": (
+        "They told you how much to text them proactively — 'text me more', 'check in on me more', "
+        "'chill with the texts', 'too many messages', 'back to normal'. Set it here so CODE enforces "
+        "it (the daily cap and which check-ins run); never just say ok. 'more' = up to 8 proactive "
+        "texts/day with morning/evening/meal check-ins; 'less' = at most 2/day, only what matters "
+        "(training gaps, open threads, real wins); 'normal' = the default. Explicit asks only."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"level": {"type": "string", "enum": ["more", "normal", "less"]}},
+        "required": ["level"],
+    },
+}
+
+
+def handle_set_checkin_level(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from heartbeat import CHECKIN_LEVELS, _max_per_day, _checkin_level
+    level = str((tool_input or {}).get("level") or "").strip().lower()
+    if level not in CHECKIN_LEVELS:
+        return f"error: level must be one of {', '.join(CHECKIN_LEVELS)}, got {level!r}"
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        was = _checkin_level(user)
+        user.checkin_level = level
+        session.commit()
+        cap = _max_per_day(user)
+    finally:
+        session.close()
+    logger.info("SET_CHECKIN_LEVEL user=%s level=%s was=%s cap=%s", user_id, level, was, cap)
+    effect = {"more": "morning/evening/meal check-ins on",
+              "less": "no meal-gap/morning/evening check-ins, only what matters",
+              "normal": "the default rhythm"}[level]
+    return (f"ok: check-in level {level} (was {was}) — code now caps proactive texts at {cap}/day, "
+            f"{effect}. Say it plainly in one line; don't promise anything beyond that.")
+
+
 SAVE_ROUTINE_TOOL = {
     "name": "save_routine",
     "description": (
@@ -990,7 +1057,8 @@ CANCEL_REMINDER_TOOL = {
 def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from reminders import create_reminder, describe, _tz
     r = create_reminder(user_id, tool_input.get("text"), tool_input.get("time"),
-                        days=tool_input.get("days"), date_str=tool_input.get("date"), source="model")
+                        days=tool_input.get("days"), date_str=tool_input.get("date"), source="model",
+                        every_hours=tool_input.get("every_hours"))
     if "error" in r:
         return f"error: {r['error']}"
     session = get_session()
@@ -998,7 +1066,7 @@ def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> s
         from models import Reminder
         row = session.get(Reminder, r["id"])
         user = session.get(User, user_id)
-        return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None))}"
+        return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None), user)}"
     finally:
         session.close()
 
@@ -1933,6 +2001,7 @@ _HANDLERS = {
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
     "log_event": handle_log_event,
     "set_reminder": handle_set_reminder,
+    "set_checkin_level": handle_set_checkin_level,
     "save_routine": handle_save_routine,
     "cancel_reminder": handle_cancel_reminder,
     "get_dining_menu": handle_get_dining_menu,

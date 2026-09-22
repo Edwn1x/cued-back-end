@@ -102,6 +102,9 @@ class User(Base):
     # awaiting their confirm (a second "STOP." opts out; "pause" pauses; anything else stays).
     opted_out = Column(Boolean, default=False)
     pending_optout_confirm = Column(Boolean, default=False)
+    # Daily rhythm: how much proactive contact they asked for (set_checkin_level).
+    # 'more' | 'normal' | 'less'; null = normal. Read by heartbeat._checkin_level.
+    checkin_level = Column(String(10), default=None)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
@@ -1019,6 +1022,11 @@ class Reminder(Base):
     last_sent_at = Column(DateTime, default=None)
     sent_count = Column(Integer, default=0)
     cancelled_at = Column(DateTime, default=None)
+    # Interval recurrence (water): every N hours between window_start and window_end
+    # ('HH:MM' local; null = the user's wake/sleep, resolved at fire time), every day.
+    every_hours = Column(Integer, default=None)
+    window_start = Column(String(5), default=None)
+    window_end = Column(String(5), default=None)
 
 
 def init_db():

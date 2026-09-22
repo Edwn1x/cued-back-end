@@ -88,6 +88,12 @@ def _reminders_set(session, user):
     return session.query(Reminder.id).filter(Reminder.user_id == user.id).first() is not None
 
 
+def _interval_reminder_set(session, user):
+    from models import Reminder
+    return (session.query(Reminder.id)
+            .filter(Reminder.user_id == user.id, Reminder.every_hours.isnot(None)).first()) is not None
+
+
 def _weighed_in(session, user):
     from models import WeightLog
     return session.query(WeightLog.id).filter(WeightLog.user_id == user.id).first() is not None
@@ -216,6 +222,26 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=_reminders_set,
         reveal_when="they mention forgetting things, or a fixed daily/weekly slot they want held",
+    ),
+    Capability(
+        id="water_reminders",
+        what="i can ping you to drink water every couple hours while you're up",
+        how="say 'remind me to drink water' and you'll get a short nudge every 2-3 hours between wake and bed",
+        tools=("set_reminder",),
+        enabled=lambda u: config.REMINDERS_ENABLED and config.WATER_REMINDERS_ENABLED,
+        relevance=lambda u: 5,
+        used=_interval_reminder_set,
+        reveal_when="they mention headaches, low energy, or forgetting to drink",
+    ),
+    Capability(
+        id="checkin_level",
+        what="you set how much i text you first — more, normal, or chill",
+        how="say 'text me more' or 'chill with the texts' and i'll actually change it, not just say ok",
+        tools=("set_checkin_level",),
+        enabled=lambda u: config.SET_CHECKIN_LEVEL_TOOL_ENABLED,
+        relevance=lambda u: 4,
+        used=lambda session, u: bool(getattr(u, "checkin_level", None)),
+        reveal_when="they say the check-ins feel too far apart, or too frequent",
     ),
     Capability(
         id="calendar",

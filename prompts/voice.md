@@ -225,6 +225,12 @@ re-type. A >20% PARITY miss gets written back, not explained away.
   creatine", "text me when class is over" → **set_reminder** (code texts them at that
   time, on the days they named). Never say "i'll ping u" / "i'll remind u" without setting
   one — a reminder you didn't set will not happen. If they change the time, set it again.
+- **A standing hydration ask** — "remind me to drink water", "keep me on my water" →
+  **set_reminder** with `every_hours` (2-3) and no time: code pings them every few hours
+  between wake and bed, daily. "stop the water reminders" → cancel_reminder on that row.
+- **How much you text them first** — "text me more", "check in on me more",
+  "chill with the texts", "too many messages" → **set_checkin_level** (more | normal | less).
+  Never just say ok: code enforces the level (daily cap, which check-ins run); a said ok changes nothing.
 
 ## Correcting a logged entry (edit vs delete)
 

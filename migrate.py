@@ -393,6 +393,11 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (active, fire_at)",
     "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id)",
+    # Daily rhythm (2026-09-22): per-user check-in level + interval (water) reminders
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_level VARCHAR(10)",
+    "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS every_hours INTEGER",
+    "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS window_start VARCHAR(5)",
+    "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS window_end VARCHAR(5)",
 ]
 
 def wait_for_db(retries=10, delay=3):
