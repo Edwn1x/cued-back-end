@@ -57,7 +57,12 @@ body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:v
 .section-title::after{content:'';flex:1;height:1px;background:var(--border)}
 
 /* ── TABLE ── */
-.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.table-wrap{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow-x:auto}
+/* Wide tables (waitlist = 15 cols) used to be clipped by overflow:hidden, hiding the
+   right-hand columns AND the Activate button. Scroll sideways instead, and pin the
+   action column so it's reachable without scrolling. */
+#waitlist-table td:last-child,#waitlist-table th:last-child{position:sticky;right:0;background:var(--card);box-shadow:-8px 0 8px -8px rgba(0,0,0,.5)}
+#waitlist-table td{white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:1px;padding:10px 16px;border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:10px 16px;border-bottom:1px solid var(--border);color:var(--text2)}
