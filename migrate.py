@@ -245,6 +245,9 @@ MIGRATIONS = [
     # Per-user nutrition-day rollover hour (local). 0 = midnight default; shifted only
     # when a user explicitly asks (set_day_reset). timefmt.local_day_bounds reads it.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS day_reset_hour INTEGER DEFAULT 0",
+    # STOP opt-out (iMessage): unsubscribed state + pending-confirmation flag. See optout.py.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_optout_confirm BOOLEAN DEFAULT FALSE",
     """CREATE TABLE IF NOT EXISTS target_adjustments (
         id SERIAL PRIMARY KEY,
         user_id INTEGER NOT NULL REFERENCES users(id),

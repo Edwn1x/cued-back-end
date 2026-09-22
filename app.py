@@ -1344,6 +1344,14 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         logger.info("WAITLIST_INBOUND_HELD user=%s channel=%s replied=%s", user.id, channel, not held_before)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
+    # STOP opt-out flow (deterministic, flag-gated). Exact "STOP."/"UNSUBSCRIBE." (caps +
+    # period) → a confirmation; a second "STOP." opts out; "pause" pauses; ANY inbound
+    # resumes an opted-out user. Terminal (no further processing) when it sent a
+    # confirmation, opted them out, or paused; otherwise falls through to the coach.
+    from optout import handle_optout_flow
+    if handle_optout_flow(session, user, body, message_id=message_sid, channel=channel):
+        return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
     # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
     # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
     # buffer). Closes a pre-existing prod hole where goodnight messages

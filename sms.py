@@ -225,6 +225,16 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     See sms_encoding.py for the character map and why we don't rely solely
     on Twilio's server-side Smart Encoding toggle.
     """
+    # Opt-out backstop: an opted-out user gets NO sends (proactive or reactive). The
+    # opt-out goodbye is sent BEFORE the flag flips, so it isn't blocked here. Flag-gated,
+    # so this is a zero-cost no-op until STOP_OPTOUT_ENABLED. (An opted-out user's own
+    # inbound resumes them before the coach ever replies; this catches stray proactive sends.)
+    if user_id and config.STOP_OPTOUT_ENABLED:
+        from optout import is_opted_out
+        if is_opted_out(user_id):
+            logger.info("SEND_SUPPRESSED_OPTED_OUT user=%s type=%s", user_id, message_type)
+            return None
+
     # Photon migration 4A: route first. iMessage → sidecar, one call, full body.
     # On ANY failure: write the `failed` row FIRST (the keystone reads it), trip
     # the breaker, then fall through to Twilio so the same message still lands.
