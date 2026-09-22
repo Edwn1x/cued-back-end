@@ -64,6 +64,7 @@ class User(Base):
     calorie_target_computed = Column(Integer, default=None)
     protein_target_computed = Column(Integer, default=None)
     targets_source = Column(String(16), default=None)  # 'computed' | 'user' | 'adaptive'
+    reported_maintenance = Column(Integer, default=None)  # a maintenance/TDEE they brought from their own tracking (macro_calculator.apply_target_override); centres the calorie band + seeds the adaptive cycle
     weigh_in_opt_out = Column(Boolean, default=False)   # "i don't own a scale" — never nudge
     queue_opt_in = Column(Boolean, default=False)        # §2.7: let the coach join the RSF line for them
     location_opt_out = Column(Boolean, default=False)    # §3.5: 'stop asking' for location pins

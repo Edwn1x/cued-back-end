@@ -130,8 +130,10 @@ def evaluate(user, session, now: datetime | None = None) -> dict:
     base["est_expenditure"] = est
 
     # ── current maintenance (what the goal rule was applied to) ──
+    # A maintenance they reported from their own tracking (users.reported_maintenance,
+    # bounded on the way in) is the better prior than the equation when present.
     computed = calculate_targets(user)
-    cur_maint = int(computed["tdee"])
+    cur_maint = int(getattr(user, "reported_maintenance", None) or computed["tdee"])
     new_maint = int(round(DAMP * est + (1 - DAMP) * cur_maint))
     proposed = apply_goal(new_maint, user.goal or "")["calories"]
 

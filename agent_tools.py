@@ -314,13 +314,19 @@ SET_TARGETS_TOOL = {
         "of inventing a number. Use it when they say things like 'can we do 2200' or 'bump "
         "protein to 150'; never to move a target on your own initiative. The stored target "
         "becomes their pick (logged as user-chosen); say so plainly and note what you'd have "
-        "set. Returns 'ok: …' or 'error: …' — only claim a change after 'ok'."
+        "set. If they cite a MAINTENANCE number from their own tracking ('my app says i "
+        "maintain at 2200', 'my tdee is like 2.1k'), pass it as `maintenance` — within reason "
+        "of the computed estimate, code stores it and centres the calorie band on it, so a "
+        "target that follows from THEIR maintenance is allowed even when it's outside the band "
+        "around ours. Returns 'ok: …' or 'error: …' — only claim a change after 'ok'."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "calories": {"type": "integer", "description": "requested daily calories"},
             "protein_g": {"type": "integer", "description": "requested daily protein in grams"},
+            "maintenance": {"type": "integer",
+                            "description": "the daily maintenance/TDEE they report from their app or prior tracking, when they cite one"},
             "reason": {"type": "string", "description": "their words for why, in brief"},
         },
         "required": [],
@@ -332,12 +338,25 @@ def handle_set_targets(user_id: int, tool_input: dict, *, message_id=None) -> st
     from macro_calculator import apply_target_override
     cal = tool_input.get("calories")
     pro = tool_input.get("protein_g")
-    if cal is None and pro is None:
-        return "error: give calories and/or protein_g"
-    r = apply_target_override(user_id, calories=cal, protein=pro, note=tool_input.get("reason"))
+    maint = tool_input.get("maintenance")
+    if cal is None and pro is None and maint is None:
+        return "error: give calories, protein_g, and/or maintenance"
+    r = apply_target_override(user_id, calories=cal, protein=pro, note=tool_input.get("reason"),
+                              maintenance=maint)
     if "error" in r:
         return f"error: {r['error']}"
     parts = []
+    m = r.get("maintenance")
+    if m:
+        if m.get("accepted"):
+            parts.append(f"ok: noted their maintenance {m['reported']} (computed estimate was "
+                         f"{m['computed_tdee']}); calorie band now centres on {m['basis_calories']}")
+        elif "min" in m:
+            parts.append(f"error: maintenance {m['reported']} is too far from the computed estimate "
+                         f"{m['computed_tdee']} (accept {m['min']}–{m['max']}); say the estimate is "
+                         f"what you have to go on and don't store theirs")
+        else:
+            parts.append("error: maintenance must be a number")
     if r["accepted"]:
         got = ", ".join(f"{k} {v}" for k, v in r["accepted"].items())
         parts.append(f"ok: set {got} (their pick; computed was {r['computed']['calories']} cal / "

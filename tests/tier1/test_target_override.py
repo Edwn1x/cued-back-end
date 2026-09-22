@@ -82,7 +82,7 @@ def test_set_targets_tool_result_strings(db):
     out2 = dispatch_tool("set_targets", {"calories": 1500}, user.id)
     assert out2.startswith("error: calories 1500 is outside the 15% band — nearest allowed 2080–2820"), out2
     assert "current: 2200 cal / 150g" in out2
-    assert handle_set_targets(user.id, {}) == "error: give calories and/or protein_g"
+    assert handle_set_targets(user.id, {}) == "error: give calories, protein_g, and/or maintenance"
 
 
 def test_set_targets_tool_is_offered_to_the_loop(db, monkeypatch):
