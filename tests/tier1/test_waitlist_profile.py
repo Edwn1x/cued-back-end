@@ -362,3 +362,37 @@ def test_admin_waitlist_tab_shows_profile_and_channel_state(db, client):
     html = r.get_data(as_text=True)
     for s in ("Opted", "Linked", "Green", "Bare", "iMessage ✓", "link sent", "fat_loss, strength", "intermediate", "full_gym"):
         assert s in html, s
+
+
+# ─── §2.9 admin remove: drop a pending waitlister for good, never an active user ──
+
+def test_remove_pending_waitlister_deletes_row_and_held_messages(db, client, sms_capture):
+    from models import User, Message
+    user = _pending(db, phone="+15105550361", name="Spammy", preferred_channel="imessage", photon_user_id="ph-61")
+    # the holding line a pending texter gets is the one child row a waitlister realistically has
+    db.add(Message(user_id=user.id, direction="out", body="hold", message_type="waitlist_hold"))
+    db.commit()
+    r = client.post(f"/admin/user/{user.id}/remove-waitlist")
+    assert r.status_code == 200 and r.get_json()["status"] == "ok"
+    uid = user.id
+    db.expunge_all()   # the deleted row is still in this session's identity map
+    assert db.query(User).filter(User.id == uid).count() == 0
+    assert db.query(Message).filter(Message.user_id == uid).count() == 0
+    assert sms_capture == []   # removal is silent
+
+
+def test_remove_refuses_a_user_who_is_not_pending(db, client):
+    from models import User
+    from tests.factories import make_user
+    active = make_user(db, phone="+15105550362", name="Real")
+    r = client.post(f"/admin/user/{active.id}/remove-waitlist")
+    assert r.status_code == 400 and "not on the waitlist" in r.get_json()["message"]
+    db.expire_all()
+    assert db.get(User, active.id) is not None
+    assert client.post("/admin/user/999999/remove-waitlist").status_code == 404
+
+
+def test_admin_waitlist_tab_offers_remove_next_to_activate(db, client):
+    user = _pending(db, phone="+15105550363", name="Undecided")
+    html = client.get("/admin").get_data(as_text=True)
+    assert f"removeWaitlist({user.id}" in html and f"activateWaitlist({user.id}" in html
