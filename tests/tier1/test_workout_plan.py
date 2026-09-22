@@ -72,7 +72,7 @@ def test_plan_accepts_aliases_and_rejects_unknown(db):
     assert build_session(user, "Full Body").template_key == "full_body"
     assert build_session(user, "chest_back").template_key == "upper"
     with pytest.raises(ValueError):
-        build_session(user, "arms day")
+        build_session(user, "tuesday")
 
 
 def test_plan_progresses_when_every_rep_was_hit_and_holds_when_not(db):

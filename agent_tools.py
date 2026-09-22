@@ -147,7 +147,7 @@ LOG_WORKOUT_TOOL = {
         "type": "object",
         "properties": {
             "split_day": {"type": "string",
-                          "description": "ONLY the day the user literally named: push/pull/legs/upper/lower/full_body. Omit if they didn't. Never for cardio."},
+                          "description": "ONLY the day the user literally named: push/pull/legs/upper/lower/full_body, or one of their own body-part days from SPLIT in your context (chest_biceps, back_triceps, legs_shoulders, chest, arms …). Omit if they didn't. Never for cardio."},
             "cardio": {"type": "boolean",
                        "description": "true for a run/bike/swim/walk/hike/sport session. Recorded as cardio; the split pointer is untouched."},
             "date": {"type": "string",
@@ -278,8 +278,10 @@ START_WORKOUT_SESSION_TOOL = {
         "Start today's session for the user: 'starting push', 'about to lift', 'gym time', "
         "'send me today's workout'. Code builds the plan from their history and sends it — "
         "on iMessage one short text plus a card they tap as they go; on SMS one message per "
-        "exercise they 👍. Pass template_key only when THEY named the day (push/pull/legs/"
-        "upper/lower/full_body); otherwise omit it and code picks the next day of their split. "
+        "exercise they 👍. Pass template_key only when THEY named the day — one of the day keys "
+        "listed under SPLIT in your context (push/pull/legs/upper/lower/full_body, or a body-part "
+        "day like chest_biceps / back_triceps / legs_shoulders / chest / arms); otherwise omit it "
+        "and code picks the next day of their split. "
         "After 'ok', reply with exactly [silent] — the text and the card already went out; "
         "never add a per-set prompt or a second intro. On 'error' tell them plainly."
     ),
@@ -809,16 +811,23 @@ SET_REMINDER_TOOL = {
 SAVE_ROUTINE_TOOL = {
     "name": "save_routine",
     "description": (
-        "They pasted or described THEIR OWN routine — a program with days and exercises "
-        "(\"Mon push: incline db press 3x10, shoulder press 3x10 …\"). Save it so their "
-        "workout cards show THEIR exercises, not the default template. Pass the routine "
-        "text as they gave it (all days at once). Days they didn't give keep the default. "
-        "Card weights start as placeholders and update from their first logged sets — say "
-        "so. Not for a single session they just did (that's log_workout)."
+        "They pasted or described THEIR OWN routine. Two forms: (1) a program with days AND "
+        "exercises (\"Mon push: incline db press 3x10, shoulder press 3x10 …\") → pass "
+        "routine_text as they gave it (all days at once) and their cards show THEIR exercises; "
+        "(2) just how they group their days (\"chest and bis, back and tris, legs and "
+        "shoulders\", \"push pull legs\", \"chest, back, shoulders, arms, legs\") → pass "
+        "split_days, one entry per day IN THEIR ORDER, in their words. Code turns each into "
+        "a day key and their cards follow that cycle. Do this the moment they state their "
+        "split — a split that isn't saved gets them the wrong card. Days they didn't give "
+        "exercises for use the default template for that body part. Card weights start as "
+        "placeholders and update from their first logged sets — say so when you saved "
+        "exercises. Not for a single session they just did (that's log_workout)."
     ),
     "input_schema": {"type": "object", "properties": {
-        "routine_text": {"type": "string", "description": "the routine as written, all days"}},
-        "required": ["routine_text"]},
+        "routine_text": {"type": "string", "description": "the routine as written, all days (form 1)"},
+        "split_days": {"type": "array", "items": {"type": "string"},
+                       "description": "their days in order, each in their words: [\"chest and biceps\", \"back and triceps\", \"legs and shoulders\"] (form 2)"}},
+        "required": []},
 }
 
 CANCEL_REMINDER_TOOL = {
@@ -846,10 +855,18 @@ def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> s
 
 
 def handle_save_routine(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    from workouts.routine import save_routine
+    from workouts.routine import save_routine, save_split_days
+    from workouts.templates import day_label
     text = (tool_input.get("routine_text") or "").strip()
+    days_in = tool_input.get("split_days")
+    if isinstance(days_in, list) and days_in and not text:
+        r = save_split_days(user_id, [str(d) for d in days_in], source="model")
+        if "error" in r:
+            return f"error: {r['error']}"
+        return (f"ok: split saved — " + " → ".join(day_label(d) for d in r["days"])
+                + f" (day keys: {', '.join(r['days'])}). start_workout_session now walks this order.")
     if len(text) < 20:
-        return "error: routine_text required (the whole routine as they gave it)"
+        return "error: pass routine_text (the whole routine as they gave it) or split_days (their days in order)"
     r = save_routine(user_id, text, source="model")
     if "error" in r:
         return f"error: {r['error']}"

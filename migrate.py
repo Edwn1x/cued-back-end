@@ -369,6 +369,8 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200)",
     # Per-user routine override for the workout card (user 42's pasted PPL, 2026-09-22)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_templates JSON",
+    # The user's own split days, in order (user 43's stated bro split, 2026-09-22)
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS split_days JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS reported_maintenance INTEGER",
     # Reminders: explicit "remind me" promises fired by code at the named local time (2026-09-22)
     """CREATE TABLE IF NOT EXISTS reminders (

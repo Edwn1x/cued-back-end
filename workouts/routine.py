@@ -22,8 +22,10 @@ import logging
 import re
 
 import config
+from sqlalchemy.orm.attributes import flag_modified
+
 from models import User, get_session
-from workouts.templates import TEMPLATES, custom_templates_for, normalize_template_key
+from workouts.templates import TEMPLATES, PART_TEMPLATES, custom_templates_for, normalize_template_key, day_key_from_phrase, parse_day_list
 
 logger = logging.getLogger("cued.routine")
 
@@ -49,7 +51,8 @@ Routine text:
 \"\"\"{text}\"\"\"
 
 Rules:
-- Split each day's exercises under one of these keys ONLY: push, pull, legs, upper, lower, full_body. Map headings like "Mon/Push (chest and shoulders)" → push, "Tue/pull" → pull, "Wed/Legs" → legs, "chest day" → push, "back day" → pull. Days that fit none of these keys are dropped.
+- Split each day's exercises under a day key. Use one of push, pull, legs, upper, lower, full_body when the heading names it ("Mon/Push (chest and shoulders)" → push, "Tue/pull" → pull, "Wed/Legs" → legs). When the heading is BODY PARTS instead (a bro split: "chest and biceps", "back/tris", "shoulders", "arms"), join the part names with underscores in the order written using ONLY these part words: chest, back, shoulders, biceps, triceps, arms, legs, core — e.g. "chest_biceps", "back_triceps", "legs_shoulders", "chest", "arms". Never turn body parts into push/pull. Days that fit neither form are dropped.
+- Keep the days in the ORDER they were written.
 - If the same key appears twice (a high-volume and a low-volume week), keep the FIRST occurrence.
 - For each exercise: name (as written, cleaned), sets (int), reps (int; for a range like "8-10" use the low end; for a time like "1 min" or "3 min song" give seconds as reps and set "timed": true), and "bodyweight": true for pull ups, planks, dead hangs, dips, push ups, hanging/ab work with no load, forearm squeezes.
 - Ignore warm-up notes, "(goal x10)", "+ (warmup)", runs, swims, and "rest day" lines.
@@ -137,7 +140,7 @@ def _slugify(name: str) -> str:
 
 
 def _global_default(slug: str):
-    for exs in TEMPLATES.values():
+    for exs in (*TEMPLATES.values(), *PART_TEMPLATES.values()):
         for e in exs:
             if e.slug == slug:
                 return e.default_weight, e.plate_step
@@ -176,13 +179,16 @@ def _row(ex: dict) -> dict | None:
             "default_weight": weight, "plate_step": step}
 
 
-def _split_for(keys: set) -> str | None:
+def _split_for(keys) -> str | None:
+    keys = set(keys)
     if {"push", "pull", "legs"} <= keys:
         return "ppl"
     if {"upper", "lower"} <= keys:
         return "upper_lower"
     if "full_body" in keys:
         return "full_body"
+    if keys and all(k not in TEMPLATES for k in keys):
+        return "bro_split"          # every day is a body-part day
     return "custom" if keys else None
 
 
@@ -242,17 +248,77 @@ def save_routine(user_id: int, text: str, *, source: str) -> dict:
         if not valid:
             return {"error": "no valid days"}
         user.custom_templates = {k: merged[k] for k in valid}
-        from sqlalchemy.orm.attributes import flag_modified
         flag_modified(user, "custom_templates")
-        split = _split_for(set(user.custom_templates))
+        split = _split_for(user.custom_templates)
         if split and (user.current_split in (None, "", "none", "custom")):
             user.current_split = split
+        # The pasted days are the cycle when they gave ≥2 and hadn't stated one already.
+        parsed_keys = [k for k in parsed if k in user.custom_templates]
+        if len(parsed_keys) >= 2 and not (user.split_days or []):
+            user.split_days = parsed_keys
+            flag_modified(user, "split_days")
         session.commit()
         summary = {k: len(v) for k, v in valid.items()}
-        logger.info("ROUTINE_SAVED user=%s source=%s days=%s split=%s", user_id, source, summary, user.current_split)
+        logger.info("ROUTINE_SAVED user=%s source=%s days=%s split=%s cycle=%s",
+                    user_id, source, summary, user.current_split, user.split_days)
         return {"days": summary, "split": user.current_split}
     finally:
         session.close()
+
+
+def split_days_from_phrases(phrases: list[str]) -> list[str] | None:
+    """Model- or extractor-given day phrases (one per day, in order) → day keys, or
+    None if any phrase isn't a day. Code owns the mapping; the model owns the
+    segmentation."""
+    keys: list[str] = []
+    for ph in phrases or []:
+        k = day_key_from_phrase(str(ph)) if isinstance(ph, str) else None
+        if not k:
+            return None
+        keys.append(k)
+    return keys if len(keys) >= 2 else None
+
+
+def save_split_days(user_id: int, days: list[str], *, source: str) -> dict:
+    """Store the user's own day cycle (users.split_days). `days` are phrases in the
+    user's words ("chest and bis") or day keys; each must map. Also labels the split
+    when it's unknown. Returns {"days": [keys], "split": ...} or {"error": ...}."""
+    keys = split_days_from_phrases(days)
+    if not keys:
+        return {"error": "couldn't read those as split days — each needs to be body parts "
+                         "(chest, back, shoulders, biceps, triceps, arms, legs, core) or "
+                         "push/pull/legs/upper/lower/full body, at least two days"}
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return {"error": "user not found"}
+        user.split_days = keys
+        flag_modified(user, "split_days")
+        split = _split_for(keys)
+        if split and (user.current_split in (None, "", "none", "custom")):
+            user.current_split = split
+        # A pointer on a day outside the new cycle can't advance; clear it so the
+        # next card is unambiguous (day one of their order).
+        if user.split_pointer_day and user.split_pointer_day not in keys:
+            user.split_pointer_day = None
+            user.split_pointer_at = None
+            user.split_pointer_source = None
+        session.commit()
+        logger.info("SPLIT_DAYS_SAVED user=%s source=%s days=%s split=%s", user_id, source, keys, user.current_split)
+        return {"days": keys, "split": user.current_split}
+    finally:
+        session.close()
+
+
+def maybe_capture_split_days(user_id: int, text: str, *, source: str) -> dict | None:
+    """Code trigger for surfaces without tools (onboarding): a message that IS a day
+    list ("chest and biceps, back and triceps, legs and shoulders") becomes the
+    user's split. Precision-biased — anything else returns None untouched."""
+    keys = parse_day_list(text)
+    if not keys:
+        return None
+    return save_split_days(user_id, keys, source=source)
 
 
 def describe_routine(custom_templates: dict | None) -> str | None:
@@ -264,8 +330,9 @@ def describe_routine(custom_templates: dict | None) -> str | None:
     if not valid:
         return None
     lines = []
-    for k in ("push", "pull", "legs", "upper", "lower", "full_body"):
-        if k in valid:
-            names = ", ".join(e.label for e in valid[k][:3])
-            lines.append(f"{k}: {len(valid[k])} exercises ({names}{', …' if len(valid[k]) > 3 else ''})")
+    order = [k for k in ("push", "pull", "legs", "upper", "lower", "full_body") if k in valid]
+    order += [k for k in valid if k not in order]          # body-part days, in the order given
+    for k in order:
+        names = ", ".join(e.label for e in valid[k][:3])
+        lines.append(f"{k}: {len(valid[k])} exercises ({names}{', …' if len(valid[k]) > 3 else ''})")
     return "\n".join(lines)

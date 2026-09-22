@@ -16,25 +16,31 @@ import logging
 from models import get_session, User, WorkoutSession, SetLog
 from sms import send_sms, _resolve_channel
 from workouts.plan import build_session
-from workouts.templates import normalize_template_key, TEMPLATES
+from workouts.templates import normalize_template_key, TEMPLATES, day_label
 from workouts.session_ops import active_session_id
 
 logger = logging.getLogger("cued.workouts")
 
 
-def infer_template(user) -> str:
+NO_SPLIT = {None, "", "none"}
+
+
+def infer_template(user) -> str | None:
     """Named day → itself. Else the day AFTER the split pointer in the user's cycle;
-    no pointer → the cycle's first day; no cycle → full_body."""
-    from split_pointer import SPLIT_CYCLES, _normalize_system
-    cycle = SPLIT_CYCLES.get(_normalize_system(user.current_split or user.confirmed_training_split or "")) or []
+    no pointer → the cycle's first day. No split at all (never trained / asked us to
+    build one) → full_body, the starting program. A split we can't map (a "custom"
+    routine with no days, an unknown label) → None: the caller tells the model, who
+    asks what days they run. Live 2026-09-22 (user 43): a stated bro split silently
+    became a full-body card."""
+    from split_pointer import cycle_for
+    cycle = [k for k in (normalize_template_key(d) for d in cycle_for(user)) if k]
     if not cycle:
-        return "full_body"
+        split = (user.current_split or user.confirmed_training_split or "").strip().lower()
+        return "full_body" if split in NO_SPLIT else None
     last = user.split_pointer_day
     if last in cycle:
-        nxt = cycle[(cycle.index(last) + 1) % len(cycle)]
-    else:
-        nxt = cycle[0]
-    return normalize_template_key(nxt) or "full_body"
+        return cycle[(cycle.index(last) + 1) % len(cycle)]
+    return cycle[0]
 
 
 def _fmt(w) -> str:
@@ -44,7 +50,7 @@ def _fmt(w) -> str:
 def intro_line(ws_state_exercises: list, key: str) -> str:
     lead = ws_state_exercises[0] if ws_state_exercises else None
     first = f"{len(lead['sets'])} sets {lead['label']}" if lead else key
-    return f"{key.replace('_', ' ')} day. {first}, then the usual. tap as you go — text me if a set goes different."
+    return f"{day_label(key)} day. {first}, then the usual. tap as you go — text me if a set goes different."
 
 
 def start_workout_session(user_id: int, template_key: str | None = None) -> dict:
@@ -60,7 +66,11 @@ def start_workout_session(user_id: int, template_key: str | None = None) -> dict
             raise ValueError(f"a session is already open (#{open_id}) — finish or abandon it first")
         key = normalize_template_key(template_key) if template_key else infer_template(user)
         if not key:
-            raise ValueError(f"unknown template {template_key!r}")
+            if template_key:
+                raise ValueError(f"unknown template {template_key!r}")
+            raise ValueError("their split isn't mapped to days yet — ask which days they run "
+                             "(e.g. chest+bis / back+tris / legs+shoulders) and save it with "
+                             "save_routine(split_days=[...]), or have them name today's day")
         phone = user.phone
     finally:
         session.close()

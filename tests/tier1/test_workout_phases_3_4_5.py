@@ -167,7 +167,7 @@ def test_start_session_card_refused_falls_to_exercise_messages(db, imessage_on, 
 def test_start_tool_result_tells_the_model_to_stay_silent(db, imessage_on, sidecar_ok, card_ok):
     from agent_tools import dispatch_tool
     user = make_user(db, preferred_channel="imessage", **FOUNDER)
-    assert dispatch_tool("start_workout_session", {"template_key": "arms"}, user.id).startswith("error: unknown template")
+    assert dispatch_tool("start_workout_session", {"template_key": "tuesday"}, user.id).startswith("error: unknown template")
     out = dispatch_tool("start_workout_session", {}, user.id)
     assert out.startswith("ok: legs session #") and "sent as a card (16 sets)" in out and out.endswith("Reply with exactly [silent].")
     assert dispatch_tool("start_workout_session", {}, user.id).startswith("error: a session is already open")

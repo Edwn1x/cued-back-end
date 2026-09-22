@@ -7,6 +7,7 @@ upper-body lifts, 10 lb for lower-body barbell lifts.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -124,6 +125,176 @@ BODYWEIGHT_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
 BODYWEIGHT_EQUIPMENT = {"bodyweight", "none", "no_equipment"}
 
 
+# ── Body-part days (bro splits) ──────────────────────────────────────────────
+# Live 2026-09-22 (user 43): "chest and biceps, back and triceps, legs and shoulders"
+# was stored as current_split="bro_split" — a value the onboarding extractor is
+# allowed to write — and the card fell to full_body because nothing below the label
+# knew what a bro split is. A day here is COMPOSED from parts: "chest_biceps" is the
+# chest block then the biceps block, so any grouping a person names gets their card,
+# not a guess. Part order in the key is the user's; part names are canonical.
+PART_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
+    "chest": [
+        _ex("bench_press", "bench press", 4, 5, 135, 5),
+        _ex("incline_db_press", "incline db press", 3, 10, 40, 5),
+        _ex("cable_fly", "cable fly", 3, 12, 20, 5),
+        _ex("pec_deck", "pec deck", 3, 12, 60, 5),
+    ],
+    "back": [
+        _ex("barbell_row", "barbell row", 4, 8, 115, 5),
+        _ex("lat_pulldown", "lat pulldown", 3, 10, 100, 5),
+        _ex("seated_cable_row", "seated cable row", 3, 10, 80, 5),
+        _ex("face_pull", "face pull", 3, 15, 30, 5),
+    ],
+    "shoulders": [
+        _ex("overhead_press", "overhead press", 3, 8, 75, 5),
+        _ex("lateral_raise", "lateral raise", 3, 12, 10, 5),
+        _ex("rear_delt_fly", "rear delt fly", 3, 15, 15, 5),
+        _ex("front_raise", "front raise", 2, 12, 10, 5),
+    ],
+    "biceps": [
+        _ex("barbell_curl", "barbell curl", 3, 10, 45, 5),
+        _ex("hammer_curl", "hammer curl", 3, 10, 25, 5),
+        _ex("preacher_curl", "preacher curl", 2, 12, 40, 5),
+    ],
+    "triceps": [
+        _ex("tricep_pushdown", "tricep pushdown", 3, 12, 40, 5),
+        _ex("skullcrusher", "skullcrusher", 3, 10, 40, 5),
+        _ex("overhead_tricep_extension", "overhead tricep extension", 2, 12, 30, 5),
+    ],
+    "legs": [
+        _ex("squat", "squat", 4, 5, 155, 10),
+        _ex("romanian_deadlift", "romanian deadlift", 3, 8, 135, 10),
+        _ex("leg_press", "leg press", 3, 10, 180, 10),
+        _ex("leg_curl", "leg curl", 3, 12, 70, 5),
+        _ex("calf_raise", "calf raise", 3, 15, 90, 10),
+    ],
+}
+# "arms" is biceps + triceps; "core" rides along as a short finisher.
+PART_TEMPLATES["arms"] = PART_TEMPLATES["biceps"][:2] + PART_TEMPLATES["triceps"][:2]
+PART_TEMPLATES["core"] = [_bw("plank", "plank (sec)", 3, 30, 10), _bw("hanging_leg_raise", "hanging leg raise", 3, 10)]
+
+BODYWEIGHT_PART_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
+    "chest": [_bw("pushup", "pushup", 4, 10), _bw("diamond_pushup", "diamond pushup", 3, 8), _bw("chair_dip", "chair dip", 3, 10)],
+    "back": [_bw("inverted_row", "inverted row (table or towel)", 4, 10), _bw("superman", "superman", 3, 12),
+             _bw("reverse_snow_angel", "reverse snow angel", 3, 12)],
+    "shoulders": [_bw("pike_pushup", "pike pushup", 3, 8), _bw("reverse_snow_angel", "reverse snow angel", 3, 12),
+                  _bw("wall_handstand_hold", "wall handstand hold (sec)", 3, 20, 10)],
+    "biceps": [_bw("underhand_inverted_row", "underhand inverted row", 3, 10), _bw("towel_curl", "towel curl", 3, 12)],
+    "triceps": [_bw("diamond_pushup", "diamond pushup", 3, 8), _bw("chair_dip", "chair dip", 3, 10)],
+    "legs": BODYWEIGHT_TEMPLATES["legs"],
+    "core": [_bw("plank", "plank (sec)", 3, 30, 10), _bw("lying_leg_raise", "lying leg raise", 3, 12)],
+}
+BODYWEIGHT_PART_TEMPLATES["arms"] = BODYWEIGHT_PART_TEMPLATES["biceps"][:1] + BODYWEIGHT_PART_TEMPLATES["triceps"]
+
+# How people say the parts. Longest match first at parse time.
+PART_ALIASES: dict[str, str] = {
+    "chest": "chest", "pecs": "chest", "pec": "chest",
+    "back": "back", "lats": "back",
+    "shoulders": "shoulders", "shoulder": "shoulders", "delts": "shoulders", "delt": "shoulders",
+    "biceps": "biceps", "bicep": "biceps", "bis": "biceps", "bi": "biceps",
+    "triceps": "triceps", "tricep": "triceps", "tris": "triceps", "tri": "triceps",
+    "arms": "arms", "arm": "arms",
+    "legs": "legs", "leg": "legs", "quads": "legs", "hamstrings": "legs", "hams": "legs", "glutes": "legs",
+    "core": "core", "abs": "core", "ab": "core",
+}
+# Per-part cap when a day is composed of several: the first part is the day's focus.
+_COMPOSE_CAP = (4, 3, 2)
+
+
+def is_composed_key(key: str | None) -> bool:
+    """True for a body-part day ("chest_biceps", "arms"), False for a global key."""
+    return bool(key) and key not in TEMPLATES and all(p in PART_TEMPLATES for p in key.split("_"))
+
+
+def compose_day(key: str, *, bodyweight: bool = False) -> list[ExerciseTemplate]:
+    """A body-part day's exercises: each part's block in the key's order, capped so a
+    two-part day is ~7 movements, not 9. Duplicate slugs across parts are dropped."""
+    src = BODYWEIGHT_PART_TEMPLATES if bodyweight else PART_TEMPLATES
+    parts = key.split("_")
+    out: list[ExerciseTemplate] = []
+    seen: set[str] = set()
+    for i, part in enumerate(parts):
+        cap = _COMPOSE_CAP[min(i, len(_COMPOSE_CAP) - 1)] if len(parts) > 1 else 99
+        for t in src.get(part, [])[:cap]:
+            if t.slug not in seen:
+                seen.add(t.slug)
+                out.append(t)
+    return out
+
+
+def day_label(key: str | None) -> str:
+    """Human form of a day key for captions/intros: "chest + biceps", "push", "full body"."""
+    if not key:
+        return "workout"
+    if is_composed_key(key):
+        return " + ".join(key.split("_"))
+    return key.replace("_", " ")
+
+
+_PART_WORD_RE = re.compile(r"[a-z]+")
+# Day separators, strongest first. The strongest one present that yields ≥2 pieces
+# wins, so "chest/bis, back/tris, legs" splits on commas (slash joins parts) while
+# "push/pull/legs" splits on slashes.
+_SEP_LEVELS = (r"\n|;|\bthen\b|→|->", r",", r"/|\|")
+_LEAD_NOISE = {"and", "with", "plus", "day", "days", "n", "&", "i", "do", "run", "a", "my", "is", "the", "split"}
+
+
+def day_key_from_phrase(phrase: str) -> str | None:
+    """"chest and bis" → "chest_biceps"; "push" → "push"; junk → None. Global split
+    names win ("push", "full body"); otherwise every word must be a body part."""
+    words = _PART_WORD_RE.findall((phrase or "").lower())
+    words = [w for w in words if w not in _LEAD_NOISE]
+    if not words:
+        return None
+    joined = "_".join(words)
+    if joined in ALIASES or joined in TEMPLATES:
+        return normalize_template_key(joined)
+    parts: list[str] = []
+    for w in words:
+        p = PART_ALIASES.get(w)
+        if not p:
+            return None
+        if p not in parts:
+            parts.append(p)
+    return "_".join(parts)
+
+
+def parse_day_list(text: str) -> list[str] | None:
+    """A stated split — "chest and biceps, back and triceps, legs and shoulders",
+    "push/pull/legs", "chest, back, shoulders, arms, legs" — as an ordered list of
+    day keys, or None when any piece isn't a day (precision over recall: a wrong
+    cycle steers every card). Needs at least two days."""
+    if not text:
+        return None
+    pieces: list[str] = []
+    for sep in _SEP_LEVELS:
+        pieces = [p.strip() for p in re.split(sep, text, flags=re.IGNORECASE) if p and p.strip()]
+        if len(pieces) >= 2:
+            break
+    if len(pieces) < 2:
+        return None
+    days: list[str] = []
+    for piece in pieces:
+        k = day_key_from_phrase(piece)
+        if not k:
+            sub = parse_day_list(piece) if any(c in piece for c in ",/|") else None
+            if not sub:
+                return None
+            days.extend(sub)
+            continue
+        parts = k.split("_")
+        # "back and triceps and legs and shoulders" (live, user 43): four+ parts joined
+        # only by "and" are consecutive PAIRS, not one day. An odd run is ambiguous →
+        # not guessed.
+        if len(parts) >= 4 and piece.lower().count(" and ") >= len(parts) - 1:
+            if len(parts) % 2:
+                return None
+            days.extend("_".join(parts[i:i + 2]) for i in range(0, len(parts), 2))
+        else:
+            days.append(k)
+    return days if len(days) >= 2 else None
+
+
 def _custom_template(entry) -> ExerciseTemplate | None:
     """One row of users.custom_templates → ExerciseTemplate, or None if malformed.
     Slugs are canonicalized (lowercase, underscores) so set-text updates and PR
@@ -150,8 +321,9 @@ def _custom_template(entry) -> ExerciseTemplate | None:
 
 def custom_templates_for(user) -> dict[str, list[ExerciseTemplate]]:
     """The user's own routine days from users.custom_templates, validated. Only known
-    split keys (push/pull/legs/upper/lower/full_body) are honored; a day whose rows
-    are all malformed is dropped so the global template still covers it."""
+    day keys (push/pull/legs/upper/lower/full_body or a body-part day such as
+    chest_biceps) are honored; a day whose rows are all malformed is dropped so the
+    global template still covers it."""
     raw = getattr(user, "custom_templates", None)
     if not isinstance(raw, dict):
         return {}
@@ -182,6 +354,8 @@ def templates_for(user) -> dict[str, list[ExerciseTemplate]]:
 def _all_templates():
     yield from TEMPLATES.values()
     yield from BODYWEIGHT_TEMPLATES.values()
+    yield from PART_TEMPLATES.values()
+    yield from BODYWEIGHT_PART_TEMPLATES.values()
 
 
 # Aliases the split pointer / a user might use.
@@ -204,15 +378,44 @@ NAME_HINTS: list[tuple[str, str]] = [
     ("face", "face_pull"), ("curl", "barbell_curl"), ("leg curl", "leg_curl"),
     ("squat", "squat"), ("leg press", "leg_press"), ("calf", "calf_raise"),
     ("ohp", "overhead_press"), ("overhead", "overhead_press"), ("shoulder press", "overhead_press"),
+    # body-part day movements (PART_TEMPLATES) — longer hints beat "curl"/"overhead"/"row"
+    ("hammer", "hammer_curl"), ("preacher", "preacher_curl"), ("lateral", "lateral_raise"),
+    ("rear delt", "rear_delt_fly"), ("front raise", "front_raise"), ("skull", "skullcrusher"),
+    ("pec deck", "pec_deck"), ("seated row", "seated_cable_row"), ("cable row", "seated_cable_row"),
+    ("overhead tricep", "overhead_tricep_extension"), ("overhead extension", "overhead_tricep_extension"),
 ]
 
 
 def normalize_template_key(key: str | None) -> str | None:
+    """A global day ("push"), an alias ("fullbody"), or a body-part day whose parts
+    are all known ("chest_biceps", "chest+bis" → "chest_biceps"); else None."""
     if not key:
         return None
-    k = key.strip().lower().replace("-", "_").replace(" ", "_")
+    k = key.strip().lower().replace("-", "_").replace(" ", "_").replace("+", "_").replace("&", "_")
     k = ALIASES.get(k, k)
-    return k if k in TEMPLATES else None
+    if k in TEMPLATES:
+        return k
+    parts = [PART_ALIASES.get(p) for p in k.split("_") if p and p not in _LEAD_NOISE]
+    if parts and all(parts):
+        deduped: list[str] = []
+        for p in parts:
+            if p not in deduped:
+                deduped.append(p)
+        return "_".join(deduped)
+    return None
+
+
+def day_template(user, key: str) -> list[ExerciseTemplate]:
+    """THE day's exercises for this user: their own routine day if they gave one,
+    else the global day, else a body-part day composed from parts. Raises KeyError
+    for a key normalize_template_key wouldn't return."""
+    t = templates_for(user)
+    if key in t:
+        return t[key]
+    if is_composed_key(key):
+        eq = (getattr(user, "equipment", None) or "").strip().lower()
+        return compose_day(key, bodyweight=eq in BODYWEIGHT_EQUIPMENT)
+    raise KeyError(key)
 
 
 def slug_for_name(name: str | None) -> str | None:
@@ -244,4 +447,6 @@ def plate_step_for_slug(slug: str) -> float:
 
 
 def is_bodyweight_slug(slug: str) -> bool:
-    return any(e.slug == slug for exs in BODYWEIGHT_TEMPLATES.values() for e in exs)
+    return any(e.slug == slug and e.default_weight == 0
+               for exs in (*BODYWEIGHT_TEMPLATES.values(), *BODYWEIGHT_PART_TEMPLATES.values(), PART_TEMPLATES["core"])
+               for e in exs)

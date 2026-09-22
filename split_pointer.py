@@ -32,7 +32,34 @@ SPLIT_CYCLES = {
     "ul": ["upper", "lower"],
     "full_body": ["full_body"],
     "arnold": ["chest_back", "shoulders_arms", "legs"],
+    # The classic five-day bro split. A user's OWN grouping (users.split_days —
+    # "chest and biceps, back and triceps, legs and shoulders") overrides this; see
+    # cycle_for(). Live 2026-09-22 (user 43): "bro_split" had no cycle → full_body card.
+    "bro_split": ["chest", "back", "shoulders", "arms", "legs"],
+    "bro": ["chest", "back", "shoulders", "arms", "legs"],
 }
+
+
+def cycle_for(user) -> list[str]:
+    """The user's split as an ordered day cycle: their stated days first
+    (users.split_days), then their pasted routine's days, then the named system's
+    cycle. [] when the split is unknown or unmapped — callers must not guess."""
+    days = getattr(user, "split_days", None)
+    if isinstance(days, list) and len(days) >= 2 and all(isinstance(d, str) and d for d in days):
+        return list(days)
+    system = _normalize_system(getattr(user, "current_split", None)
+                               or getattr(user, "confirmed_training_split", None) or "")
+    custom_keys: list[str] = []
+    custom = getattr(user, "custom_templates", None)
+    if isinstance(custom, dict) and len(custom) >= 2:
+        from workouts.templates import normalize_template_key
+        custom_keys = [k for k in (normalize_template_key(x) for x in custom) if k]
+    # A pasted routine defines the cycle when the label is loose ("custom", a bro
+    # split); a named system (ppl / upper_lower) keeps its canonical order even if
+    # only some of its days were pasted.
+    if len(custom_keys) >= 2 and system in ("", "custom", "bro_split", "bro"):
+        return custom_keys
+    return list(SPLIT_CYCLES.get(system) or (custom_keys if len(custom_keys) >= 2 else []))
 
 # Precision-biased: only unambiguous canonical day names (a bare "chest"/"arms"
 # maps differently across systems, so we don't guess — those fall through to an
@@ -46,9 +73,13 @@ def _normalize_system(system: str) -> str:
     return (system or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def _next_day(system: str, last_day: str):
-    """WRITE-TIME ONLY. Next day in the cycle after last_day, or None."""
-    cycle = SPLIT_CYCLES.get(_normalize_system(system))
+def _next_day(system_or_user, last_day: str):
+    """WRITE-TIME ONLY. Next day in the cycle after last_day, or None. Takes a User
+    (their own days win) or, for callers that only have the label, a system string."""
+    if isinstance(system_or_user, str) or system_or_user is None:
+        cycle = SPLIT_CYCLES.get(_normalize_system(system_or_user))
+    else:
+        cycle = cycle_for(system_or_user)
     if not cycle or last_day not in cycle:
         return None
     return cycle[(cycle.index(last_day) + 1) % len(cycle)]
@@ -118,8 +149,7 @@ def advance_split_pointer(user_id: int, *, named_day: str = None, at=None) -> di
             logger.info("SPLIT_POINTER_SKIP user=%s reason=already_advanced_today", user_id)
             return _pointer_dict(user)
 
-        nxt = _next_day(user.current_split or user.confirmed_training_split,
-                        user.split_pointer_day)
+        nxt = _next_day(user, user.split_pointer_day)
         if nxt:
             user.split_pointer_day = nxt
             user.split_pointer_at = now
