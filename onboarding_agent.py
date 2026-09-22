@@ -1542,7 +1542,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         _finalize_onboarding_profile(user_row)
 
         session.commit()
-        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
+        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
 
         try:
             schedule_user(user_row)

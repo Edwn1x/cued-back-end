@@ -112,19 +112,115 @@ def training_days_per_week(workout_days, default: int = 3) -> int:
     return default
 
 
-def apply_goal(tdee: int, goal: str) -> dict:
-    """The goal rule on a maintenance number → {"calories", "goal_label"}. Shared by
-    calculate_targets (onboarding) and adaptive_targets (biweekly re-application)."""
+# ─── Goal rule (founder, 2026-09-22 — rewrite/targets-deficit-research/RESEARCH.md) ──
+# Percentages of maintenance, not flat kcal. The old flat −500 was the clinical-obesity
+# default (ACSM/AHA) applied to everyone: 18% of the founder's TDEE, 26% of a
+# 16-year-old's, 31% of a small woman's. Evidence for trained/lean people is 0.5–0.7%
+# bodyweight/week ≈ 10–20% of TDEE (ISSN, Helms, Garthe); 500 kcal/day is the CEILING
+# at which lifting stops adding lean mass (Murphy & Koehler 2022), not the default.
+DEFICIT_ADULT = 0.15          # fat loss, adult
+DEFICIT_ADULT_OBESE = 0.20    # fat loss, adult, BMI ≥ 30 (ISSN: higher baseline fat → more aggressive is OK)
+DEFICIT_TEEN = 0.10           # fat loss, under 18 (pediatric: maintain / gradual; AAP: don't "diet" them)
+DEFICIT_OLDER = 0.10          # fat loss, 65+ (Villareal: lean mass + bone go first)
+RECOMP_DEFICIT = 0.10         # fat_loss + muscle (Barakat: maintenance to −200; this is the aggressive end)
+SURPLUS_BUILD = 0.10          # muscle/strength, beginner–intermediate (Iraki: +10–20%)
+SURPLUS_BUILD_ADVANCED = 0.05 # muscle/strength, advanced (Iraki: slower, less fat)
+SURPLUS_ENDURANCE = 0.05
+OBESE_BMI = 30.0
+OLDER_AGE = 65
+# Ceilings on the daily deficit (code-computed, applied after the percentage):
+DEFICIT_CEILING_TRAINING = 500        # kcal/day — Murphy & Koehler 2022
+KCAL_PER_LB_FAT_PER_DAY = 31          # Alpert 2005: ~290 kJ/kg fat/day the fat store can supply
+# Floor on intake: energy availability ≥ 30 kcal/kg fat-free mass after training (IOC RED-S).
+EA_FLOOR_KCAL_PER_KG_FFM = 30
+TRAINING_KCAL_PER_SESSION = 250       # conservative per-session expenditure for the EA floor
+
+
+def body_fat_fraction(user, bmi: float | None, age: int, is_male: bool) -> float:
+    """body_fat_pct when they gave one; else Deurenberg 1991 (BF% = 1.2·BMI + 0.23·age −
+    10.8·male − 5.4), clamped to 5–60%. Only used for the deficit ceiling and the EA
+    floor — never shown as a fact."""
+    given = getattr(user, "body_fat_pct", None)
+    if given and 3 <= float(given) <= 70:
+        return float(given) / 100.0
+    if not bmi:
+        return 0.25
+    bf = (1.2 * bmi + 0.23 * age - (10.8 if is_male else 0.0) - 5.4) / 100.0
+    return max(0.05, min(0.60, bf))
+
+
+def goal_profile(user) -> dict:
+    """The per-user inputs the goal rule needs, derived ONCE here so calculate_targets
+    and adaptive_targets apply the identical rule (a re-application at a new maintenance
+    must not silently drop the ceilings/floors)."""
+    weight_lbs = float(getattr(user, "weight_lbs", None) or 150)
+    height_in = getattr(user, "height_in", None)
+    height_cm = ((getattr(user, "height_ft", None) or 5) * 12 + (height_in if height_in is not None else 7)) * 2.54
+    age = getattr(user, "age", None) or 25
+    gender = getattr(user, "gender", None) or "male"
+    is_male = gender in ("male", "prefer_not_to_say")
+    weight_kg = weight_lbs * 0.453592
+    bmi = weight_kg / (height_cm / 100.0) ** 2 if height_cm else None
+    bf = body_fat_fraction(user, bmi, age, is_male)
+    days = training_days_per_week(getattr(user, "workout_days", None))
+    return {
+        "age": age,
+        "bmi": bmi,
+        "experience": (getattr(user, "experience", None) or "").lower() or None,
+        "trains": days > 0,
+        "fat_mass_lb": weight_lbs * bf,
+        "ffm_kg": weight_kg * (1 - bf),
+        "training_kcal_per_day": days * TRAINING_KCAL_PER_SESSION / 7.0,
+    }
+
+
+def goal_pct(goal: str, *, age: int | None = None, bmi: float | None = None,
+             experience: str | None = None) -> tuple[float, str]:
+    """(signed fraction of maintenance, goal_label)."""
     goal = goal or "general_fitness"
     if "fat_loss" in goal and "muscle" in goal:
-        return {"calories": round(tdee * 0.9 / 50) * 50, "goal_label": "recomp"}
+        return -RECOMP_DEFICIT, "recomp"
     if "fat_loss" in goal:
-        return {"calories": round((tdee - 500) / 50) * 50, "goal_label": "cutting"}
+        if age is not None and age <= TEEN_MAX_AGE:
+            return -DEFICIT_TEEN, "cutting"
+        if age is not None and age >= OLDER_AGE:
+            return -DEFICIT_OLDER, "cutting"
+        if bmi is not None and bmi >= OBESE_BMI:
+            return -DEFICIT_ADULT_OBESE, "cutting"
+        return -DEFICIT_ADULT, "cutting"
     if "muscle" in goal or "strength" in goal:
-        return {"calories": round((tdee + 250) / 50) * 50, "goal_label": "building"}
+        return (SURPLUS_BUILD_ADVANCED if experience == "advanced" else SURPLUS_BUILD), "building"
     if "endurance" in goal:
-        return {"calories": round((tdee + 150) / 50) * 50, "goal_label": "endurance"}
-    return {"calories": round(tdee / 50) * 50, "goal_label": "maintenance"}
+        return SURPLUS_ENDURANCE, "endurance"
+    return 0.0, "maintenance"
+
+
+def apply_goal(tdee: int, goal: str, *, age=None, bmi=None, experience=None, trains=True,
+               fat_mass_lb=None, ffm_kg=None, training_kcal_per_day=0.0) -> dict:
+    """The goal rule on a maintenance number → {"calories", "goal_label", "pct", "limits"}.
+    Shared by calculate_targets (onboarding) and adaptive_targets (biweekly
+    re-application); pass **goal_profile(user) so both see the same ceilings/floors.
+    Called bare (tdee, goal) it is the adult percentage rule with no limits.
+
+    Order: percentage → deficit ceilings (500/day if they train; 31 kcal per lb of fat
+    mass) → intake floor (30 kcal/kg FFM + training). `limits` names whichever bound
+    actually moved the number, so the log line can say why."""
+    pct, label = goal_pct(goal, age=age, bmi=bmi, experience=experience)
+    calories = tdee * (1 + pct)
+    limits = []
+    if pct < 0:
+        deficit = tdee - calories
+        if trains and deficit > DEFICIT_CEILING_TRAINING:
+            deficit, _ = DEFICIT_CEILING_TRAINING, limits.append("deficit≤500 (training)")
+        if fat_mass_lb is not None and deficit > KCAL_PER_LB_FAT_PER_DAY * fat_mass_lb:
+            deficit, _ = KCAL_PER_LB_FAT_PER_DAY * fat_mass_lb, limits.append("deficit≤31kcal/lb fat")
+        calories = tdee - deficit
+        if ffm_kg:
+            ea_floor = EA_FLOOR_KCAL_PER_KG_FFM * ffm_kg + (training_kcal_per_day or 0.0)
+            if calories < ea_floor:
+                calories, _ = ea_floor, limits.append("EA floor 30kcal/kg FFM")
+    return {"calories": int(round(calories / 50.0) * 50), "goal_label": label, "pct": pct,
+            "limits": limits}
 
 
 def calculate_targets(user) -> dict:
@@ -135,7 +231,10 @@ def calculate_targets(user) -> dict:
     """
     # Defaults if data is somehow missing
     weight_kg = (user.weight_lbs or 150) * 0.453592
-    height_cm = ((user.height_ft or 5) * 12 + (user.height_in or 7)) * 2.54
+    # height_in may legitimately be 0 (5'0") — `or 7` treated it as missing and computed
+    # a 5'0" user as 5'7" (live: user 33). Only None is "missing".
+    height_in = user.height_in if getattr(user, "height_in", None) is not None else 7
+    height_cm = ((user.height_ft or 5) * 12 + height_in) * 2.54
     age = user.age or 25
     gender = user.gender or "male"
 
@@ -178,7 +277,7 @@ def calculate_targets(user) -> dict:
         tdee = round(bmr * multiplier)
 
     goal = user.goal or "general_fitness"
-    g = apply_goal(tdee, goal)
+    g = apply_goal(tdee, goal, **goal_profile(user))
     calories, goal_label = g["calories"], g["goal_label"]
 
     # Floor first: the protein share cap reads the FINAL calorie number.
@@ -204,6 +303,8 @@ def calculate_targets(user) -> dict:
         "bmr": round(bmr),
         "bmr_formula": bmr_formula,
         "goal_label": goal_label,
+        "goal_pct": g["pct"],
+        "goal_limits": g["limits"],
         "activity_level": level,
         "reference_weight_lbs": round(ref_lbs, 1),
     }
@@ -231,8 +332,8 @@ def recompute_targets(user_id: int) -> dict:
             user.targets_source = "computed"
         new = (user.calorie_target, user.protein_target)
         session.commit()
-        logger.info("TARGETS_RECOMPUTED user=%s %s -> %s formula=%s tdee=%s",
-                    user_id, old, new, t["bmr_formula"], t["tdee"])
+        logger.info("TARGETS_RECOMPUTED user=%s %s -> %s formula=%s tdee=%s pct=%+.2f limits=%s",
+                    user_id, old, new, t["bmr_formula"], t["tdee"], t["goal_pct"], t["goal_limits"])
         return {"old": old, "new": new, "changed": old != new, "tdee": t["tdee"],
                 "formula": t["bmr_formula"]}
     finally:
@@ -305,7 +406,8 @@ def apply_target_override(user_id: int, *, calories=None, protein=None, note: st
         basis_cal = computed["calories"]
         stored_m = getattr(user, "reported_maintenance", None)
         if stored_m:
-            basis_cal = max(apply_goal(int(stored_m), user.goal or "")["calories"], CALORIE_FLOOR)
+            basis_cal = max(apply_goal(int(stored_m), user.goal or "", **goal_profile(user))["calories"],
+                            CALORIE_FLOOR)
         if maint_result is not None:
             maint_result["basis_calories"] = basis_cal
         for field, asked in (("calories", calories), ("protein", protein)):

@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from models import get_session, User, Meal, WeightLog, TargetAdjustment, active
-from macro_calculator import calculate_targets, apply_goal, override_bounds
+from macro_calculator import calculate_targets, apply_goal, goal_profile, override_bounds
 
 logger = logging.getLogger("cued.adaptive")
 
@@ -135,7 +135,7 @@ def evaluate(user, session, now: datetime | None = None) -> dict:
     computed = calculate_targets(user)
     cur_maint = int(getattr(user, "reported_maintenance", None) or computed["tdee"])
     new_maint = int(round(DAMP * est + (1 - DAMP) * cur_maint))
-    proposed = apply_goal(new_maint, user.goal or "")["calories"]
+    proposed = apply_goal(new_maint, user.goal or "", **goal_profile(user))["calories"]
 
     # ── direction check against the goal ──
     goal = user.goal or ""

@@ -64,11 +64,11 @@ def test_ewma_smooths_and_seeds_on_the_first_point():
 
 
 def test_apply_goal_is_the_shared_rule():
-    from macro_calculator import apply_goal, calculate_targets
+    from macro_calculator import apply_goal, calculate_targets, goal_profile
     from types import SimpleNamespace as NS
     u = NS(**{k: v for k, v in FOUNDER.items() if k != "onboarding_step"}, goal="fat_loss,muscle_building")
     t = calculate_targets(u)
-    assert apply_goal(t["tdee"], u.goal)["calories"] == t["calories"] == 2450
+    assert apply_goal(t["tdee"], u.goal, **goal_profile(u))["calories"] == t["calories"] == 2450
 
 
 # ─── gates ──────────────────────────────────────────────────────────────────
