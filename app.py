@@ -2743,6 +2743,24 @@ def admin_activate_waitlist(user_id):
 
 
 # ─── Delete User (admin) ────────────────────────────
+def _purge_user_rows(session, user_id: int) -> None:
+    """Delete every child row that does NOT cascade from users (see models.py:
+    Message/Meal/Workout/DailyLog/WeightLog/Signal/PantryItem/Place/QueueTicket/
+    WorkoutSession(+SetLog)/TargetAdjustment carry plain FKs). The newer tables
+    (events, heartbeat_ticks, episodic, token_usage, processed_messages) cascade
+    or SET NULL on their own. Caller deletes the User row and commits."""
+    from models import (Meal, WeightLog, Signal, PantryItem, Place, QueueTicket,
+                        WorkoutSession, SetLog, TargetAdjustment)
+    session_ids = [sid for (sid,) in session.query(WorkoutSession.id)
+                   .filter(WorkoutSession.user_id == user_id).all()]
+    if session_ids:
+        session.query(SetLog).filter(SetLog.session_id.in_(session_ids)) \
+               .delete(synchronize_session=False)
+    for model in (WorkoutSession, QueueTicket, Place, PantryItem, Signal, TargetAdjustment,
+                  Message, Meal, WeightLog, Workout, DailyLog):
+        session.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
+
+
 @app.route("/admin/user/<int:user_id>/delete", methods=["POST"])
 def admin_delete_user(user_id):
     """Permanently delete a user and all their data."""
@@ -2752,16 +2770,40 @@ def admin_delete_user(user_id):
         if not user:
             return jsonify({"status": "error", "message": "User not found"}), 404
         name = user.name
-        from models import Meal, WeightLog
-        session.query(Message).filter(Message.user_id == user_id).delete()
-        session.query(Meal).filter(Meal.user_id == user_id).delete()
-        session.query(WeightLog).filter(WeightLog.user_id == user_id).delete()
-        session.query(Workout).filter(Workout.user_id == user_id).delete()
-        session.query(DailyLog).filter(DailyLog.user_id == user_id).delete()
+        _purge_user_rows(session, user_id)
         session.delete(user)
         session.commit()
         logger.info(f"Admin deleted user: {name} (id={user_id})")
         return jsonify({"status": "ok", "message": f"{name} deleted."})
+    finally:
+        session.close()
+
+
+@app.route("/admin/user/<int:user_id>/remove-waitlist", methods=["POST"])
+def admin_remove_waitlist(user_id):
+    """Drop a PENDING waitlister for good (spam, duplicate, changed their mind).
+    Guarded to waitlist_status == 'pending' so the waitlist tab can never delete
+    an activated user; those go through /delete from the Users tab. Sends
+    nothing. Their Photon line (if provisioned) is left in the pool — there is
+    no deprovision call — so a re-signup on the same number gets it back via
+    find_user."""
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."}), 404
+        if user.waitlist_status != "pending":
+            return jsonify({"status": "error",
+                            "message": "User is not on the waitlist."}), 400
+        name, phone = user.name, user.phone
+        _purge_user_rows(session, user_id)
+        session.delete(user)
+        session.commit()
+        logger.info("WAITLIST_REMOVE user_id=%s phone=%s name=%r", user_id, phone, name)
+        return jsonify({"status": "ok", "message": f"{name} removed from the waitlist."}), 200
+    except Exception as e:
+        logger.error(f"/admin/user/{user_id}/remove-waitlist error: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "Remove failed."}), 500
     finally:
         session.close()
 

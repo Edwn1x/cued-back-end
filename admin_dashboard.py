@@ -61,7 +61,7 @@ body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:v
 /* Wide tables (waitlist = 15 cols) used to be clipped by overflow:hidden, hiding the
    right-hand columns AND the Activate button. Scroll sideways instead, and pin the
    action column so it's reachable without scrolling. */
-#waitlist-table td:last-child,#waitlist-table th:last-child{position:sticky;right:0;background:var(--card);box-shadow:-8px 0 8px -8px rgba(0,0,0,.5)}
+#waitlist-table td:last-child,#waitlist-table th:last-child{position:sticky;right:0;background:var(--card);box-shadow:-8px 0 8px -8px rgba(0,0,0,.5);white-space:nowrap}
 #waitlist-table td{white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:1px;padding:10px 16px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -451,6 +451,10 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
           <button class="btn btn-primary btn-sm"
                   onclick="activateWaitlist({{ w.id }}, '{{ w.name|replace("'","\\'") }}', this)">
             Activate
+          </button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px"
+                  onclick="removeWaitlist({{ w.id }}, '{{ w.name|replace("'","\\'") }}', this)">
+            Remove
           </button>
         </td>
       </tr>
@@ -860,6 +864,28 @@ async function activateWaitlist(userId, name, btn) {
     alert('Network error. Try again.');
     btn.disabled = false;
     btn.textContent = 'Activate';
+  }
+}
+
+async function removeWaitlist(userId, name, btn) {
+  if (!confirm('Remove ' + name + ' from the waitlist? This deletes their sign-up. Nothing is sent to them. Cannot be undone.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Removing…';
+  try {
+    const res = await fetch('/admin/user/' + userId + '/remove-waitlist', {method: 'POST'});
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const row = btn.closest('tr');
+      if (row) row.remove();
+    } else {
+      alert('Error: ' + (data.message || 'Remove failed.'));
+      btn.disabled = false;
+      btn.textContent = 'Remove';
+    }
+  } catch (err) {
+    alert('Network error. Try again.');
+    btn.disabled = false;
+    btn.textContent = 'Remove';
   }
 }
 
