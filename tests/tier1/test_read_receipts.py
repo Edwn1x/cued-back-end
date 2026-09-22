@@ -1,7 +1,8 @@
 """
 "Read 11:04" (founder, 2026-09-11 — "read receipts only for now"). The receipt lands
-when reply generation BEGINS, right before the typing bubble — never on arrival — and
-when the coach thumbs-ups a suppressed ack. iMessage only; fire-and-forget; never raises.
+the moment the inbound is logged — then the dots, then the reply (founder 2026-09-22:
+"read receipt as soon as they send their message followed by the typing animation") —
+and is re-asserted when generation begins. iMessage only; fire-and-forget; never raises.
 """
 
 from __future__ import annotations
@@ -96,8 +97,8 @@ def test_mark_read_never_raises(db, imessage_on, monkeypatch, caplog):
 
 
 def test_read_lands_before_typing_when_generation_begins(db, imessage_on, sidecar, anthropic_stub, sms_capture):
-    """Sequence the user sees: pause → Read → dots → reply. So the order of sidecar
-    calls in one turn must be read, typing start, send."""
+    """Flush re-asserts both (a cold sidecar can drop the arrival receipt; a long
+    buffer can outlive the client's indicator) in the same order: read, typing, send."""
     import app
     user = make_user(db, preferred_channel="imessage", onboarding_step=3)
     _inbound(db, user, "what should i eat", "spc-q1")
@@ -133,3 +134,48 @@ def test_sms_user_gets_no_receipt_on_the_same_paths(db, imessage_on, sidecar, an
     app.process_buffered_message(user.id, "what should i eat", "freeform")
     assert [r for r, _ in sidecar if r == "read"] == []
     assert sms_capture
+
+
+def _post_text(client, user, text, sid):
+    import json
+    return client.post("/internal/inbound", data=json.dumps({
+        "phone": user.phone, "text": text, "provider_message_id": sid, "chat_guid": "g", "service": "iMessage",
+        "line_phone": "+16282649335", "timestamp": "2026-09-22T20:38:29Z", "attachments": []}),
+        headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+
+
+def test_read_then_dots_go_up_on_arrival_before_the_buffer_flushes(db, imessage_on, sidecar, client, monkeypatch, sms_capture):
+    """Founder 2026-09-22: onboarding felt slow because "Read" and the dots waited out
+    the buffer. Now the sequence on ARRIVAL is read → typing start, and the buffer is
+    only armed after — nothing sent yet."""
+    import app
+    armed = []
+    monkeypatch.setattr(app, "buffer_message", lambda **kw: armed.append(kw))
+    user = make_user(db, preferred_channel="imessage", onboarding_step=1)
+    assert _post_text(client, user, "175", "spc-onb-1").status_code == 200
+    routes = [(r, j) for r, j in sidecar]
+    assert routes == [("read", {"phone": user.phone, "message_id": "spc-onb-1"}),
+                      ("typing", {"phone": user.phone, "state": "start"})], routes
+    assert sms_capture == []
+    assert len(armed) == 1 and armed[0]["delay_override"] == (5, 8)   # onboarding: one short answer at a time
+
+
+def test_onboarding_buffer_is_seconds_not_half_a_minute(db, imessage_on, sidecar, client, monkeypatch):
+    """Post-onboarding bands are untouched: a fresh thread still waits out double-texts."""
+    import app
+    armed = []
+    monkeypatch.setattr(app, "buffer_message", lambda **kw: armed.append(kw))
+    onboarding = make_user(db, preferred_channel="imessage", onboarding_step=2)
+    done = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _post_text(client, onboarding, "chicken and rice mostly", "spc-onb-2")
+    _post_text(client, done, "what should i eat", "spc-done-1")
+    assert [a["delay_override"] for a in armed] == [(5, 8), (90, 150)]
+
+
+def test_sms_inbound_gets_no_receipt_or_dots_on_arrival(db, imessage_on, sidecar, client, monkeypatch):
+    import app
+    monkeypatch.setattr(app, "buffer_message", lambda **kw: None)
+    user = make_user(db, preferred_channel="sms", onboarding_step=1)
+    r = client.post("/webhook", data={"From": user.phone, "Body": "175", "MessageSid": "SM-onb-1", "NumMedia": "0"})
+    assert r.status_code == 200
+    assert [route for route, _ in sidecar] == []

@@ -2,10 +2,11 @@
 iMessage read receipts ("Read 11:04").
 
 The sidecar wraps the provider's read action as POST /read {phone, message_id}.
-Flask marks the conversation read the moment it starts GENERATING a reply — right
-before the typing bubble — and when it thumbs-ups a suppressed ack. Sequence the
-user sees: their text → a pause (reading) → "Read" → dots → the reply. That is how
-a person's thread looks; sending "Read" on arrival would look like a bot.
+Flask marks the conversation read the moment the inbound is LOGGED (every branch
+after that — buffer, ack 👍, goodnight — is a reply to a message we have read), and
+again when reply generation begins, as a retry. Sequence the user sees: their text
+→ "Read" → dots → the reply. Founder 2026-09-22: the earlier "pause, then Read"
+made onboarding feel slow; a friend on their phone reads it right away.
 
 Same contract as typing_indicator: fire-and-forget, short timeout, never raises, only
 when the user's RESOLVED channel is iMessage (tripped breaker = nothing). SMS has
