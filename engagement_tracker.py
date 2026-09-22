@@ -94,7 +94,7 @@ def has_unanswered_outbound(user_id: int) -> bool:
 # heartbeat is the only proactive system during burn-in; legacy briefings are
 # deliberately excluded so a legacy outbound can never wedge the heartbeat silent
 # (Item 1 point 4). Reactive replies (freeform/meal/workout/…) are never here.
-PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder"}  # a fired reminder counts: don't stack a nudge on it
+PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder", "water_offer"}  # a fired reminder / the water offer counts: don't stack a nudge on it
 
 
 def has_unanswered_proactive(user_id: int, window_minutes: int) -> bool:

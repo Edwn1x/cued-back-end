@@ -492,6 +492,19 @@ def start_scheduler():
         max_instances=1,
     )
 
+    # Water-reminder offer for EXISTING users: every 10 min, guarded by the heartbeat's
+    # own guardrails, each user at most once ever (water_offer.sweep).
+    if config.WATER_OFFER_ENABLED:
+        from water_offer import sweep as water_offer_sweep
+        scheduler.add_job(
+            water_offer_sweep,
+            trigger=_IT(minutes=10),
+            id="water_offer_sweep",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
     # Adaptive targets: daily sweep; each user is only DUE every 14 days.
     if config.ADAPTIVE_TARGETS_ENABLED:
         from adaptive_targets import run_all as adaptive_run_all

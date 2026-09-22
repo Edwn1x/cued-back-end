@@ -1642,6 +1642,14 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
 
+    # Third bubble: the water-reminder offer (water_offer.py) — one line, once, answered in code.
+    if config.WATER_OFFER_ENABLED:
+        try:
+            from water_offer import send_offer as _water_offer
+            _water_offer(user.id, source="kickoff")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("WATER_OFFER_KICKOFF_FAILED user=%s err=%s", user.id, e)
+
     # The onboarding conversation is the richest life-context the coach will ever
     # get about this person (their classes, where they eat, who they went to SF
     # with) and until now NONE of it survived into coaching: onboarding turns ran

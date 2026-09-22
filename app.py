@@ -653,6 +653,21 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # Water-reminder offer: a yes/no to the pending one-line offer is answered in
+        # code (water_offer.handle_reply) — creates the interval reminder or remembers
+        # the no. Anything else lapses the offer and continues as a normal turn.
+        if (user.onboarding_step or 0) >= 3 and not image_url and config.WATER_OFFER_ENABLED:
+            try:
+                from water_offer import handle_reply as _water_offer_reply
+                wline = _water_offer_reply(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("WATER_OFFER_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                wline = None
+            if wline:
+                send_sms(user.phone, wline, user_id=user.id, message_type="water_offer_reply")
+                typing_stop(user.id)
+                return
+
         # Series §2.7: opt-in replies / 'handle the line for me' / 'not going' — in code.
         if (user.onboarding_step or 0) >= 3 and not image_url:
             try:
