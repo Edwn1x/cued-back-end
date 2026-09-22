@@ -174,7 +174,11 @@ def _get_missing_fields(user) -> list:
                 missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
-    if not user.diet:
+    # Known once EITHER typed column is filled: a person who names what they won't
+    # eat has told you their diet. Live 2026-09-22 (user 42): "I don't eat mushrooms
+    # tofu and raw fish" fit no diet label → null → onboarding parked on `diet` while
+    # the coach said "i think i got everything i need on u now".
+    if not user.diet and not (getattr(user, "restrictions", None) or "").strip():
         missing.append(("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"))
     if not nutrition_only and user.injuries is None:
         missing.append(("injuries", "any injuries or physical limitations"))
@@ -309,7 +313,10 @@ def _build_system_prompt(user) -> str:
         f"Workout time: {user.workout_time}" if user.workout_time else None,
         f"Current split: {user.current_split}" if user.current_split else None,
         f"Diet: {user.diet}" if user.diet else None,
+        f"Won't eat / restrictions: {user.restrictions}" if getattr(user, "restrictions", None) else None,
         f"Cooking: {user.cooking_situation}" if user.cooking_situation else None,
+        (f"Their own daily targets: {user.calorie_target or '?'} cal / {user.protein_target or '?'}g protein"
+         if getattr(user, "targets_source", None) == "user" and (user.calorie_target or user.protein_target) else None),
         f"Injuries: {user.injuries}" if user.injuries else None,
         f"Wake time: {user.wake_time}" if user.wake_time else None,
         f"Sleep time: {user.sleep_time}" if user.sleep_time else None,
@@ -444,7 +451,7 @@ For example:
     prompt = f"""{context_hint}Extract any fitness coaching profile data from this user message. Only extract what the user CLEARLY stated ABOUT THEMSELVES AS A PATTERN.
 
 AN ANECDOTE IS NOT A FACT. "we got malatang after", "went for pizza in sf", "had crossroads for lunch" say NOTHING about cooking_situation or diet — they are one meal, not how the person eats.
-AN ASPIRATION IS NOT THE CURRENT PATTERN. "I work out after everything's done but I wanna be more of an early bird" → workout_time is the EVENING (what they do now), NOT morning (what they wish). Every field here describes how they live today; wishes and goals belong to the coach, not to these fields. Live bug: this exact message stored workout_time=08:00. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none. When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
+AN ASPIRATION IS NOT THE CURRENT PATTERN. "I work out after everything's done but I wanna be more of an early bird" → workout_time is the EVENING (what they do now), NOT morning (what they wish). Every field here describes how they live today; wishes and goals belong to the coach, not to these fields. Live bug: this exact message stored workout_time=08:00. Only a statement about their usual pattern counts: "I mostly cook", "I'm on the dining hall plan", "I eat out most days". Likewise one workout is not workout_days, one late night is not sleep_time, and never fill diet="omnivore" unless they were asked about restrictions and said they have none — OR they named specific foods they don't eat / said "no allergies" / described what they eat with no restriction identity (a person listing dislikes HAS told you their diet: omnivore, with the dislikes in food_dislikes). When in doubt, null — a wrong field here steers every meal suggestion for months; a null just gets asked about later.
 
 User said: "{user_message}"
 
@@ -460,6 +467,9 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "workout_days": "comma separated days like mon,tue,wed,thu,fri" or number like "4" or null,
   "workout_time": "HH:MM in 24h format" or "description like afternoon, morning" or null,
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
+  "food_dislikes": "comma-separated foods they say they don't/won't eat (mushrooms, tofu, raw fish)" or null,
+  "calorie_target": integer or null (ONLY a daily calorie number THEY say they aim for or track to — "staying under 2000 cals" → 2000; never a number the coach said),
+  "protein_target": integer or null (same rule — grams of protein per day THEY track to),
   "cooking_situation": "cook_myself, dining_hall, mostly_eat_out, mix" or null,
   "injuries": "description of injuries" or "none" or null,
   "wake_time": "HH:MM in 24h format" or null,
@@ -510,6 +520,9 @@ Examples:
 "I cook for myself" → {{"cooking_situation": "cook_myself", ...rest null}}
 "I eat at the dining hall" → {{"cooking_situation": "dining_hall", ...rest null}}
 "no injuries" → {{"injuries": "none", ...rest null}}
+"I have no allergies and eat mostly chicken and protein pasta" → {{"diet": "omnivore", ...rest null}}
+"I don't eat mushrooms tofu and raw fish" → {{"diet": "omnivore", "food_dislikes": "mushrooms, tofu, raw fish", ...rest null}}
+"I count my macros staying under 2000 cals and 155 grams of protein" → {{"calorie_target": 2000, "protein_target": 155, ...rest null}}
 "I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", "tools_decision": "acknowledged", ...rest null}}
 "Does Nike Run Club count?" → {{"existing_tools": "nike_run_club", "tools_decision": "acknowledged", ...rest null}}
 "nah I don't use anything" → {{"existing_tools": "none", "tools_decision": "none", ...rest null}}
@@ -518,6 +531,8 @@ Examples:
 Short answer rules:
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
+- "I don't eat X and Y" / "no X" (specific foods) → food_dislikes="X, Y" AND diet="omnivore" — dislikes are not a diet identity
+- "no allergies" → diet="omnivore"
 - "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none", tools_decision="none"
 - "No" when asked about cooking_situation → ambiguous, return null (coach should follow up)
 - Single number like "5" → map to whatever field was just asked about, not height
@@ -615,6 +630,31 @@ def _store_extracted_data(user_id: int, data: dict):
             _set("workout_time", wt)
         if data.get("avg_steps") is not None:
             _set("avg_steps", int(data["avg_steps"]))
+        # Foods they won't eat → the typed restrictions column (the coach prompt and
+        # the nutrition agent both read it; memory is told NOT to store these).
+        if data.get("food_dislikes"):
+            from memory import _append_to_restrictions
+            items = [s.strip() for s in str(data["food_dislikes"]).split(",") if s.strip()]
+            merged = _append_to_restrictions(user.restrictions, [f"won't eat {i}" for i in items])
+            if merged != (user.restrictions or ""):
+                user.restrictions = merged
+                changed = True
+        # Targets THEY track to. Stored raw with source=user; the summary step bounds
+        # them (±15% of computed) once height/weight/goal are all known. Never
+        # overwrites a code-computed pair.
+        if getattr(user, "targets_source", None) != "computed":
+            for key, attr in (("calorie_target", "calorie_target"), ("protein_target", "protein_target")):
+                val = data.get(key)
+                if val is None:
+                    continue
+                try:
+                    val = int(round(float(val)))
+                except (TypeError, ValueError):
+                    continue
+                if val > 0 and getattr(user, attr) != val:
+                    setattr(user, attr, val)
+                    user.targets_source = "user"
+                    changed = True
 
         if changed:
             session.commit()
@@ -688,6 +728,23 @@ def _extract_target_request(message: str, user) -> dict:
         return {}
 
 
+_STATIC_PROMPT_END = "## RIGHT NOW"
+
+
+def _cacheable_system(system_prompt: str):
+    """Split the onboarding system prompt into a cached static head (identity +
+    safety — identical on every turn for every user) and the per-turn tail (clock,
+    profile, unknowns, history). Live 2026-09-22 (user 42): 11 turns × ~16.5k input
+    tokens with cache_read=0 on every one — the static head is ~80% of that."""
+    head, sep, tail = system_prompt.partition(_STATIC_PROMPT_END)
+    if not sep or len(head) < 1024:
+        return system_prompt  # no marker (tests / odd callers) → plain string, as before
+    return [
+        {"type": "text", "text": head, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": sep + tail},
+    ]
+
+
 def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
     """One onboarding reply. The model may search the web mid-reply (server-side
     tool, capped per reply by WEB_SEARCH_MAX_USES) when something specific came up
@@ -717,7 +774,7 @@ def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
         # the extra thinking is cheap and the first impression is the product.
         kwargs = dict(model=COACH_MODEL, max_tokens=config.AGENT_LOOP_MAX_TOKENS,
                       thinking={"type": "adaptive"}, output_config={"effort": "medium"},
-                      system=system_prompt, messages=messages)
+                      system=_cacheable_system(system_prompt), messages=messages)
         if tools:
             kwargs["tools"] = tools
         response = client.messages.create(**kwargs)
@@ -739,7 +796,56 @@ def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
     return last_text
 
 
-def _build_confirmation_summary(user) -> str:
+def _reconcile_user_targets(user_id: int) -> str | None:
+    """Targets the user stated mid-conversation ("staying under 2000 cals") were
+    stored raw with targets_source='user'. Now that the profile is complete, bound
+    them like the adjust turn does (±15% of computed): inside the band they stand;
+    outside, the nearest end of the band is written and the summary says so.
+    Returns the clamp note for the summary, or None when nothing was clamped."""
+    from models import get_session, User as UserModel
+    from macro_calculator import apply_target_override, override_bounds
+    session = get_session()
+    try:
+        u = session.get(UserModel, user_id)
+        if not u or getattr(u, "targets_source", None) != "user":
+            return None
+        asked_cal, asked_pro = u.calorie_target, u.protein_target
+    finally:
+        session.close()
+    if not asked_cal and not asked_pro:
+        return None
+    r = apply_target_override(user_id, calories=asked_cal, protein=asked_pro, note="stated during onboarding")
+    rejected = r.get("rejected") or {}
+    if not rejected:
+        return None
+    notes = []
+    session = get_session()
+    try:
+        u = session.get(UserModel, user_id)
+        for field, rj in rejected.items():
+            if "min" not in rj:
+                continue
+            lo, hi, asked = rj["min"], rj["max"], rj["asked"]
+            nearest = lo if asked < lo else hi
+            if field == "calories":
+                u.calorie_target = nearest
+            else:
+                u.protein_target = nearest
+            unit = " cal" if field == "calories" else "g protein"
+            notes.append(f"you said {asked}{unit}; {nearest}{unit} is as {'low' if asked < lo else 'high'} as I'll go "
+                         f"for your stats (I'd have set {rj['computed']}{unit})")
+        u.calorie_target_computed = r["computed"]["calories"]
+        u.protein_target_computed = r["computed"]["protein"]
+        u.targets_source = "user"
+        session.commit()
+    finally:
+        session.close()
+    if notes:
+        logger.info("TARGETS_USER_CLAMPED user=%s %s", user_id, "; ".join(notes))
+    return "; ".join(notes) or None
+
+
+def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
     """Build the confirmation message with calculated targets."""
     targets = calculate_targets(user)
 
@@ -762,7 +868,10 @@ def _build_confirmation_summary(user) -> str:
     if user.wake_time or user.sleep_time:
         sleep_bit = (f" Up around {user.wake_time or '?'}, asleep around {user.sleep_time or '?'}"
                      f" — that's when I'll know to leave you alone.")
-    if getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
+    if clamp_note:
+        targets_bit = (f"On targets: {clamp_note}. So {user.calorie_target} cal and "
+                       f"{user.protein_target}g protein daily. ")
+    elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
         targets_bit = (f"You picked {user.calorie_target} cal and {user.protein_target}g protein daily "
                        f"(I'd have set {targets['calories']}/{targets['protein']}g). ")
     else:
@@ -782,6 +891,14 @@ def _build_confirmation_summary(user) -> str:
     )
 
 
+# Live 2026-09-22 (user 42): with `diet` still unknown the bundle reply ended "i think
+# i got everything i need on u now" — and the next inbound re-asked it. Stated in
+# every intake builder so the model can't close a conversation code hasn't closed.
+_NOT_DONE_LINE = ("You are NOT done getting to know them yet — never say you're done, that "
+                  "you've got all you need, or that you're 'off their back'; the conversation "
+                  "closes only when nothing is still unknown, and code decides that, not you. ")
+
+
 def _build_friend_reply(user, incoming_message: str, system_prompt: str,
                         missing_fields: list) -> str:
     """The onboarding reply: engage the specific thing they said; if there's a
@@ -799,7 +916,7 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"still don't know: {unknown}. If there's no natural reason, don't force one. One "
         f"message, one paragraph, no greeting, ONE question at most — pick it before you "
         f"write, and don't join a second one on with 'and speaking of' / 'also' / 'oh and'. "
-        f"Never a second paragraph, never a visible edit."
+        f"Never a second paragraph, never a visible edit. {_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -818,6 +935,23 @@ _ASKS_FOR_THE_LIST = re.compile(
 )
 
 
+BIG_ASK_MESSAGE_TYPE = "onboarding_bigask"  # the one-text ask, marked so it can't repeat
+
+
+def _big_ask_sent(user_id: int) -> bool:
+    """Has the one-text big ask already gone out this onboarding? Live 2026-09-22
+    (user 42): three consecutive big asks, each opening "alr real talk, just drop me
+    the basics in one text" — the list is a one-time move, not a mode."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        return bool(session.query(Message.id)
+                    .filter(Message.user_id == user_id, Message.direction == "out",
+                            Message.message_type == BIG_ASK_MESSAGE_TYPE).first())
+    finally:
+        session.close()
+
+
 def _coach_turns(user_id: int) -> int:
     """Conversational turns so far = coach onboarding replies already sent, hook
     excluded. NOT inbound rows: people text in bursts ("Nah I lwk got plans" /
@@ -829,17 +963,20 @@ def _coach_turns(user_id: int) -> int:
     try:
         outs = (session.query(Message)
                 .filter(Message.user_id == user_id, Message.direction == "out",
-                        Message.message_type == "onboarding").count())
+                        Message.message_type.in_(("onboarding", BIG_ASK_MESSAGE_TYPE))).count())
         return max(0, outs - 1)  # the hook is not a reply
     finally:
         session.close()
 
 
-def _intake_mode(incoming_message: str, missing_fields: list, turns: int) -> str:
+def _intake_mode(incoming_message: str, missing_fields: list, turns: int,
+                 big_ask_sent: bool = False) -> str:
     """'friend' (default) | 'big_ask' | 'bundle'.
     big_ask — they asked for the list, or the coach has already replied BIG_ASK_AFTER_TURNS+
               times with BIG_ASK_MIN_UNKNOWN+ fields still unknown (a friend would say
               "alr real talk, let me just get the basics" rather than fish forever).
+              ONCE per onboarding unless they ask again: after it's been sent, what's
+              still missing comes back through the friend reply / the bundle.
     bundle  — one or two fields left after BUNDLE_AFTER_TURNS+ turns (or they asked):
               close it out in one natural ask instead of stretching two more replies.
     Anything else is the friend reply."""
@@ -849,7 +986,11 @@ def _intake_mode(incoming_message: str, missing_fields: list, turns: int) -> str
     asked = bool(_ASKS_FOR_THE_LIST.search(incoming_message or ""))
     if n <= 2 and n > 0 and (asked or turns >= BUNDLE_AFTER_TURNS):
         return "bundle"
-    if asked or (turns >= BIG_ASK_AFTER_TURNS and n >= BIG_ASK_MIN_UNKNOWN):
+    if asked:
+        return "big_ask"
+    if big_ask_sent:
+        return "friend"
+    if turns >= BIG_ASK_AFTER_TURNS and n >= BIG_ASK_MIN_UNKNOWN:
         return "big_ask"
     return "friend"
 
@@ -864,9 +1005,12 @@ def _build_big_ask_message(user, incoming_message: str, system_prompt: str, miss
         f"STEP 1 (required): react to the specific thing they said, like a friend. If they "
         f"asked what you need, that's your cue — no apology, no preamble.\n\n"
         f"STEP 2: ask them to drop the basics in ONE text: {fields_hint}. Frame it the way "
-        f"a friend would — 'alr real talk, just send me the basics in one go' — and name what "
-        f"to cover in plain words, not a numbered list. 3-4 sentences max. No greeting. "
-        f"This is the ONE time a list of things is okay; make it feel like one ask."
+        f"a friend would, in your own words — not a stock line. Name what to cover in plain "
+        f"words, not a numbered list. ONLY the things listed here: anything they already told "
+        f"you is not on this list, so don't re-ask it. If THE CONVERSATION SO FAR shows you "
+        f"already asked for 'the basics' once, do not reopen with that same line — just name "
+        f"the specific bits still missing. 3-4 sentences max. No greeting. "
+        f"This is the ONE time a list of things is okay; make it feel like one ask. {_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -881,7 +1025,7 @@ def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, sys
         f"STEP 1: react to what they said like a friend (answer any question fully).\n"
         f"STEP 2: you're basically done getting to know them — ask about {gaps_str} in one "
         f"short, natural line ('last thing' energy), both in one breath if there are two. "
-        f"Not a form. 1-2 sentences. No greeting."
+        f"Not a form. 1-2 sentences. No greeting. {_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1128,7 +1272,13 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     if not missing_after:
         summary_shown = bool(prev_coach) and "sound right" in prev_coach.lower()
         if not summary_shown:
-            summary = _build_confirmation_summary(user_row)
+            clamp_note = _reconcile_user_targets(user_row.id)
+            session = get_session()
+            try:
+                user_row = session.get(UserModel, user.id)
+            finally:
+                session.close()
+            summary = _build_confirmation_summary(user_row, clamp_note=clamp_note)
             instruction = (
                 f"You've got everything you need. {user_row.name} just said: \"{incoming_message}\"\n\n"
                 f"STEP 1: React to what they said like a friend would (answer any question fully).\n"
@@ -1229,14 +1379,17 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     # two-field bundle are kept for when a list is the right move — see
     # _intake_mode(): they asked for it, the conversation has run long with most
     # fields unknown, or one/two are left to close out.
-    mode = _intake_mode(incoming_message, missing_after, _coach_turns(user_row.id))
+    mode = _intake_mode(incoming_message, missing_after, _coach_turns(user_row.id),
+                        big_ask_sent=_big_ask_sent(user_row.id))
+    out_type = "onboarding"
     if mode == "big_ask":
         text = _build_big_ask_message(user_row, incoming_message, system_prompt, missing_after)
+        out_type = BIG_ASK_MESSAGE_TYPE
     elif mode == "bundle":
         text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
     else:
         text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after)
-    send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+    send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
     remaining_names = [f[0] for f in missing_after]
     logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}")
     return False

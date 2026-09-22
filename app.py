@@ -295,7 +295,8 @@ DO NOT emit facts for these (they have typed columns; storage handles them elsew
   - diet identity (vegan, vegetarian, kosher, halal)
   - food allergies / food restrictions (lactose, gluten, "allergic to whey")
   - food context (which dining hall, favorite restaurants)
-  - confirmed plan decisions (training split, workout time, calorie/protein targets)
+  - confirmed plan decisions (training split, workout time, coach-set calorie/protein targets)
+  (Macro preferences they track to ON THEIR OWN beyond calories/protein — "I keep fat under 55g and carbs around 250g" — DO belong here, category goals, so the coach can honor them.)
 
 Existing facts (use these for `replaces_text` on `update`, or to decide `skip`):
 {existing_block}
@@ -1438,9 +1439,14 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # clobber workout_logging state with at_gym.
     _pb_state = get_session_state(user.id) if config.WORKOUT_LOGGING_ENABLED else None
     _pb_in_mode = bool(_pb_state and _pb_state.get("status") == "workout_logging")
+    # Onboarding users get NO training-state writes from the keyword classifier. Live
+    # 2026-09-22 (user 42): a pasted six-day PPL routine matched the lift keywords at
+    # 3:46am — workout_confirmed on the day + at_gym — while onboarding was still
+    # collecting the profile. Same gate as workout_log_start above.
+    _pb_onboarded = (user.onboarding_step or 0) >= 3
 
     # Track workout intent (skip in logging mode)
-    if message_type == "workout_log" and not _pb_in_mode:
+    if message_type == "workout_log" and not _pb_in_mode and _pb_onboarded:
         # The one-shot Workout row is the LEGACY writer. With the agent loop on, its
         # log_workout tool is the single writer (read-before-write, split day, sets) —
         # live 2026-09-11 (user 27, "I hit pull") this path wrote a bare
@@ -1462,7 +1468,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         set_session_state(user.id, "at_gym")
         threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
-    if message_type == "workout_request" and not _pb_in_mode:
+    if message_type == "workout_request" and not _pb_in_mode and _pb_onboarded:
         confirm_workout_today(user.id)
         set_session_state(user.id, "at_gym")
         threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
@@ -1470,7 +1476,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # Catch training-day confirmations that don't look like workout logs —
     # e.g. "yeah hitting legs today" in reply to the morning briefing.
     # Only fires if today's workout hasn't been confirmed yet.
-    if message_type == "freeform" and not is_workout_confirmed_today(user.id) and not _pb_in_mode:
+    if message_type == "freeform" and _pb_onboarded and not _pb_in_mode and not is_workout_confirmed_today(user.id):
         if _is_training_day_confirmation(body):
             confirm_workout_today(user.id)
             set_session_state(user.id, "at_gym")

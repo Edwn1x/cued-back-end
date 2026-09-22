@@ -124,11 +124,59 @@ BODYWEIGHT_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
 BODYWEIGHT_EQUIPMENT = {"bodyweight", "none", "no_equipment"}
 
 
+def _custom_template(entry) -> ExerciseTemplate | None:
+    """One row of users.custom_templates → ExerciseTemplate, or None if malformed.
+    Slugs are canonicalized (lowercase, underscores) so set-text updates and PR
+    history match the card. Malformed rows are skipped, never raised: the card must
+    still open for a user whose routine JSON has one bad line."""
+    if not isinstance(entry, dict):
+        return None
+    slug = str(entry.get("slug") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not slug:
+        return None
+    try:
+        sets = int(entry.get("sets") or 0)
+        reps = int(entry.get("reps") or 0)
+        weight = float(entry.get("default_weight") or 0)
+        step = float(entry.get("plate_step") if entry.get("plate_step") is not None else 5)
+        rep_step = int(entry.get("rep_step") or 0)
+    except (TypeError, ValueError):
+        return None
+    if sets <= 0 or reps <= 0:
+        return None
+    label = str(entry.get("label") or slug.replace("_", " ")).strip()
+    return ExerciseTemplate(slug, label, sets, reps, weight, step, rep_step)
+
+
+def custom_templates_for(user) -> dict[str, list[ExerciseTemplate]]:
+    """The user's own routine days from users.custom_templates, validated. Only known
+    split keys (push/pull/legs/upper/lower/full_body) are honored; a day whose rows
+    are all malformed is dropped so the global template still covers it."""
+    raw = getattr(user, "custom_templates", None)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[ExerciseTemplate]] = {}
+    for key, rows in raw.items():
+        k = normalize_template_key(key)
+        if not k or not isinstance(rows, list):
+            continue
+        exs = [t for t in (_custom_template(r) for r in rows) if t is not None]
+        if exs:
+            out[k] = exs
+    return out
+
+
 def templates_for(user) -> dict[str, list[ExerciseTemplate]]:
     """The template set for THIS user, by the typed equipment column (code decides,
-    never the model): bodyweight → BODYWEIGHT_TEMPLATES, everything else → TEMPLATES."""
+    never the model): bodyweight → BODYWEIGHT_TEMPLATES, everything else → TEMPLATES.
+    A user's own routine (users.custom_templates) overrides per split day — the
+    card shows THEIR push day, not the generic one; days they didn't give fall back."""
     eq = (getattr(user, "equipment", None) or "").strip().lower()
-    return BODYWEIGHT_TEMPLATES if eq in BODYWEIGHT_EQUIPMENT else TEMPLATES
+    base = BODYWEIGHT_TEMPLATES if eq in BODYWEIGHT_EQUIPMENT else TEMPLATES
+    custom = custom_templates_for(user)
+    if not custom:
+        return base
+    return {**base, **custom}
 
 
 def _all_templates():
