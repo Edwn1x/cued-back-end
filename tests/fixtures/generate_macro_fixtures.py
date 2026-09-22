@@ -158,8 +158,54 @@ def breakfast_scene(path):
     img.save(path)
 
 
+def _diary(path, *, macros: bool):
+    """A food-app diary screenshot (MyNetDiary-style) for the Aislinn photo fixes:
+    a 'Lunch' section with five printed lines and a printed total. `macros=False`
+    prints calories only — the printed-only case (blanks must stay NULL)."""
+    W, H = 640, 900
+    img = Image.new("RGB", (W, H), "#ffffff")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, W, 90], fill="#2f6fdf")
+    d.text((24, 26), "MyNetDiary", font=_font_bold(34), fill="white")
+    d.text((W - 24, 30), "Today", font=_font(26), fill="white", anchor="ra")
+    d.text((24, 120), "Lunch", font=_font_bold(36), fill="#222222")
+    d.text((W - 24, 128), "551 cal", font=_font_bold(30), fill="#222222", anchor="ra")
+    d.line([24, 170, W - 24, 170], fill="#dddddd", width=2)
+    rows = [
+        ("Sprouted multigrain bread, 2 slices", 160, 8, 30, 2),
+        ("Liquid egg whites, 130 g", 68, 14, 1, 0),
+        ("Herb roasted turkey breast, 2 servings", 120, 24, 2, 2),
+        ("American cheese, 1 slice", 70, 4, 2, 5),
+        ("Mini avocado + reduced-fat mayo", 133, 4, 9, 8),
+    ]
+    y = 190
+    for name, cal, p_, c_, f_ in rows:
+        d.text((24, y), name, font=_font(24), fill="#222222")
+        d.text((W - 24, y), f"{cal} cal", font=_font(24), fill="#222222", anchor="ra")
+        if macros:
+            d.text((24, y + 30), f"P {p_} g   C {c_} g   F {f_} g", font=_font(20), fill="#777777")
+        y += 76 if macros else 52
+    d.line([24, y + 6, W - 24, y + 6], fill="#dddddd", width=2)
+    y += 24
+    d.text((24, y), "Lunch total", font=_font_bold(26), fill="#222222")
+    d.text((W - 24, y), "551 cal", font=_font_bold(26), fill="#222222", anchor="ra")
+    if macros:
+        d.text((24, y + 40), "Protein 54 g   Carbs 44 g   Fat 17 g", font=_font(24), fill="#444444")
+    img.save(path)
+
+
+def diary_screenshot(path):
+    _diary(path, macros=True)
+
+
+def diary_calories_only(path):
+    _diary(path, macros=False)
+
+
 if __name__ == "__main__":
     nutrition_label(os.path.join(HERE, "nutrition_label.png"))
     plate_meal(os.path.join(HERE, "plate_meal.png"))
     breakfast_scene(os.path.join(HERE, "breakfast_scene.png"))
-    print("wrote nutrition_label.png, plate_meal.png, breakfast_scene.png")
+    diary_screenshot(os.path.join(HERE, "diary_screenshot.png"))
+    diary_calories_only(os.path.join(HERE, "diary_calories_only.png"))
+    print("wrote nutrition_label.png, plate_meal.png, breakfast_scene.png, diary_screenshot.png, diary_calories_only.png")

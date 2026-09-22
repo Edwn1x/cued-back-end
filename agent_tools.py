@@ -21,7 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 import config
 
-from models import (Message, get_session, User, Workout, Meal, Event, DiningMenuItem, active,
+from models import (Message, get_session, User, Workout, Meal, Event, DiningMenuItem, active, Signal,
                     recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
@@ -609,6 +609,10 @@ MANAGE_LOG_TOOL = {
                        "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"}; `date` moves "
                        "the event to a new day — 'today'/'tomorrow'/'YYYY-MM-DD' — keeping its "
                        "existing time unless starts_at/ends_at are also given in the same call)."},
+            "from_app": {"type": "string",
+                         "description": "edit only: the numbers come from a screenshot of THEIR food-app diary "
+                                        "(myfitnesspal | mynetdiary | cronometer | loseit | macrofactor | other). "
+                                        "Marks the row as app-reported and returns a PARITY line (your estimate vs theirs)."},
         },
         "required": ["action"],
     },
@@ -623,9 +627,18 @@ LOG_MEAL_TOOL = {
         "a genuine SECOND serving of something similar, log it and set saw_similar to "
         "the id(s) of the similar entries you saw (so the choice is auditable). If "
         "you're unsure whether it's a repeat, ask the user one short question before "
-        "logging — never guess in either direction. Include macros if you can estimate "
-        "them. For a multi-item plate ('chicken, rice, and a coke'), pass an `items` "
-        "list — one call is cheaper than several and less likely to truncate. If they're "
+        "logging — never guess in either direction. Give ALL FOUR macros (calories, "
+        "protein_g, carbs_g, fat_g — 0 is fine) on every estimate; code rejects an item "
+        "missing one, because a blank silently drops out of the day's totals. For a "
+        "multi-item plate ('chicken, rice, and a coke'), pass an `items` list — one call "
+        "is cheaper than several and less likely to truncate. Set portion_guessed=true on "
+        "any item whose PORTION you sized by eye (a photo: how many eggs, how much yogurt, "
+        "spread on toast) rather than from a stated amount or a printed number — the "
+        "result tells you which guesses to name so the user can fix them in one line. "
+        "A screenshot of THEIR food-app diary: pass from_app (the app id) and log ONLY the "
+        "printed numbers (a macro the screenshot doesn't show stays blank — never fill it "
+        "with a guess); code refuses to add a second row for a meal slot you already "
+        "estimated and tells you which row to manage_log-edit instead. If they're "
         "telling you about a meal from an EARLIER day ('last night's dinner', 'yesterday I "
         "had…'), pass `date` ('yesterday' or YYYY-MM-DD) so it lands on that day — never "
         "log a past meal as today (it would wrongly eat into today's remaining)."
@@ -639,20 +652,64 @@ LOG_MEAL_TOOL = {
             "protein_g": {"type": "integer"},
             "carbs_g": {"type": "integer"},
             "fat_g": {"type": "integer"},
+            "portion_guessed": {"type": "boolean",
+                                "description": "true when you sized the portion by eye (photo) — not stated, not printed"},
             "saw_similar": {"type": "array", "items": {"type": "integer"},
                             "description": "ids of similar already-logged meals you saw and judged to be a distinct serving"},
+            "from_app": {"type": "string",
+                         "description": "the numbers are printed in a screenshot of THEIR food-app diary: "
+                                        "myfitnesspal | mynetdiary | cronometer | loseit | macrofactor | other"},
+            "slot": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"],
+                     "description": "with from_app: the meal slot the screenshot labels (default: from the clock)"},
             "items": {"type": "array",
                       "description": "OR log several items at once: a list of "
-                                     "{description, calories?, protein_g?, carbs_g?, fat_g?, saw_similar?} objects.",
+                                     "{description, calories?, protein_g?, carbs_g?, fat_g?, portion_guessed?, saw_similar?} objects.",
                       "items": {"type": "object", "properties": {
                           "description": {"type": "string"},
                           "calories": {"type": "integer"}, "protein_g": {"type": "integer"},
                           "carbs_g": {"type": "integer"}, "fat_g": {"type": "integer"},
+                          "portion_guessed": {"type": "boolean"},
                           "saw_similar": {"type": "array", "items": {"type": "integer"}},
                       }, "required": ["description"]}},
         },
     },
 }
+
+
+_FOOD_APPS = ("myfitnesspal", "mynetdiary", "cronometer", "loseit", "macrofactor", "other")
+_MACRO_FIELDS = ("calories", "protein_g", "carbs_g", "fat_g")
+
+
+def _canon_app(value) -> str | None:
+    """Canonical food-app id from whatever the model passed ('MFP', 'my fitness pal',
+    'net diary'); unknown-but-present → 'other'; absent → None."""
+    if not value:
+        return None
+    v = re.sub(r"[^a-z]", "", str(value).lower())
+    for app in _FOOD_APPS:
+        if app in v:
+            return app
+    if "mfp" in v or "fitnesspal" in v:
+        return "myfitnesspal"
+    if "netdiary" in v or "netdairy" in v:
+        return "mynetdiary"
+    if "loseit" in v or "lose" in v:
+        return "loseit"
+    return "other"
+
+
+def _meal_slot(when_utc: datetime, tz) -> str:
+    """The local meal window a naive-UTC instant falls in (logger-bridge §3):
+    breakfast < 11:00, lunch 11:00–16:00, dinner ≥ 16:00."""
+    h = when_utc.replace(tzinfo=timezone.utc).astimezone(tz).hour
+    return "breakfast" if h < 11 else ("lunch" if h < 16 else "dinner")
+
+
+def _with_from_app_note(notes, app: str) -> str:
+    tag = f"from_app={app}"
+    if notes and tag in notes:
+        return notes
+    return f"{notes}; {tag}" if notes else tag
 
 
 def _day_total_suffix(user_id: int) -> str:
@@ -668,16 +725,27 @@ def _day_total_suffix(user_id: int) -> str:
         cal = u.calories_today or 0
         pro = u.protein_today or 0
         tgt = f", {u.protein_target - pro}g protein left of {u.protein_target}" if u.protein_target else ""
-        return f" | DAY TOTAL NOW: {cal} cal, {pro}g protein{tgt} — use this exact number"
+        return (f" | DAY TOTAL NOW: {cal} cal, {pro}g protein{tgt} — use this exact number"
+                + (" (quote the total; the protein-left figure is for when they ask, at the evening "
+                   "meal, or when planning what to eat — not a line after every log)" if tgt else ""))
     finally:
         session.close()
 
 
 def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Create Meal(s) (the model already did the read-before-write judgment) and
-    recompute today's totals ONCE. Accepts a single meal or an `items` list (a
-    multi-item plate). Records saw_similar so an intentional near-duplicate is
-    auditable and correctable via manage_log."""
+    """Create Meal(s) and recompute today's totals ONCE. Accepts a single meal or an
+    `items` list (a multi-item plate). Records saw_similar so an intentional
+    near-duplicate is auditable and correctable via manage_log.
+
+    Code-side guardrails (rewrite/aislinn-macro-photo/CHANGESPEC.md):
+    - §4 an estimate carries all four macros or nothing is written (a NULL silently
+      drops out of the day's carb/fat sums — live row 245).
+    - §3 a from_app (diary-screenshot) write into a meal slot that already holds a row
+      is refused with the id to edit — the Sep 19 double-log, moved from model
+      judgment to code.
+    - §1 portion_guessed → confidence='low' and the result names every guess so the
+      reply can list them in one line.
+    - §2 source is photo / text / app, from the turn state, not hard-coded."""
     items = tool_input.get("items")
     if not isinstance(items, list):
         items = [tool_input]           # single-meal form (backward compatible)
@@ -685,19 +753,35 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     if not items:
         return "error: description required"
 
+    from_app = _canon_app(tool_input.get("from_app"))
+    if not from_app:
+        # §4: all four macros on every ESTIMATE (app rows are printed-only, blanks allowed).
+        for it in items:
+            missing = [f for f in _MACRO_FIELDS if it.get(f) is None]
+            if missing:
+                logger.info("LOG_MEAL_MACROS_MISSING user=%s desc=%r missing=%s",
+                            user_id, it["description"][:40], missing)
+                return (f"error: '{it['description'].strip()}' needs calories, protein_g, carbs_g and "
+                        f"fat_g (0 is fine) — missing {', '.join(missing)}; a blank silently drops out "
+                        "of the day's totals. Re-call with all four for every item; nothing was logged.")
+
     # A past-day meal ("last night's dinner", reported this morning) is stamped on
     # THAT local day (noon local → UTC) so today's totals don't absorb it. Live
     # 2026-09-12: Friday's SF pizza logged as Saturday → "why is it 1450 cal, i just
     # woke up" → deleted instead of re-dated. Bad date → today (never lose a meal).
     date_str = (tool_input.get("date") or "").strip() or None
     when, is_today = _naive_utcnow(), True
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz_str = (user.user_timezone if user else None) or "America/Los_Angeles"
+    finally:
+        session.close()
+    try:
+        tz = ZoneInfo(tz_str)
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
     if date_str:
-        session = get_session()
-        try:
-            tz_str = (session.query(User.user_timezone).filter(User.id == user_id).first() or [None])[0]
-        finally:
-            session.close()
-        tz = ZoneInfo(tz_str or "America/Los_Angeles")
         try:
             local_day = _resolve_local_date(tz, date_str, strict=True)
             is_today = local_day == datetime.now(tz).date()
@@ -707,22 +791,71 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         except Exception:
             when, is_today = _naive_utcnow(), True
 
-    logged = []
+    if from_app:
+        # §3 slot check: the screenshot's meal slot must not already hold a row this
+        # call doesn't name in saw_similar. Same food, different words ("chicken" vs
+        # the app's "turkey") is exactly the case — so the test is the SLOT, not the name.
+        slot = (tool_input.get("slot") or "").strip().lower() or _meal_slot(when, tz)
+        seen = set()
+        for it in items + [tool_input]:
+            for sid in (it.get("saw_similar") or []):
+                try:
+                    seen.add(int(sid))
+                except (TypeError, ValueError):
+                    pass
+        from timefmt import local_day_bounds
+        session = get_session()
+        try:
+            user = session.get(User, user_id)
+            d_start, d_end = local_day_bounds(user, now=when)
+            rows = (active(session, Meal, user_id=user_id)
+                    .filter(Meal.eaten_at >= d_start, Meal.eaten_at < d_end)
+                    .order_by(Meal.eaten_at).all())
+            clash = [m for m in rows
+                     if slot != "snack" and _meal_slot(m.eaten_at, tz) == slot and int(m.id) not in seen]
+        finally:
+            session.close()
+        if clash:
+            def _why(m):
+                if m.source == "app":
+                    return "already from their app"
+                return "your own estimate" + (", portion guessed" if m.confidence == "low" else "")
+            listed = "; ".join(f"[id {m.id}] '{m.description}' {m.calories or 0}cal/{m.protein_g or 0}g "
+                               f"({_why(m)})" for m in clash)
+            ids = [int(m.id) for m in clash]
+            logger.info("LOG_MEAL_SLOT_REFUSED user=%s app=%s slot=%s ids=%s", user_id, from_app, slot, ids)
+            return (f"error: {slot} already has {listed}. A diary screenshot of the same meal IS that food "
+                    "even when the names differ (you guessed chicken, the app says turkey) — call "
+                    f"manage_log edit on id {ids[0]} with the printed numbers + description (pass from_app) "
+                    f"instead of logging again. Only if they ate BOTH, re-call log_meal with "
+                    f"saw_similar={ids}. Nothing was logged.")
+
+    from_photo = bool(_TURN_STATE.get(user_id, {}).get("has_image"))
+    source = "app" if from_app else ("photo" if from_photo else "text")
+
+    logged, guessed = [], []
     session = get_session()
     try:
         for it in items:
             saw = it.get("saw_similar") or []
+            notes = f"saw_similar={saw}" if saw else None
+            if from_app:
+                notes = _with_from_app_note(notes, from_app)
+            is_guess = bool(it.get("portion_guessed")) and not from_app
             meal = Meal(
                 user_id=user_id, description=it["description"].strip(),
                 calories=it.get("calories"), protein_g=it.get("protein_g"),
                 carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
-                source="text", log_type="user_reported",
-                notes=(f"saw_similar={saw}" if saw else None), eaten_at=when,
+                source=source, log_type="app_reported" if from_app else "user_reported",
+                confidence="high" if from_app else ("low" if is_guess else None),
+                notes=notes, eaten_at=when,
             )
             session.add(meal)
             session.flush()
             logged.append((meal.id, meal.description, it.get("calories") or 0,
                            it.get("protein_g") or 0, saw))
+            if is_guess:
+                guessed.append((meal.id, meal.description))
         session.commit()
     finally:
         session.close()
@@ -735,7 +868,18 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         if saw:
             logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
                         user_id, mid, saw)
-        logger.info("LOG_MEAL user=%s meal_id=%s desc=%r", user_id, mid, desc[:40])
+        logger.info("LOG_MEAL user=%s meal_id=%s source=%s desc=%r", user_id, mid, source, desc[:40])
+
+    tail = day
+    if from_app:
+        tail += f" | source: their {from_app} screenshot"
+    if guessed:
+        # §1 affordance-in-tool-result: the reply names EVERY guess in one line so the
+        # user corrects all of them at once (Sep 22: asked about two of four, three turns).
+        names = ", ".join(f"'{d}' [id {m}]" for m, d in guessed)
+        tail += (f" | portions guessed: {names} — say every guessed portion in ONE line so they can "
+                 "fix any of them at once (\"2 eggs, 3/4 cup yogurt, 2 toasts — fix any of those\"); "
+                 "a correction is a manage_log edit on that id")
 
     dated = f", dated {date_str}" if (date_str and not is_today) else ""
     if len(logged) == 1:
@@ -743,11 +887,11 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         # Include the description so the reply NAMES what was logged ("logged the chicken
         # wrap, ~650 cal 38g"), not just macros — the user asked to see what was recorded.
         return (f"ok: logged '{desc}' id={mid} ({cal}cal/{pro}g{dated})"
-                + (f" [saw_similar={saw}]" if saw else "") + day)
+                + (f" [saw_similar={saw}]" if saw else "") + tail)
     names = ", ".join(f"'{d}'" for _m, d, _c, _p, _s in logged)
     ids = [m for m, _d, _c, _p, _s in logged]
     total_cal = sum(c for _m, _d, c, _p, _s in logged)
-    return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)" + day
+    return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)" + tail
 
 
 LOG_EVENT_TOOL = {
@@ -1064,6 +1208,8 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         fields = tool_input.get("fields") or {}
         spec = _EDIT_FIELDS.get(entity, {})
         applied, audit, tz_str = {}, list(row.edits or []), None
+        from_app = _canon_app(tool_input.get("from_app")) if entity == "meal" else None
+        old_cal = getattr(row, "calories", None)
         # A day move (event_date) must land BEFORE a time move (event_time) in the
         # same call — event_time reads its target day off the row's CURRENT
         # occurred_at, so a combined {"date": ..., "starts_at": ...} edit only lands
@@ -1127,8 +1273,35 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                           "old": _ser(old), "new": _ser(newval)})
             setattr(row, column, newval)
             applied[mfield] = _ser(newval)
+        if from_app:
+            # logger-bridge §3: the diary screenshot's numbers replace the estimate on THIS
+            # row — provenance flips to app-reported, and the row keeps its history.
+            for col, val in (("source", "app"), ("log_type", "app_reported"), ("confidence", "high")):
+                if getattr(row, col) != val:
+                    audit.append({"at": _naive_utcnow().isoformat(), "field": col,
+                                  "old": _ser(getattr(row, col)), "new": val})
+                    setattr(row, col, val)
+            row.notes = _with_from_app_note(row.notes, from_app)
+            applied["from_app"] = from_app
         if not applied:
             return f"error: no editable fields in {list(fields)} for {entity}"
+        parity = ""
+        if from_app and old_cal and "calories" in applied and row.calories is not None:
+            # logger-bridge §5 (the suffix only): code computes the miss, the model says it.
+            delta = round((row.calories - old_cal) * 100 / old_cal)
+            sign = f"{delta:+d}%" if delta else "0%"
+            session.add(Signal(user_id=user_id, kind="parity", source=from_app,
+                              payload={"meal_id": int(row.id), "cued_cal": int(old_cal),
+                                       "app_cal": int(row.calories), "delta_pct": delta}))
+            if abs(delta) <= 15:
+                parity = (f" | PARITY: you had this at {old_cal} cal, their app says {row.calories} "
+                          f"({sign}) — close; mention it once if it fits, don't make a thing of it")
+            else:
+                parity = (f" | PARITY: you had this at {old_cal} cal, their app says {row.calories} "
+                          f"({sign}) — say which way you were off, plainly, in one clause; never "
+                          "argue with the app's number")
+            logger.info("PARITY user=%s meal_id=%s cued=%s app=%s delta=%s%%", user_id, row.id,
+                        old_cal, row.calories, delta)
         row.edits = audit
         flag_modified(row, "edits")
         session.commit()
@@ -1138,7 +1311,7 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             _clear_pending_writeback(user_id, entry_id)
             day = _day_total_suffix(user_id)  # fresh total after the edit, so the coach quotes it
         logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
-        return f"ok: edited {entity} id={entry_id} ({applied})" + day
+        return f"ok: edited {entity} id={entry_id} ({applied})" + day + parity
     finally:
         session.close()
 
