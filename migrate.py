@@ -367,6 +367,8 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS imessage_opted_in_at TIMESTAMP",
     # 2026-09-20: the sign-up chat collects the full name for us; `name` stays first-only.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200)",
+    # Per-user routine override for the workout card (user 42's pasted PPL, 2026-09-22)
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_templates JSON",
 ]
 
 def wait_for_db(retries=10, delay=3):

@@ -141,13 +141,15 @@ def _parse_hour(s) -> int | None:
 def _quiet_window(user) -> tuple[int, int]:
     """The overnight quiet window (start_evening_hour, end_morning_hour), local. The
     default 9pm–8am is a FLOOR: a parseable sleep_time earlier than 9pm or a wake_time
-    later than 8am only EXTENDS it (more protective), never shrinks it."""
+    later than 8am (up to 2pm) only EXTENDS it (more protective), never shrinks it."""
     start, end = config.HEARTBEAT_QUIET_START_HOUR, config.HEARTBEAT_QUIET_END_HOUR
     hs = _parse_hour(getattr(user, "sleep_time", None))
     hw = _parse_hour(getattr(user, "wake_time", None))
     if hs is not None and 12 <= hs <= 23 and hs < start:   # sleeps earlier than 9pm
         start = hs
-    if hw is not None and 0 <= hw <= 11 and hw > end:      # wakes later than 8am
+    # Up to 2pm: a 1pm waker (live 2026-09-22, user 42: sleeps 4am, up 1pm) was
+    # capped at the noon boundary and could be texted at 9am while asleep.
+    if hw is not None and 0 <= hw <= 14 and hw > end:      # wakes later than 8am
         end = hw
     return start, end
 

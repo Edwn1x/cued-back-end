@@ -277,7 +277,7 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         if _is_consent_gate(e):
             logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
                         "their line yet; falling over to SMS", user_id, message_type)
-            if message_type == "onboarding":
+            if message_type in ("onboarding", "onboarding_bigask"):
                 body = _with_imessage_invite(user_id, body)
         else:
             logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",

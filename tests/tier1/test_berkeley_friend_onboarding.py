@@ -122,7 +122,9 @@ def test_first_reply_is_one_friend_message_and_advances_to_step_2(db, anthropic_
     ins = seen["instruction"]
     assert "ONE question" in ins and "pick it before you write" in ins
     assert "drop" not in ins.lower() and "everything" not in ins.lower()
-    assert seen["system"].startswith(onboarding_agent._build_system_prompt(user)[:200])
+    # system is a cached block list since PR A (static head cached, per-turn tail not)
+    system_text = seen["system"] if isinstance(seen["system"], str) else "".join(b["text"] for b in seen["system"])
+    assert system_text.startswith(onboarding_agent._build_system_prompt(user)[:200])
 
 
 # ── 3. web_search: one definition, every surface, capped at 2, every query logged ──

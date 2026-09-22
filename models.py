@@ -120,6 +120,11 @@ class User(Base):
     active_meal_id = Column(Integer, default=None)    # FK to meals.id — meal currently being discussed/refined
     active_meal_updated_at = Column(DateTime, default=None)  # last touch of the active meal context
     session_state = Column(JSON, default=None)  # {"status": "at_gym"|"logging_food"|"sleeping", "started_at": ISO, ...}
+    # The user's OWN routine, per split day, overriding the global templates on the
+    # workout card: {"push": [{"slug","label","sets","reps","default_weight","plate_step","rep_step"}], ...}.
+    # Live 2026-09-22 (user 42): a pasted six-day PPL survived only as "follows PPL" —
+    # the card would have shown the generic bench/incline/fly day. See workouts/templates.py.
+    custom_templates = Column(JSON, default=None)
 
     # Berkeley-specific profile fields
     which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus
