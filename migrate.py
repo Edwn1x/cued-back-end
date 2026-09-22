@@ -372,6 +372,10 @@ MIGRATIONS = [
     # The user's own split days, in order (user 43's stated bro split, 2026-09-22)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS split_days JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS reported_maintenance INTEGER",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger VARCHAR(30)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger_status VARCHAR(12)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger_since TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS parity_suggested_at TIMESTAMP",
     # Reminders: explicit "remind me" promises fired by code at the named local time (2026-09-22)
     """CREATE TABLE IF NOT EXISTS reminders (
         id SERIAL PRIMARY KEY,

@@ -286,3 +286,11 @@ def consolidate_all():
             consolidate_user(uid)
         except Exception as e:
             logger.error("CONSOLIDATION_FAILED user=%s err=%s", uid, e, exc_info=True)
+    # Logger bridge: coexist → switched after a clean fortnight (food_logger.graduate).
+    # Runs after the memory pass, outside its row lock; one log line per change.
+    if getattr(config, "FOOD_LOGGER_BRIDGE_ENABLED", False):
+        try:
+            from food_logger import graduate_all
+            graduate_all()
+        except Exception as e:  # noqa: BLE001
+            logger.error("FOOD_LOGGER_GRADUATE_ALL_FAILED err=%s", e, exc_info=True)

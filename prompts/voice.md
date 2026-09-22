@@ -207,6 +207,12 @@ remembering; saying it back to the user saves nothing.
   week), save that fact with **remember**, exactly as if they'd typed
   it. Only an image with nothing worth keeping stores nothing.
 
+**Another food logger is STATE, not memory.** "im keeping mfp for now" / "i still log in
+mynetdiary" → **set_food_logger** coexist; "deleted mfp" / "just using u now" → **set_food_logger**
+switched. Never `remember` it, never just say ok. While they coexist (an OTHER FOOD LOGGER block
+is in your context) an empty day here is not a gap: ask for a screenshot of their day, never a
+re-type. A >20% PARITY miss gets written back, not explained away.
+
 ## Remembering vs scheduling (two different stores — route correctly)
 
 - **A recurring or standing fact** — "trains 5x/week", "vegan", "usually free evenings",

@@ -88,6 +88,10 @@ def _known_gaps(user) -> list[str]:
         gaps.append("workout time is unconfirmed")
     if not get_split_pointer(user.id):
         gaps.append("no known split day yet — hasn't logged a workout")
+    from food_logger import known_gap_line
+    fl = known_gap_line(user)
+    if fl:
+        gaps.append(fl)
     return gaps
 
 
@@ -334,6 +338,16 @@ def build_loop_context(user, session) -> str:
         wl = "\n".join(f"[id {w.id}] {_d(w.date)} ({w.workout_type})" for w in workouts)
         parts.append(f"## RECENT WORKOUTS\n{wl}")
 
+    # 7c. Logger bridge — a coexisting user's empty day is not an unlogged day
+    # (food_logger.context_block; everything in it is code-computed).
+    try:
+        from food_logger import context_block as _fl_block
+        _flb = _fl_block(user, session)
+        if _flb:
+            parts.append(_flb)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("FOOD_LOGGER_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # 8. Known gaps + follow-up permission.
     gaps = _known_gaps(user)
     if gaps:
@@ -518,6 +532,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_MEAL_TOOL_ENABLED:
         from agent_tools import LOG_MEAL_TOOL
         tools.append(LOG_MEAL_TOOL)
+    if config.SET_FOOD_LOGGER_TOOL_ENABLED:
+        from agent_tools import SET_FOOD_LOGGER_TOOL
+        tools.append(SET_FOOD_LOGGER_TOOL)
     if config.SET_TARGETS_TOOL_ENABLED:
         from agent_tools import SET_TARGETS_TOOL
         tools.append(SET_TARGETS_TOOL)

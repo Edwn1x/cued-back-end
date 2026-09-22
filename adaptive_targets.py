@@ -254,6 +254,10 @@ def todays_adjustment_context(user, session) -> str:
         return (f"## TARGET CHANGED TODAY\n{row.old_target} → {row.new_target} cal. Reason: {row.reason}. "
                 "Mention it ONCE, in your words, no lecture — it's the scale talking, not you. If they "
                 "push back, hold the number and explain; set_targets still allows their pick within 15%.")
+    if getattr(user, "food_logger_status", None) == "coexist":
+        return (f"## TARGET CHECK TODAY (no change)\nStayed at {row.old_target}. Why: {row.reason}. "
+                "They log in another app: the fix is a screenshot of each day so those meals count "
+                "here too — say that once, plainly. Don't nag.")
     return (f"## TARGET CHECK TODAY (no change)\nStayed at {row.old_target}. Why: {row.reason}. "
             "If it's a logging gap, say so once, plainly, and what would fix it. Don't nag.")
 
