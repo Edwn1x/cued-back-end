@@ -242,6 +242,14 @@ def todays_adjustment_context(user, session) -> str:
            .order_by(TargetAdjustment.at.desc()).first())
     if not row:
         return ""
+    if row.changed and (row.reason or "").startswith("calculator update"):
+        return (f"## TARGET CHANGED TODAY (a fix on our side, not the scale)\n"
+                f"{row.old_target} → {row.new_target} cal. Detail: {row.reason}. "
+                "Tell them ONCE, plainly and in your words, that you re-ran their numbers with a "
+                "better formula and this is where they land now — say the new calorie AND protein "
+                "targets, and that the old protein number was too high for the budget. Own it (\"my "
+                "numbers were off\"), no apology spiral, no lecture. If they push back, set_targets "
+                "still allows their pick within 15%. Never call it a diet, deficit or cut with a minor.")
     if row.changed:
         return (f"## TARGET CHANGED TODAY\n{row.old_target} → {row.new_target} cal. Reason: {row.reason}. "
                 "Mention it ONCE, in your words, no lecture — it's the scale talking, not you. If they "

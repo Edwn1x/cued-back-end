@@ -331,10 +331,23 @@ def recompute_targets(user_id: int) -> dict:
             user.protein_target = t["protein"]
             user.targets_source = "computed"
         new = (user.calorie_target, user.protein_target)
+        changed = old != new
+        if changed:
+            # Leave the same record the biweekly cycle leaves, so the coach explains it
+            # through the existing TARGET CHANGED TODAY path (adaptive_targets.
+            # todays_adjustment_context) in its own voice — once, plainly. The reason
+            # is prefixed so that block can say "a fix on our side", not "the scale".
+            from models import TargetAdjustment
+            limits = f", limit: {', '.join(t['goal_limits'])}" if t["goal_limits"] else ""
+            session.add(TargetAdjustment(
+                user_id=user_id, old_target=old[0], new_target=new[0], changed=True,
+                reason=(f"calculator update ({t['bmr_formula']} maintenance {t['tdee']}, "
+                        f"{t['goal_pct']:+.0%} goal rule{limits}); protein {old[1]} → {new[1]}g")[:300],
+            ))
         session.commit()
         logger.info("TARGETS_RECOMPUTED user=%s %s -> %s formula=%s tdee=%s pct=%+.2f limits=%s",
                     user_id, old, new, t["bmr_formula"], t["tdee"], t["goal_pct"], t["goal_limits"])
-        return {"old": old, "new": new, "changed": old != new, "tdee": t["tdee"],
+        return {"old": old, "new": new, "changed": changed, "tdee": t["tdee"],
                 "formula": t["bmr_formula"]}
     finally:
         session.close()

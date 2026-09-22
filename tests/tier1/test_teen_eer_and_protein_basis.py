@@ -288,3 +288,28 @@ def test_goal_profile_estimates_fat_when_not_given():
     assert 48 <= p["ffm_kg"] <= 52 and p["trains"] and p["age"] == 16
     p2 = goal_profile(_u(**dict(AISLINN, body_fat_pct=40)))
     assert abs(p2["fat_mass_lb"] - 172.6 * 0.40) < 0.01           # a given number wins
+
+
+def test_recompute_leaves_a_target_adjustment_the_coach_explains(db):
+    from models import TargetAdjustment, get_session, User
+    from adaptive_targets import todays_adjustment_context
+    user = make_user(db, onboarding_step=3, calorie_target=1400, protein_target=173,
+                     targets_source="computed", **AISLINN)
+    recompute_targets(user.id)
+    s = get_session()
+    try:
+        rows = s.query(TargetAdjustment).filter(TargetAdjustment.user_id == user.id).all()
+        assert len(rows) == 1 and rows[0].changed and rows[0].old_target == 1400 and rows[0].new_target == 1750
+        assert rows[0].reason.startswith("calculator update") and "protein 173 → 137g" in rows[0].reason
+        ctx = todays_adjustment_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+    assert ctx.startswith("## TARGET CHANGED TODAY (a fix on our side") and "1400 → 1750" in ctx
+    assert "protein" in ctx and "never call it a diet" in ctx.lower()
+    # an unchanged row writes nothing
+    assert recompute_targets(user.id)["changed"] is False
+    s = get_session()
+    try:
+        assert s.query(TargetAdjustment).filter(TargetAdjustment.user_id == user.id).count() == 1
+    finally:
+        s.close()
