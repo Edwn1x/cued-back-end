@@ -509,6 +509,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)
+    if config.REMINDERS_ENABLED:
+        from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL
+        tools.extend([SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL])
     if config.GET_DINING_MENU_TOOL_ENABLED:
         from agent_tools import GET_DINING_MENU_TOOL
         tools.append(GET_DINING_MENU_TOOL)

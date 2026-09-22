@@ -78,6 +78,11 @@ def _events_logged(session, user):
     return active(session, Event, user_id=user.id).first() is not None
 
 
+def _reminders_set(session, user):
+    from models import Reminder
+    return session.query(Reminder.id).filter(Reminder.user_id == user.id).first() is not None
+
+
 def _weighed_in(session, user):
     from models import WeightLog
     return session.query(WeightLog.id).filter(WeightLog.user_id == user.id).first() is not None
@@ -181,6 +186,16 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 5,
         used=None,
         reveal_when="never as a pitch — show it by using it",
+    ),
+    Capability(
+        id="reminders",
+        what="i can text you at a set time — after class to go run, at 7 to take creatine",
+        how="say 'remind me to X after class' or 'ping me at 7' and it'll show up on time",
+        tools=("set_reminder", "cancel_reminder"),
+        enabled=lambda u: config.REMINDERS_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
+        used=_reminders_set,
+        reveal_when="they mention forgetting things, or a fixed daily/weekly slot they want held",
     ),
     Capability(
         id="calendar",

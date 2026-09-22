@@ -990,6 +990,25 @@ def recompute_daily_totals(user_id: int):
         session.close()
 
 
+class Reminder(Base):
+    """An explicit "remind me" the coach promised. fire_at is naive UTC, code-computed
+    from local_time in the user's timezone; recurring rows (recur_days 'tue,thu') re-arm
+    after each send, one-offs deactivate. See reminders.py."""
+    __tablename__ = "reminders"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    text = Column(String(300), nullable=False)
+    local_time = Column(String(5), nullable=False)       # 'HH:MM' local
+    recur_days = Column(String(30), default=None)        # 'tue,thu' | None (one-off)
+    fire_at = Column(DateTime, nullable=False, index=True)
+    source = Column(String(20), default="model")         # model | onboarding | admin
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_sent_at = Column(DateTime, default=None)
+    sent_count = Column(Integer, default=0)
+    cancelled_at = Column(DateTime, default=None)
+
+
 def init_db():
     """Create all tables."""
     Base.metadata.create_all(engine)

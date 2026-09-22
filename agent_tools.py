@@ -763,6 +763,63 @@ LOG_EVENT_TOOL = {
 }
 
 
+SET_REMINDER_TOOL = {
+    "name": "set_reminder",
+    "description": (
+        "Promise to text them at a specific LOCAL time — and keep it: code sends the "
+        "reminder at that time, independent of anything else. Use this the moment they "
+        "ask to be reminded / pinged / texted at or after something ('remind me to run "
+        "after class', 'ping me at 7 to take creatine', 'text me when class is over'). "
+        "Give `days` for a standing ask (Tue/Thu after class) or `date` for a one-off. "
+        "Never say 'i'll ping u' without calling this — a reminder that isn't set won't "
+        "happen. Time is 24h 'HH:MM' in their local time."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "what to remind them of, from their side: 'go run', 'take creatine'"},
+            "time": {"type": "string", "description": "local time 'HH:MM' (24h)"},
+            "days": {"type": "array", "items": {"type": "string"},
+                     "description": "recurring weekdays, e.g. ['tue','thu']; omit for a one-off"},
+            "date": {"type": "string", "description": "one-off: 'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+        },
+        "required": ["text", "time"],
+    },
+}
+
+CANCEL_REMINDER_TOOL = {
+    "name": "cancel_reminder",
+    "description": "Cancel a reminder they no longer want (ids are in the REMINDERS block of your context).",
+    "input_schema": {"type": "object", "properties": {"reminder_id": {"type": "integer"}},
+                     "required": ["reminder_id"]},
+}
+
+
+def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from reminders import create_reminder, describe, _tz
+    r = create_reminder(user_id, tool_input.get("text"), tool_input.get("time"),
+                        days=tool_input.get("days"), date_str=tool_input.get("date"), source="model")
+    if "error" in r:
+        return f"error: {r['error']}"
+    session = get_session()
+    try:
+        from models import Reminder
+        row = session.get(Reminder, r["id"])
+        user = session.get(User, user_id)
+        return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None))}"
+    finally:
+        session.close()
+
+
+def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from reminders import cancel_reminder
+    try:
+        rid = int(tool_input.get("reminder_id"))
+    except (TypeError, ValueError):
+        return "error: reminder_id required"
+    return "ok: cancelled" if cancel_reminder(user_id, rid) else "error: no active reminder with that id"
+
+
 def _resolve_local_date(tz: ZoneInfo, date_str, *, strict: bool = False) -> date:
     """Resolve 'today' (default) / 'tomorrow' / 'YYYY-MM-DD' to a date in tz.
     Non-strict (log_event): unparseable input silently falls back to today, the
@@ -1594,6 +1651,8 @@ _HANDLERS = {
     "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
     "log_event": handle_log_event,
+    "set_reminder": handle_set_reminder,
+    "cancel_reminder": handle_cancel_reminder,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
     "match_dining_item": handle_match_dining_item,
