@@ -476,9 +476,14 @@ _MACRO_NUMBER_RE = re.compile(r"\b\d[\d,]{0,4}\s?(?:k?cal(?:ories)?|g\b|grams?\b
 
 
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
-                   message_id: str = None) -> str:
+                   message_id: str = None, image_data_list: list = None) -> str:
     """One agentic turn → the reply text. Raises only on genuine anomalies (caller
     falls back to legacy); truncation and the iteration bound degrade gracefully."""
+    # Multi-image: the user may have sent several photos (product + its label). The
+    # model sees ALL of them; image_data stays the PRIMARY (first) for the single-image
+    # signals below (estimation prompt, receipt pre-classifier, has_image marker).
+    images = image_data_list if image_data_list else ([image_data] if image_data else [])
+    image_data = images[0] if images else None
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -533,8 +538,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if image_data and config.READ_IMAGE_ENABLED:
         # The model sees the image and routes it in-call (food/calendar/whiteboard/
         # other) — no pre-classifier beyond the receipt check. Log the receipt as corpus.
-        logger.info("AGENT_LOOP_IMAGE user=%s — vision routing (read_image corpus marker)", user.id)
-        user_content = [image_data, {"type": "text", "text": combined_body or "(the user sent an image)"}]
+        logger.info("AGENT_LOOP_IMAGE user=%s images=%d — vision routing (read_image corpus marker)",
+                    user.id, len(images))
+        caption = combined_body or ("(the user sent an image)" if len(images) == 1
+                                    else f"(the user sent {len(images)} images)")
+        user_content = [*images, {"type": "text", "text": caption}]
     elif image_data:
         # read_image off: don't send vision; note it so the coach can ask, never invent.
         user_content = ((combined_body or "")

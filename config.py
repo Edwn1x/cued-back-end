@@ -243,6 +243,13 @@ RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5"
 # "couldn't read the photo" reply looped. Give it real headroom; on truncation we
 # now detect stop_reason and ask for the items instead of blaming the photo.
 RECEIPT_EXTRACTOR_MAX_TOKENS = int(os.getenv("RECEIPT_EXTRACTOR_MAX_TOKENS", "8000"))
+# Multi-image inbound: a user can send several photos at once (a product front +
+# its nutrition label, or a few dishes) — the model should see ALL of them, not
+# just the first. image_data stays the PRIMARY (first) image for single-image
+# signals/paths; a parallel list carries the rest to the vision call. Capped to
+# bound tokens/cost (~1–1.5k tokens/image). Flag off = first-image-only (legacy).
+MULTI_IMAGE_ENABLED = os.getenv("MULTI_IMAGE_ENABLED", "true").lower() == "true"
+MAX_INBOUND_IMAGES = int(os.getenv("MAX_INBOUND_IMAGES", "5"))
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public

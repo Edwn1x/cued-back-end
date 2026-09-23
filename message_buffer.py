@@ -11,6 +11,8 @@ import random
 import logging
 from datetime import datetime, timezone
 
+import config
+
 logger = logging.getLogger("cued.buffer")
 
 # In-memory buffer: phone_number -> {"messages": [...], "timer": Timer, "user_id": int}
@@ -28,7 +30,8 @@ def _get_delay():
 
 
 def buffer_message(phone: str, body: str, user_id: int, message_type: str,
-                   image_url: str = None, process_callback=None, delay_override: tuple = None):
+                   image_url: str = None, process_callback=None, delay_override: tuple = None,
+                   images: list = None):
     """
     Add a message to the buffer for this phone number.
     If a timer is already running, cancel it and restart.
@@ -46,6 +49,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 "body": body,
                 "message_type": message_type,
                 "image_url": image_url,
+                "images": images if images else ([image_url] if image_url else []),
                 "received_at": datetime.now(timezone.utc).isoformat(),
             })
             logger.info(f"Appended to buffer for {phone} ({len(_buffers[phone]['messages'])} messages)")
@@ -56,6 +60,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                     "body": body,
                     "message_type": message_type,
                     "image_url": image_url,
+                    "images": images if images else ([image_url] if image_url else []),
                     "received_at": datetime.now(timezone.utc).isoformat(),
                 }],
                 "user_id": user_id,
@@ -94,18 +99,26 @@ def _flush_buffer(phone: str, process_callback):
             message_type = m["message_type"]
             break
 
-    # Use the last image if any message had one
-    image_url = None
+    # Combine images across every buffered message (someone firing off several photos
+    # in a row → one turn that sees them all), capped. image_url stays the FIRST for
+    # the single-image callback arg; images carries the whole set.
+    images = []
     for m in messages:
-        if m["image_url"]:
-            image_url = m["image_url"]
+        for img in (m.get("images") or ([m["image_url"]] if m.get("image_url") else [])):
+            if img is not None and img not in images:
+                images.append(img)
+    if config.MULTI_IMAGE_ENABLED:
+        images = images[:config.MAX_INBOUND_IMAGES]
+    else:
+        images = images[:1]
+    image_url = images[0] if images else None
 
-    logger.info(f"Flushing buffer for {phone}: {len(messages)} messages combined -> '{combined_body[:80]}...'")
+    logger.info(f"Flushing buffer for {phone}: {len(messages)} messages combined -> '{combined_body[:80]}...' images={len(images)}")
 
     # Call the processing function
     if process_callback:
         try:
-            process_callback(user_id, combined_body, message_type, image_url)
+            process_callback(user_id, combined_body, message_type, image_url, images=images)
         except Exception as e:
             logger.error(f"Error processing buffered messages for {phone}: {e}", exc_info=True)
 
