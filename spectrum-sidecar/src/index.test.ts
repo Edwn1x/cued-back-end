@@ -336,6 +336,50 @@ describe("buildInbound", () => {
     expect(out!.payload.text).toBe("yes that one");
   });
 
+  test("group bundle: a photo sent WITH a caption → one inbound, caption text + the image", async () => {
+    const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    let reads = 0;
+    const msg = fakeMessage({
+      content: {
+        type: "group",
+        items: [
+          { content: { type: "attachment", id: "a1", name: "receipt.jpeg", mimeType: "image/jpeg", size: 4,
+                       read: async () => { reads += 1; return bytes; } } },
+          { content: { type: "text", text: "Went grocery shopping earlier" } },
+        ],
+      },
+    });
+    const out = await buildInbound(fakeSpace, msg);
+    expect(out).not.toBeNull();
+    expect(reads).toBe(1);
+    expect(out!.payload.text).toBe("Went grocery shopping earlier");
+    expect(out!.files).toHaveLength(1);
+    expect(out!.payload.attachments).toEqual([{ name: "receipt.jpeg", mime_type: "image/jpeg", size: 4 }]);
+  });
+
+  test("group bundle: TWO photos at once → one inbound with both attachments, empty text", async () => {
+    const b1 = Buffer.from([1, 2]); const b2 = Buffer.from([3, 4, 5]);
+    const msg = fakeMessage({
+      content: {
+        type: "group",
+        items: [
+          { content: { type: "attachment", id: "a1", name: "bar.jpeg", mimeType: "image/jpeg", read: async () => b1 } },
+          { content: { type: "attachment", id: "a2", name: "label.jpeg", mimeType: "image/jpeg", read: async () => b2 } },
+        ],
+      },
+    });
+    const out = await buildInbound(fakeSpace, msg);
+    expect(out!.payload.text).toBe("");
+    expect(out!.files).toHaveLength(2);
+    expect(out!.files.map((f) => f.name)).toEqual(["bar.jpeg", "label.jpeg"]);
+  });
+
+  test("group bundle with no forwardable items is skipped", async () => {
+    const msg = fakeMessage({ content: { type: "group", items: [{ content: { type: "typing" } }] } });
+    expect(await buildInbound(fakeSpace, msg)).toBeNull();
+    expect(await buildInbound(fakeSpace, fakeMessage({ content: { type: "group", items: [] } }))).toBeNull();
+  });
+
   test("a reaction is forwarded with its emoji and target id (workout tapbacks, Phase 5)", async () => {
     const built = await buildInbound(fakeSpace, fakeMessage({ content: { type: "reaction", emoji: "👍", target: { id: "spc-msg-ex-1" } } }));
     expect(built).not.toBeNull();
