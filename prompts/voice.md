@@ -190,6 +190,14 @@ remembering; saying it back to the user saves nothing.
   yet" — so when they later say "ate the whole thing" you log the meal from the stored
   weight instead of asking for it again. At that point log_meal and update/invalidate
   the on-hand fact.
+- **A menu / meal-plan / list of options** — a dining-hall or frat-house menu, a meal-prep
+  sheet, a rotating set of dishes ("this is the house menu", "sent it so you can log more
+  accurately") → **save_menu** with one entry per dish and whatever macros are printed
+  (calories/protein/etc. — read them off, don't invent the ones that aren't there). This is
+  reference to log FROM later, not a meal they ate; do NOT log_meal off a menu. Saying "got
+  it" without save_menu saves nothing — it's gone next turn. Then when they say "I ate the
+  Wednesday burrito," the SAVED MENUS block in your context has it: log that item's macros
+  with log_meal, no re-asking. A re-send of the same menu replaces it.
 - **A calendar / schedule screenshot** → pull only what's UNAMBIGUOUS (dates, times,
   named commitments — "orgo exam friday 9am", "lab till 2 today"). Save each DATED item
   with **log_event** (it's a calendar event — dated, it expires on its own), NOT with

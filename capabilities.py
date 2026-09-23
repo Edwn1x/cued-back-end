@@ -112,6 +112,10 @@ def _sent_a_photo(session, user):
                     Message.body.contains(IMAGE_MARKER)).first() is not None)
 
 
+def _menu_saved(session, user):
+    return bool(getattr(user, "saved_menus", None))
+
+
 CAPABILITIES: list[Capability] = [
     Capability(
         id="log_meals",
@@ -162,6 +166,16 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 9 if "dining" in (getattr(u, "cooking_situation", "") or "").lower() else 3,
         used=None,
         reveal_when="they mention a dining hall or ask what to eat on campus",
+    ),
+    Capability(
+        id="saved_menus",
+        what="send me your spot's menu once — your dorm, house, or a meal-prep list — and i log from it after",
+        how="text me the menu (a pic works); when you eat something off it i log the right macros without asking",
+        tools=("save_menu",),
+        enabled=lambda u: config.SAVE_MENU_TOOL_ENABLED,
+        relevance=lambda u: 6,
+        used=_menu_saved,
+        reveal_when="they mention a set menu, house/frat meals, or a meal plan they eat off of",
     ),
     Capability(
         id="receipts",

@@ -131,6 +131,11 @@ def build_loop_context(user, session) -> str:
         parts.append(diet)
     if (user.food_context or "").strip():
         parts.append(f"Food context: {user.food_context.strip()}")
+    if config.SAVE_MENU_TOOL_ENABLED:
+        from saved_menus import render_menus_block
+        menus = render_menus_block(getattr(user, "saved_menus", None))
+        if menus:
+            parts.append(menus)
 
     # 3. Events, lifecycle-aware (memory-freshness Fix 1). Upcoming vs passed is a
     # FACT computed from the row's datetimes — the model must never infer it from a
@@ -576,6 +581,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SET_DAY_RESET_TOOL_ENABLED:
         from agent_tools import SET_DAY_RESET_TOOL
         tools.append(SET_DAY_RESET_TOOL)
+    if config.SAVE_MENU_TOOL_ENABLED:
+        from agent_tools import SAVE_MENU_TOOL
+        tools.append(SAVE_MENU_TOOL)
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])

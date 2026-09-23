@@ -230,6 +230,14 @@ LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() =
 # Lets the coach shift a user's nutrition-day rollover hour when they explicitly ask
 # (default day stays midnight for everyone). On — it only acts on an explicit request.
 SET_DAY_RESET_TOOL_ENABLED = os.getenv("SET_DAY_RESET_TOOL_ENABLED", "true").lower() == "true"
+# save_menu: persist a menu / meal-plan / list of options a user sends "so you can log
+# accurately later" (a dining-hall, frat-house, or meal-prep menu) into a per-user
+# saved_menus JSON, surfaced every turn so "I ate the Wednesday burrito" logs from the
+# saved macros instead of being read once and lost. TTL-aged (menus go stale), capped.
+SAVE_MENU_TOOL_ENABLED = os.getenv("SAVE_MENU_TOOL_ENABLED", "true").lower() == "true"
+SAVED_MENU_TTL_DAYS = int(os.getenv("SAVED_MENU_TTL_DAYS", "14"))
+SAVED_MENU_MAX = int(os.getenv("SAVED_MENU_MAX", "5"))            # most-recent N kept
+SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"

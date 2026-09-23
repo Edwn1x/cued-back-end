@@ -2089,9 +2089,65 @@ def handle_set_day_reset(user_id: int, tool_input: dict, *, message_id=None) -> 
     return f"ok: nutrition day now resets at {hour}am local — meals before then count for the previous day"
 
 
+SAVE_MENU_TOOL = {
+    "name": "save_menu",
+    "description": (
+        "Persist a MENU / meal-plan / list of options the user sent you to keep — a dining-"
+        "hall or frat-house menu, a meal-prep list, a rotating set of options — so you can "
+        "log accurately LATER when they say they ate one of them. Call this the turn the menu "
+        "arrives (photo or text); reading it into your reply saves NOTHING — it's gone next "
+        "turn unless you save it here. `name` = a short label ('frat house lunch', 'dining "
+        "hall dinner'). `items` = one entry per dish with whatever you can read: `item` "
+        "(required) plus `calories`, `protein_g`, `carbs_g`, `fat_g`, and a short `note` "
+        "(key ingredients) when they're on the menu — put macros you can actually read, omit "
+        "the ones you can't (don't invent them). Re-sending the same menu REPLACES it. This "
+        "is for reference options to log from, NOT a meal they ate (that's log_meal)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "short menu label, e.g. 'frat house lunch'"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item": {"type": "string"},
+                        "calories": {"type": "integer"},
+                        "protein_g": {"type": "integer"},
+                        "carbs_g": {"type": "integer"},
+                        "fat_g": {"type": "integer"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["item"],
+                },
+            },
+        },
+        "required": ["name", "items"],
+    },
+}
+
+
+def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Persist a user-sent menu so later 'I ate the <item>' logs from its macros."""
+    name = str((tool_input or {}).get("name") or "").strip()
+    items = (tool_input or {}).get("items")
+    if not name:
+        return "error: name is required (a short menu label)"
+    if not isinstance(items, list) or not items:
+        return "error: items must be a non-empty list of {item, ...} entries"
+    from saved_menus import save_menu_for_user
+    saved_count, total = save_menu_for_user(user_id, name, items)
+    if saved_count == 0:
+        return "error: no usable items — each needs at least an `item` name"
+    logger.info("SAVE_MENU user=%s name=%r items=%d total_menus=%d", user_id, name, saved_count, total)
+    return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
     "set_day_reset": handle_set_day_reset,
+    "save_menu": handle_save_menu,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,
     "log_workout": handle_log_workout,
