@@ -378,21 +378,56 @@ export async function buildInbound(
     });
   }
 
-  let body = "";
   const files: InboundFile[] = [];
-  let reaction: InboundPayload["reaction"] | undefined;
-  if (c.type === "text") {
-    body = (c as { text: string }).text;
-  } else if (c.type === "attachment") {
-    const a = c as { name: string; mimeType: string; size?: number; read: () => Promise<Uint8Array> };
-    files.push({ name: a.name, mimeType: a.mimeType, bytes: await a.read() });
-  } else if (c.type === "reaction") {
-    const r = c as { emoji: string; target?: { id?: string } };
-    reaction = { emoji: r.emoji, target_id: r.target?.id ?? null };
+  const acc: { body: string; reaction?: InboundPayload["reaction"] } = { body: "" };
+
+  // Pull ONE content node into the accumulator. Returns true if it was a kind we
+  // forward (text / attachment / reaction), false for anything we don't (typing,
+  // read, poll, richlink, contact, …).
+  const take = async (node: { type?: string } & Record<string, unknown>): Promise<boolean> => {
+    if (node.type === "text") {
+      const t = (node as { text?: string }).text ?? "";
+      acc.body = acc.body ? `${acc.body}\n${t}` : t;
+      return true;
+    }
+    if (node.type === "attachment") {
+      const a = node as unknown as { name: string; mimeType: string; read: () => Promise<Uint8Array> };
+      files.push({ name: a.name, mimeType: a.mimeType, bytes: await a.read() });
+      return true;
+    }
+    if (node.type === "reaction") {
+      const r = node as unknown as { emoji: string; target?: { id?: string } };
+      acc.reaction = { emoji: r.emoji, target_id: r.target?.id ?? null };
+      return true;
+    }
+    return false;
+  };
+
+  let took = false;
+  if (c.type === "group") {
+    // A "group" content bundles multiple sub-messages: { type: "group", items: Message[] }.
+    // iMessage delivers a multi-attachment send — or a photo + caption sent together — as ONE
+    // group message. Flatten it: concatenate the text parts, collect every attachment, so the
+    // whole multipart message isn't dropped. (Live: founder 2026-09-23 sent a receipt photo
+    // with a caption, then two photos at once; all vanished because "group" hit the skip path.)
+    const items = ((content as { items?: unknown }).items as Array<{ content?: unknown }> | undefined) ?? [];
+    for (const it of items) {
+      let ic: unknown = it?.content;
+      if ((ic as { type?: string } | undefined)?.type === "reply") ic = (ic as { content: unknown }).content;
+      if (ic && typeof (ic as { type?: string }).type === "string") {
+        took = (await take(ic as { type?: string } & Record<string, unknown>)) || took;
+      }
+    }
   } else {
-    log("info", "inbound skipped", { from: last4(sender.address ?? sender.id), type: (c as { type?: string }).type });
-    return null; // typing, read, poll, richlink, contact, … — not coaching input (yet)
+    took = await take(c as { type?: string } & Record<string, unknown>);
   }
+
+  if (!took) {
+    log("info", "inbound skipped", { from: last4(sender.address ?? sender.id), type: (c as { type?: string }).type });
+    return null; // typing, read, poll, richlink, contact, empty group, … — not coaching input (yet)
+  }
+  const body = acc.body;
+  const reaction = acc.reaction;
 
   return {
     payload: {
