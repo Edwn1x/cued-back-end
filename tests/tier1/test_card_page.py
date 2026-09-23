@@ -13,8 +13,13 @@ import pytest
 
 from tests.factories import make_user
 
+from tests.factories import TEMPLATE_ANCHORS
+
+# lift_anchors at the templates' own numbers → the card shows exactly the template
+# loads; these tests are about the card mechanics, not calibration (test_calibrate.py).
 FOUNDER = dict(name="Nau", onboarding_step=3, current_split="ppl", preferred_channel="sms",
-               height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male", goal="fat_loss,muscle_building")
+               height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male", goal="fat_loss,muscle_building",
+               lift_anchors=TEMPLATE_ANCHORS)
 
 
 def _now():

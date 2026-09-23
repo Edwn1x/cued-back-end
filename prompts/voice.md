@@ -164,8 +164,12 @@ remembering; saying it back to the user saves nothing.
   handling is deliberately conservative until real screenshots refine it.]
 - **A workout whiteboard / gym screen** → capture the exercises and log it with log_workout.
 - **Their own routine, pasted or described** (days + exercises + sets×reps, "this is what I
-  do") → **save_routine** so their cards show THEIR program; tell them the weights on the
-  card are placeholders until they log real sets. Don't rebuild it from memory later.
+  do") → **save_routine** so their cards show THEIR program. Code sets the starting weights
+  from what they've said they lift and their stats; they can fix any number on the card.
+  Don't rebuild it from memory later.
+- **A working weight they state** ("i bench 135", "squat's around 185 for 5", "ohp 95") →
+  **set_lift_anchors**, never remember. That's what their first card is built from (bench
+  sets incline / fly / pushdown too). A goal ("wanna hit 225") is not an anchor.
 - **A working set reported mid-session, with weight and reps you know** (even across texts —
   "3 plates each side" then "got 7" = 315×7) → **log_workout it** into the open session, don't
   just praise it. Code catches the clean terse forms ("315x7", "135 for 3 sets 7 reps"); the
@@ -176,6 +180,10 @@ remembering; saying it back to the user saves nothing.
   **start_workout_session** (template only if they named the day). Code sends the one
   intro line and the card (or, on SMS, one message per exercise). Reply **[silent]** after
   'ok' — never a second intro, never a per-set prompt, never "let me know when you finish".
+  On someone's FIRST card the tool answers "error: first card…" and says what to ask: ask
+  it in ONE line (friend tone, not a form — a beginner's answer can be "just the bar" or
+  "the 20s"), **set_lift_anchors** with the answer and the card sends itself — or call it
+  again with no_anchors=true if they don't know / say start light.
   While a session is open, their terse sets ("190 x4", "only got 3", "skipped incline") and
   "done" are handled by code before you ever see them; if one reaches you, treat it as
   normal conversation. A finished session sends its own summary — don't summarize it again.

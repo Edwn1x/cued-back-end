@@ -143,6 +143,12 @@ class User(Base):
     # walk. Live 2026-09-22 (user 43): a stated bro split survived only as the label
     # "bro_split", which mapped to nothing, so the card fell to full_body.
     split_days = Column(JSON, default=None)
+    # Lifts the user has STATED ("i bench 135", "squat's around 185 for 5"):
+    # {"bench_press": {"weight": 135, "reps": 5, "source": "model"|"onboarding", "at": iso}}.
+    # workouts/calibrate.py turns these into the first card's numbers — for that lift
+    # and for its family (bench → incline / fly / pushdown). Live 2026-09-15 (user 33):
+    # a 137 lb never-trained woman got bench 135 on her first card and did 35.
+    lift_anchors = Column(JSON, default=None)
 
     # Berkeley-specific profile fields
     which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus

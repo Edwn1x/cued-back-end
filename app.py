@@ -653,6 +653,20 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # First-card ask: the answer ("bench 35", "no clue") sends the card in code.
+        # Live 2026-09-23 (3/3): left to the model, "no clue" got "wanna start today
+        # or just planning" and no card. Anything else continues as a normal turn.
+        if (user.onboarding_step or 0) >= 3 and not image_url and config.START_WORKOUT_TOOL_ENABLED:
+            try:
+                from workouts.calibrate import handle_pending_card_reply
+                card_sent = handle_pending_card_reply(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("PENDING_CARD_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                card_sent = False
+            if card_sent:
+                typing_stop(user.id)
+                return
+
         # Water-reminder offer: a yes/no to the pending one-line offer is answered in
         # code (water_offer.handle_reply) — creates the interval reminder or remembers
         # the no. Anything else lapses the offer and continues as a normal turn.

@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from tests.factories import make_user
+from tests.factories import make_user, TEMPLATE_ANCHORS
 from tests.tier1.test_workout_phases_3_4_5 import imessage_on, sidecar_ok, card_ok  # noqa: F401 — fixtures
 
 ANGEL_MSG = "chest and biceps , back and triceps  and legs and shoulders"
@@ -133,10 +133,11 @@ def test_angel_gets_a_chest_and_biceps_card_not_full_body(db, imessage_on, sidec
     from workouts.start import start_workout_session
     from models import get_session, SetLog
     angel = make_user(db, name="Angel", preferred_channel="imessage", current_split="bro_split",
-                      confirmed_training_split="bro_split", split_days=ANGEL_DAYS, equipment="full_gym")
+                      confirmed_training_split="bro_split", split_days=ANGEL_DAYS, equipment="full_gym",
+                      lift_anchors=TEMPLATE_ANCHORS)   # lifts on file → template loads, no first-card ask
     r = start_workout_session(angel.id)
     assert r["template_key"] == "chest_biceps"
-    assert sidecar_ok == ["chest + biceps day. 4 sets bench press, then the usual. tap as you go — text me if a set goes different."]
+    assert sidecar_ok == ["chest + biceps day. starting u at 135 on bench press — first card, weights are off what u told me. tap a set and change the number if it's off, i'll remember."]
     assert card_ok[0]["caption"].startswith("chest + biceps · ")
     s = get_session()
     try:
@@ -152,7 +153,7 @@ def test_angel_gets_a_chest_and_biceps_card_not_full_body(db, imessage_on, sidec
 def test_unmapped_split_refuses_with_an_ask_instead_of_a_full_body_card(db, imessage_on, sidecar_ok, card_ok):
     from workouts.start import start_workout_session
     from agent_tools import dispatch_tool
-    u = make_user(db, preferred_channel="imessage", current_split="custom")
+    u = make_user(db, preferred_channel="imessage", current_split="custom", lift_anchors=TEMPLATE_ANCHORS)
     with pytest.raises(ValueError, match="isn't mapped to days yet"):
         start_workout_session(u.id)
     out = dispatch_tool("start_workout_session", {}, u.id)
@@ -165,7 +166,7 @@ def test_unmapped_split_refuses_with_an_ask_instead_of_a_full_body_card(db, imes
 def test_session_summary_and_caption_use_the_readable_day_label(db, imessage_on, sidecar_ok, card_ok):
     from workouts.start import start_workout_session
     from workouts.summary import format_summary
-    u = make_user(db, preferred_channel="imessage", current_split="bro_split", split_days=ANGEL_DAYS)
+    u = make_user(db, preferred_channel="imessage", current_split="bro_split", split_days=ANGEL_DAYS, lift_anchors=TEMPLATE_ANCHORS)
     r = start_workout_session(u.id, "legs_shoulders")
     assert r["template_key"] == "legs_shoulders" and card_ok[0]["caption"].startswith("legs + shoulders · ")
     head = format_summary({"template_key": "legs_shoulders", "weekday": "tue", "minutes": 0, "pr_count": 0,
