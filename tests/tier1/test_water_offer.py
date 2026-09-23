@@ -203,3 +203,32 @@ def test_offer_counts_as_an_unanswered_proactive_for_the_heartbeat(db, offer_on,
     finally:
         s.close()
     assert has_unanswered_proactive(u.id, 120) is True
+
+
+def test_a_fired_reminder_bubble_does_not_take_the_floor_from_the_offer(db, offer_on, sms_capture):
+    """Live 2026-09-23 (Alex): offer 00:31, his tue/thu 'go run' reminder fired 02:30,
+    'Nahh I drink a lot of water' at 02:31 → pending_offer saw the reminder as the
+    last outbound, the 'no' went to the model, status stuck 'offered' for good."""
+    from water_offer import send_offer, handle_reply, NO_REPLY
+    from models import get_session, Message
+    u = make_user(db)
+    send_offer(u.id)
+    s = get_session()
+    try:
+        s.add(Message(user_id=u.id, direction="out", body="go run", message_type="reminder",
+                      created_at=_now() + timedelta(seconds=5)))
+        s.commit()
+    finally:
+        s.close()
+    assert handle_reply(u.id, "Nahh I drink a lot of water") == NO_REPLY
+    assert _u(u.id).water_offer_status == "no" and _reminders(u.id) == []
+
+
+def test_stretched_yes_and_no_spellings_count(db, offer_on):
+    from water_offer import YES_RE, NO_RE
+    for t in ("Nahh I drink a lot of water", "naw", "nooo", "nope!", "Nah im good"):
+        assert NO_RE.match(t) and not YES_RE.match(t), t
+    for t in ("yess", "Yeahh do it", "yeh", "yupp", "yaa"):
+        assert YES_RE.match(t) and not NO_RE.match(t), t
+    assert not NO_RE.match("not really sure what u mean") and not NO_RE.match("nothing today")
+    assert not YES_RE.match("yesterday was rough") and not YES_RE.match("yale game sat")

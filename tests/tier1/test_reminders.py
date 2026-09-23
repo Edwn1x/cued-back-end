@@ -116,7 +116,6 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
 
     u = make_user(db, name="Alex")
     rec = create_reminder(u.id, "go run", "19:30", days="tue,thu")
-    one = create_reminder(u.id, "take creatine", "07:00")
     db.expire_all()
     fire_before = db.get(Reminder, rec["id"]).fire_at
 
@@ -129,8 +128,17 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
 
     row = db.get(Reminder, rec["id"])
     assert row.active is True and row.sent_count == 1 and row.last_sent_at is not None
-    assert row.fire_at > fire_before and row.fire_at - fire_before == timedelta(days=2)  # tue → thu
+    # tue → thu is 2 days, thu → tue is 5: depends on which listed day the first fire hit
+    from datetime import timezone as _tzu
+    from reminders import _tz
+    first_local = fire_before.replace(tzinfo=_tzu.utc).astimezone(_tz(u.user_timezone))
+    expected = timedelta(days=2 if first_local.weekday() == 1 else 5)
+    assert row.fire_at > fire_before and row.fire_at - fire_before == expected
 
+    # one-off created AFTER the recurring fire: its next 7am can fall before the
+    # recurring's first fire (thu this week), where the sweeps above would consume it
+    one = create_reminder(u.id, "take creatine", "07:00")
+    db.expire_all()
     one_row = db.get(Reminder, one["id"])
     assert fire_due(now=one_row.fire_at + timedelta(seconds=1)) == 1
     db.expire_all()
@@ -331,3 +339,15 @@ def test_reminders_table_is_migrated(db):
     from models import engine
     cols = {c["name"] for c in inspect(engine).get_columns("reminders")}
     assert {"user_id", "text", "local_time", "recur_days", "fire_at", "source", "active", "last_sent_at", "sent_count"} <= cols
+
+
+def test_agent_loop_context_carries_the_reminders_block(db):
+    """Live 2026-09-23: only the heartbeat saw REMINDERS; the reactive loop didn't know
+    Alex's tue/thu run ping existed and planned to set it again."""
+    from agent_loop import build_loop_context
+    from reminders import create_reminder
+    u = make_user(db, onboarding_step=3)
+    r = create_reminder(u.id, "go run", "19:30", days=["tue", "thu"], source="onboarding")
+    db.expire_all()
+    ctx = build_loop_context(db.get(type(u), u.id), db)
+    assert "## REMINDERS" in ctx and f"id={r['id']}" in ctx and "'go run' — tue/thu 7:30pm" in ctx

@@ -348,6 +348,17 @@ def build_loop_context(user, session) -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning("FOOD_LOGGER_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
+    # 7d. Reminders code WILL send / sent today (reminders.context_block — the same
+    # block the heartbeat sees). Live 2026-09-23: without it the loop had no idea
+    # Alex's tue/thu run ping existed and planned to "set the standing reminder" again.
+    try:
+        from reminders import context_block as _rem_block
+        _rb = _rem_block(user, session)
+        if _rb:
+            parts.append(_rb)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REMINDER_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # 8. Known gaps + follow-up permission.
     gaps = _known_gaps(user)
     if gaps:
@@ -680,6 +691,27 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             return ""  # never text a tool name to the user
         if leak and leak[0] == "reply_in_thread":
             logger.warning("AGENT_LOOP_TOOL_CALL_IN_TEXT user=%s dropped=%r", user.id, text[:60])
+            return ""
+        # Narration guard: the model wrote its PLAN as the reply (live 2026-09-23, Alex:
+        # "react to this — it's a simple decline, just acknowledge. ... Let me set the
+        # standing Tue/Thu reminder." — end_turn, no tool call, texted verbatim). ONE
+        # forced follow-up with a path for both branches: act with the tools, then send
+        # the real words (or the silent sentinel). A repeat is dropped, never sent.
+        from agent_tools import looks_like_narration, REACTION_ONLY_SENTINEL
+        if text and looks_like_narration(text):
+            if not state.get("narration_nudged"):
+                state["narration_nudged"] = True
+                logger.warning("AGENT_LOOP_NARRATION_NUDGE user=%s iter=%d text=%r", user.id, i, text[:80])
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": (
+                    "[code check — NOT from the user, do not answer it: that text reads as your own "
+                    f"planning notes, not a message to {user.name}. It was NOT sent. If you meant to "
+                    "act (react, set a reminder, log something), call the tool NOW — check the "
+                    "REMINDERS block first, a reminder listed there already exists. Then send only "
+                    f"the words you'd actually text {user.name}; if a reaction was the whole reply, "
+                    f"reply with exactly {REACTION_ONLY_SENTINEL}.]")})
+                continue
+            logger.warning("AGENT_LOOP_NARRATION_DROPPED user=%s iter=%d text=%r", user.id, i, text[:80])
             return ""
         # Write-back guard (honesty invariant, code side). usda_food_lookup named rows
         # that are ALREADY LOGGED (turn state: pending_writeback); if the reply quotes a

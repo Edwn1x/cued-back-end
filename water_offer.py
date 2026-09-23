@@ -39,11 +39,16 @@ REMINDER_TEXT = "drink water"
 WATER_OFFER_DEFAULT_HOURS = 3
 WATER_OFFER_MAX_AGE_HOURS = 48    # a yes two days later is still a yes; older → lapsed
 
-YES_RE = re.compile(r"^\s*(yes|yeah|yea|yep|yup|ya|sure|ok|okay|k|bet|do it|go for it|please|yes please|"
-                    r"sounds good|why not|👍|💧)\b", re.I)
-NO_RE = re.compile(r"^\s*(no|nah|nope|no thanks|no thank you|i'?m good|im good|not now|don'?t|pass|👎)\b", re.I)
+# Stretched spellings count (live 2026-09-23: "Nahh I drink a lot of water" matched
+# nothing and LAPSED instead of NO).
+YES_RE = re.compile(r"^\s*(yes+|yeah+|yea+h*|yeh|yep+|yup+|ya+s*|sure|ok|okay|k|bet|do it|go for it|please|"
+                    r"yes please|sounds good|why not|👍|💧)\b", re.I)
+NO_RE = re.compile(r"^\s*(no+|nah+|naw|nope+|no thanks|no thank you|i'?m good|im good|not now|don'?t|pass|👎)\b",
+                   re.I)
 HOURS_RE = re.compile(r"every\s*(\d{1,2})\s*(?:h|hr|hrs|hours?)", re.I)
 STATUS_OFFERED, STATUS_YES, STATUS_NO, STATUS_LAPSED = "offered", "yes", "no", "lapsed"
+# Outbound types that never ask the user anything (see pending_offer).
+NO_QUESTION_TYPES = ("reminder",)
 
 
 def _naive_utcnow() -> datetime:
@@ -143,8 +148,14 @@ def pending_offer(session, user) -> bool:
         return False
     from models import Message
     from engagement_tracker import _not_reaction
+    # Code-sent bubbles that ask nothing (a fired reminder: "go run") don't take the
+    # floor from the offer. Live 2026-09-23: Alex's "Nahh I drink a lot of water" landed
+    # 30s after his 7:30 run reminder, was never counted, and the offer stuck at
+    # 'offered' for good (a heartbeat/coach bubble CAN carry its own yes/no question,
+    # so those still close the window).
     last_out = (session.query(Message)
-                .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction())
+                .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction(),
+                        Message.message_type.notin_(NO_QUESTION_TYPES))
                 .order_by(Message.created_at.desc(), Message.id.desc()).first())
     return bool(last_out and last_out.message_type == MESSAGE_TYPE)
 
