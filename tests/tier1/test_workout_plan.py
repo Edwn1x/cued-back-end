@@ -51,7 +51,10 @@ def _complete(session_id, results: dict, *, source="card", when=None):
 
 # ─── build_session ───────────────────────────────────────────────────────────
 
-def test_plan_from_no_history_uses_template_defaults(db):
+def test_plan_from_no_history_is_calibrated_to_the_profile(db):
+    """No history → the template's shape (exercises, sets, reps) with loads from the
+    person's stats (workouts/calibrate.py), not the fixed 135/40. The founder fixture
+    is a 139 lb intermediate male → bench ≈ 105 for 5, incline ≈ 35 per hand."""
     from workouts.plan import build_session
     user = make_user(db, **FOUNDER)
     ws = build_session(user, "push")
@@ -62,8 +65,18 @@ def test_plan_from_no_history_uses_template_defaults(db):
         by_ex.setdefault(ex, []).append((w, r))
     assert list(by_ex) == ["bench_press", "incline_db_press", "cable_fly", "tricep_pushdown"]
     assert [len(v) for v in by_ex.values()] == [4, 3, 3, 3]
-    assert by_ex["bench_press"] == [(135.0, 5)] * 4 and by_ex["incline_db_press"] == [(40.0, 10)] * 3
+    assert by_ex["bench_press"] == [(105.0, 5)] * 4 and by_ex["incline_db_press"] == [(35.0, 10)] * 3
     assert all(not done for *_, done, _aw, _ar, _src in rows)
+
+
+def test_plan_with_no_profile_at_all_keeps_the_template_defaults(db):
+    """No sex, no bodyweight → nothing to calibrate from → the old fixed defaults."""
+    from workouts.plan import build_session
+    user = make_user(db, name="Blank", current_split="ppl", gender=None, weight_lbs=None)
+    by_ex = {}
+    for ex, idx, w, r, *_ in _sets(build_session(user, "push").id):
+        by_ex.setdefault(ex, []).append((w, r))
+    assert by_ex["bench_press"] == [(135.0, 5)] * 4 and by_ex["incline_db_press"] == [(40.0, 10)] * 3
 
 
 def test_plan_accepts_aliases_and_rejects_unknown(db):
@@ -87,7 +100,8 @@ def test_plan_progresses_when_every_rep_was_hit_and_holds_when_not(db):
         by_ex.setdefault(ex, []).append((w, r))
     assert by_ex["bench_press"] == [(140.0, 5)] * 4, by_ex["bench_press"]
     assert by_ex["incline_db_press"] == [(40.0, 10)] * 3
-    assert by_ex["cable_fly"] == [(20.0, 12)] * 3          # never done → template default
+    # never done → scaled from the bench they DID (135×5 ≈ 157 e1RM × 0.15 → 25), not the fixed 20
+    assert by_ex["cable_fly"] == [(25.0, 12)] * 3
 
 
 def test_plan_baselines_on_the_best_completed_set_not_the_last(db):

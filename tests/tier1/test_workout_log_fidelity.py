@@ -12,7 +12,11 @@ import pytest
 
 from tests.factories import make_user
 
-FOUNDER = dict(name="Nau", onboarding_step=3, current_split="ppl", split_pointer_day="pull")
+from tests.factories import TEMPLATE_ANCHORS
+
+# lifts on file at the template numbers → the card shows exactly the template loads
+# and a trained user isn't asked for his numbers first (see test_calibrate.py).
+FOUNDER = dict(name="Nau", onboarding_step=3, current_split="ppl", split_pointer_day="pull", lift_anchors=TEMPLATE_ANCHORS)
 EX = [("leg_press", "leg press"), ("squat", "squat"), ("bench_press", "bench press"),
       ("incline_db_press", "incline db press")]
 

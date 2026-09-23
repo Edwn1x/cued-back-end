@@ -205,7 +205,9 @@ def test_build_session_plans_the_users_own_push_day(db):
     finally:
         s.close()
     assert list(by) == [("incline_db_press", "dumbbell incline press"), ("shoulder_press", "shoulder press"), ("rkc_plank", "RKC plank (sec)")]
-    assert by[("incline_db_press", "dumbbell incline press")] == [(40.0, 10)] * 3
+    # His own routine keeps its shape; the load is calibrated to HIM (160 lb novice male →
+    # bench e1RM ~120 → incline 0.28 × that, first-session buffer → 30 per hand), not the fixed 40.
+    assert by[("incline_db_press", "dumbbell incline press")] == [(30.0, 10)] * 3
     assert by[("rkc_plank", "RKC plank (sec)")] == [(0.0, 60)] * 2
 
 

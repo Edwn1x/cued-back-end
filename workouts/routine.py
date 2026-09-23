@@ -12,7 +12,10 @@ Parsing is a small Sonnet JSON call (the model reads "Tue/pull (back and bi/tri)
 by code: split keys must be real, sets/reps positive ints, and weights are NEVER taken
 from the model — a known movement gets the global template's default, anything else
 gets a conservative starting load, and bodyweight/timed work gets 0 with rep-progression.
-The user's real numbers replace the placeholders the first time they log a set.
+Those stored loads are the REFERENCE numbers (a male novice's); the card calibrates
+them to the person at build time (workouts/calibrate.py — their stated lifts, a
+related lift they've done, else sex × bodyweight × level), and their real numbers
+replace everything the first time they log a set.
 """
 
 from __future__ import annotations

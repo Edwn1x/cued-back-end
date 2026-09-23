@@ -7,9 +7,12 @@ too, so the first card isn't blind to what they told the coach last week."""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from models import get_session, SetLog, WorkoutSession, Workout, active
+
+logger = logging.getLogger("cued.workouts")
 from workouts.templates import TEMPLATES, normalize_template_key, slug_for_name, plate_step_for_slug, templates_for, day_template
 
 
@@ -59,8 +62,12 @@ def _next_bodyweight_targets(session, user_id: int, tmpl) -> tuple[float, int, s
     return weight, base + (tmpl.rep_step if hit_all else 0), "history"
 
 
-def next_targets(session, user_id: int, tmpl) -> tuple[float, int, str]:
-    """(planned_weight, planned_reps, source) for one exercise."""
+def next_targets(session, user_id: int, tmpl, user=None) -> tuple[float, int, str]:
+    """(planned_weight, planned_reps, source) for one exercise. With no direct
+    history the load is CALIBRATED to the person (workouts/calibrate.py): a stated
+    anchor for the lift, a related lift they've done, else strength standards from
+    their sex / bodyweight / level. The bare template default is the last resort
+    (no profile at all). Pass `user` to enable calibration."""
     if tmpl.default_weight == 0 and tmpl.rep_step:
         return _next_bodyweight_targets(session, user_id, tmpl)
     sets = _last_session_sets(session, user_id, tmpl.slug)
@@ -75,6 +82,10 @@ def next_targets(session, user_id: int, tmpl) -> tuple[float, int, str]:
     if legacy:
         w, r, _ = legacy
         return (w + tmpl.plate_step) if r >= tmpl.reps else w, tmpl.reps, "legacy"
+    if user is not None and tmpl.default_weight:
+        from workouts.calibrate import calibrated_load
+        w, src = calibrated_load(session, user, tmpl.slug, tmpl.reps, tmpl.default_weight, tmpl.plate_step)
+        return w, tmpl.reps, src
     return tmpl.default_weight, tmpl.reps, "template"
 
 
@@ -88,11 +99,15 @@ def build_session(user, template_key: str, *, now=None) -> WorkoutSession:
         ws = WorkoutSession(user_id=user.id, date=now, template_key=key, status="planned")
         session.add(ws)
         session.flush()
+        sources: dict[str, str] = {}
         for tmpl in day_template(user, key):
-            weight, reps, _src = next_targets(session, user.id, tmpl)
+            weight, reps, src = next_targets(session, user.id, tmpl, user=user)
+            sources[tmpl.slug] = src
             for i in range(tmpl.sets):
                 session.add(SetLog(session_id=ws.id, exercise=tmpl.slug, exercise_label=tmpl.label,
                                    set_index=i, planned_weight=weight, planned_reps=reps, done=False))
+        logger.info("PLAN_BUILT user=%s session=%s key=%s sources=%s", user.id, ws.id, key,
+                    ",".join(f"{k}:{v}" for k, v in sources.items()))
         session.commit()
         session.refresh(ws)
         _ = ws.sets  # load before detaching

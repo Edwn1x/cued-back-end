@@ -16,8 +16,14 @@ import pytest
 from tests.factories import make_user
 
 SECRET = "test-internal-secret"
+from tests.factories import TEMPLATE_ANCHORS
+
+# lift_anchors at the templates' own numbers: the card shows exactly the template
+# loads (a stated 135×5 round-trips to 135 for 5), so these mechanics tests don't
+# move when calibration does — and a trained user with lifts on file isn't asked.
 FOUNDER = dict(name="Nau", onboarding_step=3, current_split="ppl", split_pointer_day="pull",
-               split_pointer_source="confirmed", height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male")
+               split_pointer_source="confirmed", height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male",
+               lift_anchors=TEMPLATE_ANCHORS)
 
 
 def _now():
@@ -113,7 +119,7 @@ def test_start_session_on_imessage_sends_intro_then_card_and_infers_the_day(db, 
     assert infer_template(user) == "legs"
     r = start_workout_session(user.id)
     assert r["template_key"] == "legs" and r["surface"] == "card" and r["sets"] == 16
-    assert sidecar_ok == ["legs day. 4 sets squat, then the usual. tap as you go — text me if a set goes different."]
+    assert sidecar_ok == ["legs day. starting u at 155 on squat — first card, weights are off what u told me. tap a set and change the number if it's off, i'll remember."]
     assert card_ok and card_ok[0]["caption"].startswith("legs · ")
     s = get_session()
     try:
@@ -143,7 +149,9 @@ def test_start_session_on_sms_sends_one_message_per_exercise_with_refs(db, sms_c
     r = start_workout_session(user.id, "push")
     assert r["surface"] == "messages"
     bodies = [b for _, b in sms_capture]
-    assert bodies[0].startswith("push day. 4 sets bench press, then the usual.") and "👍 an exercise" in bodies[0]
+    # SMS encoding turns the em-dash into "-"; assert around it
+    assert bodies[0].startswith("push day. starting u at 135 on bench press") and "first card, weights are off what u told me." in bodies[0] \
+        and "👍 an exercise" in bodies[0]
     assert bodies[1:] == ["bench press · 135 × 5 × 4", "incline db press · 40 × 10 × 3", "cable fly · 20 × 12 × 3", "tricep pushdown · 40 × 12 × 3"]
     refs = {ex: ref for ex, _i, _d, _w, _r, _s, ref in _sets(db, r["session_id"])}
     assert refs["bench_press"] == "SMfake0000000000000000000000000002" and len(set(refs.values())) == 4
@@ -368,5 +376,5 @@ def test_silent_sentinel_after_the_start_tool_sends_nothing(db, imessage_on, sid
     anthropic_stub.reply_with(handler)
     user = make_user(db, preferred_channel="imessage", **FOUNDER)
     driver.send(user, "starting push")
-    assert sidecar_ok == ["legs day. 4 sets squat, then the usual. tap as you go — text me if a set goes different."]
+    assert sidecar_ok == ["legs day. starting u at 155 on squat — first card, weights are off what u told me. tap a set and change the number if it's off, i'll remember."]
     assert "[silent]" not in "".join(sidecar_ok)

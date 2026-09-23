@@ -11,6 +11,22 @@ import itertools
 _phone_counter = itertools.count(1)
 
 
+def _template_anchors() -> dict:
+    """users.lift_anchors that reproduce the global templates' loads exactly: a stated
+    135×5 round-trips to 135 for 5, so a fixture with these gets the pre-calibration
+    card numbers (mechanics tests) and is never asked for its lifts."""
+    from workouts.templates import TEMPLATES, PART_TEMPLATES
+    out = {}
+    for exs in (*TEMPLATES.values(), *PART_TEMPLATES.values()):
+        for e in exs:
+            if e.default_weight and e.slug not in out:
+                out[e.slug] = {"weight": e.default_weight, "reps": e.reps, "source": "test"}
+    return out
+
+
+TEMPLATE_ANCHORS = _template_anchors()
+
+
 def make_user(session, **overrides):
     """Create + commit a post-onboarding User. Override any column via kwargs."""
     from models import User

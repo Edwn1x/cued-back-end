@@ -226,6 +226,19 @@ def build_loop_context(user, session) -> str:
             f"Derive today's likely day from this and the split; if the source is "
             f"'inferred', hedge (ask/confirm) rather than assert."
         )
+    # What they've told us they lift — the first card's numbers come from this. When
+    # nothing is on file the card is estimated from their stats; a stated weight in
+    # conversation ("i bench 135") belongs in set_lift_anchors, not remember.
+    try:
+        from workouts.calibrate import describe_anchors
+        anchors_line = describe_anchors(user)
+    except Exception:  # noqa: BLE001
+        anchors_line = None
+    if anchors_line:
+        parts.append(f"## LIFTS THEY'VE STATED\n{anchors_line} — a new number they say replaces it (set_lift_anchors).")
+    elif config.START_WORKOUT_TOOL_ENABLED and (user.equipment or "").strip().lower() not in ("bodyweight", "none", "no_equipment"):
+        parts.append("## LIFTS THEY'VE STATED\nnone yet — if they mention what they bench / squat / "
+                     "deadlift / press ('i bench 135'), set_lift_anchors so their card starts there.")
 
     # 5. Coaching summary + delivered points.
     if (user.coaching_summary or "").strip():
@@ -556,8 +569,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import SET_DAY_RESET_TOOL
         tools.append(SET_DAY_RESET_TOOL)
     if config.START_WORKOUT_TOOL_ENABLED:
-        from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL
-        tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL])
+        from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
+        tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)

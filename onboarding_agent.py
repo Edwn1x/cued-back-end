@@ -1374,6 +1374,16 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     except Exception as e:  # noqa: BLE001 — never block the reply on it
         logger.warning("SPLIT_DAYS_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
 
+    # A stated lift ("i bench 135", "squat 185 for 5") is the first card's calibration.
+    # Onboarding has no tools, so code catches the stating forms (never goals).
+    try:
+        from workouts.calibrate import maybe_capture_stated_anchors
+        r = maybe_capture_stated_anchors(user_row.id, incoming_message, source="onboarding")
+        if r and r.get("saved"):
+            logger.info("LIFT_ANCHORS_ONBOARDING user=%s saved=%s", user_row.id, r["saved"])
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("LIFT_ANCHORS_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
+
     # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
     # small extraction sets (or corrects) the reminder in code and the prompt shows it.
     try:

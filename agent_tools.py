@@ -283,12 +283,22 @@ START_WORKOUT_SESSION_TOOL = {
         "listed under SPLIT in your context (push/pull/legs/upper/lower/full_body, or a body-part "
         "day like chest_biceps / back_triceps / legs_shoulders / chest / arms); otherwise omit it "
         "and code picks the next day of their split. "
+        "The weights on a FIRST card are calibrated by code from what they've told you they lift "
+        "(set_lift_anchors) or, failing that, from their sex / bodyweight / experience. On anyone's "
+        "first card with no lifts on file the result is 'error: first card…' telling you what to ask "
+        "(their working numbers if they train; ANY number, even the empty bar, if they're new) — ask "
+        "it in one line, then set_lift_anchors with the answer and the card sends itself; if they don't "
+        "know or say start light, call this again with no_anchors=true. "
         "After 'ok', reply with exactly [silent] — the text and the card already went out; "
         "never add a per-set prompt or a second intro. On 'error' tell them plainly."
     ),
     "input_schema": {
         "type": "object",
-        "properties": {"template_key": {"type": "string", "description": "only if they named the day"}},
+        "properties": {
+            "template_key": {"type": "string", "description": "only if they named the day"},
+            "no_anchors": {"type": "boolean",
+                           "description": "true when they don't know their numbers or said to just start light — skips the lift ask and calibrates from their stats"},
+        },
         "required": [],
     },
 }
@@ -297,15 +307,84 @@ START_WORKOUT_SESSION_TOOL = {
 def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from workouts.start import start_workout_session
     try:
-        r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None)
+        r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None,
+                                  no_anchors=bool(tool_input.get("no_anchors")))
     except ValueError as e:
         return f"error: {e}"
     except Exception as e:  # noqa: BLE001 — a send failure must not crash the turn
         logger.error("START_WORKOUT_SESSION_FAILED user=%s err=%s", user_id, e, exc_info=True)
         return f"error: couldn't send the session ({e})"
     how = "card" if r["surface"] == "card" else "one message per exercise"
-    return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets). "
+    first = ""
+    if r.get("first"):
+        first = (" First card: the intro already told them the weights are a guess from their stats they can edit."
+                 if r.get("estimated") else " First card: the intro already said the weights are from what they told you.")
+    return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
             f"Reply with exactly [silent].")
+
+
+SET_LIFT_ANCHORS_TOOL = {
+    "name": "set_lift_anchors",
+    "description": (
+        "Save what the user says they LIFT — 'i bench 135', 'squat's like 185 for 5', 'ohp 95' — so "
+        "their workout cards start at real numbers (code derives the rest of the day from these: a "
+        "stated bench sets incline / fly / pushdown too). Use it whenever they state a working weight "
+        "for a main lift, and after asking on their first card — for a beginner that can be 'just the "
+        "bar' (45) or 'the 20s' on a press. Weight is what they SAID; reps as stated, else omit (code "
+        "assumes a ~5-rep working weight). Never a goal ('wanna bench 225'), never a number you "
+        "inferred. Returns 'ok: …' with what was saved; if a first-card ask was pending, the card has "
+        "already gone out and the result says so — reply [silent]."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "lifts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "exercise": {"type": "string", "description": "bench / squat / deadlift / ohp / row / rdl / leg press / incline / pulldown / curl"},
+                        "weight": {"type": "number", "description": "lb, as they said it"},
+                        "reps": {"type": "integer", "description": "only if they said it"},
+                    },
+                    "required": ["exercise", "weight"],
+                },
+            },
+        },
+        "required": ["lifts"],
+    },
+}
+
+
+def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.calibrate import set_anchors
+    from workouts.templates import label_for_slug
+    r = set_anchors(user_id, tool_input.get("lifts") or [], source="model")
+    if r.get("error"):
+        return f"error: {r['error']}"
+    if not r["saved"]:
+        return ("error: none of those mapped to a lift I know (bench, squat, deadlift, ohp, row, rdl, "
+                "leg press, incline, pulldown, curl) with a weight above 0")
+    logger.info("LIFT_ANCHORS_SET user=%s saved=%s rejected=%s", user_id, r["saved"], r["rejected"])
+    saved = ", ".join(f"{label_for_slug(s)} {v}" for s, v in r["saved"].items())
+    rej = f" (couldn't place: {', '.join(r['rejected'])})" if r["rejected"] else ""
+    # The answer to a first-card ask: code sends the parked day's card right here.
+    # Live 2026-09-23 (3/3): told "call start_workout_session now", the model replied
+    # "got it" and never did.
+    from workouts.calibrate import pop_pending_card
+    pending = pop_pending_card(user_id)
+    if pending:
+        from workouts.start import start_workout_session
+        try:
+            sr = start_workout_session(user_id, pending)
+            how = "card" if sr["surface"] == "card" else "one message per exercise"
+            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s", user_id, pending, sr["session_id"])
+            return (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
+                    f"as a {how} ({sr['sets']} sets) starting from these numbers. Reply with exactly [silent].")
+        except Exception as e:  # noqa: BLE001 — anchors are saved regardless
+            logger.warning("LIFT_ANCHORS_PENDING_CARD_FAILED user=%s key=%s err=%s", user_id, pending, e)
+            return f"ok: saved {saved}{rej} — but the card didn't send ({e}); call start_workout_session."
+    return f"ok: saved {saved}{rej} — their next card starts from these. If they were about to lift, call start_workout_session now."
 
 
 SET_TARGETS_TOOL = {
@@ -1797,7 +1876,7 @@ _NARRATION_RE = re.compile(
     r"\bthey (said|asked|want(ed)?) (me )?(to )?remind\b|\bsimple (decline|ack(nowledg\w+)?)\b|"
     r"\bno tool (call|use|needed)\b|\bi should (call|use|react)\b|\bcall the \w+ tool\b|"
     r"\b(set_reminder|cancel_reminder|log_meal|manage_log|log_workout|log_event|react_to_message|"
-    r"reply_in_thread|send_text|save_routine|set_targets|usda_food_lookup)\b)",
+    r"reply_in_thread|send_text|save_routine|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup)\b)",
     re.IGNORECASE)
 
 
@@ -2026,6 +2105,7 @@ _HANDLERS = {
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,
     "save_routine": handle_save_routine,
+    "set_lift_anchors": handle_set_lift_anchors,
     "cancel_reminder": handle_cancel_reminder,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
