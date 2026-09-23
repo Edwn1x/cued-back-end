@@ -83,6 +83,10 @@ class User(Base):
     # Phase A memory architecture — categorized profile, per-call coaching points, summary watermark.
     # Helper read/write happens in memory.py; column-as-source-of-truth rule keeps weight/diet/etc. out of this JSON.
     user_profile_memory = Column(JSON, default=None)  # {category: [{id, text, ts, uses, safety?}]} — see memory.py
+    # Per-user menus the user sent to persist (dining hall / frat house / meal prep), so
+    # "I ate the Wednesday burrito" logs from saved macros. See saved_menus.py.
+    # {key: {name, items:[{item, calories?, protein_g?, carbs_g?, fat_g?, note?}], captured_at}}
+    saved_menus = Column(JSON, default=None)
     delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
     last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
     last_episodic_message_id = Column(Integer, default=None)  # Phase 5 watermark: episodic digest idempotency (independent of the summary watermark)
