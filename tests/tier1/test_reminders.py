@@ -129,7 +129,12 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
 
     row = db.get(Reminder, rec["id"])
     assert row.active is True and row.sent_count == 1 and row.last_sent_at is not None
-    assert row.fire_at > fire_before and row.fire_at - fire_before == timedelta(days=2)  # tue → thu
+    # tue → thu is 2 days, thu → tue is 5: depends on which listed day the first fire hit
+    from datetime import timezone as _tzu
+    from reminders import _tz
+    first_local = fire_before.replace(tzinfo=_tzu.utc).astimezone(_tz(u.user_timezone))
+    expected = timedelta(days=2 if first_local.weekday() == 1 else 5)
+    assert row.fire_at > fire_before and row.fire_at - fire_before == expected
 
     one_row = db.get(Reminder, one["id"])
     assert fire_due(now=one_row.fire_at + timedelta(seconds=1)) == 1
