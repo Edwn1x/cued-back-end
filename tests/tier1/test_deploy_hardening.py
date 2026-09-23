@@ -66,7 +66,7 @@ def test_process_buffered_message_closes_its_session_before_the_model_turn(db, a
     monkeypatch.setattr(app, "get_session", _tracked)
 
     seen = {}
-    def _loop(user, body, mtype, image_data=None):
+    def _loop(user, body, mtype, image_data=None, image_data_list=None, **kwargs):
         seen["outer_closed_at_model_time"] = opened[0].closed
         return "hey"
     monkeypatch.setattr(app, "run_agent_loop", _loop)

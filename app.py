@@ -606,7 +606,8 @@ def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
         logger.info("REACT_LATEST_SKIPPED user=%s err=%s", user_id, e)
 
 
-def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None):
+def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None,
+                             images: list = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
     session = get_session()
     try:
@@ -762,7 +763,8 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         response_text = None
         if config.SINGLE_AGENT_LOOP_ENABLED:
             try:
-                response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url)
+                response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
+                                               image_data_list=images)
             except Exception as e:
                 logger.error("AGENT_LOOP_FALLBACK user=%s falling back to legacy: %s",
                              user.id, e, exc_info=True)
@@ -1303,7 +1305,7 @@ def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
 
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 def _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
-                     channel="sms", provider_sid=None):
+                     channel="sms", provider_sid=None, image_list=None):
     """The inbound pipeline, from the idempotency claim through the buffer arm.
 
     Extracted verbatim from the Twilio webhook (Photon migration Phase 4B) so
@@ -1607,6 +1609,11 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         except Exception:  # noqa: BLE001
             pass
 
+    # Multi-image: image_data is the PRIMARY (first) image every single-image path
+    # uses; images carries all of them (SMS/MMS and captions default to the one).
+    if image_list is None:
+        image_list = [image_data] if image_data else []
+
     # Buffer the message — AI call and SMS response happen after the delay
     buffer_message(
         phone=from_number,
@@ -1614,6 +1621,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         user_id=user.id,
         message_type=message_type,
         image_url=image_data,
+        images=image_list,
         process_callback=process_buffered_message,
         delay_override=buffer_delay,
     )
@@ -1749,12 +1757,21 @@ def internal_inbound():
     # the declared mime, so a non-image or unreadable attachment leaves
     # image_data None: the turn runs text-only and the stored marker still says
     # a picture came.
-    image_name, image_data = None, None
+    # Collect EVERY attachment that normalizes to an image (a multi-attachment send —
+    # e.g. product front + nutrition label — arrives as one inbound; the sidecar
+    # forwards them all as attachment_N). image_data is the first for single-image
+    # signals/paths; image_list carries all of them to the vision call. Capped.
+    image_name, image_data, image_list = None, None, []
     from image_normalize import normalize_image
+    cap = config.MAX_INBOUND_IMAGES if config.MULTI_IMAGE_ENABLED else 1
     for f in files:
         image_name = image_name or f.filename or "attachment"
-        if image_data is None:
-            image_data = normalize_image(f.read(), f.mimetype, name=f.filename)
+        if len(image_list) >= cap:
+            break
+        norm = normalize_image(f.read(), f.mimetype, name=f.filename)
+        if norm is not None:
+            image_list.append(norm)
+    image_data = image_list[0] if image_list else None
 
     session = get_session()
     try:
@@ -1776,7 +1793,7 @@ def internal_inbound():
             return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200
         logger.info("Incoming iMessage from %s: %s", _last4(handle), body[:120])
         _process_inbound(session, user, handle, body, provider_message_id, image_name, image_data,
-                         channel="imessage", provider_sid=provider_message_id)
+                         channel="imessage", provider_sid=provider_message_id, image_list=image_list)
         return jsonify({"ok": True, "known": True}), 200
     except Exception as e:
         # Unlike Twilio, the sidecar DOES retry 5xx (3 attempts). Release the claim
