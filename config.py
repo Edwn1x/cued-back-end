@@ -217,6 +217,11 @@ START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").low
 RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
 RECEIPT_CLASSIFIER_MODEL = os.getenv("RECEIPT_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
 RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5")
+# A full week's grocery receipt itemizes to a long JSON list; the old 1500 cap
+# truncated it mid-string (stop=max_tokens) → unparseable JSON → the misleading
+# "couldn't read the photo" reply looped. Give it real headroom; on truncation we
+# now detect stop_reason and ask for the items instead of blaming the photo.
+RECEIPT_EXTRACTOR_MAX_TOKENS = int(os.getenv("RECEIPT_EXTRACTOR_MAX_TOKENS", "8000"))
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public

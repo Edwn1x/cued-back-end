@@ -77,11 +77,26 @@ est_grams is the TOTAL weight of food for that line (e.g. 'dozen eggs' → 600; 
 'greek yogurt 32oz' → 907). Never invent items that aren't on the receipt."""
 
 
-def extract_receipt(image_data: dict, user_id=None) -> dict | None:
+# Sentinel: the extractor's JSON was cut off at the token cap (a LONG receipt),
+# NOT an unreadable image. handle_receipt_image answers these two cases differently
+# so we never blame a fine photo for a receipt that was simply too long to itemize.
+TRUNCATED = object()
+
+
+def extract_receipt(image_data: dict, user_id=None):
+    """dict on success, TRUNCATED sentinel when the model hit the token cap
+    mid-JSON (receipt too long), or None when it's genuinely unreadable."""
     try:
-        r = _cl().messages.create(model=config.RECEIPT_EXTRACTOR_MODEL, max_tokens=1500,
+        r = _cl().messages.create(model=config.RECEIPT_EXTRACTOR_MODEL,
+                                  max_tokens=config.RECEIPT_EXTRACTOR_MAX_TOKENS,
                                   messages=[{"role": "user", "content": [image_data, {"type": "text", "text": EXTRACT_PROMPT}]}])
         track_usage(user_id, "receipts.extract_receipt", config.RECEIPT_EXTRACTOR_MODEL, r)
+        # Gate on stop_reason BEFORE parsing: a max_tokens stop means the item list is
+        # incomplete even if the truncated text happens to parse — treat it as too-long.
+        if getattr(r, "stop_reason", None) == "max_tokens":
+            logger.warning("RECEIPT_EXTRACT_TRUNCATED user=%s cap=%s — receipt too long",
+                           user_id, config.RECEIPT_EXTRACTOR_MAX_TOKENS)
+            return TRUNCATED
         text = _join_text(r.content).replace("```json", "").replace("```", "").strip()
         if "{" in text and "}" in text:
             text = text[text.index("{"):text.rindex("}") + 1]
@@ -184,8 +199,13 @@ def handle_receipt_image(user_id: int, image_data: dict) -> str | None:
     if classify_image(image_data, user_id) != "receipt":
         return None
     data = extract_receipt(image_data, user_id)
+    if data is TRUNCATED:
+        # The photo was fine — the receipt was just too long to itemize. Ask for the
+        # part that matters instead of blaming the image (which loops when they resend).
+        return ("that's a long receipt — too many lines for me to pull clean. just tell me the "
+                "main protein stuff you got (meat, eggs, dairy, etc.) and i'll log it")
     if not data:
-        return "that looks like a receipt but i couldn't read the lines — try a flatter, brighter shot?"
+        return "couldn't pull the items off that one. just type the main things you got and i'll save it"
     reply = ingest_receipt(user_id, data)
     return reply or "got the receipt but nothing on it looked like food to me. send me what you actually bought?"
 
