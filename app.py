@@ -621,8 +621,10 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # turn reads by user.id through its own short sessions).
         session.close()
 
-        # "Read" then "Cued is typing…" — the buffer (reading) is over; generation
-        # starts now. Receipt first so the stamp lands before the dots.
+        # "Read" and the dots already went up on arrival (_process_inbound). Both are
+        # re-asserted here: the receipt retries a cold-sidecar miss (live 2026-09-12,
+        # first call after idle timed out), and a long buffer can outlive the client's
+        # typing indicator. Receipt first so the stamp is never behind the dots.
         from read_receipts import mark_read
         from typing_indicator import typing_start, typing_stop
         mark_read(user.id)
@@ -1357,6 +1359,18 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     log_incoming(user.id, body, has_image=image_url is not None,
                      channel=channel, provider_sid=provider_sid)
 
+    # "Read" the moment it lands (founder 2026-09-22: "read receipt as soon as they
+    # send their message, then the typing animation"). Every branch below — ack 👍,
+    # goodnight, logging mode, the buffer — is a reply to a message we have read, so
+    # the stamp goes up here, once, after the row exists (mark_read resolves the
+    # Photon id from the latest inbound row). Fire-and-forget; SMS resolves to nothing.
+    if channel == "imessage":
+        try:
+            from read_receipts import mark_read
+            mark_read(user.id)
+        except Exception:  # noqa: BLE001 — a receipt never touches the pipeline
+            pass
+
     # Waitlist gate (2026-09-19): a pending user who texts the line — the "hey cued"
     # opt-in tap from the site's success screen, or a curious SMS — is held HERE, in
     # code. One holding line, then silence until the admin activates them: no safety
@@ -1427,13 +1441,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         # bare "Ok" got nothing), and the only honest reply to a closing ack IS a 👍.
         # No model call; the sidecar resolves message_sid (the Photon id). Never a
         # strike (reaction rows are excluded from every silence gate). SMS: silent, as before.
-        reacted = False
-        if channel == "imessage" and message_sid:
-            try:
-                from read_receipts import mark_read
-                mark_read(user.id)  # a 👍 without "Read" would look odd
-            except Exception:  # noqa: BLE001
-                pass
+        reacted = False  # "Read" already went up when the inbound was logged
         if config.IMESSAGE_REACTIONS_ENABLED and channel == "imessage" and message_sid:
             try:
                 from sms import react_to_message
@@ -1569,36 +1577,35 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         _handle_logging_mode_message(user, body, _pb_state)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
-    # Adaptive buffer based on conversation momentum
+    # Inbound buffer band (config.py; env-tunable). Two bands + the photo hold. The
+    # old "momentum" logic (20–30 active / 90–150 fresh thread) was dead code: the
+    # inbound is logged above, so "time since last inbound" was always seconds and the
+    # 90–150 band never fired. Founder 2026-09-23: delete it, and shorter overall.
     if (user.onboarding_step or 0) < 3:
-        # Onboarding — tight buffer, user is actively engaged
-        buffer_delay = (25, 35)
+        # Onboarding — one short answer at a time; just long enough to catch an
+        # immediate double-text; the model turn adds the rest.
+        buffer_delay = config.ONBOARDING_BUFFER_S
     else:
-        # Check time since last inbound message to detect active conversation
-        from datetime import datetime, timedelta, timezone as _tz
-        last_inbound = (
-            session.query(Message)
-            .filter(Message.user_id == user.id, Message.direction == "in")
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if last_inbound and last_inbound.created_at:
-            last_msg_age = datetime.now(_tz.utc) - last_inbound.created_at.replace(tzinfo=_tz.utc)
-            if last_msg_age < timedelta(minutes=5):
-                # Active back-and-forth — respond faster
-                buffer_delay = (20, 30)
-            else:
-                # New conversation thread — full buffer to catch double-texts
-                buffer_delay = (90, 150)
-        else:
-            buffer_delay = (90, 150)
+        buffer_delay = config.REPLY_BUFFER_S
 
     # A captionless photo is the strongest signal that a caption is coming (people
     # send the pic, then the words). Live 2026-09-15: the image flushed at 20s, the
     # caption landed the same second → two turns, two replies, two questions.
     # Hold a bare image longer so the words join it.
     if image_data and not (body or "").strip():
-        buffer_delay = (max(buffer_delay[0], 45), max(buffer_delay[1], 60))
+        buffer_delay = (max(buffer_delay[0], config.PHOTO_BUFFER_S[0]),
+                        max(buffer_delay[1], config.PHOTO_BUFFER_S[1]))
+
+    # Dots right after "Read": a reply IS coming from this point (every no-reply
+    # branch returned above), so the bubble goes up now rather than at flush — but
+    # only for a short wait; a long photo hold gets its dots at flush (as before).
+    # Re-asserted at flush too — a buffer can outlive the client's indicator.
+    if channel == "imessage" and buffer_delay[1] <= config.TYPING_ON_ARRIVAL_MAX_S:
+        try:
+            from typing_indicator import typing_start
+            typing_start(user.id)
+        except Exception:  # noqa: BLE001
+            pass
 
     # Buffer the message — AI call and SMS response happen after the delay
     buffer_message(

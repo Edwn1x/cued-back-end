@@ -129,6 +129,27 @@ AGENT_LOOP_MAX_TOKENS = int(os.getenv("AGENT_LOOP_MAX_TOKENS", "8000"))
 # Bound the tool loop (unbounded agent loops = runaway bills). 8 comfortably fits the
 # realistic worst case — a schedule dump wanting ~6 events plus a meal photo in one
 # buffer flush — even if the model works through them across turns rather than batching.
+# Inbound buffer bands, seconds (min, max), env-tunable without a deploy of code:
+#   ONBOARDING_BUFFER_S  — one short answer at a time; 5–8 catches an immediate double-text.
+#   REPLY_BUFFER_S       — every post-onboarding text. Founder 2026-09-23: the old
+#                          "fresh thread 90–150s" band was dead code (the just-logged inbound
+#                          always read as an active conversation) and 20–30 still felt long
+#                          for direct asks ("send my card", "my link") — one short band now.
+#   PHOTO_BUFFER_S       — a captionless photo: the caption usually follows the pic.
+def _band(env, default):
+    raw = os.getenv(env, default)
+    try:
+        lo, hi = [int(x) for x in raw.replace("-", ",").split(",")[:2]]
+        return (max(1, lo), max(max(1, lo), hi))
+    except Exception:
+        lo, hi = [int(x) for x in default.split(",")]
+        return (lo, hi)
+ONBOARDING_BUFFER_S = _band("ONBOARDING_BUFFER_S", "5,8")
+REPLY_BUFFER_S = _band("REPLY_BUFFER_S", "10,15")
+PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
+# Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
+# dots up for a minute, so those get dots at flush (existing behaviour).
+TYPING_ON_ARRIVAL_MAX_S = int(os.getenv("TYPING_ON_ARRIVAL_MAX_S", "20"))
 AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
@@ -354,8 +375,9 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
-# iMessage typing bubble while a reply is being generated (typing_indicator.py).
-# ON by default (ships on + instrumented: grep TYPING_SIGNAL); reactive replies only.
+# iMessage typing bubble from the moment an inbound is buffered until the reply lands
+# (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
+# reactive replies only.
 # The heartbeat is separate and OFF: decide() may choose silence, and a bubble that
 # appears and then nothing arrives reads as a glitch — founder's call after feeling it.
 TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower() == "true"
@@ -364,8 +386,8 @@ TYPING_INDICATOR_ENABLED = os.getenv("TYPING_INDICATOR_ENABLED", "true").lower()
 # The WHEN rules live in voice.md; the never-a-strike rule in engagement_tracker.
 IMESSAGE_REACTIONS_ENABLED = os.getenv("IMESSAGE_REACTIONS_ENABLED", "true").lower() == "true"
 TYPING_INDICATOR_HEARTBEAT = os.getenv("TYPING_INDICATOR_HEARTBEAT", "false").lower() == "true"
-# "Read 11:04" on the user's message when reply generation begins (read_receipts.py).
-# ON by default; reactive replies + the suppressed-ack thumbs-up. Never on arrival.
+# "Read 11:04" on the user's message the moment it is logged (read_receipts.py),
+# re-asserted when generation begins. ON by default; every reactive path incl. the ack 👍.
 READ_RECEIPTS_ENABLED = os.getenv("READ_RECEIPTS_ENABLED", "true").lower() == "true"
 
 SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")

@@ -187,4 +187,4 @@ def test_captionless_image_gets_a_longer_buffer_so_the_caption_joins_it(db, clie
                "attachments": [{"name": "IMG_2.png", "mime_type": "image/png", "size": len(png)}]}
     data = {"payload": json.dumps(payload), "attachment_0": (io.BytesIO(png), "IMG_2.png", "image/png")}
     client.post("/internal/inbound", data=data, headers={"X-Internal-Secret": SECRET}, content_type="multipart/form-data")
-    assert seen[-1]["delay_override"] == (20, 30)
+    assert seen[-1]["delay_override"] == (10, 15)
