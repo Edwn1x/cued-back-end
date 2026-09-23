@@ -3,13 +3,14 @@
 Design goal: NEVER lose a user to an ACCIDENTAL opt-out. So the whole flow is
 deliberately high-friction:
 
-  1. TRIGGER — the inbound message is EXACTLY "STOP." or "UNSUBSCRIBE." (all caps,
-     period required, whole message trimmed). A casual "stop" / "STOP" / "Stop." does
-     nothing here and flows to the coach as normal conversation.
+  1. TRIGGER — the WHOLE message (trimmed) is "STOP" or "UNSUBSCRIBE", any case, with
+     or without a trailing period/exclamation. Founder 2026-09-23: the confirmation
+     step is the buffer, so the trigger no longer needs the caps+period ritual. A
+     "stop" inside a sentence ("stop asking me that") still does nothing here.
   2. CONFIRMATION — the trigger does NOT opt them out. It sets pending_optout_confirm
-     and sends one confirmation offering: opt out for good (reply "STOP." again),
+     and sends one confirmation offering: opt out for good (reply STOP again),
      "pause" (a few quiet days), or anything else = stay.
-  3. RESOLUTION — while pending: another exact "STOP." → opted_out; "pause" → quiet_until
+  3. RESOLUTION — while pending: another STOP → opted_out; "pause" → quiet_until
      set STOP_PAUSE_DAYS out; anything else → clear the pending flag and continue as a
      normal turn (they stay).
   4. RESUME — any inbound from an opted-out (or paused) user brings them right back.
@@ -21,16 +22,24 @@ flag is set, so it isn't blocked by its own suppression.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 
 import config
 
 logger = logging.getLogger("cued.optout")
 
-# Exact, case-sensitive, period required. Whole message (trimmed) must equal one of these.
-TRIGGERS = ("STOP.", "UNSUBSCRIBE.")
+# The whole message must be one of these words — any case, optional trailing "." / "!".
+# Kept as a tuple for the log line / tests; the match is is_trigger().
+TRIGGERS = ("STOP", "UNSUBSCRIBE")
+_TRIGGER_RE = re.compile(r"^\s*(stop|unsubscribe)\s*[.!]*\s*$", re.I)
 
-CONFIRM_MSG = ("wanna stop all texts from me? reply STOP. again to opt out for good, "
+
+def is_trigger(trimmed: str) -> bool:
+    return bool(_TRIGGER_RE.match(trimmed or ""))
+
+
+CONFIRM_MSG = ("wanna stop all texts from me? reply STOP again to opt out for good, "
                "or 'pause' to take a few days off. anything else and we're good")
 GOODBYE_MSG = "you're off the texts. text me anytime and i'm right back"
 
@@ -64,7 +73,7 @@ def handle_optout_flow(session, user, body: str, *, message_id=None, channel: st
     # 2) RESOLVE a pending confirmation.
     if getattr(user, "pending_optout_confirm", False):
         user.pending_optout_confirm = False
-        if trimmed in TRIGGERS:
+        if is_trigger(trimmed):
             # Confirmed. Send the goodbye BEFORE flipping the flag (suppression reads it).
             try:
                 send_sms(user.phone, GOODBYE_MSG, user_id=user.id, message_type="optout_goodbye")
@@ -89,8 +98,8 @@ def handle_optout_flow(session, user, body: str, *, message_id=None, channel: st
         logger.info("OPTOUT_CONFIRM_DECLINED user=%s (stays)", user.id)
         return False
 
-    # 3) FRESH TRIGGER — exact "STOP." / "UNSUBSCRIBE." → confirmation, no opt-out yet.
-    if trimmed in TRIGGERS:
+    # 3) FRESH TRIGGER — "STOP" / "UNSUBSCRIBE" as the whole message → confirmation, no opt-out yet.
+    if is_trigger(trimmed):
         user.pending_optout_confirm = True
         session.commit()
         try:

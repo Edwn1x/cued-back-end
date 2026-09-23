@@ -13,6 +13,8 @@ Seven live findings from user 32's first five days, each pinned deterministicall
 
 from __future__ import annotations
 
+import re
+
 import math
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -238,15 +240,22 @@ def _seed(db, user_id, direction, when, body, message_type="freeform"):
 
 def test_open_thread_today_is_open_not_expired(db):
     import heartbeat
+    from timefmt import local_day_bounds
     s, user = _ctx_user(db, **AISLINN)
     try:
-        _seed(s, user.id, "in", _now() - timedelta(hours=3), "During lunch I made a homemade McMuffin")
-        _seed(s, user.id, "out", _now() - timedelta(hours=2), "how many egg whites and how much ham")
+        # "today" is the user's LOCAL day: between local midnight and ~03:00 (07:00–10:00
+        # UTC in CI) a "2 hours ago" seed lands on yesterday and reads EXPIRED. Keep both
+        # seeds inside today's local window (CI failed 2026-09-23 08:00 UTC).
+        start, _end = local_day_bounds(user)
+        asked = max(_now() - timedelta(hours=2), start + timedelta(minutes=30))
+        _seed(s, user.id, "in", asked - timedelta(hours=1) if asked - timedelta(hours=1) >= start else start + timedelta(minutes=5),
+              "During lunch I made a homemade McMuffin")
+        _seed(s, user.id, "out", asked, "how many egg whites and how much ham")
         sig = heartbeat._open_thread_signal(user, s)
     finally:
         s.close()
     assert sig and "OPEN THREAD" in sig and "EXPIRED" not in sig, sig
-    assert "2" in sig, sig  # hours old
+    assert re.search(r"\b\d+(\.\d+)? ?h", sig) or "hour" in sig, sig  # carries its age
 
 
 def test_open_thread_from_a_previous_local_day_is_expired(db):
