@@ -1785,6 +1785,29 @@ def leaked_tool_call(text: str):
     return ("reply_in_thread", arg)
 
 
+# Planning notes sent AS the reply. Live 2026-09-23 (Alex, msg 4461): "react to this —
+# it's a simple decline, just acknowledge. ... they said remind to run after class.
+# Should I set that reminder? ... Let me set the standing Tue/Thu reminder." —
+# stop=end_turn, no tool call, texted verbatim. Only phrases a coach never texts a
+# friend: talking about them in the third person, deliberating about tools, tool
+# names as identifiers. "let me set that up for u" / "should i set a reminder?" are
+# things the coach legitimately says TO the user and are deliberately not matched.
+_NARRATION_RE = re.compile(
+    r"(^\W*react to this\b|\bjust acknowledge\b|\bthe user\b|\bthe human\b|"
+    r"\bthey (said|asked|want(ed)?) (me )?(to )?remind\b|\bsimple (decline|ack(nowledg\w+)?)\b|"
+    r"\bno tool (call|use|needed)\b|\bi should (call|use|react)\b|\bcall the \w+ tool\b|"
+    r"\b(set_reminder|cancel_reminder|log_meal|manage_log|log_workout|log_event|react_to_message|"
+    r"reply_in_thread|send_text|save_routine|set_targets|usda_food_lookup)\b)",
+    re.IGNORECASE)
+
+
+def looks_like_narration(text: str) -> bool:
+    """True when the visible text reads as the model's own plan, not a message to the
+    user. The loop nudges once (act with tools, then send the real words) and drops a
+    repeat — never texts it."""
+    return bool(_NARRATION_RE.search(text or ""))
+
+
 _EMOJI_ONLY = re.compile(r"^[\s\u200d\ufe0f\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\u2B55\u203C\u2049\u2764]+$")
 
 

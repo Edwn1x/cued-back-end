@@ -452,3 +452,48 @@ def test_voice_forbids_re_delivering_the_last_message():
     v = " ".join(_voice_prompt().split())
     assert "Never re-deliver your last message" in v
     assert "don't prescribe it back to them" in v
+
+
+ALEX_NARRATION = ("react to this — it's a simple decline, just acknowledge.\n\n"
+                  "Also it's 7:31, class ended at 7:30, they said remind to run after class. "
+                  "Should I set that reminder? Earlier I said I'd ping at 7:30. "
+                  "Let me set the standing Tue/Thu reminder.")
+
+
+def test_narration_detector_matches_plans_not_coach_speech():
+    from agent_tools import looks_like_narration
+    assert looks_like_narration(ALEX_NARRATION)
+    assert looks_like_narration("The user declined the water offer. I should react with a thumbs up.")
+    assert looks_like_narration("call set_reminder for tue/thu 7:30pm then reply")
+    # things the coach legitimately texts TO the user
+    for ok in ("all good, won't bring it up again", "let me set that up for u rn",
+               "should i set a reminder for that?", "called rsf, they said 11pm",
+               "go run, i got u at 7:30", "noted, no water pings"):
+        assert not looks_like_narration(ok), ok
+
+
+def test_narration_is_nudged_once_then_the_real_reply_is_sent(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    """Live 2026-09-23 (Alex, msg 4461): the model's plan went out as the text. Now: one
+    code follow-up, the model answers properly, only that goes out."""
+    import app
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, "Nahh I drink a lot of water", "spc-msg-nah")
+    anthropic_stub.push(ALEX_NARRATION, "all good, won't bring it up again")
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, "Nahh I drink a lot of water", "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == "all good, won't bring it up again"
+    # (the stub records the loop's messages list by reference, so count the log line)
+    assert caplog.text.count("AGENT_LOOP_NARRATION_NUDGE") == 1
+    assert any("planning notes" in str(m.get("content")) for c in anthropic_stub.calls for m in c["messages"])
+
+
+def test_narration_twice_is_dropped_never_sent(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    import app
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, "Nahh I drink a lot of water", "spc-msg-nah2")
+    anthropic_stub.push(ALEX_NARRATION, "The user declined. I should just acknowledge.")
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, "Nahh I drink a lot of water", "freeform")
+    assert not [j for r, j in sidecar if r == "send"] and sms_capture == []
+    assert "AGENT_LOOP_NARRATION_DROPPED" in caplog.text
