@@ -98,8 +98,8 @@ class User(Base):
     # via set_day_reset; timefmt.local_day_bounds is the single reader. Clamped 0–11.
     day_reset_hour = Column(Integer, default=0)
     # STOP opt-out (optout.py). opted_out = fully unsubscribed (no sends until any inbound
-    # resumes them). pending_optout_confirm = they sent the exact "STOP." trigger and we're
-    # awaiting their confirm (a second "STOP." opts out; "pause" pauses; anything else stays).
+    # resumes them). pending_optout_confirm = they sent the STOP trigger and we're
+    # awaiting their confirm (a second STOP opts out; "pause" pauses; anything else stays).
     opted_out = Column(Boolean, default=False)
     pending_optout_confirm = Column(Boolean, default=False)
     # Daily rhythm: how much proactive contact they asked for (set_checkin_level).

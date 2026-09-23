@@ -277,9 +277,9 @@ SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "fa
 WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
 
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
-# avoid ACCIDENTAL opt-outs losing a user: the trigger is an EXACT "STOP." or "UNSUBSCRIBE."
-# (all caps, period required, whole message), which then sends a confirmation; only a
-# second "STOP." actually opts out. "pause" takes a few days off instead. Any inbound
+# avoid ACCIDENTAL opt-outs losing a user: the trigger is "STOP" or "UNSUBSCRIBE" as the
+# WHOLE message (any case, period optional — founder 2026-09-23: the confirmation step is
+# the buffer), which then sends a confirmation; only a second STOP actually opts out. "pause" takes a few days off instead. Any inbound
 # resumes an opted-out or paused user. Ships flag-gated OFF. See optout.py.
 STOP_OPTOUT_ENABLED = os.getenv("STOP_OPTOUT_ENABLED", "false").lower() == "true"
 STOP_PAUSE_DAYS = int(os.getenv("STOP_PAUSE_DAYS", "4"))

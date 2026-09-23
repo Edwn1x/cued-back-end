@@ -1,6 +1,6 @@
 """STOP opt-out flow (optout.handle_optout_flow) — deliberately high-friction to
-prevent ACCIDENTAL opt-outs. Trigger is exact "STOP."/"UNSUBSCRIBE." (caps + period),
-which sends a confirmation; only a second "STOP." opts out; "pause" pauses; any inbound
+prevent ACCIDENTAL opt-outs. Trigger is "STOP"/"UNSUBSCRIBE" as the whole message (any case,
+period optional), which sends a confirmation; only a second STOP opts out; "pause" pauses; any inbound
 resumes. Flag-gated."""
 from __future__ import annotations
 
@@ -41,19 +41,19 @@ def _reget(db, uid):
 # ─── trigger precision (no accidental opt-outs) ───────────────────────────────
 
 @pytest.mark.parametrize("body,triggers", [
-    ("STOP.", True), ("UNSUBSCRIBE.", True), (" STOP. ", True),   # exact (trim ok)
-    ("stop.", False), ("STOP", False), ("Stop.", False),          # wrong case / no period
-    ("stop", False), ("stop asking me questions", False),          # casual
-    ("STOP MESSAGING ME", False), ("please STOP.", False),        # not the whole message
+    ("STOP.", True), ("UNSUBSCRIBE.", True), (" STOP. ", True),   # the old exact form still works
+    ("STOP", True), ("stop", True), ("Stop.", True), ("STOP!", True), ("unsubscribe", True),  # no period / any case (2026-09-23)
+    ("stop asking me questions", False), ("STOP MESSAGING ME", False), ("please STOP.", False),  # not the whole message
+    ("stopping by the gym", False), ("", False),
 ])
-def test_trigger_only_on_exact_caps_period(db, sms_capture, body, triggers):
+def test_trigger_is_the_whole_message_any_case(db, sms_capture, body, triggers):
     from tests.factories import make_user
     user = make_user(db)
     terminal = _run(db, user, body)
     u = _reget(db, user.id)
     if triggers:
         assert terminal is True and u.pending_optout_confirm is True
-        assert any("reply STOP." in m for _p, m in sms_capture)   # confirmation sent
+        assert any("reply STOP again" in m for _p, m in sms_capture)   # confirmation sent
         assert u.opted_out is False                                # NOT opted out yet
     else:
         assert terminal is False and u.pending_optout_confirm is False and u.opted_out is False
@@ -64,9 +64,9 @@ def test_trigger_only_on_exact_caps_period(db, sms_capture, body, triggers):
 def test_second_stop_confirms_optout(db, sms_capture):
     from tests.factories import make_user
     user = make_user(db)
-    _run(db, user, "STOP.")                       # triggers confirmation
+    _run(db, user, "stop")                        # triggers confirmation (no period, lowercase)
     assert _reget(db, user.id).pending_optout_confirm is True
-    terminal = _run(db, user, "STOP.")            # confirm
+    terminal = _run(db, user, "STOP")             # confirm (no period)
     u = _reget(db, user.id)
     assert terminal is True and u.opted_out is True and u.pending_optout_confirm is False
     assert any("off the texts" in m for _p, m in sms_capture)     # goodbye
