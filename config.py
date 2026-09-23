@@ -129,6 +129,27 @@ AGENT_LOOP_MAX_TOKENS = int(os.getenv("AGENT_LOOP_MAX_TOKENS", "8000"))
 # Bound the tool loop (unbounded agent loops = runaway bills). 8 comfortably fits the
 # realistic worst case — a schedule dump wanting ~6 events plus a meal photo in one
 # buffer flush — even if the model works through them across turns rather than batching.
+# Inbound buffer bands, seconds (min, max), env-tunable without a deploy of code:
+#   ONBOARDING_BUFFER_S  — one short answer at a time; 5–8 catches an immediate double-text.
+#   REPLY_BUFFER_S       — every post-onboarding text. Founder 2026-09-23: the old
+#                          "fresh thread 90–150s" band was dead code (the just-logged inbound
+#                          always read as an active conversation) and 20–30 still felt long
+#                          for direct asks ("send my card", "my link") — one short band now.
+#   PHOTO_BUFFER_S       — a captionless photo: the caption usually follows the pic.
+def _band(env, default):
+    raw = os.getenv(env, default)
+    try:
+        lo, hi = [int(x) for x in raw.replace("-", ",").split(",")[:2]]
+        return (max(1, lo), max(max(1, lo), hi))
+    except Exception:
+        lo, hi = [int(x) for x in default.split(",")]
+        return (lo, hi)
+ONBOARDING_BUFFER_S = _band("ONBOARDING_BUFFER_S", "5,8")
+REPLY_BUFFER_S = _band("REPLY_BUFFER_S", "10,15")
+PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
+# Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
+# dots up for a minute, so those get dots at flush (existing behaviour).
+TYPING_ON_ARRIVAL_MAX_S = int(os.getenv("TYPING_ON_ARRIVAL_MAX_S", "20"))
 AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"

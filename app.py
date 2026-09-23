@@ -1577,43 +1577,30 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         _handle_logging_mode_message(user, body, _pb_state)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
-    # Adaptive buffer based on conversation momentum
+    # Inbound buffer band (config.py; env-tunable). Two bands + the photo hold. The
+    # old "momentum" logic (20–30 active / 90–150 fresh thread) was dead code: the
+    # inbound is logged above, so "time since last inbound" was always seconds and the
+    # 90–150 band never fired. Founder 2026-09-23: delete it, and shorter overall.
     if (user.onboarding_step or 0) < 3:
-        # Onboarding — the user is answering one question at a time with one short
-        # text; 25–35s here made every step feel slow (founder 2026-09-22). Just
-        # long enough to catch an immediate double-text; the model turn adds the rest.
-        buffer_delay = (5, 8)
+        # Onboarding — one short answer at a time; just long enough to catch an
+        # immediate double-text; the model turn adds the rest.
+        buffer_delay = config.ONBOARDING_BUFFER_S
     else:
-        # Check time since last inbound message to detect active conversation
-        from datetime import datetime, timedelta, timezone as _tz
-        last_inbound = (
-            session.query(Message)
-            .filter(Message.user_id == user.id, Message.direction == "in")
-            .order_by(Message.created_at.desc())
-            .first()
-        )
-        if last_inbound and last_inbound.created_at:
-            last_msg_age = datetime.now(_tz.utc) - last_inbound.created_at.replace(tzinfo=_tz.utc)
-            if last_msg_age < timedelta(minutes=5):
-                # Active back-and-forth — respond faster
-                buffer_delay = (20, 30)
-            else:
-                # New conversation thread — full buffer to catch double-texts
-                buffer_delay = (90, 150)
-        else:
-            buffer_delay = (90, 150)
+        buffer_delay = config.REPLY_BUFFER_S
 
     # A captionless photo is the strongest signal that a caption is coming (people
     # send the pic, then the words). Live 2026-09-15: the image flushed at 20s, the
     # caption landed the same second → two turns, two replies, two questions.
     # Hold a bare image longer so the words join it.
     if image_data and not (body or "").strip():
-        buffer_delay = (max(buffer_delay[0], 45), max(buffer_delay[1], 60))
+        buffer_delay = (max(buffer_delay[0], config.PHOTO_BUFFER_S[0]),
+                        max(buffer_delay[1], config.PHOTO_BUFFER_S[1]))
 
     # Dots right after "Read": a reply IS coming from this point (every no-reply
-    # branch returned above), so the bubble goes up now rather than at flush.
-    # Re-asserted at flush too — a long buffer can outlive the client's indicator.
-    if channel == "imessage":
+    # branch returned above), so the bubble goes up now rather than at flush — but
+    # only for a short wait; a long photo hold gets its dots at flush (as before).
+    # Re-asserted at flush too — a buffer can outlive the client's indicator.
+    if channel == "imessage" and buffer_delay[1] <= config.TYPING_ON_ARRIVAL_MAX_S:
         try:
             from typing_indicator import typing_start
             typing_start(user.id)

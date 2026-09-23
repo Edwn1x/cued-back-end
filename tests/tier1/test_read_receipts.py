@@ -161,7 +161,8 @@ def test_read_then_dots_go_up_on_arrival_before_the_buffer_flushes(db, imessage_
 
 
 def test_onboarding_buffer_is_seconds_not_half_a_minute(db, imessage_on, sidecar, client, monkeypatch):
-    """Post-onboarding bands are untouched: a fresh thread still waits out double-texts."""
+    """Onboarding 5–8s; post-onboarding one short band (the old 90–150 'fresh thread' band
+    was dead code and is gone)."""
     import app
     armed = []
     monkeypatch.setattr(app, "buffer_message", lambda **kw: armed.append(kw))
@@ -169,7 +170,7 @@ def test_onboarding_buffer_is_seconds_not_half_a_minute(db, imessage_on, sidecar
     done = make_user(db, preferred_channel="imessage", onboarding_step=3)
     _post_text(client, onboarding, "chicken and rice mostly", "spc-onb-2")
     _post_text(client, done, "what should i eat", "spc-done-1")
-    assert [a["delay_override"] for a in armed] == [(5, 8), (90, 150)]
+    assert [a["delay_override"] for a in armed] == [(5, 8), (10, 15)]   # one short post-onboarding band
 
 
 def test_sms_inbound_gets_no_receipt_or_dots_on_arrival(db, imessage_on, sidecar, client, monkeypatch):
@@ -179,3 +180,41 @@ def test_sms_inbound_gets_no_receipt_or_dots_on_arrival(db, imessage_on, sidecar
     r = client.post("/webhook", data={"From": user.phone, "Body": "175", "MessageSid": "SM-onb-1", "NumMedia": "0"})
     assert r.status_code == 200
     assert [route for route, _ in sidecar] == []
+
+
+def test_photo_hold_gets_no_arrival_dots_but_short_bands_do(db, imessage_on, sidecar, client, monkeypatch):
+    """Dots on arrival only when the wait is short (TYPING_ON_ARRIVAL_MAX_S); the 45–60s
+    captionless-photo hold keeps its dots for flush, so a bubble never sits for a minute."""
+    import app, config
+    armed = []
+    monkeypatch.setattr(app, "buffer_message", lambda **kw: armed.append(kw))
+    monkeypatch.setattr(config, "READ_IMAGE_ENABLED", True)
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _post_text(client, user, "what should i eat", "spc-t-1")
+    routes = [route for route, _ in sidecar]
+    assert routes.count("/typing") >= 1 or any("typing" in r for r in routes), routes
+    n_typing_before = sum(1 for r in routes if "typing" in r)
+    # a captionless photo: read receipt yes, arrival dots no
+    import io, json
+    from tests.tier1.test_image_normalize import PNG_1PX
+    png = PNG_1PX
+    payload = {"phone": user.phone, "text": "", "provider_message_id": "photon-nocap", "chat_guid": "x",
+               "service": "iMessage", "line_phone": "+1628", "timestamp": "2026-09-15T01:19:00.000Z",
+               "attachments": [{"name": "IMG_9.png", "mime_type": "image/png", "size": len(png)}]}
+    data = {"payload": json.dumps(payload), "attachment_0": (io.BytesIO(png), "IMG_9.png", "image/png")}
+    client.post("/internal/inbound", data=data, headers={"X-Internal-Secret": SECRET}, content_type="multipart/form-data")
+    assert armed[-1]["delay_override"] == config.PHOTO_BUFFER_S
+    routes = [route for route, _ in sidecar]
+    assert sum(1 for r in routes if "typing" in r) == n_typing_before, routes
+
+
+def test_buffer_bands_are_env_tunable(monkeypatch):
+    import importlib, os
+    import config
+    monkeypatch.setenv("REPLY_BUFFER_S", "3,6")
+    monkeypatch.setenv("ONBOARDING_BUFFER_S", "garbage")
+    importlib.reload(config)
+    assert config.REPLY_BUFFER_S == (3, 6) and config.ONBOARDING_BUFFER_S == (5, 8)
+    monkeypatch.delenv("REPLY_BUFFER_S"); monkeypatch.delenv("ONBOARDING_BUFFER_S")
+    importlib.reload(config)
+    assert config.REPLY_BUFFER_S == (10, 15)
