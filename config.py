@@ -271,6 +271,10 @@ QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED",
 HEARTBEAT_RHYTHM_ENABLED = os.getenv("HEARTBEAT_RHYTHM_ENABLED", "false").lower() == "true"
 # set_checkin_level tool: "text me more" / "chill with the texts" becomes a code-enforced cap, not a said ok.
 SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "false").lower() == "true"
+# Water-reminder OFFER (water_offer.py): the one-line, once-only "want water pings? yes or no"
+# after the kickoff (new users) and on a guarded sweep (existing users); the reply is
+# handled in code. Founder 2026-09-22: users can't ask for a feature they've never heard of.
+WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
 
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
 # avoid ACCIDENTAL opt-outs losing a user: the trigger is an EXACT "STOP." or "UNSUBSCRIBE."

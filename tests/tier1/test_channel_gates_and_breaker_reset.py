@@ -26,8 +26,16 @@ def _out(db, user, *, minutes_ago, status="sent", message_type="evening", body="
     from models import Message
     # naive-UTC column (heartbeat convention) — an aware value would be shifted to
     # the session timezone on write and skew the gate's age math.
+    now = datetime.now(timezone.utc)
+    when = now - timedelta(minutes=minutes_ago)
+    # has_unanswered_outbound's window is "today" from UTC midnight: near 00:00 UTC a
+    # "10 minutes ago" seed lands on yesterday and the gate correctly says False (CI
+    # failed at 00:02 UTC, 2026-09-23). Keep the seed inside today's window, ordered.
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if when < today_start + timedelta(minutes=1):
+        when = today_start + timedelta(minutes=1) + timedelta(seconds=max(0, 120 - minutes_ago))
     m = Message(user_id=user.id, direction="out", body=body, message_type=message_type,
-                created_at=(datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).replace(tzinfo=None),
+                created_at=when.replace(tzinfo=None),
                 delivery_status=status, channel="imessage" if status == "failed" else "sms")
     db.add(m); db.commit()
     return m

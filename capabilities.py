@@ -226,10 +226,10 @@ CAPABILITIES: list[Capability] = [
     Capability(
         id="water_reminders",
         what="i can ping you to drink water every couple hours while you're up",
-        how="say 'remind me to drink water' and you'll get a short nudge every 2-3 hours between wake and bed",
+        how="say 'remind me to drink water' (or yes to my offer) and you'll get a short nudge every 2-3 hours between wake and bed",
         tools=("set_reminder",),
         enabled=lambda u: config.REMINDERS_ENABLED and config.WATER_REMINDERS_ENABLED,
-        relevance=lambda u: 5,
+        relevance=lambda u: 8 if getattr(u, "water_offer_status", None) in (None, "lapsed") else 3,
         used=_interval_reminder_set,
         reveal_when="they mention headaches, low energy, or forgetting to drink",
     ),

@@ -105,6 +105,9 @@ class User(Base):
     # Daily rhythm: how much proactive contact they asked for (set_checkin_level).
     # 'more' | 'normal' | 'less'; null = normal. Read by heartbeat._checkin_level.
     checkin_level = Column(String(10), default=None)
+    # Water-reminder offer (water_offer.py): None = never offered | offered | yes | no | lapsed.
+    water_offer_status = Column(String(10), default=None)
+    water_offered_at = Column(DateTime, default=None)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"
