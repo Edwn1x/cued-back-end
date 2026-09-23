@@ -116,7 +116,6 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
 
     u = make_user(db, name="Alex")
     rec = create_reminder(u.id, "go run", "19:30", days="tue,thu")
-    one = create_reminder(u.id, "take creatine", "07:00")
     db.expire_all()
     fire_before = db.get(Reminder, rec["id"]).fire_at
 
@@ -136,6 +135,10 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
     expected = timedelta(days=2 if first_local.weekday() == 1 else 5)
     assert row.fire_at > fire_before and row.fire_at - fire_before == expected
 
+    # one-off created AFTER the recurring fire: its next 7am can fall before the
+    # recurring's first fire (thu this week), where the sweeps above would consume it
+    one = create_reminder(u.id, "take creatine", "07:00")
+    db.expire_all()
     one_row = db.get(Reminder, one["id"])
     assert fire_due(now=one_row.fire_at + timedelta(seconds=1)) == 1
     db.expire_all()
