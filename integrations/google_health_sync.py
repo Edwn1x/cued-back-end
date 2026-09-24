@@ -109,8 +109,23 @@ def _record_weight(session, user, sample: dict) -> bool:
     return True
 
 
+def _sleep_rank(s: dict) -> tuple[int, int]:
+    """(main-ness, minutes asleep). Live 2026-09-24: the REST `type` is STAGES|CLASSIC (how
+    it was tracked); main-vs-nap is `metadata.mainSleep` / `metadata.nap`. The RPC docs'
+    MAIN_SLEEP|NAP enum is accepted too in case it ever shows up in `type`."""
+    meta = s.get("metadata") or {}
+    t = s.get("type")
+    if meta.get("mainSleep") or t == "MAIN_SLEEP":
+        main = 2
+    elif meta.get("nap") or t == "NAP":
+        main = 0
+    else:
+        main = 1
+    return main, int(((s.get("summary") or {}).get("minutesAsleep")) or 0)
+
+
 def _main_sleep_by_day(sessions: list[dict], tz) -> dict[str, dict]:
-    """{local end-date: session} keeping MAIN_SLEEP over NAP, longest if several."""
+    """{local end-date: session} keeping the main sleep over a nap, longest if tied."""
     out: dict[str, dict] = {}
     for s in sessions:
         iv = s.get("interval") or {}
@@ -121,14 +136,10 @@ def _main_sleep_by_day(sessions: list[dict], tz) -> dict[str, dict]:
         local_end = (end_utc + timedelta(seconds=off)) if off is not None else \
             end_utc.replace(tzinfo=timezone.utc).astimezone(tz).replace(tzinfo=None)
         day = local_end.date().isoformat()
-        is_main = (s.get("type") == "MAIN_SLEEP")
-        mins = int(((s.get("summary") or {}).get("minutesAsleep")) or 0)
+        rank = _sleep_rank(s)
         cur = out.get(day)
-        if cur is None:
-            out[day] = s | {"_main": is_main, "_mins": mins}
-            continue
-        if (is_main and not cur["_main"]) or (is_main == cur["_main"] and mins > cur["_mins"]):
-            out[day] = s | {"_main": is_main, "_mins": mins}
+        if cur is None or rank > cur["_rank"]:
+            out[day] = s | {"_rank": rank, "_mins": rank[1]}
     return out
 
 
@@ -204,9 +215,12 @@ def sync_user(user_id: int, *, days: int | None = None) -> dict:
                 fields["sleep_start"] = _parse_ts(iv.get("startTime"))
                 fields["sleep_end"] = _parse_ts(iv.get("endTime"))
                 summ = sl.get("summary") or {}
-                asleep, awake = sl["_mins"], int(summ.get("minutesAwake") or 0)
-                if asleep + awake > 0:
-                    fields["sleep_efficiency"] = int(round(100 * asleep / (asleep + awake)))
+                asleep = sl["_mins"]
+                # Fitbit's own definition: asleep / time in the sleep period (falls back to
+                # asleep + awake when the API omits minutesInSleepPeriod)
+                period = int(summ.get("minutesInSleepPeriod") or 0) or (asleep + int(summ.get("minutesAwake") or 0))
+                if period > 0:
+                    fields["sleep_efficiency"] = min(100, int(round(100 * asleep / period)))
             if fields:
                 _upsert_day(session, user_id, d, **fields)
                 days_written += 1
