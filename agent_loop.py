@@ -611,6 +611,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])
+        if config.CARD_LINK_FALLBACK_ENABLED:
+            from agent_tools import SET_CARD_DELIVERY_TOOL
+            tools.append(SET_CARD_DELIVERY_TOOL)
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)

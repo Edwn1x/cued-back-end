@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 
+import config
 from models import get_session, User, WorkoutSession, Message
 from card_page import card_url, build_state
 from workouts.templates import day_label
@@ -54,6 +55,18 @@ def _version(ws: WorkoutSession) -> int:
     return int(time.time())
 
 
+def _send_card_as_link(session_id: int, user_id: int, phone: str, url: str, layout: dict) -> dict:
+    """Deliver the card as a plain browser link (no Spectrum extension) — the card_page
+    web app taps + logs the same. send_sms logs the outbound row; there's no card_session to
+    store (the web page reflects live session state on its own, so nothing to refresh)."""
+    from sms import send_sms
+    caption = (layout or {}).get("caption") or "your workout"
+    body = f"{caption} — opens in ur browser, tap sets as u go: {url}"
+    sid = send_sms(phone, body, user_id=user_id, message_type="workout_card")
+    logger.info("WORKOUT_CARD_LINK_SENT user=%s session=%s id=%s", user_id, session_id, sid)
+    return {"card_link": url, "provider_message_id": sid}
+
+
 def send_workout_card(session_id: int) -> dict:
     """Send the session as a card (static layout, tap → overlay). Stores
     card_session + card_message_id on the session and logs the outbound
@@ -68,10 +81,16 @@ def send_workout_card(session_id: int) -> dict:
         user = session.get(User, ws.user_id)
         state = build_state(session, ws)
         phone, user_id = user.phone, user.id
+        prefers_link = bool(getattr(user, "prefers_card_link", False))
         url = card_url(user_id, ws.id, version=_version(ws))
         layout = card_layout(state)
     finally:
         session.close()
+    # Web-link fallback: a user who skips the Spectrum extension gets the card as a plain
+    # browser link (the card_page web app taps + logs the same, no extension). Same URL the
+    # extension bubble wraps — it just goes as text.
+    if prefers_link and config.CARD_LINK_FALLBACK_ENABLED:
+        return _send_card_as_link(session_id, user_id, phone, url, layout)
     r = send_card(phone, url, live=False, layout=layout)
     session = get_session()
     try:
