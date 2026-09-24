@@ -99,6 +99,14 @@ def oauth_callback(provider: str):
 
     base.complete_connection(user_id, provider, bundle)
 
+    # Immediate first pull so the user isn't blind until the next scheduled sync — they
+    # often ask "what's on it?" seconds after connecting. Best-effort; a sync failure
+    # must not fail the connect (the scheduler will catch up).
+    try:
+        prov.sync_now(user_id)
+    except Exception:
+        logger.exception("OAUTH_SYNC_NOW_FAILED provider=%s user=%s", provider, user_id)
+
     # one confirmation text through the normal outbound path — success only
     try:
         session = get_session()

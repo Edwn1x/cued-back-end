@@ -614,6 +614,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOG_EVENT_TOOL_ENABLED:
         from agent_tools import LOG_EVENT_TOOL
         tools.append(LOG_EVENT_TOOL)
+    if config.LOOKUP_EVENTS_TOOL_ENABLED:
+        from agent_tools import LOOKUP_EVENTS_TOOL
+        tools.append(LOOKUP_EVENTS_TOOL)
     if config.REMINDERS_ENABLED:
         from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL, set_reminder_tool  # noqa: F401
         # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance

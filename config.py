@@ -208,6 +208,11 @@ MEAL_ROUTING_PROMPT_ENABLED = os.getenv("MEAL_ROUTING_PROMPT_ENABLED", "false").
 # to persist schedule items; they fell to legacy extraction into the `schedule`
 # memory category and got evicted by the per-category soft cap (burn-in finding).
 LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() == "true"
+# lookup_events: query the FULL synced Event table (bcourses/gcal/log_event) by keyword +
+# date-range, so "when is HW4 due" / "what's due in October" works past the 7-day UPCOMING
+# context window (a due date weeks out is synced but not in the prompt). Read-only.
+LOOKUP_EVENTS_TOOL_ENABLED = os.getenv("LOOKUP_EVENTS_TOOL_ENABLED", "true").lower() == "true"
+LOOKUP_EVENTS_MAX_DAYS = int(os.getenv("LOOKUP_EVENTS_MAX_DAYS", "120"))
 # Reminders (reminders.py): set_reminder/cancel_reminder tools, onboarding capture, and the
 # 60s firing sweep. Ships ON (founder rule: capabilities ship on + budgeted + instrumented);
 # one flag covers all three so a revert is one var.

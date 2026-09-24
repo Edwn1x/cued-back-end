@@ -261,7 +261,7 @@ CAPABILITIES: list[Capability] = [
         id="calendar",
         what="i can hold dates — a midterm, a trip, a game — and plan around them",
         how="tell me 'midterm thursday' or 'home this weekend' and i'll work with it",
-        tools=("log_event",),
+        tools=("log_event", "lookup_events"),
         enabled=lambda u: config.LOG_EVENT_TOOL_ENABLED,
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=_events_logged,
