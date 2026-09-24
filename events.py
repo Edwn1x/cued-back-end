@@ -31,6 +31,12 @@ logger = logging.getLogger("cued.events")
 DEFAULT_TZ = "America/Los_Angeles"
 IN_CLASS_DEFAULT_MINUTES = 90  # when no end time is stated
 
+# Dated, forward-looking "calendar-ish" sources — model-logged items (log_event) plus
+# synced calendars (gcal, bcourses). The regex floor (went_to_gym / in_class) is
+# past-tense "happened" detection and is deliberately excluded from forward readers.
+# The coach never sees the source; the UPCOMING block is the same whatever fed it.
+CALENDAR_SOURCES = ("model", "gcal", "bcourses")
+
 # ── went_to_gym: completed only ("just got back", "already went", "just lifted")
 _GYM_WENT_RE = re.compile(
     r"\b("
@@ -116,6 +122,55 @@ def record_event(user_id: int, event_type: str, *, ends_at=None, source="regex",
         session.close()
 
 
+def upsert_external_event(user_id: int, *, source: str, external_id: str, title: str,
+                          occurred_at, ends_at=None, all_day: bool = False,
+                          event_type: str = "scheduled") -> int:
+    """Insert or update a synced calendar event, keyed by (user_id, source,
+    external_id). A re-pull updates the existing row (title/time change) instead of
+    duplicating it; a previously soft-deleted row is revived if the event reappears.
+    Returns the event id."""
+    from models import get_session
+    session = get_session()
+    try:
+        ev = (session.query(Event)
+              .filter(Event.user_id == user_id, Event.source == source,
+                      Event.external_id == external_id).one_or_none())
+        if ev is None:
+            ev = Event(user_id=user_id, source=source, external_id=external_id,
+                       event_type=event_type)
+            session.add(ev)
+        ev.title = (title or "")[:300]
+        ev.raw_text = ev.title            # readers that fall back to raw_text still work
+        ev.occurred_at = occurred_at
+        ev.ends_at = ends_at
+        ev.all_day = bool(all_day)
+        ev.event_type = event_type
+        ev.deleted_at = None              # revive if it had been cancelled before
+        session.commit()
+        return ev.id
+    finally:
+        session.close()
+
+
+def delete_external_event(user_id: int, *, source: str, external_id: str) -> bool:
+    """Soft-delete a synced event (calendar said status=cancelled). Returns True if a
+    row was found. Goes through deleted_at so every reader drops it at once."""
+    from models import get_session
+    session = get_session()
+    try:
+        ev = (session.query(Event)
+              .filter(Event.user_id == user_id, Event.source == source,
+                      Event.external_id == external_id, Event.deleted_at.is_(None))
+              .one_or_none())
+        if ev is None:
+            return False
+        ev.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.commit()
+        return True
+    finally:
+        session.close()
+
+
 def apply_event_signals_task(user_id: int, message: str):
     """Synchronous inbound floor: detect + persist nudge-critical events. Regex
     only (no LLM), idempotent enough for the nudge use case (a second identical
@@ -186,6 +241,29 @@ def todays_events(user_id: int, event_type: str = None) -> list:
         session.close()
 
 
+def calendar_block_soon(user_id: int, minutes: int = 90, *, now=None) -> bool:
+    """True if a TIMED calendar block (class/exam/work — source in CALENDAR_SOURCES,
+    not all-day) is ongoing or starts within `minutes`. The heartbeat uses this the
+    way it uses the sleep window: don't fire a proactive nudge into someone's block.
+    All-day events don't gate (they'd suppress the whole day)."""
+    from models import active
+    n = _now_naive_utc(now)
+    horizon = n + timedelta(minutes=minutes)
+    session = get_session()
+    try:
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source.in_(CALENDAR_SOURCES),
+                        Event.all_day.isnot(True),
+                        Event.occurred_at < horizon)
+                .order_by(Event.occurred_at.desc()).limit(50).all())
+    finally:
+        session.close()
+    for e in rows:
+        if e.occurred_at and event_end(e) > n:   # overlaps [now, now+minutes]
+            return True
+    return False
+
+
 def event_end(ev) -> datetime:
     """Effective end of an event, naive UTC: ends_at, else occurred_at + the same
     default duration in_class uses. Lifecycle state (upcoming/passed) is COMPUTED
@@ -217,7 +295,7 @@ def upcoming_events(user_id: int, days: int = 7, *, now=None) -> list:
         _start, end_today = local_day_bounds(user, now=now)
         horizon = end_today + timedelta(days=days)
         return (active(session, Event, user_id=user_id)
-                .filter(Event.source == "model",
+                .filter(Event.source.in_(CALENDAR_SOURCES),
                         Event.occurred_at >= end_today,
                         Event.occurred_at < horizon)
                 .order_by(Event.occurred_at).all())
@@ -242,7 +320,7 @@ def recently_passed_events(user_id: int, hours: int = 48, *, now=None) -> list:
         now_utc = _now_naive_utc(now)
         window_start = now_utc - timedelta(hours=hours)
         rows = (active(session, Event, user_id=user_id)
-                .filter(Event.source == "model",
+                .filter(Event.source.in_(CALENDAR_SOURCES),
                         # effective end >= window_start bounds occurred_at below
                         # by window_start - the default duration; a day of margin.
                         Event.occurred_at >= window_start - timedelta(days=1),

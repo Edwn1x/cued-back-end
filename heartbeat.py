@@ -327,6 +327,11 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     from events import in_class_now
     if in_class_now(user.id):
         return "in_class"
+    # Connected-calendar block (class/exam/work) ongoing or starting within 90 min —
+    # don't fire a proactive nudge into it, same as the sleep window (spec §1.3).
+    from events import calendar_block_soon
+    if calendar_block_soon(user.id):
+        return "calendar_block"
     return None
 
 

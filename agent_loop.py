@@ -144,10 +144,16 @@ def build_loop_context(user, session) -> str:
     _now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _is_all_day(e):
+        if getattr(e, "all_day", False):     # synced calendar all-day events set this
+            return True
         if not e.occurred_at or not e.ends_at:
             return False
         s_l, e_l = to_local(e.occurred_at, user), to_local(e.ends_at, user)
         return (s_l.hour, s_l.minute) == (0, 0) and (e_l.hour, e_l.minute) == (23, 59)
+
+    # Calendar-ish sources (log_event, gcal, bcourses) carry a title in raw_text and
+    # render the same way; only the regex floor (went_to_gym/in_class) uses event_type.
+    _CAL_SRC = ("model", "gcal", "bcourses")
 
     # 3a. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
     # model-logged dated schedule items (log_event) — the latter carry a description
@@ -155,8 +161,8 @@ def build_loop_context(user, session) -> str:
     evs = todays_events(user.id)
     if evs:
         def _fmt_event(e):
-            if e.source == "model":
-                label = (e.raw_text or e.event_type or "").strip()
+            if e.source in _CAL_SRC:
+                label = (e.raw_text or e.title or e.event_type or "").strip()
                 if _is_all_day(e):
                     span = " (all day)"
                 elif e.occurred_at:
@@ -173,7 +179,7 @@ def build_loop_context(user, session) -> str:
             # the same way it can for meals and workouts.
             line = f"[id {e.id}] {label}{span}"
             # A same-day 2:15pm event at 6pm must not read like one at 9pm.
-            if e.source == "model" and e.occurred_at and event_end(e) < _now_utc:
+            if e.source in _CAL_SRC and e.occurred_at and event_end(e) < _now_utc:
                 line += (" — PASSED (already happened; never treat as upcoming, "
                          "at most one natural follow-up)")
             return line
@@ -260,6 +266,17 @@ def build_loop_context(user, session) -> str:
         if notes:
             nl = "\n".join(f"- {_d(n.occurred_on)}: {n.text}" for n in notes)
             parts.append(f"## RECENT LIFE CONTEXT (personal — follow up naturally)\n{nl}")
+
+    # 5c. Connected integrations — the one-line status, NEVER a token. Lets the
+    # coach know what it can see (calendar, strava) and mention a disconnect once.
+    if config.GCAL_ENABLED or config.STRAVA_READ_ENABLED or config.BCOURSES_ENABLED:
+        try:
+            from integrations.base import status_line
+            sl = status_line(user.id)
+            if sl:
+                parts.append(f"## INTEGRATIONS\n{sl}")
+        except Exception:
+            logger.exception("INTEGRATIONS_STATUS_FAILED user=%s", user.id)
 
     # 6. Recent conversation window (reuse the watermark boundary — no overlap with summary).
     watermark = user.last_compressed_message_id or 0
@@ -625,6 +642,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # every surface lives in agent_tools (cap = WEB_SEARCH_MAX_USES per reply).
         from agent_tools import WEB_SEARCH_TOOL
         tools.append(WEB_SEARCH_TOOL)
+    if config.SEND_CONNECT_LINK_TOOL_ENABLED:
+        # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
+        # identity/voice.md; the link bubble is an allowed URL exception.
+        from agent_tools import SEND_CONNECT_LINK_TOOL
+        tools.append(SEND_CONNECT_LINK_TOOL)
 
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it

@@ -270,6 +270,39 @@ DENSITY_DISPLAY_ID = os.getenv("DENSITY_DISPLAY_ID", "dsp_956223069054042646")
 RSF_CONTACT_EMAIL = os.getenv("RSF_CONTACT_EMAIL", "enrr865@gmail.com")
 RSF_TIMEOUT_S = int(os.getenv("RSF_TIMEOUT_S", "10"))
 RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
+
+# ─── Integrations (OAuth: Google Calendar, Strava, bCourses) ──────────────────
+# Shared plumbing (integrations/ package). Every flag defaults OFF; the whole
+# surface ships dark and is flipped for Nau's number first. See the spec.
+#
+# Tokens are encrypted at rest with Fernet — INTEGRATION_TOKEN_ENC_KEY is REQUIRED
+# to store or read any third-party token; without it integrations.crypto refuses
+# rather than persist plaintext. Generate with:
+#     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+INTEGRATION_TOKEN_ENC_KEY = os.getenv("INTEGRATION_TOKEN_ENC_KEY", "")
+# Signs the single-use connect-link token (integrations/tokens.py). Same fallback
+# chain as the card token so a deploy without the var still mints valid links.
+CONNECT_TOKEN_SECRET = os.getenv("CONNECT_TOKEN_SECRET", "")
+# The host that serves /c/<provider> (connect link) and /oauth/<provider>/callback.
+# This is the FLASK app's own public URL, NOT the cued.fit static site — a static
+# host can't 302 into an OAuth flow. The OAuth redirect_uri registered with Google
+# and Strava must exactly match "<INTEGRATIONS_BASE_URL>/oauth/<provider>/callback".
+INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-production-90171c.up.railway.app")
+# Per-provider read/write flags.
+GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
+BCOURSES_ENABLED = os.getenv("BCOURSES_ENABLED", "false").lower() == "true"
+STRAVA_READ_ENABLED = os.getenv("STRAVA_READ_ENABLED", "false").lower() == "true"
+STRAVA_POST_ENABLED = os.getenv("STRAVA_POST_ENABLED", "false").lower() == "true"
+# The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).
+SEND_CONNECT_LINK_TOOL_ENABLED = os.getenv("SEND_CONNECT_LINK_TOOL_ENABLED", "false").lower() == "true"
+# OAuth client credentials (set in prod once the provider apps exist; never logged).
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+STRAVA_CLIENT_ID = os.getenv("STRAVA_CLIENT_ID", "")
+STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
+# Strava webhook subscription verify token (echoed back on the GET handshake).
+STRAVA_WEBHOOK_VERIFY_TOKEN = os.getenv("STRAVA_WEBHOOK_VERIFY_TOKEN", "")
+INTEGRATIONS_HTTP_TIMEOUT_S = int(os.getenv("INTEGRATIONS_HTTP_TIMEOUT_S", "15"))
 # Burn-in fix — render every timestamp in the user's LOCAL zone + a local "now" anchor,
 # and inject a code-computed macro totals block. Default ON (these are corrections);
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.

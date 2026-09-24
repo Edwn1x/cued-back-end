@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, Boolean, JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import config
@@ -570,17 +570,55 @@ class Event(Base):
     Timestamps are stored as naive UTC (matching quiet_until / session_state).
     """
     __tablename__ = "events"
+    # A synced calendar event is uniquely (user, source, external_id) — the upsert
+    # key so a re-pull updates the row instead of duplicating it. Existing regex/model
+    # events have external_id=NULL; Postgres treats NULLs as distinct, so they never
+    # collide with each other or with this constraint.
+    __table_args__ = (UniqueConstraint("user_id", "source", "external_id",
+                                       name="uq_events_user_source_external"),)
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life
+    event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life | scheduled
     occurred_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     ends_at = Column(DateTime, nullable=True)         # e.g. in_class end (naive UTC); None = use default duration
-    source = Column(String(20), default="regex")      # regex | model
+    source = Column(String(20), default="regex")      # regex | model | gcal | bcourses
     raw_text = Column(Text)                            # the message snippet that triggered detection
+    title = Column(String(300))                        # display title (calendar events); regex/model use raw_text
+    external_id = Column(String(200))                  # provider id: "<calendar_id>:<event_id>" for gcal; NULL otherwise
+    all_day = Column(Boolean, default=False)           # a calendar all-day event (date, no time)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     deleted_at = Column(DateTime, default=None)        # soft delete — filter via models.active()
     edits = Column(JSON, default=None)                 # append-only manage_log edit audit
+
+
+class Integration(Base):
+    """One third-party OAuth connection per (user, provider). The shared home for
+    Google Calendar, Strava, bCourses, and any later wearable. Tokens are stored
+    as Fernet ciphertext (integrations.crypto) — NEVER plaintext, never logged,
+    never in the coach's context. The coach sees only the derived status line
+    (integrations.base.status_line), e.g. "gcal connected, strava connected".
+
+    `meta` (JSONB) carries the provider-specific bits: per-calendar syncToken /
+    feed_url / last_sync_at / last_error, and the pending single-use connect
+    nonce during an in-flight OAuth handshake. Timestamps are naive UTC (matching
+    events / session_state)."""
+    __tablename__ = "integrations"
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_integrations_user_provider"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(16), nullable=False)   # gcal | bcourses | strava | fitbit | whoop | oura
+    status = Column(String(16), nullable=False, default="pending")  # pending | connected | revoked | error
+    access_token = Column(Text)                      # Fernet ciphertext (nullable — bcourses has none)
+    refresh_token = Column(Text)                     # Fernet ciphertext
+    expires_at = Column(DateTime)                    # naive UTC; when the access token dies
+    scopes = Column(Text)                            # granted scopes, space/comma-delimited
+    external_id = Column(String(64))                 # provider's user/athlete id (Google sub, Strava athlete id)
+    meta = Column(JSON, default=dict)                # sync tokens, feed urls, last_sync_at, last_error, connect nonce
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+                        onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class HeartbeatTick(Base):

@@ -505,6 +505,20 @@ def start_scheduler():
             max_instances=1,
         )
 
+    # Google Calendar sync (Part 1): incremental pull per connected user every 30 min
+    # (pure API + DB, no model). Flag-gated OFF; no-op when no gcal users are connected.
+    if config.GCAL_ENABLED:
+        from integrations.gcal_sync import sync_all as gcal_sync_all
+        scheduler.add_job(
+            gcal_sync_all,
+            trigger=_IT(minutes=30),
+            id="gcal_sync",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("Google Calendar sync scheduled: every 30 min.")
+
     # Adaptive targets: daily sweep; each user is only DUE every 14 days.
     if config.ADAPTIVE_TARGETS_ENABLED:
         from adaptive_targets import run_all as adaptive_run_all
