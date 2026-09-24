@@ -142,10 +142,13 @@ def oauth_callback(provider: str):
 
 @integrations_bp.route("/oauth/google_health/webhook", methods=["POST"])
 def google_health_webhook():
-    import secrets as _secrets
-    secret = config.GOOGLE_HEALTH_WEBHOOK_SECRET
-    given = request.headers.get("Authorization") or ""
-    if not (secret and given and _secrets.compare_digest(given, secret)):
+    import hmac as _hmac
+    secret = (config.GOOGLE_HEALTH_WEBHOOK_SECRET or "").strip()
+    given = (request.headers.get("Authorization") or "").strip()
+    # bytes, not str: secrets/hmac.compare_digest on str REQUIRES ASCII and raises
+    # TypeError (→ 500) otherwise — live 2026-09-24, the first configured secret had a
+    # non-ASCII character. Header values are ASCII in practice; stay total regardless.
+    if not (secret and given and _hmac.compare_digest(given.encode("utf-8"), secret.encode("utf-8"))):
         return Response(status=401)
     payload = request.get_json(force=True, silent=True)
     if isinstance(payload, dict) and payload.get("type") == "verification":
