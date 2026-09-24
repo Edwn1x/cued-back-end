@@ -172,3 +172,40 @@ def test_5pm_pt_event_not_passed_at_11pm_utc_same_local_day(db):
     assert event_end(ev) > _naive_utc(ref_utc), "effective end miscomputed"
     assert recently_passed_events(user.id, now=ref_utc) == [], \
         "a 5pm-PT event must not be 'passed' at 11pm UTC of the same local day"
+
+
+def test_upcoming_event_renders_its_end_time_span(db):
+    """A synced calendar event's end time must reach the coach: UPCOMING renders
+    start–end, not start-only (live 2026-09-24: coach said a Fri quiz 'had no end'
+    when ends_at was synced). The en-dash '–' is the span; the line separator is
+    an em-dash '—', so this is unambiguous."""
+    from tests.factories import make_user
+    from events import upsert_external_event
+    from datetime import datetime, timezone, timedelta
+
+    user = make_user(db)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = (now + timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)  # ~1pm PT
+    end = start + timedelta(hours=1)
+    upsert_external_event(user.id, source="gcal", external_id="cs70quiz",
+                          title="quiz for cs70", occurred_at=start, ends_at=end, all_day=False)
+
+    upcoming = _section(_ctx(user.id), "UPCOMING EVENTS")
+    assert "quiz for cs70" in upcoming
+    assert "–" in upcoming, "upcoming event must render a start–end span, not start-only"
+
+
+def test_upcoming_all_day_event_has_no_time_span(db):
+    """An all-day synced event shouldn't grow a spurious time span."""
+    from tests.factories import make_user
+    from events import upsert_external_event
+    from datetime import datetime, timezone, timedelta
+
+    user = make_user(db)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = (now + timedelta(days=2)).replace(hour=7, minute=0, second=0, microsecond=0)
+    upsert_external_event(user.id, source="gcal", external_id="allday1",
+                          title="conference", occurred_at=start, ends_at=start + timedelta(days=1),
+                          all_day=True)
+    upcoming = _section(_ctx(user.id), "UPCOMING EVENTS")
+    assert "conference" in upcoming and "–" not in upcoming
