@@ -1404,6 +1404,23 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     if handle_optout_flow(session, user, body, message_id=message_sid, channel=channel):
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
+    # bCourses feed link (Part 1.4, flag-gated): a pasted Canvas calendar-feed URL is
+    # a code-handled connect — store it, reply "got it", first sync in the background.
+    # Terminal: the coach never gets a bearer-ish URL as a question to answer.
+    if config.BCOURSES_ENABLED:
+        from integrations.bcourses import handle_inbound_feed_url
+        if handle_inbound_feed_url(session, user, body, channel=channel):
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Canvas access token (Part 1.4b, flag-gated): a pasted personal access token is
+    # validated against Canvas, stored encrypted, scrubbed from the logged inbound,
+    # and answered in code. Terminal either way (valid or not) — a bearer token is
+    # never handed to the model as a message to reply to.
+    if config.CANVAS_ENABLED:
+        from integrations.canvas import handle_inbound_token
+        if handle_inbound_token(session, user, body, channel=channel):
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
     # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
     # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
     # buffer). Closes a pre-existing prod hole where goodnight messages

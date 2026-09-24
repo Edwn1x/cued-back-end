@@ -519,6 +519,34 @@ def start_scheduler():
         )
         logger.info("Google Calendar sync scheduled: every 30 min.")
 
+    # bCourses feed sync (Part 1.4): re-pull every pasted Canvas ICS feed every 6h
+    # (pure HTTP + DB, no model). Flag-gated OFF; no-op when no feeds are on file.
+    if config.BCOURSES_ENABLED:
+        from integrations.bcourses import sync_all as bcourses_sync_all
+        scheduler.add_job(
+            bcourses_sync_all,
+            trigger=_IT(hours=6),
+            id="bcourses_sync",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("bCourses feed sync scheduled: every 6h.")
+
+    # Canvas token sync (Part 1.4b): planner items + submission status every 30 min
+    # (submission freshness matters — a nag about turned-in homework is the failure).
+    if config.CANVAS_ENABLED:
+        from integrations.canvas import sync_all as canvas_sync_all
+        scheduler.add_job(
+            canvas_sync_all,
+            trigger=_IT(minutes=30),
+            id="canvas_sync",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("Canvas token sync scheduled: every 30 min.")
+
     # Adaptive targets: daily sweep; each user is only DUE every 14 days.
     if config.ADAPTIVE_TARGETS_ENABLED:
         from adaptive_targets import run_all as adaptive_run_all

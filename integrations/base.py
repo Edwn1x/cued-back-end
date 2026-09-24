@@ -182,6 +182,72 @@ class RefreshFailed(RuntimeError):
     pass
 
 
+# ─── pull-style providers (feed URL / pasted token): sync bookkeeping ─────────
+
+def note_sync_failure(user_id: int, provider: str, err: Exception, *, fails_before_error: int = 3) -> None:
+    """A fetch failed. Count it in meta.fail_count; flip status to `error` only after
+    `fails_before_error` consecutive misses so a transient blip never shows the coach
+    an error state. `error` rows keep being polled and heal on the next good pull."""
+    session = get_session()
+    try:
+        integ = get_integration(session, user_id, provider)
+        if integ is None:
+            return
+        meta = dict(integ.meta or {})
+        meta["fail_count"] = int(meta.get("fail_count") or 0) + 1
+        meta["last_error"] = str(err)[:300]
+        integ.meta = meta
+        integ.updated_at = _utcnow()
+        if meta["fail_count"] >= fails_before_error and integ.status == "connected":
+            integ.status = "error"
+        session.commit()
+    finally:
+        session.close()
+    logger.warning("INTEGRATION_SYNC_FAILED user=%s provider=%s err=%s", user_id, provider, str(err)[:120])
+
+
+def note_sync_success(user_id: int, provider: str, now: datetime | None = None, **meta_updates) -> None:
+    n = now or _utcnow()
+    session = get_session()
+    try:
+        integ = get_integration(session, user_id, provider)
+        if integ is None:
+            return
+        meta = dict(integ.meta or {})
+        meta["fail_count"] = 0
+        meta.pop("last_error", None)
+        meta["last_sync_at"] = n.isoformat()
+        meta.update(meta_updates)
+        integ.meta = meta
+        integ.status = "connected"
+        integ.updated_at = n
+        session.commit()
+    finally:
+        session.close()
+
+
+def redact_inbound(user_id: int, secret: str, placeholder: str) -> int:
+    """A pasted feed URL / access token was logged as a normal inbound row before the
+    pre-pass saw it. Scrub it from the stored body so the conversation window (and
+    therefore the model) never carries the secret. Returns rows changed."""
+    from models import Message
+    if not secret:
+        return 0
+    session = get_session()
+    try:
+        rows = (session.query(Message)
+                .filter(Message.user_id == user_id, Message.direction == "in",
+                        Message.body.contains(secret))
+                .order_by(Message.id.desc()).limit(3).all())
+        for m in rows:
+            m.body = m.body.replace(secret, placeholder)
+        if rows:
+            session.commit()
+        return len(rows)
+    finally:
+        session.close()
+
+
 def get_valid_access_token(user_id: int, provider: str) -> str | None:
     """Return a usable access token, refreshing first if it's within REFRESH_SKEW_S
     of expiry. On refresh failure, mark the row revoked and return None (the coach
@@ -258,6 +324,10 @@ def status_line(user_id: int) -> str | None:
         for r in rows:
             if r.status == "connected":
                 extra = _strava_scope_suffix(r.scopes) if r.provider == "strava" else ""
+                if r.provider == "canvas":
+                    codes = [c for c in ((r.meta or {}).get("course_codes") or []) if c][:6]
+                    if codes:
+                        extra = " (" + " · ".join(codes) + ")"
                 parts.append(f"{r.provider} connected{extra}")
             elif r.status == "revoked":
                 parts.append(f"{r.provider} disconnected")
@@ -274,4 +344,5 @@ __all__ = [
     "get_integration", "set_pending", "pending_nonce", "complete_connection",
     "mark_error", "mark_revoked", "get_valid_access_token", "status_line",
     "RefreshFailed", "REFRESH_SKEW_S",
+    "note_sync_failure", "note_sync_success", "redact_inbound",
 ]

@@ -17,7 +17,8 @@ logger = logging.getLogger("cued.integrations.boot")
 _PROVIDER_MODULES: list[str] = [
     "integrations.gcal",       # Part 1 — Google Calendar
     # "integrations.strava",   # Part 2
-    # "integrations.bcourses", # Part 1.4 (no OAuth, but registers for status)
+    # bcourses (Part 1.4) is deliberately NOT registered: no OAuth, so /c/bcourses stays
+    # a 404; status_line reads its row directly.
 ]
 
 for _mod in _PROVIDER_MODULES:

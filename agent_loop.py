@@ -153,7 +153,7 @@ def build_loop_context(user, session) -> str:
 
     # Calendar-ish sources (log_event, gcal, bcourses) carry a title in raw_text and
     # render the same way; only the regex floor (went_to_gym/in_class) uses event_type.
-    _CAL_SRC = ("model", "gcal", "bcourses")
+    _CAL_SRC = ("model", "gcal", "bcourses", "canvas")
 
     # 3a. Today's events (local-day). Regex floor (went_to_gym / in_class) AND
     # model-logged dated schedule items (log_event) — the latter carry a description
@@ -269,7 +269,8 @@ def build_loop_context(user, session) -> str:
 
     # 5c. Connected integrations — the one-line status, NEVER a token. Lets the
     # coach know what it can see (calendar, strava) and mention a disconnect once.
-    if config.GCAL_ENABLED or config.STRAVA_READ_ENABLED or config.BCOURSES_ENABLED:
+    if (config.GCAL_ENABLED or config.STRAVA_READ_ENABLED or config.BCOURSES_ENABLED
+            or config.CANVAS_ENABLED):
         try:
             from integrations.base import status_line
             sl = status_line(user.id)

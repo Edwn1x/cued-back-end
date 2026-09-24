@@ -291,6 +291,11 @@ INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-producti
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
 BCOURSES_ENABLED = os.getenv("BCOURSES_ENABLED", "false").lower() == "true"
+# Canvas personal access token (Part 1.4b): the richer bCourses connection — planner
+# API with submission status. Sits ON TOP of the feed: while a token is valid it
+# supersedes the feed's events; revoke → the feed sync resumes. Separate flag.
+CANVAS_ENABLED = os.getenv("CANVAS_ENABLED", "false").lower() == "true"
+CANVAS_BASE_URL = os.getenv("CANVAS_BASE_URL", "https://bcourses.berkeley.edu")
 STRAVA_READ_ENABLED = os.getenv("STRAVA_READ_ENABLED", "false").lower() == "true"
 STRAVA_POST_ENABLED = os.getenv("STRAVA_POST_ENABLED", "false").lower() == "true"
 # The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).

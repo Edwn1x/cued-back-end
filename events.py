@@ -35,7 +35,7 @@ IN_CLASS_DEFAULT_MINUTES = 90  # when no end time is stated
 # synced calendars (gcal, bcourses). The regex floor (went_to_gym / in_class) is
 # past-tense "happened" detection and is deliberately excluded from forward readers.
 # The coach never sees the source; the UPCOMING block is the same whatever fed it.
-CALENDAR_SOURCES = ("model", "gcal", "bcourses")
+CALENDAR_SOURCES = ("model", "gcal", "bcourses", "canvas")
 
 # ── went_to_gym: completed only ("just got back", "already went", "just lifted")
 _GYM_WENT_RE = re.compile(
@@ -148,6 +148,31 @@ def upsert_external_event(user_id: int, *, source: str, external_id: str, title:
         ev.deleted_at = None              # revive if it had been cancelled before
         session.commit()
         return ev.id
+    finally:
+        session.close()
+
+
+def prune_external_events(user_id: int, *, source: str, keep: set, lo, hi, now=None) -> int:
+    """Soft-delete every active `source` event in [lo, hi) whose external_id is not in
+    `keep` — the event dropped out of the feed (deleted / unpublished / superseded by
+    a richer source). Only inside the window the caller actually re-pulled: rows
+    outside it were never re-fetched, so their absence means nothing."""
+    from models import get_session
+    n = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    session = get_session()
+    try:
+        rows = (session.query(Event)
+                .filter(Event.user_id == user_id, Event.source == source,
+                        Event.deleted_at.is_(None),
+                        Event.occurred_at >= lo, Event.occurred_at < hi).all())
+        count = 0
+        for ev in rows:
+            if ev.external_id not in keep:
+                ev.deleted_at = n
+                count += 1
+        if count:
+            session.commit()
+        return count
     finally:
         session.close()
 
