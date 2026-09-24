@@ -389,6 +389,25 @@ def _job_health(session, now_utc_naive):
                  "today": f"{calls_today} calls / ${cost_today:.2f}",
                  "notes": "every Anthropic call tracks here — silence during active hours = something broke"})
 
+    # Calendar syncs (integrations): last successful pull = the newest connected row's
+    # updated_at (sync_user bumps it on every good pull). Stale past 2 cadences.
+    from models import Integration as _Integ
+    for name, prov, flag, cadence_min, note in (
+        ("Google Calendar Sync", "gcal", config.GCAL_ENABLED, 30, "every 30m, incremental syncToken per calendar"),
+        ("bCourses Feed Sync", "bcourses", config.BCOURSES_ENABLED, 6 * 60, "every 6h, pasted Canvas ICS feed"),
+    ):
+        connected = session.query(_Integ).filter(_Integ.provider == prov, _Integ.status == "connected").count()
+        errored = session.query(_Integ).filter(_Integ.provider == prov, _Integ.status.in_(("error", "revoked"))).count()
+        last_sync = session.query(func.max(_Integ.updated_at)).filter(
+            _Integ.provider == prov, _Integ.status == "connected").scalar()
+        if flag and connected == 0:
+            h, c = "NO USERS", "gray"
+        else:
+            h, c = stale_check(last_sync, cadence_min * 2, flag)
+        jobs.append({"name": name, "enabled": flag,
+                     "last": _fmt(last_sync), "ago": _ago(last_sync), "health": h, "health_color": c,
+                     "today": f"{connected} connected / {errored} error", "notes": note})
+
     jobs.append({"name": "Legacy Scheduler", "enabled": config.LEGACY_SCHEDULER_ENABLED,
                  "last": "—", "ago": "", "health": "DISABLED" if not config.LEGACY_SCHEDULER_ENABLED else "ON",
                  "health_color": "gray" if not config.LEGACY_SCHEDULER_ENABLED else "green",
