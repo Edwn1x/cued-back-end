@@ -73,8 +73,11 @@ def sync_user(user_id: int) -> dict:
     try:
         cals = gcal.list_calendars(token)
     except Exception as e:
-        logger.warning("GCAL_LIST_CALENDARS_FAILED user=%s err=%s", user_id, e)
-        return {"error": str(e)}
+        # Grants made with events.readonly alone can't list calendars (403). The
+        # primary calendar is still readable, so sync that rather than nothing; a
+        # re-connect picks up the calendarlist scope and the secondary calendars.
+        logger.warning("GCAL_LIST_CALENDARS_FAILED user=%s err=%s — falling back to primary", user_id, e)
+        cals = [{"id": "primary", "summary": "primary"}]
 
     now = datetime.now(timezone.utc)
     time_min = now.strftime("%Y-%m-%dT%H:%M:%SZ")

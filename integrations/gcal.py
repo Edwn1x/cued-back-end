@@ -31,7 +31,11 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo"
 CAL_API = "https://www.googleapis.com/calendar/v3"
-SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+# events.readonly alone can read events but NOT list calendars — calendarList.list
+# 403'd live (2026-09-24). calendarlist.readonly is the narrowest scope that lists them;
+# still no write, no calendar.readonly (that one exposes ACLs/settings).
+SCOPE = ("https://www.googleapis.com/auth/calendar.events.readonly "
+         "https://www.googleapis.com/auth/calendar.calendarlist.readonly")
 
 
 def _timeout() -> int:
@@ -111,7 +115,15 @@ class GCalProvider(Provider):
             r.raise_for_status()
             return str(r.json().get("id") or "") or None
         except Exception:
-            logger.warning("GCAL_USERINFO_FAILED", exc_info=True)
+            logger.info("GCAL_USERINFO_UNAVAILABLE (no profile scope) — using primary calendar id")
+        try:
+            r = requests.get(f"{CAL_API}/users/me/calendarList/primary",
+                             headers={"Authorization": f"Bearer {access_token}"},
+                             timeout=_timeout())
+            r.raise_for_status()
+            return (str(r.json().get("id") or "") or None)
+        except Exception:
+            logger.warning("GCAL_ACCOUNT_ID_FAILED", exc_info=True)
             return None
 
     def connected_message(self, integ) -> str:
