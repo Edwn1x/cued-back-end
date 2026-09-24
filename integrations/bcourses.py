@@ -2,8 +2,9 @@
 
 The user pastes their bCourses calendar-feed URL (bCourses → Calendar → Calendar
 Feed). Code sniffs it out of the inbound text, stores it on an `integrations` row
-(provider=bcourses, meta.feed_url), replies in code, and kicks a first sync in the
-background. A 6-hour scheduler job re-pulls the ICS for every feed on file and
+(provider=bcourses, meta.feed_url), pulls once inline (bounded — the reply says
+whether the feed had anything), and replies in code. A 6-hour scheduler job re-pulls
+the ICS for every feed on file and
 upserts assignments / course events into the shared event store with
 source='bcourses' and external_id=<ICS UID>, so UPCOMING, the heartbeat's
 calendar gate, and the coach's calendar rules see due dates exactly like gcal
@@ -23,9 +24,9 @@ from zoneinfo import ZoneInfo
 import requests
 
 import config
-from models import get_session, User, Integration, Event
+from models import get_session, User, Integration
 from integrations import base
-from events import upsert_external_event
+from events import upsert_external_event, prune_external_events
 
 logger = logging.getLogger("cued.integrations.bcourses")
 
@@ -41,7 +42,10 @@ SYNC_HORIZON_DAYS = 60       # same forward window as gcal
 LOOKBACK_DAYS = 1            # keep yesterday's due dates so "PASSED" reads still work
 MAX_EVENT_HOURS = 24         # skip semester-long blocks — noise
 FAILS_BEFORE_ERROR = 3       # transient fetch blips don't flip the row to error
+INLINE_TIMEOUT_S = 8         # the paste reply waits this long for the first pull, then goes async
 GOT_IT = "got it. i'll pull ur due dates in and plan around them"
+GOT_IT_EMPTY = "got it. nothing on ur bcourses calendar yet tho, i'll keep checking"
+REDACTED = "[bcourses feed link]"
 
 
 def _utcnow() -> datetime:
@@ -77,8 +81,7 @@ def save_feed(user_id: int, feed_url: str) -> None:
 
 
 def _spawn_first_sync(user_id: int) -> None:
-    """First pull right after the paste, off the webhook thread (the ICS fetch is a
-    network call; the webhook has a ~15s budget)."""
+    """Background pull, used when the inline one couldn't finish in time."""
     def _run():
         try:
             sync_user(user_id)
@@ -87,28 +90,42 @@ def _spawn_first_sync(user_id: int) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _try_sync_now(user_id: int) -> int | None:
+    """Bounded inline first pull so the reply can say whether the feed has anything.
+    Returns the upserted count, or None if it didn't finish / failed (then async)."""
+    try:
+        res = sync_user(user_id, timeout=INLINE_TIMEOUT_S)
+    except Exception:
+        return None
+    return int(res["upserted"]) if "upserted" in res else None
+
+
 def handle_inbound_feed_url(session, user, body: str, *, channel: str = "sms") -> bool:
-    """Inbound pre-pass. If the message carries a bCourses feed URL: store it, reply
-    in code, start the first sync, and return True (terminal — the coach never
-    sees this turn as a question to answer). Returns False otherwise. Flag-gated
-    no-op when BCOURSES_ENABLED is off."""
+    """Inbound pre-pass. If the message carries a bCourses feed URL: scrub it from
+    the logged row, store it, pull once (bounded) so the reply can say what it found,
+    and return True (terminal — the coach never sees this turn as a question to
+    answer). Returns False otherwise. Flag-gated no-op when BCOURSES_ENABLED is off."""
     if not config.BCOURSES_ENABLED:
         return False
     url = find_feed_url(body)
     if not url:
         return False
     from sms import send_sms
+    base.redact_inbound(user.id, url, REDACTED)
     save_feed(user.id, url)
-    send_sms(user.phone, GOT_IT, user_id=user.id, message_type="integration_connected")
     logger.info("BCOURSES_FEED_SAVED user=%s channel=%s", user.id, channel)
-    _spawn_first_sync(user.id)
+    n = _try_sync_now(user.id)
+    if n is None:
+        _spawn_first_sync(user.id)
+    line = GOT_IT_EMPTY if n == 0 else GOT_IT
+    send_sms(user.phone, line, user_id=user.id, message_type="integration_connected")
     return True
 
 
 # ─── ICS fetch + parse ────────────────────────────────────────────────────────
 
-def _fetch_ics(feed_url: str) -> str:
-    r = requests.get(feed_url, timeout=config.INTEGRATIONS_HTTP_TIMEOUT_S,
+def _fetch_ics(feed_url: str, *, timeout: float | None = None) -> str:
+    r = requests.get(feed_url, timeout=timeout or config.INTEGRATIONS_HTTP_TIMEOUT_S,
                      headers={"User-Agent": "cued-coach/1.0 (+https://cued.fit)"})
     r.raise_for_status()
     text = r.text or ""
@@ -165,70 +182,14 @@ def parse_ics(text: str, tz: ZoneInfo) -> list[dict]:
 
 # ─── sync ─────────────────────────────────────────────────────────────────────
 
-def _record_failure(user_id: int, err: Exception) -> None:
-    session = get_session()
-    try:
-        integ = base.get_integration(session, user_id, SOURCE)
-        if integ is None:
-            return
-        meta = dict(integ.meta or {})
-        meta["fail_count"] = int(meta.get("fail_count") or 0) + 1
-        meta["last_error"] = str(err)[:300]
-        integ.meta = meta
-        integ.updated_at = _utcnow()
-        flip = meta["fail_count"] >= FAILS_BEFORE_ERROR and integ.status == "connected"
-        if flip:
-            integ.status = "error"
-        session.commit()
-    finally:
-        session.close()
-    logger.warning("BCOURSES_FETCH_FAILED user=%s err=%s", user_id, str(err)[:120])
-
-
-def _record_success(user_id: int, now: datetime) -> None:
-    session = get_session()
-    try:
-        integ = base.get_integration(session, user_id, SOURCE)
-        if integ is None:
-            return
-        meta = dict(integ.meta or {})
-        meta["fail_count"] = 0
-        meta.pop("last_error", None)
-        meta["last_sync_at"] = now.isoformat()
-        integ.meta = meta
-        integ.status = "connected"
-        integ.updated_at = now
-        session.commit()
-    finally:
-        session.close()
-
-
-def _delete_vanished(user_id: int, seen: set, lo: datetime, hi: datetime, now: datetime) -> int:
-    """An event that dropped out of the feed (assignment deleted / unpublished) is
-    soft-deleted so it stops showing up. Only inside the sync window — rows outside
-    it were never re-pulled this run, so their absence means nothing."""
-    session = get_session()
-    try:
-        rows = (session.query(Event)
-                .filter(Event.user_id == user_id, Event.source == SOURCE,
-                        Event.deleted_at.is_(None),
-                        Event.occurred_at >= lo, Event.occurred_at < hi).all())
-        n = 0
-        for ev in rows:
-            if ev.external_id not in seen:
-                ev.deleted_at = now
-                n += 1
-        if n:
-            session.commit()
-        return n
-    finally:
-        session.close()
-
-
-def sync_user(user_id: int) -> dict:
-    """Pull one user's feed into the event store. Returns a summary dict."""
+def sync_user(user_id: int, *, timeout: float | None = None) -> dict:
+    """Pull one user's feed into the event store. Returns a summary dict. Defers to
+    a live Canvas token (canvas.py) — one board, not two copies of each assignment."""
     if not config.BCOURSES_ENABLED:
         return {"skipped": "flag off"}
+    from integrations import canvas
+    if canvas.is_active(user_id):
+        return {"skipped": "canvas token active"}
     session = get_session()
     try:
         integ = base.get_integration(session, user_id, SOURCE)
@@ -243,10 +204,10 @@ def sync_user(user_id: int) -> dict:
         return {"skipped": "no feed url"}
 
     try:
-        text = _fetch_ics(feed_url)
+        text = _fetch_ics(feed_url, timeout=timeout)
         parsed = parse_ics(text, tz)
     except Exception as e:
-        _record_failure(user_id, e)
+        base.note_sync_failure(user_id, SOURCE, e, fails_before_error=FAILS_BEFORE_ERROR)
         return {"error": str(e)}
 
     now = _utcnow()
@@ -265,8 +226,8 @@ def sync_user(user_id: int) -> dict:
                               all_day=ev["all_day"])
         seen.add(ev["external_id"])
         upserted += 1
-    deleted = _delete_vanished(user_id, seen, lo, hi, now)
-    _record_success(user_id, now)
+    deleted = prune_external_events(user_id, source=SOURCE, keep=seen, lo=lo, hi=hi, now=now)
+    base.note_sync_success(user_id, SOURCE, now)
     logger.info("BCOURSES_SYNC user=%s upserted=%s deleted=%s parsed=%s",
                 user_id, upserted, deleted, len(parsed))
     return {"upserted": upserted, "deleted": deleted}
@@ -294,5 +255,5 @@ def sync_all() -> int:
     return n
 
 
-__all__ = ["SOURCE", "FEED_URL_RE", "GOT_IT", "find_feed_url", "save_feed",
-           "handle_inbound_feed_url", "parse_ics", "sync_user", "sync_all"]
+__all__ = ["SOURCE", "FEED_URL_RE", "GOT_IT", "GOT_IT_EMPTY", "REDACTED", "find_feed_url",
+           "save_feed", "handle_inbound_feed_url", "parse_ics", "sync_user", "sync_all"]

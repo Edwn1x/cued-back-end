@@ -1412,6 +1412,15 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         if handle_inbound_feed_url(session, user, body, channel=channel):
             return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
+    # Canvas access token (Part 1.4b, flag-gated): a pasted personal access token is
+    # validated against Canvas, stored encrypted, scrubbed from the logged inbound,
+    # and answered in code. Terminal either way (valid or not) — a bearer token is
+    # never handed to the model as a message to reply to.
+    if config.CANVAS_ENABLED:
+        from integrations.canvas import handle_inbound_token
+        if handle_inbound_token(session, user, body, channel=channel):
+            return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
     # Fix 5: safety pre-pass runs SYNCHRONOUSLY at the top of the webhook,
     # BEFORE any branch (goodnight, ack-suppression, logging mode, classify,
     # buffer). Closes a pre-existing prod hole where goodnight messages

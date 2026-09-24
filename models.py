@@ -582,7 +582,7 @@ class Event(Base):
     event_type = Column(String(30), nullable=False)  # went_to_gym | in_class | skipped | ate | traveling | life | scheduled
     occurred_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     ends_at = Column(DateTime, nullable=True)         # e.g. in_class end (naive UTC); None = use default duration
-    source = Column(String(20), default="regex")      # regex | model | gcal | bcourses
+    source = Column(String(20), default="regex")      # regex | model | gcal | bcourses | canvas
     raw_text = Column(Text)                            # the message snippet that triggered detection
     title = Column(String(300))                        # display title (calendar events); regex/model use raw_text
     external_id = Column(String(200))                  # provider id: "<calendar_id>:<event_id>" for gcal; NULL otherwise

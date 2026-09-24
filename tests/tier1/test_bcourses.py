@@ -30,11 +30,14 @@ def _row(uid):
         s.close()
 
 
-def _run_inbound(db, user, body, monkeypatch):
+def _run_inbound(db, user, body, monkeypatch, inline_result=3):
+    """inline_result: what the bounded first pull returns (int upserted, or None =
+    didn't finish → background)."""
     from models import get_session, User
     from integrations import bcourses
     spawned = []
     monkeypatch.setattr(bcourses, "_spawn_first_sync", lambda uid: spawned.append(uid))
+    monkeypatch.setattr(bcourses, "_try_sync_now", lambda uid: inline_result)
     s = get_session()
     try:
         u = s.get(User, user.id)
@@ -62,19 +65,73 @@ def test_feed_url_detection(body, found):
     assert (find_feed_url(body) is not None) is found
 
 
-def test_paste_stores_feed_replies_and_starts_first_sync(db, sms_capture, monkeypatch):
+def test_paste_stores_feed_pulls_inline_and_replies(db, sms_capture, monkeypatch):
     from tests.factories import make_user
     from integrations.bcourses import GOT_IT
     user = make_user(db)
 
-    terminal, spawned = _run_inbound(db, user, f"this is it {FEED}", monkeypatch)
+    terminal, spawned = _run_inbound(db, user, f"this is it {FEED}", monkeypatch, inline_result=3)
     assert terminal is True
     row = _row(user.id)
     assert row is not None and row.status == "connected"
     assert row.meta["feed_url"] == FEED
     assert row.access_token is None
     assert [b for _p, b in sms_capture] == [GOT_IT]
-    assert spawned == [user.id]
+    assert spawned == []                         # inline pull finished → no background
+
+
+def test_empty_feed_says_so_in_the_reply(db, sms_capture, monkeypatch):
+    from tests.factories import make_user
+    from integrations.bcourses import GOT_IT_EMPTY
+    user = make_user(db)
+    terminal, spawned = _run_inbound(db, user, FEED, monkeypatch, inline_result=0)
+    assert terminal and spawned == []
+    assert [b for _p, b in sms_capture] == [GOT_IT_EMPTY]
+
+
+def test_slow_first_pull_goes_async_with_the_plain_reply(db, sms_capture, monkeypatch):
+    from tests.factories import make_user
+    from integrations.bcourses import GOT_IT
+    user = make_user(db)
+    terminal, spawned = _run_inbound(db, user, FEED, monkeypatch, inline_result=None)
+    assert terminal and spawned == [user.id]
+    assert [b for _p, b in sms_capture] == [GOT_IT]
+
+
+def test_pasted_url_is_scrubbed_from_the_logged_inbound(db, sms_capture, monkeypatch):
+    """The feed link is a bearer-ish secret: it must not stay in messages (the
+    conversation window the model sees)."""
+    from tests.factories import make_user
+    from sms import log_incoming
+    from models import get_session, Message
+    from integrations.bcourses import REDACTED
+    user = make_user(db)
+    log_incoming(user.id, f"here u go {FEED}", channel="imessage")
+    _run_inbound(db, user, f"here u go {FEED}", monkeypatch)
+    s = get_session()
+    try:
+        m = (s.query(Message).filter(Message.user_id == user.id, Message.direction == "in")
+             .order_by(Message.id.desc()).first())
+        assert FEED not in m.body and REDACTED in m.body and m.body.startswith("here u go")
+    finally:
+        s.close()
+
+
+def test_feed_sync_defers_to_a_live_canvas_token(db, monkeypatch):
+    from tests.factories import make_user
+    from integrations import bcourses
+    from models import get_session, Integration
+    monkeypatch.setattr(config, "CANVAS_ENABLED", True)
+    user = make_user(db)
+    _connect(db, user.id)
+    s = get_session()
+    try:
+        s.add(Integration(user_id=user.id, provider="canvas", status="connected",
+                          access_token="ciphertext", meta={}))
+        s.commit()
+    finally:
+        s.close()
+    assert bcourses.sync_user(user.id) == {"skipped": "canvas token active"}
 
 
 def test_repaste_replaces_url_and_clears_error(db, sms_capture, monkeypatch):
@@ -166,7 +223,7 @@ def test_sync_parses_upserts_windows_and_prunes(db, monkeypatch):
         _vevent("event-calendar-event-sem", "Fall semester", now + timedelta(days=1), now + timedelta(days=90)),
         _vevent("event-calendar-event-lab", "Lab section", floating_local, floating_local + timedelta(hours=2)),
     )
-    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url: feed)
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: feed)
 
     res = bcourses.sync_user(user.id)
     assert res == {"upserted": 3, "deleted": 0}
@@ -204,14 +261,14 @@ def test_sync_parses_upserts_windows_and_prunes(db, monkeypatch):
         _vevent("event-calendar-event-7", "Midterm review", allday, allday + timedelta(days=1), all_day=True),
         _vevent("event-calendar-event-lab", "Lab section", floating_local, floating_local + timedelta(hours=2)),
     )
-    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url: feed2)
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: feed2)
     res2 = bcourses.sync_user(user.id)
     assert res2 == {"upserted": 2, "deleted": 1}
     titles = {e.title for e in upcoming_events(user.id, days=60)}
     assert "due: HW 3 [CS 61C]" not in titles and "Midterm review" in titles
 
     # a re-added assignment revives the same row, no duplicate
-    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url: feed)
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: feed)
     bcourses.sync_user(user.id)
     s = get_session()
     try:
@@ -233,7 +290,7 @@ def test_due_deadline_gates_heartbeat_only_in_its_window(db, monkeypatch):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     soon = now + timedelta(minutes=30)
     feed = _ics(_vevent("event-assignment-9", "quiz", soon, soon))
-    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url: feed)
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: feed)
     bcourses.sync_user(user.id)
     assert calendar_block_soon(user.id, now=now) is True
     assert calendar_block_soon(user.id, now=now + timedelta(minutes=31)) is False
@@ -245,7 +302,7 @@ def test_fetch_failures_flip_to_error_only_after_three_and_heal(db, monkeypatch)
     user = make_user(db)
     _connect(db, user.id)
 
-    def _boom(url):
+    def _boom(url, **kw):
         raise RuntimeError("503 from canvas")
     monkeypatch.setattr(bcourses, "_fetch_ics", _boom)
 
@@ -263,7 +320,7 @@ def test_fetch_failures_flip_to_error_only_after_three_and_heal(db, monkeypatch)
     assert sl == "bcourses error" and "bcourses.berkeley.edu" not in sl
 
     # error rows are still polled and heal on the next good pull
-    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url: _ics())
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: _ics())
     assert bcourses.sync_all() == 1
     row = _row(user.id)
     assert row.status == "connected" and row.meta["fail_count"] == 0 and "last_error" not in row.meta
