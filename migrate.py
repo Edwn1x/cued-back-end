@@ -248,6 +248,8 @@ MIGRATIONS = [
     # Per-user saved menus (save_menu tool → saved_menus.py). Reference material a user
     # sends to log from later; TTL-aged in context, not evicted from storage.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS saved_menus JSON",
+    # Workout card web-link fallback (set_card_delivery / workouts/card.py).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS prefers_card_link BOOLEAN DEFAULT FALSE",
     # STOP opt-out (iMessage): unsubscribed state + pending-confirmation flag. See optout.py.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_optout_confirm BOOLEAN DEFAULT FALSE",

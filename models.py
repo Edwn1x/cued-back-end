@@ -87,6 +87,10 @@ class User(Base):
     # "I ate the Wednesday burrito" logs from saved macros. See saved_menus.py.
     # {key: {name, items:[{item, calories?, protein_g?, carbs_g?, fat_g?, note?}], captured_at}}
     saved_menus = Column(JSON, default=None)
+    # Workout card delivery: True = send cards as a plain browser link (no Spectrum
+    # extension needed to tap sets); False (default) = the Photon extension card. See
+    # workouts/card.py + set_card_delivery.
+    prefers_card_link = Column(Boolean, default=False)
     delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
     last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
     last_episodic_message_id = Column(Integer, default=None)  # Phase 5 watermark: episodic digest idempotency (independent of the summary watermark)

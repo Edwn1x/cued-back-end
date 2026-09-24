@@ -2274,10 +2274,61 @@ def handle_lookup_events(user_id: int, tool_input: dict, *, message_id=None) -> 
     return "ok: found:\n" + "\n".join(_fmt(e) for e in rows)
 
 
+SET_CARD_DELIVERY_TOOL = {
+    "name": "set_card_delivery",
+    "description": (
+        "Switch how this user gets their workout card. `mode`='link' sends it as a plain "
+        "browser link (opens the web logger — taps + logs the same, NO Spectrum extension "
+        "needed) — use it when they don't want to install the extension or ask for a web "
+        "link. `mode`='card' goes back to the tappable in-iMessage extension card. Sets "
+        "their preference for ALL future cards, and re-sends the current session's card in "
+        "the new format if one is open."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"mode": {"type": "string", "enum": ["link", "card"]}},
+        "required": ["mode"],
+    },
+}
+
+
+def handle_set_card_delivery(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Flip users.prefers_card_link and re-send the open card in the new format."""
+    mode = str((tool_input or {}).get("mode") or "").strip().lower()
+    if mode not in ("link", "card"):
+        return "error: mode must be 'link' or 'card'"
+    from models import get_session, User
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        user.prefers_card_link = (mode == "link")
+        session.commit()
+    finally:
+        session.close()
+    resent = False
+    from workouts.session_ops import active_session_id
+    sid = active_session_id(user_id)
+    if sid:
+        try:
+            from workouts.card import send_workout_card
+            send_workout_card(sid)   # honors the new preference
+            resent = True
+        except Exception as e:  # noqa: BLE001 — card send is best-effort; the pref still stuck
+            logger.warning("SET_CARD_DELIVERY_RESEND_FAILED user=%s err=%s", user_id, e)
+    logger.info("SET_CARD_DELIVERY user=%s mode=%s resent=%s", user_id, mode, resent)
+    if mode == "link":
+        return ("ok: cards now come as a browser link, no extension needed"
+                + (" — re-sent the current one as a link" if resent else "; their next card will be a link"))
+    return "ok: back to the tappable card" + (" — re-sent the current one" if resent else "")
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
+    "set_card_delivery": handle_set_card_delivery,
     "lookup_events": handle_lookup_events,
     "send_connect_link": handle_send_connect_link,
     "reply_in_thread": handle_reply_in_thread,

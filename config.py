@@ -246,6 +246,11 @@ SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"
+# Card web-link fallback: some users don't want the Spectrum iMessage extension (needed to
+# tap sets in-thread). When a user prefers it, send the card as a plain browser link (the
+# card_page web app works extension-free) instead of the Photon extension card. set_card_delivery
+# flips users.prefers_card_link; send_workout_card honors it.
+CARD_LINK_FALLBACK_ENABLED = os.getenv("CARD_LINK_FALLBACK_ENABLED", "true").lower() == "true"
 # Receipts → pantry (receipts.py). Off by default: the image pre-classifier adds
 # one haiku call to every photo turn; flip after GATE 1 on the founder's phone.
 RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
