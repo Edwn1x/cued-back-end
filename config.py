@@ -376,6 +376,12 @@ SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "fa
 # after the kickoff (new users) and on a guarded sweep (existing users); the reply is
 # handled in code. Founder 2026-09-22: users can't ask for a feature they've never heard of.
 WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
+# Card setup step at onboarding completion (workouts/card_setup.py): the extension
+# framing (an iMessage extension like GamePigeon, not an app), their first card sent
+# right then so the install happens at home, and a one-time tour of the card. When ON,
+# the water offer leaves the kickoff and arrives via its sweep (~30 min after the
+# conversation goes quiet) so only one code-answered question holds the floor.
+CARD_SETUP_ENABLED = os.getenv("CARD_SETUP_ENABLED", "false").lower() == "true"
 
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
 # avoid ACCIDENTAL opt-outs losing a user: the trigger is "STOP" or "UNSUBSCRIBE" as the

@@ -67,12 +67,16 @@ def _send_card_as_link(session_id: int, user_id: int, phone: str, url: str, layo
     return {"card_link": url, "provider_message_id": sid}
 
 
-def send_workout_card(session_id: int) -> dict:
+def send_workout_card(session_id: int, *, reuse_from: int | None = None) -> dict:
     """Send the session as a card (static layout, tap → overlay). Stores
     card_session + card_message_id on the session and logs the outbound
     Message row (channel imessage, message_type workout_card). Raises CardError
-    on refusal so the caller can fall over (Phase 5)."""
-    from photon_cards import send_card
+    on refusal so the caller can fall over (Phase 5).
+
+    `reuse_from`: an earlier session whose bubble (an untouched setup card, a day
+    they never started) is EDITED in place to point at this session instead of a
+    second bubble appearing. Falls back to a fresh send if the edit is refused."""
+    from photon_cards import send_card, update_card, CardError
     session = get_session()
     try:
         ws = session.get(WorkoutSession, session_id)
@@ -84,14 +88,29 @@ def send_workout_card(session_id: int) -> dict:
         prefers_link = bool(getattr(user, "prefers_card_link", False))
         url = card_url(user_id, ws.id, version=_version(ws))
         layout = card_layout(state)
+        old_cs, old_mid = None, None
+        if reuse_from:
+            old = session.get(WorkoutSession, reuse_from)
+            if old is not None and old.card_session:
+                old_cs, old_mid = dict(old.card_session), old.card_message_id
     finally:
         session.close()
     # Web-link fallback: a user who skips the Spectrum extension gets the card as a plain
     # browser link (the card_page web app taps + logs the same, no extension). Same URL the
-    # extension bubble wraps — it just goes as text.
+    # extension bubble wraps — it just goes as text. No bubble → nothing to reuse.
     if prefers_link and config.CARD_LINK_FALLBACK_ENABLED:
         return _send_card_as_link(session_id, user_id, phone, url, layout)
-    r = send_card(phone, url, live=False, layout=layout)
+    r = None
+    if old_cs:
+        try:
+            update_card(phone, old_cs, url, live=False, layout=layout)
+            r = {"provider_message_id": old_mid, "card_session": old_cs}
+            logger.info("WORKOUT_CARD_REUSED user=%s session=%s from=%s", user_id, session_id, reuse_from)
+        except CardError as e:
+            logger.warning("WORKOUT_CARD_REUSE_FAILED user=%s session=%s from=%s err=%s — sending fresh",
+                           user_id, session_id, reuse_from, e)
+    if r is None:
+        r = send_card(phone, url, live=False, layout=layout)
     session = get_session()
     try:
         ws = session.get(WorkoutSession, session_id)

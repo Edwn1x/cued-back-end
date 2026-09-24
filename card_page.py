@@ -199,6 +199,14 @@ def card_api_session():
         ws = _load(session, ids)
         if not ws:
             return jsonify({"ok": False, "error": "not found"}), 404
+        # First fetch of any card = the page rendered on their phone = the Spectrum
+        # extension is installed. Read by workouts/card_setup.py: once this is set the
+        # extension line is never sent again.
+        u = session.get(User, ws.user_id)
+        if u is not None and not getattr(u, "card_opened_at", None):
+            u.card_opened_at = _utcnow()
+            session.commit()
+            logger.info("CARD_OPENED user=%s session=%s", u.id, ws.id)
         return jsonify({"ok": True, **build_state(session, ws)})
     finally:
         session.close()

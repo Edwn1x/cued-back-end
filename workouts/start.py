@@ -12,6 +12,7 @@ session, marks it active, then:
 from __future__ import annotations
 
 import logging
+import re
 
 from models import get_session, User, WorkoutSession, SetLog
 from sms import send_sms, _resolve_channel
@@ -47,12 +48,39 @@ def _fmt(w) -> str:
     return f"{float(w):g}"
 
 
-def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estimated: bool = False) -> str:
+def _when(workout_time) -> str:
+    """'18:00' → '6pm', '18:30' → '6:30pm'; a description ('afternoon') as-is; else ''."""
+    t = (workout_time or "").strip()
+    if not t:
+        return ""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+    if not m:
+        return t
+    h, mm = int(m.group(1)), int(m.group(2))
+    suffix = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}{suffix}" if mm == 0 else f"{h12}:{mm:02d}{suffix}"
+
+
+def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estimated: bool = False,
+               setup: bool = False, workout_time=None) -> str:
     """The one text before the card. `first` = their first card ever: there is no
     "usual" yet, so say where the numbers came from and point at the edit affordance.
-    `estimated` = nothing known about their lifts, the loads are from their stats."""
+    `estimated` = nothing known about their lifts, the loads are from their stats.
+    `setup` = the onboarding setup step: they're at home, not at the gym — the card is
+    to open now (install the extension, check the numbers) so they're set for later."""
     lead = ws_state_exercises[0] if ws_state_exercises else None
-    if first and lead and lead["sets"] and (lead["sets"][0].get("planned_weight") or 0):
+    loaded = bool(lead and lead["sets"] and (lead["sets"][0].get("planned_weight") or 0))
+    if setup:
+        when = _when(workout_time)
+        later = f" so ur set for {when}" if when else " so ur set for when u lift"
+        if loaded:
+            w = float(lead["sets"][0]["planned_weight"])
+            src = ("weights are my best guess from ur stats" if estimated else "weights are off what u told me")
+            return (f"here's ur first card, {day_label(key)} day. starting u at {_fmt(w)} on {lead['label']} — {src}. "
+                    f"tap it now{later}. fix any number that's off, i'll remember.")
+        return f"here's ur first card, {day_label(key)} day. tap it now{later}."
+    if first and loaded:
         w = float(lead["sets"][0]["planned_weight"])
         src = ("first card, so the weights are my best guess from ur stats" if estimated
                else "first card, weights are off what u told me")
@@ -102,19 +130,44 @@ def _anchor_ask_text(user) -> str:
             f"know / say just start light, call start_workout_session with no_anchors=true")
 
 
-def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False) -> dict:
-    """→ {"session_id", "template_key", "surface": "card"|"messages", "sets", "first"}.
+def _untouched(session, session_id: int) -> bool:
+    """No completed set on the session — a card they only looked at (the onboarding
+    setup card, a day they never started). Not something to refuse a new session over,
+    and its bubble is worth reusing rather than stacking a second one."""
+    return session.query(SetLog.id).filter(SetLog.session_id == session_id, SetLog.done.is_(True)).first() is None
+
+
+def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False,
+                          setup: bool = False) -> dict:
+    """→ {"session_id", "template_key", "surface": "card"|"messages"|"refused", "sets", "first", "setup"}.
     Raises ValueError on an unknown template or an already-open session, and
     NeedsAnchors (a ValueError) on a trained user's first loaded card when nothing
-    is known about their lifts — unless `no_anchors` (they don't know / said start light)."""
+    is known about their lifts — unless `no_anchors` (they don't know / said start light).
+    `setup` = the onboarding setup step (workouts/card_setup.py): 'tap it now' intro, no
+    per-exercise fallback. An UNTOUCHED planned session (a card they only looked at) is
+    retired and its bubble edited in place to the new day instead of refusing."""
     session = get_session()
     try:
         user = session.get(User, user_id)
         if not user:
             raise ValueError("user not found")
         open_id = active_session_id(user_id)
+        reuse_from = None
         if open_id:
-            raise ValueError(f"a session is already open (#{open_id}) — finish or abandon it first")
+            # Only a PLANNED (never started — the setup card) untouched session yields;
+            # an active one is the normal guard even if untouched, else a double
+            # "starting push" re-sends the whole day (13 texts on SMS).
+            old = session.get(WorkoutSession, open_id)
+            if old.status != "planned" or not _untouched(session, open_id):
+                raise ValueError(f"a session is already open (#{open_id}) — finish or abandon it first")
+            reuse_from = open_id
+        else:
+            # The newest session timed out untouched (the 6h abandon sweep) but its bubble
+            # is still in the thread → edit that bubble to today's card instead.
+            latest = (session.query(WorkoutSession).filter(WorkoutSession.user_id == user_id)
+                      .order_by(WorkoutSession.id.desc()).first())
+            if latest is not None and latest.status == "abandoned" and latest.card_session and _untouched(session, latest.id):
+                reuse_from = latest.id
         key = normalize_template_key(template_key) if template_key else infer_template(user)
         if not key:
             if template_key:
@@ -125,12 +178,19 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         from workouts.calibrate import has_any_lift_evidence
         first = _is_first_card(session, user_id)
         estimated = first and not has_any_lift_evidence(session, user)
-        if estimated and not no_anchors and _wants_anchor_ask(session, user, key):
-            logger.info("WORKOUT_SESSION_NEEDS_ANCHORS user=%s key=%s", user_id, key)
+        # No second ask when they already answered it for the card being replaced.
+        if estimated and not no_anchors and not reuse_from and _wants_anchor_ask(session, user, key):
+            logger.info("WORKOUT_SESSION_NEEDS_ANCHORS user=%s key=%s setup=%s", user_id, key, setup)
             from workouts.calibrate import set_pending_card
-            set_pending_card(user_id, key)      # the answer (set_lift_anchors) sends this day's card in code
+            set_pending_card(user_id, key, setup=setup)   # the answer (set_lift_anchors) sends this day's card in code
             raise NeedsAnchors(_anchor_ask_text(user))
-        phone = user.phone
+        if reuse_from:
+            old = session.get(WorkoutSession, reuse_from)
+            if old.status in ("planned", "active"):
+                old.status = "abandoned"
+                session.commit()
+            logger.info("WORKOUT_SESSION_REPLANNED user=%s old=%s key=%s", user_id, reuse_from, key)
+        phone, workout_time = user.phone, user.workout_time
     finally:
         session.close()
 
@@ -140,9 +200,10 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     session = get_session()
     try:
         row = session.get(WorkoutSession, ws.id)
-        row.status = "active"
         from card_page import _utcnow
-        row.started_at = _utcnow()
+        if not setup:                       # the setup card is planned, not started — they're at home
+            row.status = "active"
+            row.started_at = _utcnow()
         session.commit()
         from card_page import build_state
         state = build_state(session, row)
@@ -152,21 +213,33 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     surface = "messages"
     if _resolve_channel(user_id) == "imessage":
         from workouts.card import send_workout_card
+        from workouts import card_setup
         from photon_cards import CardError
-        send_sms(phone, intro_line(state["exercises"], key, first=first, estimated=estimated),
+        # Extension framing (once in full, then a one-liner) until the card has ever been opened.
+        card_setup.send_extension_intro_if_due(user_id, phone)
+        send_sms(phone, intro_line(state["exercises"], key, first=first, estimated=estimated,
+                                   setup=setup, workout_time=workout_time),
                  user_id=user_id, message_type="workout_intro")
         try:
-            send_workout_card(ws.id)
+            send_workout_card(ws.id, reuse_from=reuse_from)
             surface = "card"
         except CardError as e:
-            logger.warning("WORKOUT_CARD_REFUSED user=%s session=%s err=%s — per-exercise messages instead", user_id, ws.id, e)
+            logger.warning("WORKOUT_CARD_REFUSED user=%s session=%s err=%s — %s", user_id, ws.id, e,
+                           "setup: one line, no exercise texts" if setup else "per-exercise messages instead")
+        if surface == "card":
+            card_setup.send_breakdown_if_due(user_id, phone)   # the tour, once ever
     if surface == "messages":
-        _send_exercise_messages(user_id, phone, ws.id, state, intro=(_resolve_channel(user_id) != "imessage"),
-                                first=first, estimated=estimated)
-    logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s",
-                user_id, ws.id, key, surface, state["set_count"], first, estimated)
+        if setup:
+            from workouts import card_setup
+            card_setup.setup_card_refused(user_id, phone, ws.id)
+            surface = "refused"
+        else:
+            _send_exercise_messages(user_id, phone, ws.id, state, intro=(_resolve_channel(user_id) != "imessage"),
+                                    first=first, estimated=estimated)
+    logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s",
+                user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
-            "first": first, "estimated": estimated}
+            "first": first, "estimated": estimated, "setup": setup}
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,

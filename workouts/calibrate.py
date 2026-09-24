@@ -466,7 +466,10 @@ _PENDING_KEY = "_pending_card"
 PENDING_CARD_TTL_S = 3 * 3600
 
 
-def set_pending_card(user_id: int, template_key: str) -> None:
+def set_pending_card(user_id: int, template_key: str, *, setup: bool = False) -> None:
+    """Park the day whose card the ask's answer will send. `setup` = the ask came from
+    the onboarding setup step (workouts/card_setup.py), so the card goes out in setup
+    mode (framing + 'tap it now' intro + tour)."""
     from models import get_session, User
     from sqlalchemy.orm.attributes import flag_modified
     session = get_session()
@@ -475,7 +478,7 @@ def set_pending_card(user_id: int, template_key: str) -> None:
         if not u:
             return
         merged = dict(u.lift_anchors or {})
-        merged[_PENDING_KEY] = {"key": template_key, "at": _utcnow().isoformat()}
+        merged[_PENDING_KEY] = {"key": template_key, "at": _utcnow().isoformat(), "setup": bool(setup)}
         u.lift_anchors = merged
         flag_modified(u, "lift_anchors")
         session.commit()
@@ -524,6 +527,18 @@ def peek_pending_card(user_id: int) -> str | None:
     return str(entry["key"]) if age <= PENDING_CARD_TTL_S else None
 
 
+def peek_pending_setup(user_id: int) -> bool:
+    """True when the pending ask was parked by the onboarding setup step."""
+    from models import get_session, User
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        entry = (u.lift_anchors or {}).get(_PENDING_KEY) if u and isinstance(u.lift_anchors, dict) else None
+    finally:
+        session.close()
+    return bool(isinstance(entry, dict) and entry.get("setup"))
+
+
 # "I don't have a number" answers to the first-card ask. Only consulted while an ask
 # is pending (≤ TTL) and the text carries no digits. STRONG forms answer on their own;
 # WEAK ones ("idk", "not sure") only as a short bare reply — "lol idk what should i
@@ -554,6 +569,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     key = peek_pending_card(user_id)
     if not key or not (text or "").strip():
         return False
+    setup = peek_pending_setup(user_id)
     from workouts.start import start_workout_session
     items = parse_stated_anchors(text)
     if items:
@@ -561,7 +577,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
         if r.get("saved"):
             try:
                 pop_pending_card(user_id)
-                sr = start_workout_session(user_id, key)
+                sr = start_workout_session(user_id, key, setup=setup)
                 logger.info("PENDING_CARD_ANSWERED user=%s key=%s anchors=%s session=%s", user_id, key, r["saved"], sr["session_id"])
                 return True
             except Exception as e:  # noqa: BLE001 — fall through to the model with anchors saved
@@ -569,7 +585,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
                 return False
     if is_no_number_answer(text):
         try:
-            sr = start_workout_session(user_id, key, no_anchors=True)
+            sr = start_workout_session(user_id, key, no_anchors=True, setup=setup)
             logger.info("PENDING_CARD_NO_NUMBER user=%s key=%s session=%s", user_id, key, sr["session_id"])
             return True
         except Exception as e:  # noqa: BLE001
