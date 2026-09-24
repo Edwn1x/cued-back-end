@@ -195,6 +195,12 @@ def build_loop_context(user, session) -> str:
             when = _d(e.occurred_at)
             if not _is_all_day(e):
                 when += f" {_t(e.occurred_at, relative=False)}"
+                # Include the end the same way today's events do — otherwise a synced
+                # calendar event's end time (ends_at) never reaches the coach, so "when
+                # does my friday quiz end" reads as "the calendar has no end time" when it
+                # does (live: founder 2026-09-24).
+                if e.ends_at:
+                    when += f"–{_t(e.ends_at, relative=False)}"
             return f"[id {e.id}] {label} — {when}"
         parts.append("## UPCOMING EVENTS (next 7 days — logged ahead of time; you may "
                      "reference or prep them)\n"
