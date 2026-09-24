@@ -351,14 +351,15 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         id="connect_accounts",
-        what="i can read your google calendar, your bcourses due dates, and strava so i plan around your week",
+        what="i can read your google calendar, your bcourses due dates, your fitbit (sleep, steps, heart rate), and strava so i plan around your week and how you're actually recovering",
         how="say the word and i text you a one-tap link — no app, no login. for bcourses just paste me your calendar feed link (or an access token if you want me to see what you've turned in)",
         tools=("send_connect_link",),
         enabled=lambda u: (config.GCAL_ENABLED or config.STRAVA_READ_ENABLED
-                           or config.BCOURSES_ENABLED or config.CANVAS_ENABLED),
+                           or config.BCOURSES_ENABLED or config.CANVAS_ENABLED
+                           or config.FITBIT_ENABLED),
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=None,
-        reveal_when="they mention their calendar, a busy week, strava, or a run/ride",
+        reveal_when="they mention their calendar, a busy week, strava, a run/ride, their fitbit or watch, how they slept, or their steps",
     ),
 ]
 

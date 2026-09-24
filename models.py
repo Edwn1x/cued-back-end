@@ -621,6 +621,32 @@ class Integration(Base):
                         onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
+class WearableDay(Base):
+    """One row per (user, provider, LOCAL day) of daily wearable summaries — Fitbit
+    first (integrations/fitbit_sync.py), the same shape for any later device. Daily
+    totals only (no intraday). Sleep is keyed by the morning it ENDS (Fitbit's
+    dateOfSleep) and only the main sleep counts; sleep_start/end are naive UTC like
+    every other timestamp. Weight does NOT live here — scale readings go to
+    weight_logs so the WEIGHT trend and adaptive targets see them unchanged."""
+    __tablename__ = "wearable_days"
+    __table_args__ = (UniqueConstraint("user_id", "provider", "day", name="uq_wearable_days_user_provider_day"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(16), nullable=False)      # fitbit | (later: oura, whoop, garmin)
+    day = Column(String(10), nullable=False)           # YYYY-MM-DD in the user's timezone
+    steps = Column(Integer)
+    calories_out = Column(Integer)                     # device's total burn estimate for the day
+    active_minutes = Column(Integer)                   # very + fairly active
+    resting_hr = Column(Integer)                       # bpm
+    hrv_rmssd = Column(Float)                          # ms, nightly (main sleep)
+    sleep_minutes = Column(Integer)                    # main sleep, minutes asleep
+    sleep_start = Column(DateTime)                     # naive UTC
+    sleep_end = Column(DateTime)                       # naive UTC
+    sleep_efficiency = Column(Integer)                 # 0-100 (classic logs only; NULL for stages)
+    synced_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class HeartbeatTick(Base):
     """One row per heartbeat tick decision (spoke or silent + why). Fed back into
     the next tick's context so the coach can't re-conclude and re-send the same

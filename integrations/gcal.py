@@ -70,7 +70,7 @@ class GCalProvider(Provider):
         }
         return f"{AUTH_URL}?{urlencode(params)}"
 
-    def exchange_code(self, code: str, *, redirect_uri: str) -> TokenBundle:
+    def exchange_code(self, code: str, *, redirect_uri: str, state: str | None = None) -> TokenBundle:
         resp = requests.post(TOKEN_URL, data={
             "code": code,
             "client_id": config.GOOGLE_OAUTH_CLIENT_ID,

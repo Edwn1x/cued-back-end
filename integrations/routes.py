@@ -91,7 +91,8 @@ def oauth_callback(provider: str):
         return _page("something went wrong", "try again in a bit.", 400)
 
     try:
-        bundle = prov.exchange_code(code, redirect_uri=_redirect_uri(provider))
+        bundle = prov.exchange_code(code, redirect_uri=_redirect_uri(provider),
+                                    state=request.args.get("state"))
     except Exception as e:
         logger.exception("OAUTH_EXCHANGE_FAILED provider=%s user=%s", provider, user_id)
         base.mark_error(user_id, provider, f"exchange: {e}")
@@ -125,6 +126,38 @@ def oauth_callback(provider: str):
         # the connection still succeeded; just the confirmation text failed
 
     return _page("connected", "you're all set — head back to Messages.")
+
+
+# ─── Fitbit push subscriptions (Part 2a) ─────────────────────────────────────
+#
+#   GET  /oauth/fitbit/subscriber?verify=<code>   Fitbit verifies the endpoint when you
+#        save it in the app settings: 204 if the code matches ours, 404 otherwise.
+#   POST /oauth/fitbit/subscriber                 a JSON list of {collectionType, date,
+#        ownerId, ownerType, subscriptionId}; we 204 immediately and sync off-thread.
+#
+# Lives outside /admin so the basic-auth gate never blocks Fitbit.
+
+@integrations_bp.route("/oauth/fitbit/subscriber", methods=["GET"])
+def fitbit_subscriber_verify():
+    import secrets as _secrets
+    code = config.FITBIT_SUBSCRIBER_VERIFY_CODE
+    given = request.args.get("verify") or ""
+    if code and given and _secrets.compare_digest(given, code):
+        return Response(status=204)
+    return Response(status=404)
+
+
+@integrations_bp.route("/oauth/fitbit/subscriber", methods=["POST"])
+def fitbit_subscriber_notify():
+    if not config.FITBIT_ENABLED:
+        return Response(status=204)   # acknowledge so Fitbit doesn't disable the subscriber
+    try:
+        payload = request.get_json(force=True, silent=True)
+        from integrations import fitbit_sync
+        fitbit_sync.handle_notifications(payload)
+    except Exception:
+        logger.exception("FITBIT_NOTIFY_FAILED")
+    return Response(status=204)
 
 
 __all__ = ["integrations_bp"]

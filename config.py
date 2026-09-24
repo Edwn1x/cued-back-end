@@ -303,6 +303,18 @@ CANVAS_ENABLED = os.getenv("CANVAS_ENABLED", "false").lower() == "true"
 CANVAS_BASE_URL = os.getenv("CANVAS_BASE_URL", "https://bcourses.berkeley.edu")
 STRAVA_READ_ENABLED = os.getenv("STRAVA_READ_ENABLED", "false").lower() == "true"
 STRAVA_POST_ENABLED = os.getenv("STRAVA_POST_ENABLED", "false").lower() == "true"
+# Fitbit (Part 2a): wearable read — daily sleep / steps / resting HR / HRV into
+# wearable_days, scale readings into weight_logs. Its own OAuth app (dev.fitbit.com),
+# NOT the Google client above: Fitbit signs in with Google but runs its own token server.
+# See rewrite/fitbit/CHANGESPEC.md.
+FITBIT_ENABLED = os.getenv("FITBIT_ENABLED", "false").lower() == "true"
+FITBIT_CLIENT_ID = os.getenv("FITBIT_CLIENT_ID", "")
+FITBIT_CLIENT_SECRET = os.getenv("FITBIT_CLIENT_SECRET", "")
+# Echoed back on Fitbit's subscriber-endpoint verification GET (you choose it in the app
+# settings at dev.fitbit.com; must match exactly). Empty = subscriptions off, polling only.
+FITBIT_SUBSCRIBER_VERIFY_CODE = os.getenv("FITBIT_SUBSCRIBER_VERIFY_CODE", "")
+FITBIT_BACKFILL_DAYS = int(os.getenv("FITBIT_BACKFILL_DAYS", "14"))   # first sync window
+FITBIT_SYNC_DAYS = int(os.getenv("FITBIT_SYNC_DAYS", "2"))            # steady-state window
 # The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).
 SEND_CONNECT_LINK_TOOL_ENABLED = os.getenv("SEND_CONNECT_LINK_TOOL_ENABLED", "false").lower() == "true"
 # OAuth client credentials (set in prod once the provider apps exist; never logged).

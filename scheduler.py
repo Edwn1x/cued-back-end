@@ -519,6 +519,21 @@ def start_scheduler():
         )
         logger.info("Google Calendar sync scheduled: every 30 min.")
 
+    # Fitbit sync (Part 2a): daily sleep / steps / HR / weight per connected user every
+    # 30 min (pure API + DB, no model). Push notifications make it fresher; this is the
+    # floor. max_instances=1 also keeps Fitbit's ROTATING refresh tokens from racing.
+    if config.FITBIT_ENABLED:
+        from integrations.fitbit_sync import sync_all as fitbit_sync_all
+        scheduler.add_job(
+            fitbit_sync_all,
+            trigger=_IT(minutes=30),
+            id="fitbit_sync",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("Fitbit sync scheduled: every 30 min.")
+
     # bCourses feed sync (Part 1.4): re-pull every pasted Canvas ICS feed every 6h
     # (pure HTTP + DB, no model). Flag-gated OFF; no-op when no feeds are on file.
     if config.BCOURSES_ENABLED:
