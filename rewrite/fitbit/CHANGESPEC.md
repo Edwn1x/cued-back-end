@@ -48,7 +48,11 @@ What the coach gets, in priority order: last night's sleep (+7-day avg), steps t
     → `dataPoints[].dailyRestingHeartRate.{date, beatsPerMinute}`; same shape for
     `daily-heart-rate-variability` → `averageHeartRateVariabilityMilliseconds`.
   - `GET …/dataTypes/sleep/dataPoints:reconcile?dataSourceFamily=…/google-wearables&filter=sleep.interval.civil_end_time >= "…"`
-    → `dataPoints[].sleep.{interval:{startTime,endTime,startUtcOffset,endUtcOffset}, type: MAIN_SLEEP|NAP, summary:{minutesAsleep,minutesAwake}}`.
+    → `dataPoints[].sleep.{interval:{startTime,endTime,startUtcOffset,endUtcOffset}, type: STAGES|CLASSIC,
+    metadata:{mainSleep|nap: true, processed, stagesStatus}, summary:{minutesAsleep, minutesAwake,
+    minutesInSleepPeriod, stagesSummary[]}}`. **Live correction (founder's first sync, 2026-09-24):
+    `type` is how it was tracked, NOT the RPC docs' MAIN_SLEEP|NAP enum — main-vs-nap is
+    `metadata.mainSleep` / `metadata.nap`; `stagesSummary` arrives duplicated (harmless).
   - `GET …/dataTypes/weight/dataPoints?filter=weight.sample_time.physical_time >= "…Z"`
     → `dataPoints[].{name, weight:{sampleTime:{physicalTime}, weightKg}}` (the REST page
     also documents `weightGrams`; the client accepts either).
@@ -96,9 +100,9 @@ backfill pull. Plus the thin read client (§1) with typed `HealthAPIError(status
 ### 3.2 Sync (`integrations/google_health_sync.py`)
 Table `wearable_days` — one row per (user, provider, local day): steps, calories_out,
 active_minutes (AZM), resting_hr, hrv_rmssd, sleep_minutes, sleep_start/end (naive UTC),
-sleep_efficiency (asleep/(asleep+awake)), synced_at. `UNIQUE(user_id, provider, day)`.
-Sleep is keyed by the LOCAL date the session ENDS (using the API's `endUtcOffset`); only
-`MAIN_SLEEP` counts (a NAP never overwrites the night).
+sleep_efficiency (asleep / minutesInSleepPeriod, Fitbit's definition), synced_at. `UNIQUE(user_id, provider, day)`.
+Sleep is keyed by the LOCAL date the session ENDS (using the API's `endUtcOffset`); the
+`metadata.mainSleep` session wins over a `metadata.nap` one (longest if tied).
 
 `sync_user(user_id, *, days=None)`: window = last `days` local days (default 2; first sync
 = `GOOGLE_HEALTH_BACKFILL_DAYS`, 14). 401 → `mark_revoked` (status line shows
@@ -145,9 +149,12 @@ link; personal gmail only); admin `/admin/system` job row.
   with gcal already connected, "can i connect my google fitbit air?" fires
   `send_connect_link(google_health)` in the same turn; the model unprompted added
   "personal gmail only" once — correct, from the voice rule.
-- Live (owed): founder connects as a listed test user; check `GOOGLE_HEALTH_SYNC user=31`,
-  `wearable_days` rows, WEARABLE block in the next reply's context, then the webhook
-  registration script → a notification within minutes of a watch sync.
+- Live (DONE 2026-09-24 23:45 UTC): founder tapped → callback 200 → `GOOGLE_HEALTH_SYNC
+  user=31 window=2026-09-11..2026-09-24 days=14` in 25s → 14 `wearable_days` rows with
+  steps/kcal/AZM/RHR/HRV/sleep, confirmation text sent, WEARABLE block renders. Found +
+  fixed same hour: main-sleep marker is `metadata.mainSleep` (see §1). Webhook handshake
+  verified on prod (201 with secret / 401 without / 204 notification). Owed: the
+  subscriber registration script (founder's gcloud) → a notification after a watch sync.
 
 ## 6. Founder steps
 In the PR handoff message (Cloud console: enable Google Health API, add the three scopes,

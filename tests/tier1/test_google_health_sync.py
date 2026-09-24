@@ -64,11 +64,14 @@ class _API:
         self.hrv = {_d(0): 34.0, _d(-1): 41.0}
         off = f"{int(datetime.now(TZ).utcoffset().total_seconds())}s"
         self.sleep = [
-            {"name": "s-main", "type": "MAIN_SLEEP", "summary": {"minutesAsleep": "372", "minutesAwake": "35"},
+            # the LIVE shape (2026-09-24): type is STAGES; main-vs-nap lives in metadata
+            {"name": "s-main", "type": "STAGES", "metadata": {"mainSleep": True, "processed": True},
+             "summary": {"minutesAsleep": "372", "minutesAwake": "35", "minutesInSleepPeriod": "407"},
              "interval": {"startTime": _rfc(f"{_d(-1)}T23:48:00"), "endTime": _rfc(f"{_d(0)}T06:31:00"),
                           "startUtcOffset": off, "endUtcOffset": off}},
-            {"name": "s-nap", "type": "NAP", "summary": {"minutesAsleep": "40", "minutesAwake": "2"},   # a nap, same day
-             "interval": {"startTime": _rfc(f"{_d(0)}T14:00:00"), "endTime": _rfc(f"{_d(0)}T14:45:00"),
+            {"name": "s-nap", "type": "STAGES", "metadata": {"nap": True},   # a LONGER nap, same day — main still wins
+             "summary": {"minutesAsleep": "400", "minutesAwake": "2", "minutesInSleepPeriod": "402"},
+             "interval": {"startTime": _rfc(f"{_d(0)}T14:00:00"), "endTime": _rfc(f"{_d(0)}T20:45:00"),
                           "startUtcOffset": off, "endUtcOffset": off}},
         ]
         self.weights = [{"name": "users/1/dataTypes/weight/dataPoints/w777", "sample_time": _rfc(f"{_d(0)}T07:10:00"), "lbs": 171.2}]
@@ -109,7 +112,7 @@ def test_sync_writes_days_main_sleep_only_and_weight(db, monkeypatch):
     rows = {r.day: r for r in db.query(WearableDay).filter_by(user_id=user.id).all()}
     t = rows[_d(0)]
     assert t.steps == 4210 and t.resting_hr == 59 and t.hrv_rmssd == 34.0
-    assert t.sleep_minutes == 372 and t.sleep_efficiency == 91          # MAIN_SLEEP, not the nap; 372/(372+35)
+    assert t.sleep_minutes == 372 and t.sleep_efficiency == 91          # metadata.mainSleep, not the longer nap; 372/407
     assert t.calories_out == 2410 and t.active_minutes == 32
     assert t.sleep_start == _utc(f"{_d(-1)}T23:48:00") and t.sleep_end == _utc(f"{_d(0)}T06:31:00")
     assert rows[_d(-1)].steps == 8123 and rows[_d(-1)].sleep_minutes is None
