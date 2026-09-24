@@ -175,3 +175,40 @@ def test_heartbeat_guardrail_returns_calendar_block(db):
         assert guardrail_reason(u, s) == "calendar_block"
     finally:
         s.close()
+
+
+def test_list_calendars_failure_falls_back_to_primary(db, monkeypatch):
+    """Live 2026-09-24: a grant with only events.readonly 403s on calendarList.list.
+    The primary calendar is still readable, so sync it instead of syncing nothing."""
+    from tests.factories import make_user
+    from integrations import gcal_sync, base, gcal
+    from events import upcoming_events
+
+    user = make_user(db)
+    _connected_gcal(db, user.id)
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
+
+    def _forbidden(tok):
+        raise RuntimeError("403 Client Error: Forbidden for url: .../users/me/calendarList")
+    monkeypatch.setattr(gcal, "list_calendars", _forbidden)
+    asked = []
+    soon = datetime.now(timezone.utc) + timedelta(days=2)
+    ev = [{"id": "e1", "status": "confirmed", "summary": "ochem midterm",
+           "start": {"dateTime": _iso(soon)}, "end": {"dateTime": _iso(soon + timedelta(hours=2))}}]
+
+    def _list_events(tok, cid, **kw):
+        asked.append(cid)
+        return ev, "S1"
+    monkeypatch.setattr(gcal, "list_events", _list_events)
+
+    res = gcal_sync.sync_user(user.id)
+    assert res == {"upserted": 1, "deleted": 0}
+    assert asked == ["primary"]
+    assert "ochem midterm" in {e.title for e in upcoming_events(user.id, days=60)}
+
+
+def test_scope_can_list_calendars():
+    from integrations.gcal import SCOPE
+    assert "calendar.events.readonly" in SCOPE
+    assert "calendar.calendarlist.readonly" in SCOPE
+    assert "auth/calendar.readonly" not in SCOPE and "auth/calendar " not in SCOPE + " "
