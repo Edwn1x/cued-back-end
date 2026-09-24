@@ -127,4 +127,37 @@ def oauth_callback(provider: str):
     return _page("connected", "you're all set — head back to Messages.")
 
 
+# ─── Google Health API webhook (Part 2a) ─────────────────────────────────────
+#
+#   POST /oauth/google_health/webhook
+#     Registered once per Cloud project (scripts/register_google_health_subscriber.py)
+#     with endpointAuthorization.secret = GOOGLE_HEALTH_WEBHOOK_SECRET; Google sends
+#     that value verbatim in the Authorization header. Two request kinds:
+#       verification  {"type": "verification"} — must answer 200/201 WITH the secret and
+#                     401/403 WITHOUT it (Google sends both to prove we check).
+#       notification  {"data": {healthUserId, dataType, operation, intervals…}} or a
+#                     JSON array of those when batched — answer 204 immediately (anything
+#                     else is retried with backoff for 7 days) and sync off-thread.
+#     Lives outside /admin so the basic-auth gate never blocks Google.
+
+@integrations_bp.route("/oauth/google_health/webhook", methods=["POST"])
+def google_health_webhook():
+    import secrets as _secrets
+    secret = config.GOOGLE_HEALTH_WEBHOOK_SECRET
+    given = request.headers.get("Authorization") or ""
+    if not (secret and given and _secrets.compare_digest(given, secret)):
+        return Response(status=401)
+    payload = request.get_json(force=True, silent=True)
+    if isinstance(payload, dict) and payload.get("type") == "verification":
+        return Response(status=201)
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return Response(status=204)   # acknowledge so Google doesn't back off + retry for days
+    try:
+        from integrations import google_health_sync
+        google_health_sync.handle_notifications(payload)
+    except Exception:
+        logger.exception("GOOGLE_HEALTH_NOTIFY_FAILED")
+    return Response(status=204)
+
+
 __all__ = ["integrations_bp"]

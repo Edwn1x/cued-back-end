@@ -308,6 +308,18 @@ CANVAS_ENABLED = os.getenv("CANVAS_ENABLED", "false").lower() == "true"
 CANVAS_BASE_URL = os.getenv("CANVAS_BASE_URL", "https://bcourses.berkeley.edu")
 STRAVA_READ_ENABLED = os.getenv("STRAVA_READ_ENABLED", "false").lower() == "true"
 STRAVA_POST_ENABLED = os.getenv("STRAVA_POST_ENABLED", "false").lower() == "true"
+# Google Health API (Part 2a): wearable read for Fitbit / Fitbit Air / Pixel Watch —
+# daily sleep / steps / resting HR / HRV into wearable_days, scale readings into
+# weight_logs. The legacy Fitbit Web API shuts down 2026-09-30; this is its successor
+# and it rides on the SAME Google OAuth client as gcal (GOOGLE_OAUTH_CLIENT_ID below)
+# with the googlehealth.* scopes added on the consent screen. See rewrite/fitbit/CHANGESPEC.md.
+GOOGLE_HEALTH_ENABLED = os.getenv("GOOGLE_HEALTH_ENABLED", "false").lower() == "true"
+# Value the webhook subscriber was registered with (endpointAuthorization.secret); Google
+# sends it verbatim in the Authorization header of every notification. Empty = webhook
+# route refuses everything (polling still works).
+GOOGLE_HEALTH_WEBHOOK_SECRET = os.getenv("GOOGLE_HEALTH_WEBHOOK_SECRET", "")
+GOOGLE_HEALTH_BACKFILL_DAYS = int(os.getenv("GOOGLE_HEALTH_BACKFILL_DAYS", "14"))   # first sync window
+GOOGLE_HEALTH_SYNC_DAYS = int(os.getenv("GOOGLE_HEALTH_SYNC_DAYS", "2"))            # steady-state window
 # The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).
 SEND_CONNECT_LINK_TOOL_ENABLED = os.getenv("SEND_CONNECT_LINK_TOOL_ENABLED", "false").lower() == "true"
 # OAuth client credentials (set in prod once the provider apps exist; never logged).

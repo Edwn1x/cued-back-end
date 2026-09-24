@@ -276,7 +276,7 @@ def build_loop_context(user, session) -> str:
     # 5c. Connected integrations — the one-line status, NEVER a token. Lets the
     # coach know what it can see (calendar, strava) and mention a disconnect once.
     if (config.GCAL_ENABLED or config.STRAVA_READ_ENABLED or config.BCOURSES_ENABLED
-            or config.CANVAS_ENABLED):
+            or config.CANVAS_ENABLED or config.GOOGLE_HEALTH_ENABLED):
         try:
             from integrations.base import status_line
             sl = status_line(user.id)
@@ -445,6 +445,19 @@ def build_loop_context(user, session) -> str:
                     parts.append(_blk)
         except Exception as e:  # noqa: BLE001
             logger.warning("ADAPTIVE_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
+    # Wearable (Part 2a): last night / steps / HR vs baseline from a connected Fitbit /
+    # Pixel Watch (Google Health API).
+    # Next to WEIGHT on purpose — same "act on it, don't recite it" contract. The
+    # heartbeat wraps this builder, so its ticks see the block too.
+    if config.GOOGLE_HEALTH_ENABLED and (getattr(user, "onboarding_step", 0) or 0) >= 3:
+        try:
+            from integrations.google_health_sync import wearable_context
+            _wb = wearable_context(user, session)
+            if _wb:
+                parts.append(_wb)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("WEARABLE_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     # Contextual reveals: capabilities they haven't touched yet (capabilities.py).
     # Post-onboarding only; the voice rule limits it to one clause when it fits.

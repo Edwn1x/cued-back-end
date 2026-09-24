@@ -428,6 +428,26 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_integrations_user ON integrations (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_integrations_provider_status ON integrations (provider, status)",
+    # Part 2a — wearable daily summaries (Google Health API: Fitbit / Pixel Watch). One row per (user, provider, local day). The
+    # UNIQUE matches models.WearableDay.__table_args__ so create_all and migrate agree.
+    """CREATE TABLE IF NOT EXISTS wearable_days (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider VARCHAR(16) NOT NULL,
+        day VARCHAR(10) NOT NULL,
+        steps INTEGER,
+        calories_out INTEGER,
+        active_minutes INTEGER,
+        resting_hr INTEGER,
+        hrv_rmssd DOUBLE PRECISION,
+        sleep_minutes INTEGER,
+        sleep_start TIMESTAMP,
+        sleep_end TIMESTAMP,
+        sleep_efficiency INTEGER,
+        synced_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (user_id, provider, day)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_wearable_days_user ON wearable_days (user_id)",
     # Part 1 — synced calendar events reuse the events table. Add display/upsert
     # columns; the UNIQUE(user_id, source, external_id) is the calendar upsert key
     # (existing regex/model rows have external_id NULL → never collide). Matches
