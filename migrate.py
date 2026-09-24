@@ -426,7 +426,7 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_integrations_user ON integrations (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_integrations_provider_status ON integrations (provider, status)",
-    # Part 2a — Fitbit daily summaries. One row per (user, provider, local day). The
+    # Part 2a — wearable daily summaries (Google Health API: Fitbit / Pixel Watch). One row per (user, provider, local day). The
     # UNIQUE matches models.WearableDay.__table_args__ so create_all and migrate agree.
     """CREATE TABLE IF NOT EXISTS wearable_days (
         id SERIAL PRIMARY KEY,

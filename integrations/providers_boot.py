@@ -16,7 +16,7 @@ logger = logging.getLogger("cued.integrations.boot")
 # "that connection is off" rather than crashing boot.
 _PROVIDER_MODULES: list[str] = [
     "integrations.gcal",       # Part 1 — Google Calendar
-    "integrations.fitbit",     # Part 2a — Fitbit (wearable read)
+    "integrations.google_health",  # Part 2a — Google Health API (Fitbit / Pixel Watch, read)
     # "integrations.strava",   # Part 2b
     # bcourses (Part 1.4) is deliberately NOT registered: no OAuth, so /c/bcourses stays
     # a 404; status_line reads its row directly.

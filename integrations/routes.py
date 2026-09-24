@@ -91,8 +91,7 @@ def oauth_callback(provider: str):
         return _page("something went wrong", "try again in a bit.", 400)
 
     try:
-        bundle = prov.exchange_code(code, redirect_uri=_redirect_uri(provider),
-                                    state=request.args.get("state"))
+        bundle = prov.exchange_code(code, redirect_uri=_redirect_uri(provider))
     except Exception as e:
         logger.exception("OAUTH_EXCHANGE_FAILED provider=%s user=%s", provider, user_id)
         base.mark_error(user_id, provider, f"exchange: {e}")
@@ -128,35 +127,36 @@ def oauth_callback(provider: str):
     return _page("connected", "you're all set — head back to Messages.")
 
 
-# ─── Fitbit push subscriptions (Part 2a) ─────────────────────────────────────
+# ─── Google Health API webhook (Part 2a) ─────────────────────────────────────
 #
-#   GET  /oauth/fitbit/subscriber?verify=<code>   Fitbit verifies the endpoint when you
-#        save it in the app settings: 204 if the code matches ours, 404 otherwise.
-#   POST /oauth/fitbit/subscriber                 a JSON list of {collectionType, date,
-#        ownerId, ownerType, subscriptionId}; we 204 immediately and sync off-thread.
-#
-# Lives outside /admin so the basic-auth gate never blocks Fitbit.
+#   POST /oauth/google_health/webhook
+#     Registered once per Cloud project (scripts/register_google_health_subscriber.py)
+#     with endpointAuthorization.secret = GOOGLE_HEALTH_WEBHOOK_SECRET; Google sends
+#     that value verbatim in the Authorization header. Two request kinds:
+#       verification  {"type": "verification"} — must answer 200/201 WITH the secret and
+#                     401/403 WITHOUT it (Google sends both to prove we check).
+#       notification  {"data": {healthUserId, dataType, operation, intervals…}} or a
+#                     JSON array of those when batched — answer 204 immediately (anything
+#                     else is retried with backoff for 7 days) and sync off-thread.
+#     Lives outside /admin so the basic-auth gate never blocks Google.
 
-@integrations_bp.route("/oauth/fitbit/subscriber", methods=["GET"])
-def fitbit_subscriber_verify():
+@integrations_bp.route("/oauth/google_health/webhook", methods=["POST"])
+def google_health_webhook():
     import secrets as _secrets
-    code = config.FITBIT_SUBSCRIBER_VERIFY_CODE
-    given = request.args.get("verify") or ""
-    if code and given and _secrets.compare_digest(given, code):
-        return Response(status=204)
-    return Response(status=404)
-
-
-@integrations_bp.route("/oauth/fitbit/subscriber", methods=["POST"])
-def fitbit_subscriber_notify():
-    if not config.FITBIT_ENABLED:
-        return Response(status=204)   # acknowledge so Fitbit doesn't disable the subscriber
+    secret = config.GOOGLE_HEALTH_WEBHOOK_SECRET
+    given = request.headers.get("Authorization") or ""
+    if not (secret and given and _secrets.compare_digest(given, secret)):
+        return Response(status=401)
+    payload = request.get_json(force=True, silent=True)
+    if isinstance(payload, dict) and payload.get("type") == "verification":
+        return Response(status=201)
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return Response(status=204)   # acknowledge so Google doesn't back off + retry for days
     try:
-        payload = request.get_json(force=True, silent=True)
-        from integrations import fitbit_sync
-        fitbit_sync.handle_notifications(payload)
+        from integrations import google_health_sync
+        google_health_sync.handle_notifications(payload)
     except Exception:
-        logger.exception("FITBIT_NOTIFY_FAILED")
+        logger.exception("GOOGLE_HEALTH_NOTIFY_FAILED")
     return Response(status=204)
 
 

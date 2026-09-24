@@ -40,7 +40,7 @@ class FakeProvider:
     def authorize_url(self, *, state, redirect_uri):
         return f"https://prov.example/auth?state={state}&redirect_uri={redirect_uri}"
 
-    def exchange_code(self, code, *, redirect_uri, state=None):
+    def exchange_code(self, code, *, redirect_uri):
         from integrations.base import TokenBundle
         if self.fail_exchange:
             raise RuntimeError("exchange boom")

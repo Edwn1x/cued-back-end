@@ -2073,14 +2073,14 @@ SEND_CONNECT_LINK_TOOL = {
         "answer a can-i with \"want me to send it?\" (that's a wasted round trip). "
         "Fire it once — the link goes out as its own bubble; your reply is the "
         "sentence around it, not the URL. Providers: 'gcal' (google calendar, "
-        "read-only), 'fitbit' (their fitbit / google fitbit watch: sleep, steps, "
-        "resting HR — a separate link from google calendar even though it signs in "
-        "with google), and 'strava' (activities). Not for bcourses — that's a pasted "
+        "read-only), 'google_health' (their fitbit / fitbit air / pixel watch via the "
+        "google health app: sleep, steps, resting HR — a SEPARATE link from google "
+        "calendar even though it's the same google sign-in), and 'strava' (activities). Not for bcourses — that's a pasted "
         "feed URL, no link needed."
     ),
     "input_schema": {
         "type": "object",
-        "properties": {"provider": {"type": "string", "enum": ["gcal", "fitbit", "strava"]}},
+        "properties": {"provider": {"type": "string", "enum": ["gcal", "google_health", "strava"]}},
         "required": ["provider"],
     },
 }
@@ -2172,11 +2172,11 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
     and text the user the /c/<provider> link as its own bubble. Returns a status
     string for the model (the model's own reply is the sentence around the link)."""
     provider = (tool_input or {}).get("provider", "").strip().lower()
-    if provider not in ("gcal", "fitbit", "strava"):
+    if provider not in ("gcal", "google_health", "strava"):
         return f"error: unknown provider {provider!r}"
     # gate: only offer a provider whose flag is on
     flag = {"gcal": config.GCAL_ENABLED,
-            "fitbit": config.FITBIT_ENABLED,
+            "google_health": config.GOOGLE_HEALTH_ENABLED,
             "strava": config.STRAVA_READ_ENABLED or config.STRAVA_POST_ENABLED}[provider]
     if not flag:
         return f"error: {provider} is not enabled"

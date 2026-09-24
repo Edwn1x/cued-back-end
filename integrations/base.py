@@ -48,10 +48,7 @@ class Provider:
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         raise NotImplementedError
 
-    def exchange_code(self, code: str, *, redirect_uri: str, state: str | None = None) -> TokenBundle:
-        """`state` is the connect token the authorize step was minted with. Providers
-        that need per-handshake material (Fitbit's PKCE verifier) derive it from
-        `state` rather than storing it; the others ignore it."""
+    def exchange_code(self, code: str, *, redirect_uri: str) -> TokenBundle:
         raise NotImplementedError
 
     def refresh(self, refresh_token: str) -> TokenBundle:

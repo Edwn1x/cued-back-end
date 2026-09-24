@@ -396,7 +396,7 @@ def _job_health(session, now_utc_naive):
         ("Google Calendar Sync", "gcal", config.GCAL_ENABLED, 30, "every 30m, incremental syncToken per calendar"),
         ("bCourses Feed Sync", "bcourses", config.BCOURSES_ENABLED, 6 * 60, "every 6h, pasted Canvas ICS feed"),
         ("Canvas Token Sync", "canvas", config.CANVAS_ENABLED, 30, "every 30m, planner API + submission status via pasted token"),
-        ("Fitbit Sync", "fitbit", config.FITBIT_ENABLED, 30, "every 30m + push notifications; sleep/steps/HR → wearable_days, scale → weight_logs"),
+        ("Google Health Sync (Fitbit)", "google_health", config.GOOGLE_HEALTH_ENABLED, 30, "every 30m + webhook; sleep/steps/HR → wearable_days, scale → weight_logs"),
     ):
         connected = session.query(_Integ).filter(_Integ.provider == prov, _Integ.status == "connected").count()
         errored = session.query(_Integ).filter(_Integ.provider == prov, _Integ.status.in_(("error", "revoked"))).count()

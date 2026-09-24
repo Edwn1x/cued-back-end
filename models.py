@@ -622,10 +622,10 @@ class Integration(Base):
 
 
 class WearableDay(Base):
-    """One row per (user, provider, LOCAL day) of daily wearable summaries — Fitbit
-    first (integrations/fitbit_sync.py), the same shape for any later device. Daily
-    totals only (no intraday). Sleep is keyed by the morning it ENDS (Fitbit's
-    dateOfSleep) and only the main sleep counts; sleep_start/end are naive UTC like
+    """One row per (user, provider, LOCAL day) of daily wearable summaries — the Google
+    Health API (Fitbit / Pixel Watch; integrations/google_health_sync.py) first, the same
+    shape for any later device. Daily totals only (no intraday). Sleep is keyed by the
+    morning it ENDS and only the main sleep counts; sleep_start/end are naive UTC like
     every other timestamp. Weight does NOT live here — scale readings go to
     weight_logs so the WEIGHT trend and adaptive targets see them unchanged."""
     __tablename__ = "wearable_days"
@@ -633,7 +633,7 @@ class WearableDay(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    provider = Column(String(16), nullable=False)      # fitbit | (later: oura, whoop, garmin)
+    provider = Column(String(16), nullable=False)      # google_health | (later: oura, whoop, garmin)
     day = Column(String(10), nullable=False)           # YYYY-MM-DD in the user's timezone
     steps = Column(Integer)
     calories_out = Column(Integer)                     # device's total burn estimate for the day
