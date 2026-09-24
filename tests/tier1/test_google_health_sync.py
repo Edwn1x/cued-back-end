@@ -210,6 +210,16 @@ def test_webhook_verification_handshake(client):
                        headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_webhook_secret_with_non_ascii_or_padding_never_500s(client, monkeypatch):
+    """Live 2026-09-24: a secret with a non-ASCII char made secrets.compare_digest raise
+    TypeError → 500 on the authorized half of Google's handshake."""
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_WEBHOOK_SECRET", "Bearer s3cret–with–dashes ")
+    ok = {"Authorization": "Bearer s3cret–with–dashes"}
+    assert client.post("/oauth/google_health/webhook", json={"type": "verification"}, headers=ok).status_code == 201
+    assert client.post("/oauth/google_health/webhook", json={"type": "verification"},
+                       headers={"Authorization": "Bearer s3cret-with-dashes"}).status_code == 401
+
+
 def test_webhook_notification_acks_204_and_kicks_sync(client, db, monkeypatch):
     from integrations import google_health_sync as ghs
     user = make_user(db)
