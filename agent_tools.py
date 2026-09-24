@@ -2199,10 +2199,86 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
     return f"ok: sent the {provider} connect link"
 
 
+LOOKUP_EVENTS_TOOL = {
+    "name": "lookup_events",
+    "description": (
+        "Search the user's FULL connected calendar — bcourses/canvas due dates, google "
+        "calendar, and anything you logged. Use it whenever they ask about a class, "
+        "assignment, exam, or event that ISN'T already in your UPCOMING EVENTS context: "
+        "that context only holds the next ~7 days, but due dates are routinely WEEKS out "
+        "and ARE synced. NEVER tell them something 'isn't on the feed' or 'isn't posted "
+        "yet' before checking here first. `query` = a keyword matched against the title "
+        "(course code / assignment / exam — 'hw4', 'cs61c', 'midterm'); omit it to list "
+        "everything in the window. `days_ahead` = how far out to search (default 45; go "
+        "higher for 'this semester'). Returns the matching events with their real "
+        "dates/times — read the due date straight from here."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "keyword to match the event title (course / assignment / exam)"},
+            "days_ahead": {"type": "integer", "description": "days ahead to search (default 45)"},
+        },
+    },
+}
+
+
+def handle_lookup_events(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: search the full synced Event table by keyword + window, so a due date
+    weeks out (past the 7-day UPCOMING context) is findable instead of 'not on the feed'."""
+    from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+    from sqlalchemy import or_
+    from models import get_session, Event, User, active
+    from events import CALENDAR_SOURCES
+
+    q_raw = (tool_input or {}).get("query")
+    query = q_raw.strip() if isinstance(q_raw, str) else ""
+    try:
+        days = int((tool_input or {}).get("days_ahead") or 45)
+    except (TypeError, ValueError):
+        days = 45
+    days = max(1, min(days, config.LOOKUP_EVENTS_MAX_DAYS))
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    horizon = now + timedelta(days=days)
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz = ZoneInfo(getattr(user, "user_timezone", None) or "America/Los_Angeles")
+        qy = (active(session, Event, user_id=user_id)
+              .filter(Event.source.in_(CALENDAR_SOURCES),
+                      Event.occurred_at >= now - timedelta(hours=18),   # keep today's remaining
+                      Event.occurred_at < horizon))
+        if query:
+            like = f"%{query}%"
+            qy = qy.filter(or_(Event.title.ilike(like), Event.raw_text.ilike(like)))
+        rows = qy.order_by(Event.occurred_at).limit(30).all()
+    finally:
+        session.close()
+
+    if not rows:
+        if query:
+            return f"no events matching '{query}' in the next {days} days (checked the full synced calendar)"
+        return f"nothing on the calendar in the next {days} days"
+
+    def _fmt(e):
+        loc = e.occurred_at.replace(tzinfo=timezone.utc).astimezone(tz)
+        title = (e.title or e.raw_text or e.event_type or "event").strip()
+        if getattr(e, "all_day", False):
+            return f"{title} — {loc.strftime('%a %b %-d')} (all day)"
+        when = loc.strftime("%a %b %-d, %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+        return f"{title} — {when}"
+
+    return "ok: found:\n" + "\n".join(_fmt(e) for e in rows)
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
+    "lookup_events": handle_lookup_events,
     "send_connect_link": handle_send_connect_link,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,

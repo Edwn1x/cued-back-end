@@ -62,6 +62,12 @@ class Provider:
         """Whether this provider's flag is on. Overridden per provider."""
         return True
 
+    def sync_now(self, user_id: int) -> None:
+        """Best-effort immediate pull right after a successful connect, so the user
+        isn't blind until the next scheduled sync (they often ask 'what's on it?'
+        seconds later). Default no-op; providers with a sync override it."""
+        return None
+
 
 PROVIDERS: dict[str, Provider] = {}
 

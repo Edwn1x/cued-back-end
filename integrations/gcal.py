@@ -129,6 +129,12 @@ class GCalProvider(Provider):
     def connected_message(self, integ) -> str:
         return "connected. i'll pull ur calendar in and plan around it"
 
+    def sync_now(self, user_id: int):
+        """Immediate first pull on connect — otherwise the user waits up to the 30-min
+        sync_all tick before any event shows (they ask 'what's on it?' right away)."""
+        from integrations import gcal_sync
+        return gcal_sync.sync_user(user_id)
+
 
 # ─── Calendar API client (read) — used by the §1.2 sync layer ─────────────────
 
