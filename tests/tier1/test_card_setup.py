@@ -344,3 +344,11 @@ def test_context_line_states(db, setup_on):
             s.close()
         assert needle in context_line(_u(u.id)), col
     assert "set_card_delivery" in context_line(type("U", (), {"prefers_card_link": True})())
+
+
+def test_the_link_is_never_offered_up_front():
+    """Founder 2026-09-24: the browser link is for pushback only — not in the framing, the
+    reminder, or the tour."""
+    from workouts.card_setup import EXTENSION_INTRO, EXTENSION_REMINDER, BREAKDOWN
+    for line in (*EXTENSION_INTRO, EXTENSION_REMINDER, *BREAKDOWN):
+        assert "link" not in line.lower() and "browser" not in line.lower(), line

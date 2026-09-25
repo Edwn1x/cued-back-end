@@ -37,11 +37,11 @@ MESSAGE_TYPE = "card_setup"
 EXTENSION_INTRO = (
     "last thing. ur workouts show up right here as a card u tap as u go",
     "it runs on a small imessage extension, same kind of thing as gamepigeon. one tap to add, "
-    "nothing on ur home screen, and u never leave messages for any of it. rather skip that? "
-    "say 'send it as a link' and the same card opens in ur browser",
+    "nothing on ur home screen, and u never leave messages for any of it",
 )
-EXTENSION_REMINDER = ("heads up, the card needs that imessage extension (like gamepigeon, one tap to add). "
-                      "or say 'send it as a link' and it opens in ur browser")
+# Founder (2026-09-24): the browser link (PR #113) is offered ONLY when they push back on
+# installing — never up front. The framing is a confident ask; the model holds the link.
+EXTENSION_REMINDER = "heads up, the card needs that imessage extension (like gamepigeon, one tap to add)"
 BREAKDOWN = (
     "quick tour: each block is an exercise, each row is a set, weight × reps",
     "tap a row when u finish the set. number off? tap it, fix it, save. + set adds one, swap changes the exercise",
@@ -134,9 +134,9 @@ def context_line(user) -> str | None:
     return ("## WORKOUT CARD\nsent, NEVER opened on their phone — the iMessage extension isn't added yet. "
             "'it won't open' / 'nothing happens' / 'what is this' = that, not a bug: tapping the card offers "
             "the one-tap add (like GamePigeon), nothing on their home screen, they stay in Messages. Say that "
-            "once; if they'd rather not, set_card_delivery mode='link' sends the same card as a browser link "
-            "(or they text you their sets). Never troubleshoot (no 'are u on iphone', no 'restart messages' — "
-            "the card only reaches iPhones).")
+            "once. Do NOT offer the browser link unprompted — only if they push back on installing (don't want "
+            "it, won't, 'can't i just…', ask for a link) → set_card_delivery mode='link'. Never troubleshoot "
+            "(no 'are u on iphone', no 'restart messages' — the card only reaches iPhones).")
 
 
 def ask_text(user) -> str:

@@ -32,6 +32,7 @@ ANGEL = dict(name="Angel", onboarding_step=3, preferred_channel="imessage", equi
              lift_anchors={"bench": {"weight": 185, "reps": 5, "source": "stated"},
                            "squat": {"weight": 225, "reps": 5, "source": "stated"}})
 
+NO_LINK_RE = re.compile(r"\blink\b|browser|safari")
 OUR_APP_RE = re.compile(r"\b(our|the|cued|an|my) app\b|download (the|an|our) app|it'?s an app", re.IGNORECASE)
 
 
@@ -81,6 +82,7 @@ def test_what_is_this_do_i_need_an_app(db, imessage_on, sidecar_ok, card_ok, mon
     assert re.search(r"\bno app\b|not an app|\bextension\b", low), reply
     assert "gamepigeon" in low or "one tap" in low, reply
     assert not OUR_APP_RE.search(reply), reply
+    assert not NO_LINK_RE.search(low), reply          # the link is for pushback only
     assert _n_sessions(u.id) == 1 and len(card_ok) == 1, "a second card went out"
 
 
@@ -90,8 +92,10 @@ def test_it_wont_open(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
     reply = _run(u.id, "it won't open on my phone lol")
     print(f"\n[{i}] {reply!r}")
     low = reply.lower()
-    assert "extension" in low or re.search(r"(text|tell|send) me|\blink\b|add(ed)? (it|first)|one[- ]tap", low), reply
+    # The property: it's the add step (extension / gamepigeon / add), not a glitch to debug.
+    assert re.search(r"extension|gamepigeon|\badd(ed|s)?\b|(text|tell|send) me", low), reply
     assert not re.search(r"\b(fixed|resent|sent (it|another|a new)|try again now)\b", low), reply
+    assert not NO_LINK_RE.search(low), reply          # confusion ≠ pushback: explain the add, no link
     assert _n_sessions(u.id) == 1 and len(card_ok) == 1, "a second card went out"
 
 
@@ -120,4 +124,24 @@ def test_dont_want_to_install_send_a_link(db, imessage_on, sidecar_ok, card_ok, 
     finally:
         s.close()
     assert any("/card" in b for b in sidecar_ok[n_before:]), (reply, sidecar_ok[n_before:])
+    assert len(card_ok) == 1, "a second extension bubble went out"
+
+
+@pytest.mark.parametrize("i", range(3))
+def test_soft_pushback_without_asking_for_a_link_gets_the_link(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
+    """Pushback that never says 'link': the model has to recognize it and switch them."""
+    import config
+    monkeypatch.setattr(config, "CARD_LINK_FALLBACK_ENABLED", True)
+    u = _setup(db, monkeypatch)
+    n_before = len(sidecar_ok)
+    reply = _run(u.id, "ehh i really don't wanna install anything on my phone")
+    print(f"\n[{i}] {reply!r}")
+    from models import get_session, User
+    s = get_session()
+    try:
+        pref = s.get(User, u.id).prefers_card_link
+    finally:
+        s.close()
+    low = reply.lower()
+    assert pref is True or NO_LINK_RE.search(low), reply     # switched them, or at least offered it
     assert len(card_ok) == 1, "a second extension bubble went out"
