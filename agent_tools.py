@@ -1875,8 +1875,10 @@ _NARRATION_RE = re.compile(
     r"(^\W*react to this\b|\bjust acknowledge\b|\bthe user\b|\bthe human\b|"
     r"\bthey (said|asked|want(ed)?) (me )?(to )?remind\b|\bsimple (decline|ack(nowledg\w+)?)\b|"
     r"\bno tool (call|use|needed)\b|\bi should (call|use|react)\b|\bcall the \w+ tool\b|"
+    r"\blet me address (it|that|this)\b|"   # live 2026-09-24: "…that's the tap. Let me address it." then the real answer
     r"\b(set_reminder|cancel_reminder|log_meal|manage_log|log_workout|log_event|react_to_message|"
-    r"reply_in_thread|send_text|save_routine|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup)\b)",
+    r"reply_in_thread|send_text|save_routine|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup|"
+    r"set_card_delivery)\b)",
     re.IGNORECASE)
 
 
