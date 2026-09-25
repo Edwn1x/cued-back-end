@@ -1652,8 +1652,18 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
 
-    # Third bubble: the water-reminder offer (water_offer.py) — one line, once, answered in code.
-    if config.WATER_OFFER_ENABLED:
+    # Third: the card setup step (workouts/card_setup.py) — extension framing, their
+    # first card, the tour — for iMessage users. The water offer then comes by its sweep
+    # (~HEARTBEAT_ACTIVE_CONVO_MINUTES after the conversation goes quiet): one
+    # code-answered question on the floor at a time. Flag off → the water offer at
+    # kickoff as before (water_offer.py, one line, once, answered in code).
+    if config.CARD_SETUP_ENABLED:
+        try:
+            from workouts.card_setup import run_onboarding_setup
+            logger.info("CARD_SETUP_KICKOFF user=%s result=%s", user.id, run_onboarding_setup(user.id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("CARD_SETUP_KICKOFF_FAILED user=%s err=%s", user.id, e)
+    elif config.WATER_OFFER_ENABLED:
         try:
             from water_offer import send_offer as _water_offer
             _water_offer(user.id, source="kickoff")

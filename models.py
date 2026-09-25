@@ -116,6 +116,11 @@ class User(Base):
     # Water-reminder offer (water_offer.py): None = never offered | offered | yes | no | lapsed.
     water_offer_status = Column(String(10), default=None)
     water_offered_at = Column(DateTime, default=None)
+    # Card setup (workouts/card_setup.py): when the extension framing was sent, when the
+    # card page was first fetched (= the extension is installed), when the tour was sent.
+    card_setup_at = Column(DateTime, default=None)
+    card_opened_at = Column(DateTime, default=None)
+    card_explained_at = Column(DateTime, default=None)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"

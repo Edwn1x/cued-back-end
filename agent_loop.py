@@ -256,6 +256,15 @@ def build_loop_context(user, session) -> str:
     elif config.START_WORKOUT_TOOL_ENABLED and (user.equipment or "").strip().lower() not in ("bodyweight", "none", "no_equipment"):
         parts.append("## LIFTS THEY'VE STATED\nnone yet — if they mention what they bench / squat / "
                      "deadlift / press ('i bench 135'), set_lift_anchors so their card starts there.")
+    # Whether the card has ever rendered on their phone (= the iMessage extension is
+    # installed). Drives the honest answer to "what is this" / "it won't open".
+    try:
+        from workouts.card_setup import context_line as _card_line
+        card_line = _card_line(user)
+    except Exception:  # noqa: BLE001
+        card_line = None
+    if card_line:
+        parts.append(card_line)
 
     # 5. Coaching summary + delivered points.
     if (user.coaching_summary or "").strip():
