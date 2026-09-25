@@ -37,11 +37,11 @@ MESSAGE_TYPE = "card_setup"
 EXTENSION_INTRO = (
     "last thing. ur workouts show up right here as a card u tap as u go",
     "it runs on a small imessage extension, same kind of thing as gamepigeon. one tap to add, "
-    "nothing on ur home screen, and u never leave messages for any of it. without it u can "
-    "still text me ur sets, the card's just the full version",
+    "nothing on ur home screen, and u never leave messages for any of it. rather skip that? "
+    "say 'send it as a link' and the same card opens in ur browser",
 )
 EXTENSION_REMINDER = ("heads up, the card needs that imessage extension (like gamepigeon, one tap to add). "
-                      "or just text me ur sets")
+                      "or say 'send it as a link' and it opens in ur browser")
 BREAKDOWN = (
     "quick tour: each block is an exercise, each row is a set, weight × reps",
     "tap a row when u finish the set. number off? tap it, fix it, save. + set adds one, swap changes the exercise",
@@ -91,6 +91,8 @@ def send_extension_intro_if_due(user_id: int, phone: str) -> list[str]:
     u = _user(user_id)
     if u is None or getattr(u, "card_opened_at", None):
         return []
+    if getattr(u, "prefers_card_link", False) and config.CARD_LINK_FALLBACK_ENABLED:
+        return []          # they chose the browser link (PR #113): no extension talk at all
     from sms import send_sms
     lines = list(EXTENSION_INTRO) if not getattr(u, "card_setup_at", None) else [EXTENSION_REMINDER]
     for line in lines:
@@ -119,7 +121,12 @@ def context_line(user) -> str | None:
     """The loop's WORKOUT CARD block. A card was sent and never opened → the extension
     isn't installed yet, and that is what 'it won't open' means (live 2026-09-24, 0/3:
     left to itself the model asked 'u on iphone?' and suggested force-quitting Messages)."""
-    if not enabled() or not getattr(user, "card_setup_at", None):
+    if not enabled():
+        return None
+    if getattr(user, "prefers_card_link", False) and config.CARD_LINK_FALLBACK_ENABLED:
+        return ("## WORKOUT CARD\nthey get their card as a plain browser link (no extension) — their choice. "
+                "set_card_delivery mode='card' switches back to the tappable in-thread card if they ask.")
+    if not getattr(user, "card_setup_at", None):
         return None
     if getattr(user, "card_opened_at", None):
         return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
@@ -127,8 +134,9 @@ def context_line(user) -> str | None:
     return ("## WORKOUT CARD\nsent, NEVER opened on their phone — the iMessage extension isn't added yet. "
             "'it won't open' / 'nothing happens' / 'what is this' = that, not a bug: tapping the card offers "
             "the one-tap add (like GamePigeon), nothing on their home screen, they stay in Messages. Say that "
-            "once, offer to take their sets by text, and never troubleshoot (no 'are u on iphone', no "
-            "'restart messages' — the card only reaches iPhones).")
+            "once; if they'd rather not, set_card_delivery mode='link' sends the same card as a browser link "
+            "(or they text you their sets). Never troubleshoot (no 'are u on iphone', no 'restart messages' — "
+            "the card only reaches iPhones).")
 
 
 def ask_text(user) -> str:

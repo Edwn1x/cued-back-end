@@ -306,3 +306,41 @@ def test_a_timed_out_untouched_card_is_reused_too(db, setup_on, sidecar_ok, card
     assert r2["surface"] == "card" and r2["session_id"] != r["session_id"]
     assert len(card_ok["sent"]) == 1 and len(card_ok["updated"]) == 1
     assert _sessions(u.id)[-1][2] == {"id": "photon-card-1"}
+
+
+def test_link_preferring_user_gets_the_tour_but_no_extension_talk_and_no_opened_stamp(db, setup_on, sidecar_ok,
+                                                                                        card_ok, sync_threads, client,
+                                                                                        monkeypatch):
+    """PR #113's browser-link users: same card in Safari, so the tour still applies, but the
+    extension framing is moot and an open in the browser must not count as 'extension installed'."""
+    import config
+    monkeypatch.setattr(config, "CARD_LINK_FALLBACK_ENABLED", True)
+    from workouts.start import start_workout_session
+    from workouts.card_setup import EXTENSION_INTRO, EXTENSION_REMINDER, BREAKDOWN, context_line
+    from card_page import card_token
+    u = _imsg_user(db, onboarding_step=3, prefers_card_link=True)
+    r = start_workout_session(u.id, setup=True)
+    assert r["surface"] == "card" and card_ok["sent"] == []                    # went as a link, not a bubble
+    assert not any(b in EXTENSION_INTRO or b == EXTENSION_REMINDER for b in sidecar_ok), sidecar_ok
+    assert any("card.html" in b or "/card/" in b for b in sidecar_ok), sidecar_ok
+    assert sidecar_ok[-3:] == list(BREAKDOWN)
+    tok = card_token(u.id, r["session_id"])
+    assert client.get("/card/api/session", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
+    assert _u(u.id).card_opened_at is None
+    assert "browser link" in (context_line(_u(u.id)) or "")
+
+
+def test_context_line_states(db, setup_on):
+    from workouts.card_setup import context_line
+    from datetime import datetime
+    u = _imsg_user(db, onboarding_step=3)
+    assert context_line(_u(u.id)) is None                                       # no card ever sent
+    for col, needle in (("card_setup_at", "NEVER opened"), ("card_opened_at", "extension is installed")):
+        from models import get_session, User
+        s = get_session()
+        try:
+            setattr(s.get(User, u.id), col, datetime(2026, 9, 24)); s.commit()
+        finally:
+            s.close()
+        assert needle in context_line(_u(u.id)), col
+    assert "set_card_delivery" in context_line(type("U", (), {"prefers_card_link": True})())

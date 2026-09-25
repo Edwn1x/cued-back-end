@@ -8,6 +8,8 @@ Binary, x3 each (founder rule).
   2. "it won't open on my phone lol" → the extension line or the text-me-your-sets
      fallback; no second card, no claim it's fixed.
   3. "what do the numbers on it mean" → weight and reps, in words.
+  4. "nah i don't wanna install anything, just send it as a link" → set_card_delivery
+     mode=link (PR #113): prefers_card_link flips and the card URL goes out as text.
 Run: pytest tests/tier2/test_card_setup_live.py --run-tier2 -s
 """
 
@@ -88,7 +90,7 @@ def test_it_wont_open(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
     reply = _run(u.id, "it won't open on my phone lol")
     print(f"\n[{i}] {reply!r}")
     low = reply.lower()
-    assert "extension" in low or re.search(r"(text|tell|send) me", low), reply
+    assert "extension" in low or re.search(r"(text|tell|send) me|\blink\b|add(ed)? (it|first)|one[- ]tap", low), reply
     assert not re.search(r"\b(fixed|resent|sent (it|another|a new)|try again now)\b", low), reply
     assert _n_sessions(u.id) == 1 and len(card_ok) == 1, "a second card went out"
 
@@ -101,3 +103,21 @@ def test_what_do_the_numbers_mean(db, imessage_on, sidecar_ok, card_ok, monkeypa
     low = reply.lower()
     assert re.search(r"\b(weight|lbs?|pounds?)\b", low) and re.search(r"\breps?\b", low), reply
     assert _n_sessions(u.id) == 1 and len(card_ok) == 1, "a second card went out"
+
+
+@pytest.mark.parametrize("i", range(3))
+def test_dont_want_to_install_send_a_link(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
+    import config
+    monkeypatch.setattr(config, "CARD_LINK_FALLBACK_ENABLED", True)
+    u = _setup(db, monkeypatch)
+    n_before = len(sidecar_ok)
+    reply = _run(u.id, "nah i don't wanna install anything, can u just send it as a link")
+    print(f"\n[{i}] {reply!r}")
+    from models import get_session, User
+    s = get_session()
+    try:
+        assert s.get(User, u.id).prefers_card_link is True, reply
+    finally:
+        s.close()
+    assert any("/card" in b for b in sidecar_ok[n_before:]), (reply, sidecar_ok[n_before:])
+    assert len(card_ok) == 1, "a second extension bubble went out"
