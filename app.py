@@ -612,6 +612,11 @@ def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
         logger.info("REACT_LATEST_SKIPPED user=%s err=%s", user_id, e)
 
 
+# Phase 6: the single agent loop is the sole responder. When it fails or the lever is
+# off, this is the one safe line the user gets — lowercase, in the coach's voice.
+SAFE_GLITCH_REPLY = "sorry, glitched for a sec — say that again?"
+
+
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None,
                              images: list = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
@@ -763,21 +768,29 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             ).start()
             return
 
-        # Phase 2: single agent loop behind a flag. On ANY runtime failure, fall
-        # back to the legacy classifier->specialists pipeline and log loudly — the
-        # user never sees a gap (invariant #5). Legacy stays live until Phase 6.
+        # Phase 6: the single agent loop is the SOLE responder — the legacy
+        # classifier->specialists fallback is gone (deleted with the pipeline). On any
+        # runtime failure (or the loop turned off via the SINGLE_AGENT_LOOP_ENABLED
+        # lever, or an empty result), send ONE safe minimal line in the coach's voice
+        # and log loudly at ERROR so the turn is easy to debug. No legacy call.
         response_text = None
+        loop_raised = False
         if config.SINGLE_AGENT_LOOP_ENABLED:
             try:
                 response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
                                                image_data_list=images)
             except Exception as e:
-                logger.error("AGENT_LOOP_FALLBACK user=%s falling back to legacy: %s",
-                             user.id, e, exc_info=True)
+                loop_raised = True
+                logger.error("AGENT_LOOP_FAILED user=%s text=%r err=%s",
+                             user.id, (combined_body or "")[:200], e, exc_info=True)
                 response_text = None
         if response_text is None:
-            from orchestrator import route_message
-            response_text = route_message(user, combined_body, message_type, image_data=image_url)
+            # The exception path above already logged with a full traceback; a disabled
+            # loop or a None result still needs one loud ERROR marker before the safe reply.
+            if not loop_raised:
+                logger.error("AGENT_LOOP_NO_RESPONSE user=%s enabled=%s text=%r",
+                             user.id, config.SINGLE_AGENT_LOOP_ENABLED, (combined_body or "")[:200])
+            response_text = SAFE_GLITCH_REPLY
 
         # Send the response — threaded on the message the coach chose, if any. A
         # reaction-only turn returns "" : the tapback was the reply, send nothing
