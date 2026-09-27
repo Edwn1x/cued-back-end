@@ -18,9 +18,10 @@ call (a POST {"type":"verification"} with the secret → expects 201, and one wi
 expects 401). AUTOMATIC subscriptionCreatePolicy means every user who grants the
 scopes is subscribed without a per-user call.
 
-Data type names in subscriberConfigs are the API's kebab-case ids. If Google rejects a
-name with a 400, drop it via --data-types and re-run; the sync polls every 30 min
-regardless, so a missing subscription only costs freshness.
+Data type names in subscriberConfigs are the API's kebab-case ids (the defaults were
+accepted live 2026-09-27; camelCase is rejected). User credentials need a quota project
+(x-goog-user-project, sent automatically) or the API answers 403 SERVICE_DISABLED. The
+sync polls every 30 min regardless, so a missing subscription only costs freshness.
 """
 from __future__ import annotations
 
@@ -31,8 +32,10 @@ import sys
 import urllib.request
 
 API = "https://health.googleapis.com/v4"
+# Accepted by projects.subscribers.create on 2026-09-27 (kebab-case ids). "total-calories"
+# is NOT a subscribable type (INVALID_DATA_TYPE) even though it rolls up fine.
 DEFAULT_TYPES = ["steps", "sleep", "weight", "daily-resting-heart-rate",
-                 "daily-heart-rate-variability", "active-zone-minutes", "total-calories"]
+                 "daily-heart-rate-variability", "active-zone-minutes"]
 
 
 def main() -> int:
@@ -43,6 +46,9 @@ def main() -> int:
     ap.add_argument("--subscriber-id", default="cued-webhook")
     ap.add_argument("--data-types", default=",".join(DEFAULT_TYPES))
     ap.add_argument("--token", help="access token; default = `gcloud auth print-access-token`")
+    ap.add_argument("--quota-project", help="project ID or number billed for the call; user credentials "
+                    "REQUIRE it (x-goog-user-project) or health.googleapis.com answers 403 SERVICE_DISABLED. "
+                    "Default: --project-number")
     a = ap.parse_args()
 
     token = a.token or subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
@@ -54,7 +60,8 @@ def main() -> int:
     }
     url = f"{API}/projects/{a.project_number}/subscribers?subscriberId={a.subscriber_id}"
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                          "x-goog-user-project": a.quota_project or a.project_number})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             print(r.status, r.read().decode())
