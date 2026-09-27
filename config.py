@@ -456,6 +456,25 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
+# ─── Send reliability (2026-09-26) ────────────────────────────────────────────
+# A sidecar READ timeout means our request was sent but the ack didn't come back
+# in time — Photon may well have delivered the iMessage anyway. Treating that
+# like a hard failure double-sends (iMessage lands AND we fall over to SMS) and
+# wrongly trips the breaker. When on, a read timeout on the first bubble does NOT
+# trip the breaker and does NOT fall over to SMS. A connect failure or a non-2xx
+# still does (nothing landed there). Tradeoff: a genuine timeout where the send
+# ALSO failed silently leaves that one message undelivered — the rare cost of
+# never double-sending. See sms.send_sms.
+SIDECAR_TIMEOUT_NO_FAILOVER = os.getenv("SIDECAR_TIMEOUT_NO_FAILOVER", "true").lower() == "true"
+# Suppress a coach reply that is (normalized) identical to the last one sent to
+# the same user inside this window — the backstop for the buffer race that
+# produced two near-identical turns ("same 4 messages"). See sms._is_duplicate_send.
+OUTBOUND_DEDUP_ENABLED = os.getenv("OUTBOUND_DEDUP_ENABLED", "true").lower() == "true"
+OUTBOUND_DEDUP_WINDOW_S = int(os.getenv("OUTBOUND_DEDUP_WINDOW_S", "90"))
+# A message landing within this many seconds of the buffer timer firing is a
+# candidate for the timer-vs-append race; logged for observability. The actual
+# absorption is done by the per-timer token guard in message_buffer._flush_buffer.
+BUFFER_JOIN_WINDOW_S = float(os.getenv("BUFFER_JOIN_WINDOW_S", "2.0"))
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

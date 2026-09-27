@@ -140,12 +140,17 @@ def sync_exec(_appmod, monkeypatch):
     """Make post-reply daemon threads synchronous and the buffer timer deterministic."""
     import app
     import message_buffer
+    import sms
     _sync.clear_pending()
+    sms.reset_outbound_dedup()  # module-level cache; reused user ids would cross-contaminate
+    message_buffer._last_flush.clear()
     monkeypatch.setattr(app, "threading", _sync.make_threading_shim(Thread=_sync.SyncThread))
     monkeypatch.setattr(message_buffer, "threading",
                         _sync.make_threading_shim(Timer=_sync.FakeTimer))
     yield
     _sync.clear_pending()
+    sms.reset_outbound_dedup()
+    message_buffer._last_flush.clear()
 
 
 @pytest.fixture(autouse=True)
