@@ -153,8 +153,9 @@ link; personal gmail only); admin `/admin/system` job row.
   user=31 window=2026-09-11..2026-09-24 days=14` in 25s → 14 `wearable_days` rows with
   steps/kcal/AZM/RHR/HRV/sleep, confirmation text sent, WEARABLE block renders. Found +
   fixed same hour: main-sleep marker is `metadata.mainSleep` (see §1). Webhook handshake
-  verified on prod (201 with secret / 401 without / 204 notification). Owed: the
-  subscriber registration script (founder's gcloud) → a notification after a watch sync.
+  verified on prod (201 with secret / 401 without / 204 notification). Subscriber REGISTERED 2026-09-27 (`projects/237200916367/subscribers/cued-webhook`,
+  AUTOMATIC, six types — `total-calories` is not subscribable; user creds need
+  `x-goog-user-project`). Owed: observe the first real notification after a watch sync.
 
 ## 6. Founder steps
 In the PR handoff message (Cloud console: enable Google Health API, add the three scopes,
