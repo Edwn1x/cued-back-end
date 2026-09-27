@@ -92,6 +92,17 @@ Call EXACTLY ONE tool:
 If any part of your reasoning concludes a text is warranted, call send_text. NEVER call stay_silent and then say in the reason that you should have spoken — that is a contradiction; call send_text instead."""
 
 
+# Wearable-aware decision guidance (build item 1). Appended to HEARTBEAT_PROMPT in `decide`
+# only when HEARTBEAT_WEARABLE_AWARE_ENABLED, so the prompt is byte-for-byte unchanged for
+# everyone with the flag off. Tells the model to ACT on the WEARABLE / RECOVERY blocks
+# rather than recite them; degrades to a no-op when there is no wearable data.
+_WEARABLE_GUIDANCE = """WEARABLE / RECOVERY — act on it, don't recite it (only when a WEARABLE or RECOVERY block is present below):
+- A measured SHORT or POOR night → prefer a gentler check-in, and HOLD a demanding accountability nudge (a hard push, a "why'd you skip") for a better day. A real friend eases up after a rough night. This is a tone choice, NOT a license to invent a text out of nothing.
+- A clearly GOOD-recovery day → a warm win hook, or the day's session, lands well IF there's real, specific material for it (never generic praise from the numbers alone).
+- LOW steps on a REST day → an optional, warm movement nudge (a short walk), never a scold.
+- Never diagnose from HR/HRV, never call it a health issue; bring up one number only when it changes the plan. Missing or absent wearable data changes nothing — decide exactly as you would today."""
+
+
 def _naive_utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -220,28 +231,62 @@ def _profile_quiet_window(user, local) -> tuple[int, int] | None:
     return start, end
 
 
-def _in_standing_quiet_hours(user, *, now=None) -> bool:
+def _measured_wake_min(user, session, *, now=None) -> int | None:
+    """Minutes-of-day (local) the morning quiet floor should extend to when the WATCH shows
+    the user woke LATER than their stated wake this morning — so we don't ping someone the
+    watch says is still asleep. Conservative + fail-open + flag-gated; None means 'no
+    extension, use today's window exactly'. Reads wearable_days via the read-only helper;
+    the sync pipeline is never touched."""
+    if not config.HEARTBEAT_WEARABLE_AWARE_ENABLED or session is None:
+        return None
+    try:
+        from wearable_read import recovery_read
+        rec = recovery_read(user, session, now=now)
+        if not rec or not rec.fresh or rec.sleep_end_local is None:
+            return None
+        local = _ref(now).astimezone(_user_tz(user))
+        se = rec.sleep_end_local
+        # Only trust a measured wake that lands on TODAY's local morning (a sleep that
+        # ended this morning). A stale/older sleep_end tells us nothing about right now.
+        if se.date() != local.date():
+            return None
+        # Same small after-wake buffer the profile window uses, capped at 2pm — matching
+        # the existing _quiet_window late-wake cap so we never over-extend from a bad read.
+        return min(se.hour * 60 + se.minute + QUIET_AFTER_WAKE_MIN, 14 * 60)
+    except Exception:
+        # Fail-open: a wearable read must never crash the quiet-hours gate.
+        return None
+
+
+def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
     """True if it's currently the user's overnight quiet window (local). `now` is an
     optional aware/naive-UTC instant for tests. With QUIET_HOURS_FROM_PROFILE_ENABLED the
     window is THEIRS (sleep−30 .. wake+15) whenever both profile times parse; otherwise
-    the global floor window (extended, never shrunk, by a parseable profile time)."""
+    the global floor window (extended, never shrunk, by a parseable profile time). When a
+    `session` is given and HEARTBEAT_WEARABLE_AWARE_ENABLED, a measured wake the watch
+    shows LATER than their stated wake extends the morning floor too (never shrinks it)."""
     if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
         return False
     local = _ref(now).astimezone(_user_tz(user))
+    m = local.hour * 60 + local.minute
+    wake_min = _measured_wake_min(user, session, now=now)   # None unless the watch says slept-in
     if config.QUIET_HOURS_FROM_PROFILE_ENABLED:
         win = _profile_quiet_window(user, local)
         if win:
             start, end = win
-            m = local.hour * 60 + local.minute
+            if wake_min is not None:
+                end = max(end, wake_min)        # measured slept-in only EXTENDS the morning floor
             if start == end:
                 return False
             if start > end:                     # spans midnight (the normal case)
                 return m >= start or m < end
             return start <= m < end             # e.g. sleeps 01:00, wakes 09:00
-    hour = local.hour
     start, end = _quiet_window(user)
+    start_min, end_min = start * 60, end * 60
+    if wake_min is not None:
+        end_min = max(end_min, wake_min)        # measured slept-in only EXTENDS the morning floor
     # window always spans midnight (start is evening, end is morning)
-    return hour >= start or hour < end
+    return m >= start_min or m < end_min
 
 
 # ─── check-in level (daily rhythm §5) ────────────────────────────────────────
@@ -292,7 +337,7 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
         return "opted_out"
     # Standing overnight quiet hours — no proactive send while they'd be asleep. This
     # is the always-on floor; quiet_until (a transient goodnight) is checked below too.
-    if _in_standing_quiet_hours(user, now=now):
+    if _in_standing_quiet_hours(user, now=now, session=session):
         return "quiet_hours_standing"
     # quiet hours (goodnight / quiet_until, naive UTC)
     if user.quiet_until and _naive_utcnow() < user.quiet_until:
@@ -371,6 +416,58 @@ def _recent_win_signal(user, session) -> str | None:
     return (f"## MOMENTUM (last 7 days — code-computed; a genuinely strong run may be worth "
             f"marking, a thin or falling-off one is NOT a win)\n"
             f"Completed {len(done)} workout(s) in the last 7 days: {types}.")
+
+
+def _recovery_signal(user, session) -> str | None:
+    """RECOVERY standing-condition hint (wearable), the PROACTIVE twin of the reactive
+    WEARABLE block. Reads last night's sleep vs the user's 7-day baseline and resting-HR /
+    HRV "worse than baseline" EXACTLY like the reactive flag, via the read-only wearable_read
+    helper — the google_health sync module is never touched. Renders only on a real recovery
+    read (a clearly POOR or clearly GOOD night); a middling night is None (no noise). The
+    guidance is a SOFT tone gate (downgrade/hold a demanding nudge), never a hard suppress.
+    Flag-gated; fail-open (any error or missing/stale data → None, the tick proceeds)."""
+    if not config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
+        return None
+    try:
+        from wearable_read import recovery_read, _hm
+        rec = recovery_read(user, session)
+    except Exception:  # noqa: BLE001
+        return None
+    if not rec or not rec.fresh:
+        return None
+    if not (rec.poor_recovery or rec.good_recovery):
+        return None
+    bits = []
+    if rec.sleep_minutes is not None:
+        s = f"last night {_hm(rec.sleep_minutes)}"
+        if rec.sleep_baseline:
+            s += f" (7-day avg {_hm(rec.sleep_baseline)})"
+        bits.append(s)
+    worse = []
+    if rec.rhr_worse:
+        worse.append("resting HR")
+    if rec.hrv_worse:
+        worse.append("HRV")
+    if worse:
+        bits.append(" and ".join(worse) + " worse than baseline")
+    if rec.steps_today is not None:
+        st = f"steps today {rec.steps_today:,}"
+        if rec.steps_baseline:
+            st += f" (7-day avg {int(rec.steps_baseline):,})"
+        bits.append(st)
+    facts = "; ".join(bits) if bits else "recent wearable data on file"
+    if rec.poor_recovery:
+        guidance = ("Recovery reads POOR. SOFT tone gate: if you'd otherwise send a demanding "
+                    "accountability nudge (a hard push, a 'why'd you skip'), DOWNGRADE it to a gentle "
+                    "check-in or HOLD it today — a real friend eases up after a rough night, doesn't pile "
+                    "on. NOT a hard block: a genuine open thread, a safety item, or real warm material "
+                    "still speaks. One number only if it changes the plan; never diagnose from HR/HRV.")
+    else:
+        guidance = ("Recovery reads GOOD (well-rested). A warm win hook or the day's session lands well "
+                    "IF there's specific, real material for it — never generic praise from the numbers "
+                    "alone. One number only if it changes the plan; never diagnose.")
+    return ("## RECOVERY (wearable — code-computed; act on it, never a readout)\n"
+            f"{facts}.\n{guidance}")
 
 
 _DAY_ABBR = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -731,6 +828,15 @@ def _proactive_context(user, session) -> str:
     if gap:
         parts.append(gap)
 
+    # Wearable recovery (flag-gated + fail-open inside; inert without fresh wearable data).
+    try:
+        rec = _recovery_signal(user, session)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RECOVERY_SIGNAL_FAILED user=%s err=%s", user.id, e)
+        rec = None
+    if rec:
+        parts.append(rec)
+
     # Daily rhythm standing conditions (each flag-gated inside; a failure never kills the tick).
     for fn in (_meal_gap_signal, _morning_open_signal, _evening_close_signal):
         try:
@@ -837,9 +943,12 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
     finally:
         session.close()
 
+    prompt = HEARTBEAT_PROMPT
+    if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
+        prompt = HEARTBEAT_PROMPT + "\n\n" + _WEARABLE_GUIDANCE
     system = [
         {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": HEARTBEAT_PROMPT + "\n\n" + context},
+        {"type": "text", "text": prompt + "\n\n" + context},
     ]
     tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]
     if search["available"]:

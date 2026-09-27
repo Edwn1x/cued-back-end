@@ -1,0 +1,175 @@
+"""Read-only wearable summary for the PROACTIVE engine (the heartbeat).
+
+The google_health SYNC pipeline (integrations/google_health.py + the write side of
+integrations/google_health_sync.py) owns WRITING wearable_days. This module only READS
+that table, so the proactive heartbeat can become recovery-aware without touching the
+sync module (and without importing its private context-builder). The reactive coach reply
+keeps using integrations.google_health_sync.wearable_context; this is its proactive twin
+— a compact, code-computed recovery read, not a user-facing readout.
+
+Everything here is fail-open: with GOOGLE_HEALTH_ENABLED off, the user not connected, or
+no fresh row, `recovery_read` returns None and every caller falls back to today's exact
+behaviour.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import config
+from models import WearableDay
+
+# Kept LOCAL (not imported from google_health_sync) so this reader stays decoupled from
+# the sync module — it must never be edited by, or edit, that pipeline.
+SOURCE = "google_health"
+FRESH_MAX_AGE_DAYS = 3        # no row newer than this → treat as stale, fall back
+# "worse than baseline" thresholds mirror the reactive block exactly.
+RHR_WORSE_DELTA = 4           # resting HR >= 7-day avg + 4 bpm
+HRV_WORSE_RATIO = 0.85        # HRV <= 85% of 7-day avg
+# poor-night thresholds (conservative)
+SHORT_NIGHT_MIN = 360        # < 6h absolute
+POOR_VS_BASELINE = 0.80      # or < 80% of their 7-day sleep baseline
+# good-recovery thresholds
+GOOD_NIGHT_MIN = 420         # >= 7h
+GOOD_VS_BASELINE = 0.95      # and >= 95% of baseline
+
+
+def _tz(user) -> ZoneInfo:
+    try:
+        return ZoneInfo(user.user_timezone or "America/Los_Angeles")
+    except Exception:
+        return ZoneInfo("America/Los_Angeles")
+
+
+def _local_today(user, now=None) -> date:
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return ref.astimezone(_tz(user)).date()
+
+
+def _avg(vals):
+    vals = [v for v in vals if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _to_local(dt_utc, tz):
+    """A naive-UTC wearable timestamp → aware-local datetime (None-safe)."""
+    if dt_utc is None:
+        return None
+    return dt_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+
+
+@dataclass
+class Recovery:
+    sleep_minutes: int | None          # last night, minutes asleep
+    sleep_baseline: float | None       # 7-day avg sleep minutes
+    sleep_end_local: datetime | None   # measured wake this morning (aware local)
+    sleep_start_local: datetime | None # measured bedtime (aware local)
+    steps_today: int | None
+    steps_baseline: float | None
+    rhr_today: int | None
+    rhr_baseline: float | None
+    hrv_today: float | None
+    hrv_baseline: float | None
+    rhr_worse: bool
+    hrv_worse: bool
+    fresh: bool                        # a row within FRESH_MAX_AGE_DAYS exists
+
+    @property
+    def poor_night(self) -> bool:
+        if self.sleep_minutes is None:
+            return False
+        if self.sleep_minutes < SHORT_NIGHT_MIN:
+            return True
+        return bool(self.sleep_baseline) and self.sleep_minutes < self.sleep_baseline * POOR_VS_BASELINE
+
+    @property
+    def poor_recovery(self) -> bool:
+        # A short/poor night, OR both cardiovascular markers worse than baseline
+        # (mirrors the reactive "worse than baseline" pair — never a single number).
+        return self.poor_night or (self.rhr_worse and self.hrv_worse)
+
+    @property
+    def good_recovery(self) -> bool:
+        if self.sleep_minutes is None or self.sleep_minutes < GOOD_NIGHT_MIN:
+            return False
+        if self.sleep_baseline and self.sleep_minutes < self.sleep_baseline * GOOD_VS_BASELINE:
+            return False
+        return not self.rhr_worse and not self.hrv_worse
+
+
+def recovery_read(user, session, *, now=None) -> Recovery | None:
+    """Compact recovery read from wearable_days for the heartbeat, or None when there is
+    nothing trustworthy to act on (flag/connection/stale all fail-open to None).
+
+    Read-only: a single SELECT over WearableDay for this user's last 7 local days. Never
+    writes, never calls the sync module."""
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return None
+    try:
+        # connection status: only a connected/error account has meaningful history
+        # (mirrors the reactive gate without importing the sync module).
+        from integrations.base import get_integration
+        integ = get_integration(session, user.id, SOURCE)
+        if integ is None or integ.status not in ("connected", "error"):
+            return None
+
+        tz = _tz(user)
+        today = _local_today(user, now=now)
+        since = (today - timedelta(days=7)).isoformat()
+        rows = (session.query(WearableDay)
+                .filter(WearableDay.user_id == user.id, WearableDay.provider == SOURCE,
+                        WearableDay.day >= since)
+                .order_by(WearableDay.day.asc()).all())
+        if not rows:
+            return None
+        fresh_cutoff = (today - timedelta(days=FRESH_MAX_AGE_DAYS)).isoformat()
+        fresh = any(r.day >= fresh_cutoff for r in rows)
+        if not fresh:
+            return Recovery(None, None, None, None, None, None, None, None, None, None,
+                            False, False, False)
+
+        by_day = {r.day: r for r in rows}
+        today_s = today.isoformat()
+        t = by_day.get(today_s)
+        # last night = the sleep that ENDED today; else the most recent night
+        night = t if (t and t.sleep_minutes) else by_day.get((today - timedelta(days=1)).isoformat())
+
+        sleep_minutes = night.sleep_minutes if night else None
+        sleep_baseline = _avg([r.sleep_minutes for r in rows if r.sleep_minutes])
+        sleep_end_local = _to_local(night.sleep_end, tz) if night else None
+        sleep_start_local = _to_local(night.sleep_start, tz) if night else None
+
+        steps_today = t.steps if t else None
+        steps_baseline = _avg([r.steps for r in rows if r.steps and r.day != today_s])
+
+        rhr_today = (t.resting_hr if t else None) or (night.resting_hr if night else None)
+        rhr_baseline = _avg([r.resting_hr for r in rows if r.resting_hr])
+        hrv_today = (t.hrv_rmssd if t else None) or (night.hrv_rmssd if night else None)
+        hrv_baseline = _avg([r.hrv_rmssd for r in rows if r.hrv_rmssd])
+
+        rhr_worse = bool(rhr_today and rhr_baseline and rhr_today >= rhr_baseline + RHR_WORSE_DELTA)
+        hrv_worse = bool(hrv_today and hrv_baseline and hrv_today <= hrv_baseline * HRV_WORSE_RATIO)
+
+        return Recovery(
+            sleep_minutes=sleep_minutes, sleep_baseline=sleep_baseline,
+            sleep_end_local=sleep_end_local, sleep_start_local=sleep_start_local,
+            steps_today=steps_today, steps_baseline=steps_baseline,
+            rhr_today=rhr_today, rhr_baseline=rhr_baseline,
+            hrv_today=hrv_today, hrv_baseline=hrv_baseline,
+            rhr_worse=rhr_worse, hrv_worse=hrv_worse, fresh=True)
+    except Exception:
+        # Fail-open: a reader error must never crash a heartbeat tick.
+        return None
+
+
+def _hm(minutes) -> str:
+    if not minutes:
+        return "?"
+    return f"{int(minutes) // 60}h{int(minutes) % 60:02d}m"
+
+
+__all__ = ["recovery_read", "Recovery", "SOURCE"]
