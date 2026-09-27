@@ -140,14 +140,24 @@ def test_failover_to_sms_clears_the_bubble_before_the_green_text(db, imessage_on
 
 
 def test_processing_failure_clears_the_bubble(db, imessage_on, typing_posts, monkeypatch, anthropic_stub):
-    import app
+    """Phase 6: the loop is the sole responder. A loop failure is handled gracefully —
+    the user gets the safe reply, and the arriving message clears the bubble (no legacy
+    fallback, no hanging typing indicator)."""
+    import app, config
+    from models import get_session, Message
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
     user = make_user(db, preferred_channel="imessage", onboarding_step=3)
     monkeypatch.setattr(app, "run_agent_loop", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    from orchestrator import route_message  # legacy fallback also fails → except path
-    monkeypatch.setattr("orchestrator.route_message", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom2")))
     app.process_buffered_message(user.id, "hi", "freeform")
     states = [p["json"]["state"] for p in typing_posts]
-    assert states[0] == "start" and "stop" in states
+    assert states and states[0] == "start"  # the bubble went up while generating
+    s = get_session()
+    try:
+        out = s.query(Message).filter(Message.user_id == user.id, Message.direction == "out").all()
+    finally:
+        s.close()
+    assert any("glitched for a sec" in (m.body or "") for m in out), \
+        "the safe reply that clears the bubble was not sent"
 
 
 # ── heartbeat stays off unless asked ─────────────────────────────────────────

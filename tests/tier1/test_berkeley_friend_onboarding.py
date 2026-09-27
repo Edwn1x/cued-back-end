@@ -699,11 +699,12 @@ def test_log_workout_dates_a_past_session_and_does_not_confirm_today(db):
 
 def test_webhook_one_shot_workout_row_is_off_when_the_loop_owns_logging(db, driver, monkeypatch, anthropic_stub):
     """Live: "I hit pull" → the webhook's legacy one-shot wrote a bare workout_type=
-    'logged' row (no exercises) next to the loop's real log_workout row."""
+    'logged' row (no exercises) next to the loop's real log_workout row. Phase 6
+    removed the legacy one-shot writer entirely — the loop's log_workout tool is the
+    sole writer now, so a bare "workout_log" text never writes a Workout row."""
     import app, config
     from models import Workout
     monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", True)
-    monkeypatch.setattr(config, "WORKOUT_LOGGING_ENABLED", False)
     monkeypatch.setattr(app, "classify_message", lambda body, has_image=False: "workout_log")
     anthropic_stub.reply_with(lambda kw: "nice, logged" )  # the loop replies with text, no tool
     user = make_user(db, name="Nau")

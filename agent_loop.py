@@ -1,9 +1,11 @@
 """
 Phase 2 — the single agent loop (inbound only).
 
-One model call per inbound, one voice, full context. Replaces
-classifier→specialists→merge behind SINGLE_AGENT_LOOP_ENABLED; the webhook falls
-back to the legacy pipeline (orchestrator.route_message) on any exception.
+One model call per inbound, one voice, full context. Replaced the legacy
+classifier→specialists→merge pipeline, which was deleted in Phase 6 Commit C.
+The loop is the SOLE responder now: on any exception the webhook sends one safe
+minimal line and logs at ERROR (there is no legacy fallback). Gated by
+SINGLE_AGENT_LOOP_ENABLED, kept as a permanently-on lever.
 
 Context is UNIFIED — all memory categories rendered (not the per-agent slice), so
 a fact told in one domain is available in another (fixes failure 1). Safety

@@ -5,28 +5,31 @@ dependency on the legacy multi-agent pipeline. If its transitive import closure 
 disjoint from the doomed set, deleting that set is removing dead weight the brain
 already doesn't touch — not surgery.
 
-This is evidence-independent: it passes today (before any flag flip) and stays true
-after the prepared deletion commits land. The AST walk catches imports anywhere —
-top-level AND lazy in-function `from coach import ...` — which a runtime import check
-would miss.
+This is evidence-independent: it passed before any flag flip and stays true after the
+deletion commits land. The AST walk catches imports anywhere — top-level AND the lazy
+in-function form — which a runtime import check would miss.
 
-When the pipeline commit lands, it EXTENDS this file to also assert the doomed modules
-are gone (`import orchestrator` raises) and to add `app` to the roots.
+Phase 6 Commit C landed the pipeline deletion: this file now also asserts the doomed
+modules are GONE (importing the entrypoint raises ModuleNotFoundError) and adds `app`
+to the roots (its inbound path no longer reaches any legacy module).
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
 import os
+
+import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# The live single-agent path: reactive brain + proactive + nightly maintenance.
-# `scheduler` is included since Commit A removed its legacy briefings + coach import,
-# leaving it coach-free (its transitive closure is now disjoint from the doomed set).
-ROOTS = ["agent_loop", "agent_tools", "heartbeat", "consolidation", "episodic", "scheduler"]
+# The live single-agent path: the inbound webhook brain (`app`) + the reactive loop +
+# its tools + the proactive heartbeat + nightly maintenance. `scheduler` went coach-free
+# in Commit A; `app` lost its last legacy callers in Commit C.
+ROOTS = ["app", "agent_loop", "agent_tools", "heartbeat", "consolidation", "episodic", "scheduler"]
 
-# The legacy pipeline slated for deletion (Phase 6 inventory).
+# The legacy pipeline deleted in Phase 6 Commit C.
 DOOMED = {"orchestrator", "coach", "skill_loader", "tone_analyzer", "agents"}
 
 
@@ -95,11 +98,12 @@ def test_roots_all_resolve():
         assert _module_path(r), f"root module {r!r} not found — isolation check would be hollow"
 
 
-def test_doomed_set_still_present_pre_deletion():
-    """Sanity: before the deletion commits land, the doomed modules DO still exist.
-    (The pipeline commit deletes them and flips this expectation.)"""
-    present = {m for m in DOOMED if _module_path(m)}
-    assert present == DOOMED, (
-        f"expected all doomed modules present pre-deletion; missing {sorted(DOOMED - present)}. "
-        f"If a deletion landed, update this test in the same commit."
+def test_doomed_set_is_deleted():
+    """Phase 6 Commit C: the legacy pipeline is GONE. No .py on disk for any doomed
+    module, and importing the entrypoint raises."""
+    still_present = {m for m in DOOMED if _module_path(m)}
+    assert still_present == set(), (
+        f"legacy modules still on disk after the deletion commit: {sorted(still_present)}"
     )
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("orchestrator")
