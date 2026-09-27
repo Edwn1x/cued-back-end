@@ -87,6 +87,11 @@ class User(Base):
     # "I ate the Wednesday burrito" logs from saved macros. See saved_menus.py.
     # {key: {name, items:[{item, calories?, protein_g?, carbs_g?, fat_g?, note?}], captured_at}}
     saved_menus = Column(JSON, default=None)
+    # Cross-turn image persistence (recent_media.py): a short, per-user record of the
+    # last few inbound photos and what the coach read off them, so a later turn can say
+    # "the photo you sent showed X" instead of re-asking or denying a pic was sent.
+    # [{"at": iso, "caption": str, "summary": str}] — capped + TTL'd in context.
+    recent_photos = Column(JSON, default=None)
     # Workout card delivery: True = send cards as a plain browser link (no Spectrum
     # extension needed to tap sets); False (default) = the Photon extension card. See
     # workouts/card.py + set_card_delivery.

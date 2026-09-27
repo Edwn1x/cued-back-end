@@ -70,6 +70,17 @@ def session_within(user, hours: float, now_local) -> bool:
     return timedelta(0) <= (planned - now_local) <= timedelta(hours=hours)
 
 
+def has_active_session(session, user) -> bool:
+    """An IN-PROGRESS (started) card session — status 'active', not a merely 'planned'
+    one. A proactive beat mid-workout is contradictory ('gym's dead, quick pull?' during
+    an active push) and redundant, so it suppresses the sweep. Distinct from
+    session_ops.active_session_id, which also counts 'planned' sessions (those still WANT
+    the planned-day beat)."""
+    return session.query(WorkoutSession.id).filter(
+        WorkoutSession.user_id == user.id,
+        WorkoutSession.status == "active").first() is not None
+
+
 def gym_beat_sent_today(session, user, now_local) -> bool:
     day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
     return session.query(Message.id).filter(Message.user_id == user.id, Message.direction == "out",
@@ -148,6 +159,10 @@ def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
         return None
     if gym_beat_sent_today(session, user, now_local):
         return None
+    # Mid-workout: no proactive nudge ('gym's dead, quick pull?' during an active push is
+    # contradictory + redundant; a line nudge is moot once they're already lifting).
+    if has_active_session(session, user):
+        return None
     if not planned_today(user, session, now_local) or is_workout_confirmed_today(user.id):
         return None
     walk = walk_min_for(user, session)
@@ -159,8 +174,11 @@ def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
             return Beat("optin_ask", OPTIN_ASK, "gym_optin_ask")
         return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
 
-    if reading["label"] in ("dead", "light"):
-        return Beat("dead", f"gym's dead right now. quick {_template_for(user)}?", "gym_dead")
+    # Quiet enough for a quick session. Only below GYM_DEAD_MAX_PCT (so ~45% — the top of
+    # the "light" band — is never called "dead"); the word matches the real reading.
+    if reading["pct"] < config.GYM_DEAD_MAX_PCT:
+        mood = "dead" if reading["label"] == "dead" else "quiet"
+        return Beat("dead", f"gym's {mood} right now. quick {_template_for(user)}?", "gym_dead")
     return None
 
 
@@ -286,6 +304,33 @@ def heading_out(user_id: int, text: str) -> Beat | None:
         return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
     finally:
         session.close()
+
+
+def send_line_link(user_id: int) -> str:
+    """On-demand (agent_tools.send_gym_line_link): text the RSF virtual-line JOIN link —
+    the SAME Waitwell JOIN_URL the automatic §2.8 heading-out flow sends — as its own
+    bubble. This is the real capability behind 'here's the line link, tap it': without it
+    the coach could only OFFER the link and never actually send one (2026-09-26 trust
+    incident). Returns a status line for the coach loop (its reply is the sentence around
+    the link, not the URL)."""
+    now_utc = datetime.now(timezone.utc)
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user or not user.phone:
+            return "error: no phone on file"
+        phone = user.phone
+        walk = walk_min_for(user, session)
+    finally:
+        session.close()
+    reading = occupancy.now(now_utc.replace(tzinfo=None))
+    if reading and reading["line_on"]:
+        text = d1_text(reading, walk)   # quotes the live % + the leave-by framing
+    else:
+        text = f"here's the rsf virtual-line link — one tap, drop your number and you're in: {JOIN_URL}"
+    send_sms(phone, text, user_id=user_id, message_type="gym_line_d1")
+    logger.info("GYM_LINE_LINK_SENT user=%s ondemand=1 line_on=%s", user_id, bool(reading and reading["line_on"]))
+    return "ok: sent the rsf virtual-line link"
 
 
 def rsf_context_block(reading: dict | None) -> str:

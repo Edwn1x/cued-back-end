@@ -200,8 +200,8 @@ CAPABILITIES: list[Capability] = [
     Capability(
         id="rsf_line",
         what="when rsf's packed and you're heading over, i'll send you the virtual-line link so you're in before you get there",
-        how="just text me 'heading to the gym' — if the line's on you get the link, one tap",
-        tools=(),
+        how="just text me 'heading to the gym' — if the line's on you get the link, one tap; or ask for it any time",
+        tools=("send_gym_line_link",),
         enabled=lambda u: config.RSF_METER_ENABLED,
         relevance=lambda u: 6,
         used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="gym_line_d1").first() is not None,

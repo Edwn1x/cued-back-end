@@ -188,6 +188,66 @@ def test_flag_off_disables_everything(db, monkeypatch, sms_capture):
     assert context_block(db.get(type(u), u.id), db) is None
 
 
+# ─── interval (water) reminders respect quiet hours + calendar blocks ────────────
+# Live incidents: an interval water ping fired at 3am, and one mid-exam during a class
+# block. The heartbeat gates both; the water job now reuses the same gates (defer, don't
+# fire). Explicit one-off/weekly rows the user asked for still fire.
+
+def test_interval_water_reminder_deferred_during_quiet_hours(db, monkeypatch, sms_capture, anthropic_stub):
+    import config
+    from models import Reminder
+    from reminders import create_reminder, fire_due
+    monkeypatch.setattr(config, "HEARTBEAT_STANDING_QUIET_ENABLED", True)  # off in the harness by default
+    anthropic_stub.reply_with(lambda kw: "hydrate")
+    u = make_user(db, wake_time="07:00", sleep_time="23:00")
+    r = create_reminder(u.id, "drink water", None, every_hours=3, source="offer")
+    now = _utc(datetime(2026, 9, 22, 3, 0))     # 3am PT — inside the 9pm–8am quiet floor
+    row = db.get(Reminder, r["id"]); row.fire_at = now; db.commit()
+
+    assert fire_due(now=now) == 0 and not sms_capture   # suppressed, not sent
+    db.expire_all()
+    row = db.get(Reminder, r["id"])
+    assert row.active is True and row.fire_at > now      # re-armed to the next slot
+    assert row.sent_count in (0, None)
+
+
+def test_interval_water_reminder_deferred_during_calendar_block(db, monkeypatch, sms_capture, anthropic_stub):
+    import config
+    from models import Reminder, Event, get_session
+    from reminders import create_reminder, fire_due
+    monkeypatch.setattr(config, "HEARTBEAT_STANDING_QUIET_ENABLED", True)
+    anthropic_stub.reply_with(lambda kw: "hydrate")
+    u = make_user(db, wake_time="07:00", sleep_time="23:00")
+    r = create_reminder(u.id, "drink water", None, every_hours=3, source="offer")
+    now = _utc(datetime(2026, 9, 22, 12, 0))    # noon PT — awake, so only the block gates
+    # an ongoing timed class/exam block that overlaps now
+    db.add(Event(user_id=u.id, event_type="in_class", occurred_at=now - timedelta(minutes=30),
+                 ends_at=now + timedelta(minutes=60), source="model", raw_text="midterm"))
+    row = db.get(Reminder, r["id"]); row.fire_at = now
+    db.commit()
+
+    assert fire_due(now=now) == 0 and not sms_capture   # suppressed mid-block
+    db.expire_all()
+    assert db.get(Reminder, r["id"]).active is True
+
+
+def test_interval_water_reminder_fires_at_a_normal_time(db, monkeypatch, sms_capture, anthropic_stub):
+    import config
+    from models import Reminder
+    from reminders import create_reminder, fire_due
+    monkeypatch.setattr(config, "HEARTBEAT_STANDING_QUIET_ENABLED", True)
+    anthropic_stub.reply_with(lambda kw: "hydrate, champ")
+    u = make_user(db, wake_time="07:00", sleep_time="23:00")
+    r = create_reminder(u.id, "drink water", None, every_hours=3, source="offer")
+    now = _utc(datetime(2026, 9, 22, 12, 0))    # noon PT — awake, no block
+    row = db.get(Reminder, r["id"]); row.fire_at = now; db.commit()
+
+    assert fire_due(now=now) == 1
+    assert sms_capture[-1][1] == "hydrate, champ"
+    db.expire_all()
+    assert db.get(Reminder, r["id"]).active is True     # interval re-arms after firing
+
+
 # ─── tools ────────────────────────────────────────────────────────────────────
 
 def test_set_and_cancel_reminder_tools(db):

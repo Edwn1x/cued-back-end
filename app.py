@@ -1284,6 +1284,18 @@ _GOODNIGHT_EXPLICIT = (
 _GOODNIGHT_IMPLICIT = ("night", "gn", "ttyt", "talk tomorrow", "ttyl", "bye", "byw", "peace out")
 _GOODNIGHT_NOT = ("last night", "tonight", "nights", "night's", "night before", "other night",
                   "all night", "every night", "night shift", "night class", "late night", "night out")
+# Uncertainty / inability to sleep is venting, NOT a signoff. Live 2026-09-26: "idek if
+# ima sleep tn tho" matched "ima sleep" and fired the wind-down (set quiet_until, sent a
+# goodnight). Someone unsure they'll sleep — or who can't — is the opposite of turning in.
+_GOODNIGHT_NEGATE = ("idk if", "idek if", "dunno if", "not sure if", "no idea if", "unsure if",
+                     "if ima sleep", "if im gonna sleep", "if imma sleep", "if i'll sleep",
+                     "if ill sleep", "if i sleep", "if i even sleep", "whether i",
+                     "cant sleep", "can't sleep", "cannot sleep", "cant fall asleep",
+                     "can't fall asleep", "cant even sleep", "can't even sleep",
+                     "might not sleep", "may not sleep", "prob wont sleep", "probably wont sleep",
+                     "wont sleep", "won't sleep", "not gonna sleep", "not going to sleep",
+                     "no sleep", "unable to sleep", "hard to sleep", "trouble sleeping",
+                     "cant seem to sleep", "can't seem to sleep")
 _GOODNIGHT_EVENING = (20, 5)  # implicit forms count only from 8pm to 5am local
 
 
@@ -1296,6 +1308,9 @@ def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
     if len(body_lower) >= 40:
         return False
     if any(ex in body_lower for ex in _GOODNIGHT_NOT):
+        return False
+    # Uncertainty / inability to sleep is venting, not a signoff — never wind down on it.
+    if any(neg in body_lower for neg in _GOODNIGHT_NEGATE):
         return False
     def _has(phrase):
         return _re.search(r"(?<![a-z])" + _re.escape(phrase) + r"(?![a-z])", body_lower) is not None
@@ -1582,10 +1597,10 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
 
         import random
         response = random.choice([
-            "Night. Get some real sleep.",
-            "Sleep well. Talk tomorrow.",
-            "Night, rest up.",
-            "Get some rest. Hit me up in the morning.",
+            "night. get some real sleep.",
+            "sleep well. talk tomorrow.",
+            "night, rest up.",
+            "get some rest. hit me up in the morning.",
         ])
         send_sms(user.phone, response, user_id=user.id, message_type="goodnight")
         # Cancel any pending buffer so it doesn't flush after goodnight
@@ -2863,10 +2878,16 @@ def admin_delete_user(user_id):
         if not user:
             return jsonify({"status": "error", "message": "User not found"}), 404
         name = user.name
+        photon_user_id = user.photon_user_id
         _purge_user_rows(session, user_id)
         session.delete(user)
         session.commit()
         logger.info(f"Admin deleted user: {name} (id={user_id})")
+        # Free the shared-pool Photon seat so it doesn't linger (best-effort; a
+        # Photon failure never blocks the local delete — the seat can be freed
+        # manually). No-op when the user was never provisioned.
+        import photon
+        photon.deprovision_user(photon_user_id)
         return jsonify({"status": "ok", "message": f"{name} deleted."})
     finally:
         session.close()
@@ -2877,9 +2898,9 @@ def admin_remove_waitlist(user_id):
     """Drop a PENDING waitlister for good (spam, duplicate, changed their mind).
     Guarded to waitlist_status == 'pending' so the waitlist tab can never delete
     an activated user; those go through /delete from the Users tab. Sends
-    nothing. Their Photon line (if provisioned) is left in the pool — there is
-    no deprovision call — so a re-signup on the same number gets it back via
-    find_user."""
+    nothing. Their Photon seat (if provisioned) is released back to the shared
+    pool (best-effort) so the small pool doesn't fill with dropped sign-ups; a
+    re-signup on the same number re-provisions via add_user."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -2889,10 +2910,14 @@ def admin_remove_waitlist(user_id):
             return jsonify({"status": "error",
                             "message": "User is not on the waitlist."}), 400
         name, phone = user.name, user.phone
+        photon_user_id = user.photon_user_id
         _purge_user_rows(session, user_id)
         session.delete(user)
         session.commit()
         logger.info("WAITLIST_REMOVE user_id=%s phone=%s name=%r", user_id, phone, name)
+        # Release the shared-pool Photon seat (best-effort; never blocks the delete).
+        import photon
+        photon.deprovision_user(photon_user_id)
         return jsonify({"status": "ok", "message": f"{name} removed from the waitlist."}), 200
     except Exception as e:
         logger.error(f"/admin/user/{user_id}/remove-waitlist error: {e}", exc_info=True)

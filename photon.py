@@ -152,6 +152,41 @@ def provision_user(user_id: int) -> bool:
         session.close()
 
 
+def remove_user(photon_user_id: str) -> None:
+    """DELETE the shared Photon user by its Photon id, freeing the pool seat
+    (DELETE /projects/{projectId}/users/{userId}). A 404 means the seat is already
+    gone → treated as success. Raises PhotonError on any other non-2xx."""
+    url = _users_url() + quote(str(photon_user_id), safe="")
+    resp = requests.delete(url, headers=_auth_header(), timeout=config.PHOTON_TIMEOUT_S)
+    if resp.status_code == 404:
+        return  # already absent; the seat is free either way
+    if resp.status_code >= 300:
+        raise PhotonError(f"photon users delete {resp.status_code}: {resp.text[:200]}")
+
+
+def deprovision_user(photon_user_id: str | None) -> bool:
+    """Best-effort release of a user's shared-pool Photon seat on account delete.
+
+    The pool is small; a deleted/removed user's seat must not linger. Never raises
+    — a Photon problem must NOT block the local delete (the seat can still be freed
+    manually via the API). Returns True when the seat was released (or there was
+    nothing to release), False when the call was skipped or failed."""
+    if not photon_user_id:
+        return True  # never provisioned → nothing to free
+    if not (config.SPECTRUM_PROJECT_ID and config.SPECTRUM_PROJECT_SECRET):
+        logger.warning("PHOTON_DEPROVISION_SKIPPED reason=missing_project_creds photon_user_id=%s",
+                       photon_user_id)
+        return False
+    try:
+        remove_user(photon_user_id)
+    except Exception as e:  # noqa: BLE001 — a Photon failure must not block the delete
+        logger.warning("PHOTON_DEPROVISION_FAILED photon_user_id=%s err=%s — seat left in pool",
+                       photon_user_id, e)
+        return False
+    logger.info("PHOTON_DEPROVISIONED photon_user_id=%s", photon_user_id)
+    return True
+
+
 # ─── Shared-pool consent gate: the deep link ─────────────────────────────────
 # A shared Photon user can't be MESSAGED until they text their assigned line
 # once ("Target not allowed for this project"; live 2026-09-12, user 28). Photon

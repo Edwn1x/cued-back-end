@@ -268,6 +268,29 @@ RECEIPT_EXTRACTOR_MAX_TOKENS = int(os.getenv("RECEIPT_EXTRACTOR_MAX_TOKENS", "80
 # bound tokens/cost (~1–1.5k tokens/image). Flag off = first-image-only (legacy).
 MULTI_IMAGE_ENABLED = os.getenv("MULTI_IMAGE_ENABLED", "true").lower() == "true"
 MAX_INBOUND_IMAGES = int(os.getenv("MAX_INBOUND_IMAGES", "5"))
+# Cross-turn image persistence (recent_media.py): the image itself is gone next turn,
+# so a compact "you were sent a photo, here's what you read off it" note is persisted
+# per user (users.recent_photos JSON) and injected into the loop context. Fixes the
+# 2026-09-26 incident where the coach lost a photo across turns, mislabeled it ("the
+# banana pic"), denied a pic was sent, and re-asked answered questions. Capped + TTL'd.
+RECENT_MEDIA_ENABLED = os.getenv("RECENT_MEDIA_ENABLED", "true").lower() == "true"
+RECENT_MEDIA_MAX = int(os.getenv("RECENT_MEDIA_MAX", "3"))           # most-recent N kept
+RECENT_MEDIA_TTL_HOURS = int(os.getenv("RECENT_MEDIA_TTL_HOURS", "24"))
+# Inline-image failed-send guard: images intermittently arrive as text containing only
+# the ￼ (U+FFFC) object-replacement char with attachments=0 (stripped upstream by
+# Photon). Without a guard the coach confabulates the "image" contents. When on, a
+# message that is essentially just ￼ placeholders with no real attachment is treated as
+# "an image didn't come through" — the coach says so and asks for a resend, never guesses.
+INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED = os.getenv(
+    "INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED", "true").lower() == "true"
+# Photo-reread delete guard: deleting/replacing an already-logged meal must be an
+# intentional action, never a side-effect of re-interpreting a NEW photo. When on, a
+# manage_log delete of a meal on a turn that carries an image is refused unless the
+# user's caption expresses delete intent — the coach is steered to ADD the new food as a
+# separate item instead. Fixes the 2026-09-26 incident (a yogurt photo deleted the
+# correct banana entry to "replace" it).
+PHOTO_REREAD_DELETE_GUARD_ENABLED = os.getenv(
+    "PHOTO_REREAD_DELETE_GUARD_ENABLED", "true").lower() == "true"
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public
@@ -280,6 +303,15 @@ DENSITY_DISPLAY_ID = os.getenv("DENSITY_DISPLAY_ID", "dsp_956223069054042646")
 RSF_CONTACT_EMAIL = os.getenv("RSF_CONTACT_EMAIL", "enrr865@gmail.com")
 RSF_TIMEOUT_S = int(os.getenv("RSF_TIMEOUT_S", "10"))
 RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
+# On-demand coach tool that texts the RSF virtual-line JOIN link (agent_tools.
+# SEND_GYM_LINE_LINK_TOOL → gym_beats.send_line_link). The real capability behind
+# "here's the line link" so the coach never fakes the offer. Default ON.
+SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "true").lower() == "true"
+# Below this occupancy a proactive gym beat may call the weight room quiet enough for
+# a quick session. Sits below the light/busy midpoint so ~45% (the "light" band tops
+# out at 49%) is NEVER called "dead" (2026-09-26 incident: a "gym's dead, quick pull?"
+# beat fired at 45%). Labels: dead <25 · light <50 · busy <75 · packed <95 · line ≥95.
+GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
 
 # ─── Integrations (OAuth: Google Calendar, Strava, bCourses) ──────────────────
 # Shared plumbing (integrations/ package). Every flag defaults OFF; the whole
@@ -366,6 +398,11 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 HEARTBEAT_MEAL_GAP_ENABLED = os.getenv("HEARTBEAT_MEAL_GAP_ENABLED", "false").lower() == "true"
 # Gates only the every_hours affordance on set_reminder (water); the engine is inert without rows.
 WATER_REMINDERS_ENABLED = os.getenv("WATER_REMINDERS_ENABLED", "false").lower() == "true"
+# Interval (water) reminders respect the SAME quiet-hours + calendar-block gates the
+# heartbeat applies to proactive nudges — a water ping fired at 3am and one mid-exam
+# (live incidents). Explicit "remind me at HH:MM" rows always fire (the user asked).
+# Protective by default; inert in tests because standing quiet is off there and no events exist.
+WATER_REMINDER_GATES_ENABLED = os.getenv("WATER_REMINDER_GATES_ENABLED", "true").lower() == "true"
 # Quiet = sleep-30min .. wake+15min from the user's own 'HH:MM' profile times, else the global window.
 QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED", "false").lower() == "true"
 # MORNING OPEN / EVENING CLOSE standing conditions: the rhythm the disabled legacy briefings left behind.
@@ -456,6 +493,25 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
+# ─── Send reliability (2026-09-26) ────────────────────────────────────────────
+# A sidecar READ timeout means our request was sent but the ack didn't come back
+# in time — Photon may well have delivered the iMessage anyway. Treating that
+# like a hard failure double-sends (iMessage lands AND we fall over to SMS) and
+# wrongly trips the breaker. When on, a read timeout on the first bubble does NOT
+# trip the breaker and does NOT fall over to SMS. A connect failure or a non-2xx
+# still does (nothing landed there). Tradeoff: a genuine timeout where the send
+# ALSO failed silently leaves that one message undelivered — the rare cost of
+# never double-sending. See sms.send_sms.
+SIDECAR_TIMEOUT_NO_FAILOVER = os.getenv("SIDECAR_TIMEOUT_NO_FAILOVER", "true").lower() == "true"
+# Suppress a coach reply that is (normalized) identical to the last one sent to
+# the same user inside this window — the backstop for the buffer race that
+# produced two near-identical turns ("same 4 messages"). See sms._is_duplicate_send.
+OUTBOUND_DEDUP_ENABLED = os.getenv("OUTBOUND_DEDUP_ENABLED", "true").lower() == "true"
+OUTBOUND_DEDUP_WINDOW_S = int(os.getenv("OUTBOUND_DEDUP_WINDOW_S", "90"))
+# A message landing within this many seconds of the buffer timer firing is a
+# candidate for the timer-vs-append race; logged for observability. The actual
+# absorption is done by the per-timer token guard in message_buffer._flush_buffer.
+BUFFER_JOIN_WINDOW_S = float(os.getenv("BUFFER_JOIN_WINDOW_S", "2.0"))
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

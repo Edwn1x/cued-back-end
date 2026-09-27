@@ -1,5 +1,7 @@
+import hashlib
 import logging
 import re
+import threading
 import time
 
 import requests
@@ -13,6 +15,43 @@ from sms_encoding import normalize_for_sms, residual_non_gsm, estimate_segments
 logger = logging.getLogger("cued.sms")
 
 client = Client(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
+
+# ─── Outbound dedup (buffer-race backstop) ────────────────────────────────────
+# user_id -> (normalized_body_hash, monotonic_ts) of the last reply we sent. When
+# the buffer race spawns a second, topically identical turn, the coach produces a
+# near-identical reply moments later; suppressing the byte-for-byte repeat inside
+# OUTBOUND_DEDUP_WINDOW_S is what the user experiences as "not getting the same
+# messages twice". Keyed by user_id so it spans both channels (iMessage + SMS).
+_recent_out: dict = {}
+_recent_out_lock = threading.Lock()
+
+
+def _norm_body(body: str) -> str:
+    """Whitespace-collapsed, lowercased — so trivial re-rendering differences
+    (a stray newline, casing) still count as the same message."""
+    return " ".join((body or "").split()).lower()
+
+
+def _is_duplicate_send(user_id, body) -> bool:
+    """True when this exact (normalized) body was just sent to this user inside
+    the dedup window. Records the send as a side effect so the NEXT call can see
+    it. No-op (never suppresses) without a user_id or when the flag is off."""
+    if not user_id or not config.OUTBOUND_DEDUP_ENABLED:
+        return False
+    digest = hashlib.sha256(_norm_body(body).encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    with _recent_out_lock:
+        prev = _recent_out.get(user_id)
+        if prev and prev[0] == digest and (now - prev[1]) < config.OUTBOUND_DEDUP_WINDOW_S:
+            return True
+        _recent_out[user_id] = (digest, now)
+    return False
+
+
+def reset_outbound_dedup():
+    """Clear the dedup cache (test isolation; also safe operationally)."""
+    with _recent_out_lock:
+        _recent_out.clear()
 
 SMS_SPLIT_DELAY = 2.5  # seconds between split messages
 SMS_SEGMENT_WARN_THRESHOLD = 6  # ~900+ GSM-7 chars; log when bodies get this large
@@ -235,6 +274,13 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
             logger.info("SEND_SUPPRESSED_OPTED_OUT user=%s type=%s", user_id, message_type)
             return None
 
+    # Buffer-race backstop: if this is byte-for-byte the reply we just sent this
+    # user, the second (duplicate) turn from a raced flush is producing it — drop
+    # it before it hits either channel. Runs above the router so it covers both.
+    if _is_duplicate_send(user_id, body):
+        logger.info("SEND_SUPPRESSED_DUPLICATE user=%s type=%s", user_id, message_type)
+        return None
+
     # Photon migration 4A: route first. iMessage → sidecar, one call, full body.
     # On ANY failure: write the `failed` row FIRST (the keystone reads it), trip
     # the breaker, then fall through to Twilio so the same message still lands.
@@ -246,6 +292,7 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         bubbles = [_imessage_body(b) for b in split_bubbles(body)]
         first_sid = None
         first_err = None
+        first_err_timeout = False
         for i, part in enumerate(bubbles):
             try:
                 sid = (_send_imessage(phone, part, reply_to_sid) if (i == 0 and reply_to_sid)
@@ -257,23 +304,47 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
                 if i < len(bubbles) - 1:
                     time.sleep(bubble_delay(part))
             except Exception as e:  # noqa: BLE001
-                _log_message(user_id, part, message_type,
-                             channel="imessage", provider_sid=None, delivery_status="failed")
+                # A READ timeout is "maybe delivered": we sent the request and just
+                # didn't get the ack in time — Photon likely still landed it. Mark
+                # the row as landed (NOT 'failed', which the keystone reads as a
+                # miss) so we neither double-count nor, below, double-send. A real
+                # failure (non-2xx, ok=false, connect error) keeps the 'failed' row.
+                is_read_timeout = (config.SIDECAR_TIMEOUT_NO_FAILOVER
+                                   and isinstance(e, requests.exceptions.ReadTimeout))
+                _log_message(user_id, part, message_type, channel="imessage",
+                             provider_sid=None,
+                             delivery_status="sent" if is_read_timeout else "failed")
                 if i == 0:
                     first_err = e
+                    first_err_timeout = is_read_timeout
                     break
+                if is_read_timeout:
+                    logger.warning("IMESSAGE_BUBBLE_TIMEOUT user_id=%s idx=%s — maybe delivered; "
+                                   "earlier bubbles landed, not failing over", user_id, i)
+                    return first_sid
                 logger.warning("IMESSAGE_BUBBLE_FAILED user_id=%s idx=%s err=%s — earlier bubbles landed",
                                user_id, i, e)
                 return first_sid
         if first_err is None:
             return first_sid
         e = first_err
-        # First bubble failed → clear the dots and fall the WHOLE message over to SMS.
+        # First bubble failed → clear the dots.
         try:
             from typing_indicator import typing_stop
             typing_stop(user_id)
         except Exception:  # noqa: BLE001
             pass
+        # A read timeout on the first bubble: the request was sent, so Photon may
+        # have delivered it. Falling over to SMS here is what double-sends the
+        # message, and a slow ack is not a dead pipe — so do NOT trip the breaker
+        # and do NOT fall through to Twilio. (A connect error / non-2xx is a hard
+        # failure and takes the failover path below, as before.)
+        if first_err_timeout:
+            logger.warning("IMESSAGE_SEND_TIMEOUT user_id=%s message_type=%s err=%s — sidecar may "
+                           "have delivered; NOT failing over to SMS, NOT tripping breaker",
+                           user_id, message_type, e)
+            return first_sid
+        # First bubble hard-failed → fall the WHOLE message over to SMS.
         if _is_consent_gate(e):
             logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
                         "their line yet; falling over to SMS", user_id, message_type)
