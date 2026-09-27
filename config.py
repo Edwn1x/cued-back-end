@@ -390,6 +390,18 @@ HEARTBEAT_STANDING_QUIET_ENABLED = os.getenv("HEARTBEAT_STANDING_QUIET_ENABLED",
 HEARTBEAT_QUIET_START_HOUR = int(os.getenv("HEARTBEAT_QUIET_START_HOUR", "21"))  # 9pm local
 HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))       # 8am local
 
+# Wearable-aware PROACTIVE outreach (consumption side only — never touches the
+# google_health SYNC pipeline). When on and the user has fresh google_health data:
+#   • the heartbeat prompt gets recovery guidance (short night → gentler / hold a
+#     demanding nudge; good recovery → warm-win hook; low steps on a rest day → walk),
+#   • a RECOVERY standing-condition block surfaces last night's sleep + HR/HRV vs
+#     baseline (a SOFT tone gate, never a hard suppression), and
+#   • the standing quiet floor extends to a measured wake the watch shows is later than
+#     their stated wake (don't ping someone the watch says is still asleep).
+# Fail-open: with GOOGLE_HEALTH_ENABLED off, no wearable rows, or stale data it is inert
+# (behaviour identical to today). ON by default, mirroring the other heartbeat gates.
+HEARTBEAT_WEARABLE_AWARE_ENABLED = os.getenv("HEARTBEAT_WEARABLE_AWARE_ENABLED", "true").lower() == "true"
+
 # Daily rhythm (rewrite/daily-rhythm/CHANGESPEC.md) — user 32: "check-ups are way too far
 # apart". All five default OFF; flipped in prod after the deploy.
 # MEAL GAP standing condition: an unlogged lunch at 2pm was never a reason to speak.
