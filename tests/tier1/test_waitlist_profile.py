@@ -396,3 +396,48 @@ def test_admin_waitlist_tab_offers_remove_next_to_activate(db, client):
     user = _pending(db, phone="+15105550363", name="Undecided")
     html = client.get("/admin").get_data(as_text=True)
     assert f"removeWaitlist({user.id}" in html and f"activateWaitlist({user.id}" in html
+
+
+# ─── Photon seat is released back to the shared pool on delete/remove ─────────
+
+def test_remove_waitlister_deprovisions_the_photon_seat(db, client, monkeypatch):
+    """The pool is small — dropping a pending waitlister must free their Photon
+    seat, not leave it lingering. The delete path calls deprovision_user with the
+    row's photon_user_id."""
+    import photon
+    user = _pending(db, phone="+15105550371", name="Freed", photon_user_id="ph-71")
+    seen = []
+    monkeypatch.setattr(photon, "deprovision_user", lambda pid: seen.append(pid) or True)
+    r = client.post(f"/admin/user/{user.id}/remove-waitlist")
+    assert r.status_code == 200 and r.get_json()["status"] == "ok"
+    assert seen == ["ph-71"]
+
+
+def test_delete_user_deprovisions_the_photon_seat(db, client, monkeypatch):
+    from tests.factories import make_user
+    import photon
+    user = make_user(db, phone="+15105550372", name="Gone", photon_user_id="ph-72")
+    seen = []
+    monkeypatch.setattr(photon, "deprovision_user", lambda pid: seen.append(pid) or True)
+    r = client.post(f"/admin/user/{user.id}/delete")
+    assert r.status_code == 200 and r.get_json()["status"] == "ok"
+    assert seen == ["ph-72"]
+
+
+def test_delete_still_succeeds_when_photon_api_fails(db, client, monkeypatch, photon_on):
+    """A Photon API failure must NEVER block the local delete. Exercise the real
+    deprovision path with the DELETE call blowing up: the route still returns ok and
+    the row is gone (the seat is just left in the pool, logged for a manual sweep)."""
+    from models import User
+    from tests.factories import make_user
+    import photon
+    user = make_user(db, phone="+15105550373", name="Stubborn", photon_user_id="ph-73")
+    uid = user.id
+
+    def _boom(url, headers=None, timeout=None):
+        raise RuntimeError("photon 500")
+    monkeypatch.setattr(photon.requests, "delete", _boom)
+    r = client.post(f"/admin/user/{uid}/delete")
+    assert r.status_code == 200 and r.get_json()["status"] == "ok"
+    db.expunge_all()
+    assert db.query(User).filter(User.id == uid).count() == 0

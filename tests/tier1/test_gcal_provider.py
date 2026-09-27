@@ -57,7 +57,7 @@ def test_exchange_code_returns_tokens_and_account_sub(monkeypatch):
 
     def fake_get(url, headers=None, params=None, timeout=None):
         assert headers["Authorization"] == "Bearer AT"
-        return _Resp(200, {"id": "google-sub-123", "email": "x@y.com"})
+        return _Resp(200, {"id": "primary@gmail.com", "primary": True})
 
     monkeypatch.setattr(gcal.requests, "post", fake_post)
     monkeypatch.setattr(gcal.requests, "get", fake_get)
@@ -66,8 +66,33 @@ def test_exchange_code_returns_tokens_and_account_sub(monkeypatch):
     assert calls["post"]["grant_type"] == "authorization_code"
     assert calls["post"]["code"] == "AUTHCODE"
     assert b.access_token == "AT" and b.refresh_token == "RT"
-    assert b.external_id == "google-sub-123"
+    assert b.external_id == "primary@gmail.com"
     assert b.expires_at is not None
+
+
+def test_account_id_uses_primary_calendar_not_userinfo(monkeypatch):
+    """external_id comes from calendarList/primary — the userinfo endpoint is NOT
+    authorized by the calendar scopes (401s on every connect). We must only hit the
+    calendar API, and a failure must leave external_id blank without breaking connect."""
+    from integrations import gcal
+    urls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        urls.append(url)
+        return _Resp(200, {"id": "primary@gmail.com"})
+
+    monkeypatch.setattr(gcal.requests, "get", fake_get)
+    sub = gcal.GCalProvider()._account_sub("AT")
+    assert sub == "primary@gmail.com"
+    assert len(urls) == 1
+    assert urls[0].endswith("/calendar/v3/users/me/calendarList/primary")
+    assert not any("userinfo" in u for u in urls)
+
+    # a failure is best-effort: no raise, external_id left blank
+    monkeypatch.setattr(gcal.requests, "get", lambda *a, **k: _Resp(401, {}))
+    assert gcal.GCalProvider()._account_sub("AT") is None
+    # no token → no call at all
+    assert gcal.GCalProvider()._account_sub(None) is None
 
 
 def test_refresh_keeps_existing_refresh_token(monkeypatch):

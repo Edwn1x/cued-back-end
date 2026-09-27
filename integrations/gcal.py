@@ -4,7 +4,8 @@ Two layers:
   1. GCalProvider — the OAuth half, plugged into the Part 0 framework (authorize →
      exchange → refresh). Scope is calendar.events.readonly ONLY (narrowest that
      lists events); access_type=offline + prompt=consent so a refresh token comes
-     back. external_id = the Google account `sub`.
+     back. external_id = the primary calendar id (the userinfo endpoint is NOT
+     authorized by the calendar scopes — it 401s on every connect).
   2. Thin Calendar API client — list_calendars + list_events (incremental via
      syncToken, 410 → caller does a full resync). The sync ORCHESTRATION (upsert
      into the event store, the 30-min job) lives in the sync layer (§1.2), not here.
@@ -29,7 +30,6 @@ logger = logging.getLogger("cued.integrations.gcal")
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo"
 CAL_API = "https://www.googleapis.com/calendar/v3"
 # events.readonly alone can read events but NOT list calendars — calendarList.list
 # 403'd live (2026-09-24). calendarlist.readonly is the narrowest scope that lists them;
@@ -107,15 +107,14 @@ class GCalProvider(Provider):
         )
 
     def _account_sub(self, access_token: str | None) -> str | None:
+        """Stable per-account id for external_id. The userinfo endpoint is NOT
+        authorized by the calendar scopes — it 401s on every connect (noisy, and
+        leaves external_id blank), so derive the id from the primary calendar
+        instead: calendarList/primary's `id` is the account's calendar address,
+        which the calendar scope DOES authorize. Best-effort — a miss just leaves
+        external_id blank (non-fatal; the connect still succeeds)."""
         if not access_token:
             return None
-        try:
-            r = requests.get(USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"},
-                             timeout=_timeout())
-            r.raise_for_status()
-            return str(r.json().get("id") or "") or None
-        except Exception:
-            logger.info("GCAL_USERINFO_UNAVAILABLE (no profile scope) — using primary calendar id")
         try:
             r = requests.get(f"{CAL_API}/users/me/calendarList/primary",
                              headers={"Authorization": f"Bearer {access_token}"},
