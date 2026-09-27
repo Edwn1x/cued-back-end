@@ -550,3 +550,65 @@ def test_start_onboarding_provisions_before_the_first_outbound(db, monkeypatch, 
 
     assert [o[0] for o in order] == ["provision", "send"]
     assert order[0][1] == user.id
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D. Photon deprovisioning — free the shared-pool seat on account delete
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_remove_user_http_shape(monkeypatch, photon_creds):
+    """DELETE /projects/{projectId}/users/{userId} with Basic auth."""
+    import photon
+    seen = {}
+    def _delete(url, headers=None, timeout=None):
+        seen.update(url=url, headers=headers, timeout=timeout)
+        return _Resp(200, {"succeed": True})
+    monkeypatch.setattr(photon.requests, "delete", _delete)
+    photon.remove_user("usr_123")
+    assert seen["url"] == "https://spectrum.photon.codes/projects/ce4294aa-0000-4000-8000-000000000001/users/usr_123"
+    expected = "Basic " + base64.b64encode(b"ce4294aa-0000-4000-8000-000000000001:s3cret").decode()
+    assert seen["headers"]["Authorization"] == expected
+    assert 0 < seen["timeout"] <= 15
+
+
+def test_remove_user_treats_404_as_already_gone(monkeypatch, photon_creds):
+    import photon
+    monkeypatch.setattr(photon.requests, "delete", lambda *a, **k: _Resp(404, {"succeed": False}))
+    photon.remove_user("usr_missing")  # no raise — the seat is free either way
+    # any other non-2xx is a hard failure
+    monkeypatch.setattr(photon.requests, "delete", lambda *a, **k: _Resp(500, {"error": "boom"}))
+    with pytest.raises(photon.PhotonError, match="500"):
+        photon.remove_user("usr_123")
+
+
+def test_deprovision_user_none_is_a_noop(monkeypatch, photon_creds):
+    import photon
+    monkeypatch.setattr(photon.requests, "delete",
+                        lambda *a, **k: pytest.fail("must not call the API for an unprovisioned user"))
+    assert photon.deprovision_user(None) is True
+
+
+def test_deprovision_user_releases_the_seat(monkeypatch, photon_creds):
+    import photon
+    seen = []
+    monkeypatch.setattr(photon.requests, "delete",
+                        lambda url, headers=None, timeout=None: seen.append(url) or _Resp(200, {"succeed": True}))
+    assert photon.deprovision_user("usr_123") is True
+    assert seen and seen[0].endswith("/users/usr_123")
+
+
+def test_deprovision_user_swallows_api_failure(monkeypatch, photon_creds):
+    """Best-effort: a Photon error is logged and returns False, never raised."""
+    import photon
+    monkeypatch.setattr(photon.requests, "delete",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("network down")))
+    assert photon.deprovision_user("usr_123") is False
+
+
+def test_deprovision_user_skips_without_creds(monkeypatch):
+    import config, photon
+    monkeypatch.setattr(config, "SPECTRUM_PROJECT_ID", "")
+    monkeypatch.setattr(config, "SPECTRUM_PROJECT_SECRET", "")
+    monkeypatch.setattr(photon.requests, "delete",
+                        lambda *a, **k: pytest.fail("must not call the API without creds"))
+    assert photon.deprovision_user("usr_123") is False

@@ -2863,10 +2863,16 @@ def admin_delete_user(user_id):
         if not user:
             return jsonify({"status": "error", "message": "User not found"}), 404
         name = user.name
+        photon_user_id = user.photon_user_id
         _purge_user_rows(session, user_id)
         session.delete(user)
         session.commit()
         logger.info(f"Admin deleted user: {name} (id={user_id})")
+        # Free the shared-pool Photon seat so it doesn't linger (best-effort; a
+        # Photon failure never blocks the local delete — the seat can be freed
+        # manually). No-op when the user was never provisioned.
+        import photon
+        photon.deprovision_user(photon_user_id)
         return jsonify({"status": "ok", "message": f"{name} deleted."})
     finally:
         session.close()
@@ -2877,9 +2883,9 @@ def admin_remove_waitlist(user_id):
     """Drop a PENDING waitlister for good (spam, duplicate, changed their mind).
     Guarded to waitlist_status == 'pending' so the waitlist tab can never delete
     an activated user; those go through /delete from the Users tab. Sends
-    nothing. Their Photon line (if provisioned) is left in the pool — there is
-    no deprovision call — so a re-signup on the same number gets it back via
-    find_user."""
+    nothing. Their Photon seat (if provisioned) is released back to the shared
+    pool (best-effort) so the small pool doesn't fill with dropped sign-ups; a
+    re-signup on the same number re-provisions via add_user."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -2889,10 +2895,14 @@ def admin_remove_waitlist(user_id):
             return jsonify({"status": "error",
                             "message": "User is not on the waitlist."}), 400
         name, phone = user.name, user.phone
+        photon_user_id = user.photon_user_id
         _purge_user_rows(session, user_id)
         session.delete(user)
         session.commit()
         logger.info("WAITLIST_REMOVE user_id=%s phone=%s name=%r", user_id, phone, name)
+        # Release the shared-pool Photon seat (best-effort; never blocks the delete).
+        import photon
+        photon.deprovision_user(photon_user_id)
         return jsonify({"status": "ok", "message": f"{name} removed from the waitlist."}), 200
     except Exception as e:
         logger.error(f"/admin/user/{user_id}/remove-waitlist error: {e}", exc_info=True)
