@@ -99,7 +99,7 @@ class User(Base):
     delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
     last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
     last_episodic_message_id = Column(Integer, default=None)  # Phase 5 watermark: episodic digest idempotency (independent of the summary watermark)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     calories_today = Column(Integer, default=0)  # running total for today
     protein_today = Column(Integer, default=0)
@@ -266,7 +266,7 @@ class Message(Base):
     direction = Column(String(3), nullable=False)  # "in" or "out"
     body = Column(Text, nullable=False)
     message_type = Column(String(30))  # morning, breakfast, lunch, dinner, workout, post_workout, evening, freeform
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     # Photon migration Phase 2 — which pipe carried this row and whether it landed.
     # delivery_status='failed' is what the keystone reads (engagement_tracker.
     # increment_unanswered): a message we KNOW didn't land is never an unanswered
@@ -289,7 +289,7 @@ class UnknownInbound(Base):
     handle = Column(String(200), nullable=False)       # E.164 phone or Apple-ID email
     channel = Column(String(10), default="imessage")   # 'imessage' | 'sms'
     body_preview = Column(String(200), default=None)
-    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 def record_unknown_inbound(handle: str, channel: str, body: str | None = None) -> None:
@@ -311,7 +311,7 @@ class Workout(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    date = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     workout_type = Column(String(50))  # push, pull, legs, full_body, upper, lower, cardio, rest
     exercises = Column(JSON)  # list of {name, sets, reps, weight, notes}
     user_notes = Column(Text)  # what the user reported back
@@ -328,8 +328,8 @@ class Meal(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    eaten_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # when the user actually ate it
-    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # when the system logged it
+    eaten_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))  # when the user actually ate it
+    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))  # when the system logged it
     description = Column(Text, nullable=False)  # "chicken burrito bowl from chipotle"
     calories = Column(Integer)
     protein_g = Column(Integer)
@@ -352,7 +352,7 @@ class TargetAdjustment(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     old_target = Column(Integer)
     new_target = Column(Integer)
     changed = Column(Boolean, default=False)
@@ -371,7 +371,7 @@ class Signal(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     kind = Column(String(20), nullable=False)          # receipt | location | …
-    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     source = Column(String(30))
     payload = Column(JSON)
     expires_at = Column(DateTime)
@@ -388,7 +388,7 @@ class PantryItem(Base):
     unit = Column(String(20))
     est_grams = Column(Float)
     protein_per_100g = Column(Float)
-    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     source = Column(String(10))                        # receipt | text
     depleted_at = Column(DateTime)
 
@@ -399,7 +399,7 @@ class GymOccupancy(Base):
 
     id = Column(Integer, primary_key=True)
     facility = Column(String(20), nullable=False)      # rsf_weights | rsf_cardio
-    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     pct = Column(Integer)
     est_wait_min = Column(Integer)
     raw = Column(JSON)
@@ -427,7 +427,7 @@ class QueueTicket(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     ticket_id = Column(String(80), nullable=False)
-    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     est_wait_min = Column(Integer)
     summoned_at = Column(DateTime)
     left_at = Column(DateTime)
@@ -441,7 +441,7 @@ class WorkoutSession(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    date = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     template_key = Column(String(30))            # push / pull / legs / upper / lower / full_body
     status = Column(String(12), default="planned")  # planned | active | done | abandoned
     started_at = Column(DateTime)
@@ -480,7 +480,7 @@ class WeightLog(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    weighed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    weighed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     weight_lbs = Column(Float, nullable=False)
     notes = Column(Text)  # optional context from user
 
@@ -492,7 +492,7 @@ class DailyLog(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    date = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     sleep_hours = Column(Float)
     energy_level = Column(Integer)  # 1-5
     daily_rating = Column(Integer)  # 1-5
@@ -521,7 +521,7 @@ class DiningMenuItem(Base):
     serving_size = Column(String(50))
     allergens = Column(Text)     # comma-separated: nuts, gluten, dairy...
     dietary_tags = Column(Text)  # comma-separated: vegan, vegetarian, halal
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class TokenUsage(Base):
@@ -540,7 +540,7 @@ class TokenUsage(Base):
     # becomes NULL — treated as a "system call" thereafter. Without this,
     # admin user-delete fails with ForeignKeyViolation on Postgres.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), index=True)
     model = Column(String(10))   # "sonnet" | "haiku"
     site = Column(String(60))    # e.g. "coach.get_coach_response", "extract_and_store_memory"
     input_tokens = Column(Integer, default=0)                  # fresh uncached input
@@ -570,7 +570,7 @@ class ProcessedMessage(Base):
     # ON DELETE SET NULL so deleting a user never fails on this ledger (same
     # discipline as token_usage); the dedup row is not worth blocking a delete.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class Event(Base):
@@ -1109,7 +1109,7 @@ class Reminder(Base):
     fire_at = Column(DateTime, nullable=False, index=True)
     source = Column(String(20), default="model")         # model | onboarding | admin
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     last_sent_at = Column(DateTime, default=None)
     sent_count = Column(Integer, default=0)
     cancelled_at = Column(DateTime, default=None)
