@@ -12,7 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
-from scheduler import start_scheduler, schedule_user
+from scheduler import start_scheduler
 import config
 from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
@@ -2140,7 +2140,6 @@ def activate_sms():
         if not user:
             return jsonify({"status": "error", "message": "User not found."})
 
-        schedule_user(user)
         start_onboarding(user)
 
         logger.info(f"SMS activated for existing user: {user.name} ({user.phone})")
@@ -2655,12 +2654,6 @@ def admin():
                 } for m in meals_list],
             })
 
-        # ── AGENT PIPELINE STATS ──
-        route_nutrition = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "nutrition" in m.message_type)
-        route_training = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "training" in m.message_type)
-        route_readiness = sum(1 for m in all_messages if m.direction == "out" and m.message_type and "readiness" in m.message_type)
-        route_legacy = total_sent - route_nutrition - route_training - route_readiness
-
         # Message type breakdown
         from collections import Counter
         type_counts = Counter(m.message_type or "unknown" for m in all_messages if m.direction == "out")
@@ -2740,10 +2733,6 @@ def admin():
             recent_messages=recent_messages_data,
             recent_meals=recent_meals_data,
             grouped_meals=grouped_meals,
-            route_nutrition=route_nutrition,
-            route_training=route_training,
-            route_readiness=route_readiness,
-            route_legacy=route_legacy,
             message_types=message_types_data,
             twilio_cost=twilio_cost,
             api_cost=api_cost,
@@ -2832,10 +2821,8 @@ def admin_activate_waitlist(user_id):
         session.commit()
         # Refresh from a new session so start_onboarding sees the committed state.
         fresh = session.get(User, user_id)
-        # start_onboarding ONLY. Do NOT also call schedule_user — wake_time is
-        # None until onboarding completes, so schedule_user would just log a
-        # warning and no-op. The existing onboarding-completion path re-calls
-        # schedule_user once wake_time is set.
+        # start_onboarding ONLY — the heartbeat is the proactive path now; there
+        # is no per-user templated cron to register.
         start_onboarding(fresh)
         logger.info("WAITLIST_ACTIVATE user_id=%s phone=%s name=%r",
                     fresh.id, fresh.phone, fresh.name)
@@ -3720,81 +3707,6 @@ async function handleSubmit(e) {
 </body>
 </html>
 """
-
-_UNUSED_OLD_ADMIN_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Baseline Admin</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, system-ui, sans-serif; background: #0F0F10; color: #FAFAFA; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; }
-        h1 { margin-bottom: 24px; }
-        .user-card { background: #18181B; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-        .user-name { font-size: 18px; font-weight: 600; }
-        .user-meta { color: #A1A1AA; font-size: 13px; margin-top: 4px; }
-        .messages { margin-top: 16px; max-height: 400px; overflow-y: auto; }
-        .msg { padding: 8px 12px; margin: 4px 0; border-radius: 8px; font-size: 14px; max-width: 85%; }
-        .msg.out { background: #6D5CFF; margin-left: auto; text-align: right; color: white; }
-        .msg.in { background: #27272A; }
-        .msg .time { font-size: 11px; color: #71717A; margin-top: 2px; }
-        .msg.out .time { color: #C4B5FF; }
-        .send-form { display: flex; gap: 8px; margin-top: 12px; }
-        .send-form input { flex: 1; padding: 10px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; color: #FAFAFA; font-size: 14px; }
-        .send-form button { padding: 10px 20px; background: #6D5CFF; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Baseline Admin</h1>
-        {% for ud in users %}
-        <div class="user-card">
-            <div class="user-name">{{ ud.user.name }}</div>
-            <div class="user-meta">{{ ud.user.phone }} · {{ ud.user.goal }} · {{ ud.user.experience }} · wake {{ ud.user.wake_time }}</div>
-            <div class="messages">
-                {% for m in ud.messages %}
-                <div class="msg {{ m.direction }}">
-                    {{ m.body }}
-                    <div class="time">{{ m.created_at.strftime('%b %d %I:%M %p') }} · {{ m.message_type }}</div>
-                </div>
-                {% endfor %}
-            </div>
-            <form class="send-form" onsubmit="return adminSend(event, {{ ud.user.id }})">
-                <input name="body" placeholder="Manual override message...">
-                <button type="submit">Send</button>
-            </form>
-        </div>
-        {% endfor %}
-        {% if not users %}
-        <p style="color: #A1A1AA;">No active users yet. Share your signup link!</p>
-        {% endif %}
-    </div>
-    <script>
-    async function adminSend(e, userId) {
-        e.preventDefault();
-        const body = e.target.body.value;
-        if (!body.trim() || window._sendInFlight) return false;   // double-submit guard
-        window._sendInFlight = true;
-        try {
-            await fetch('/admin/send', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: 'user_id=' + userId + '&body=' + encodeURIComponent(body)
-            });
-            e.target.body.value = '';
-            location.reload();
-        } finally {
-            window._sendInFlight = false;
-        }
-        return false;
-    }
-    </script>
-</body>
-</html>
-"""
-
 
 # ─── App Startup ────────────────────────────────────
 if __name__ == "__main__":

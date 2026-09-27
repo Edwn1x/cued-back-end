@@ -61,31 +61,6 @@ def test_cross_domain_fact_reaches_the_unified_loop_context(db):
     assert "organic chem exam" in ctx
 
 
-# ─── Failure 3: scheduler blind to conversation ("already went") ─────────────
-
-def test_already_at_gym_suppresses_pre_workout_nudge(db, sms_capture):
-    """A went_to_gym event today must suppress the pre_workout nudge. FIXED in
-    Phase 1 (Event table + scheduler gate) — xfail marker removed."""
-    from tests.factories import make_user
-    from engagement_tracker import should_send
-    from events import record_event
-    import scheduler
-
-    user = make_user(
-        db,
-        confirmed_training_days="mon,tue,wed,thu,fri,sat,sun",  # always a training day
-        unanswered_count=0,
-    )
-    record_event(user.id, "went_to_gym")  # the Phase 1 mechanism for "already went"
-
-    # Guard: the ONLY reason to suppress should be the event, not engagement
-    # gating — otherwise a spurious pass. Assert it would otherwise be allowed.
-    assert should_send(user, "pre_workout"), "engagement gate would suppress; fix setup"
-
-    scheduler.send_scheduled_message(user.id, "pre_workout")
-    assert sms_capture == [], f"nudge fired despite an already-went-to-gym event: {sms_capture}"
-
-
 # ─── Failure 5a: injuries are immortal (never heal) ──────────────────────────
 
 def test_healed_injury_leaves_active_context(db, driver, monkeypatch, anthropic_stub):

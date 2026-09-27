@@ -401,7 +401,7 @@ def test_admin_send_forms_guard_in_flight():
                 open("app.py", encoding="utf-8").read(), open("admin_dashboard.py", encoding="utf-8").read()):
         pass
     html = open("app.py", encoding="utf-8").read() + open("admin_dashboard.py", encoding="utf-8").read()
-    assert html.count("/admin/send") >= 4  # 3 forms + the route
+    assert html.count("/admin/send") >= 3  # 2 live forms + the route
     assert html.count("_sendInFlight") >= 3, "every send form must carry the in-flight guard"
 
 

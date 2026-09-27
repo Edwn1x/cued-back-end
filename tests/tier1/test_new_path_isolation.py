@@ -22,7 +22,9 @@ import os
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # The live single-agent path: reactive brain + proactive + nightly maintenance.
-ROOTS = ["agent_loop", "agent_tools", "heartbeat", "consolidation", "episodic"]
+# `scheduler` is included since Commit A removed its legacy briefings + coach import,
+# leaving it coach-free (its transitive closure is now disjoint from the doomed set).
+ROOTS = ["agent_loop", "agent_tools", "heartbeat", "consolidation", "episodic", "scheduler"]
 
 # The legacy pipeline slated for deletion (Phase 6 inventory).
 DOOMED = {"orchestrator", "coach", "skill_loader", "tone_analyzer", "agents"}
