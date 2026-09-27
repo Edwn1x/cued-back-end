@@ -102,10 +102,6 @@ ONBOARDING_EXTRACTOR_MODEL = os.getenv("ONBOARDING_EXTRACTOR_MODEL", "claude-son
 # "yesterday", and "im cs" stored nowhere. memory.sanitize_facts is the deterministic
 # backstop under whichever model runs here.
 MEMORY_EXTRACTOR_MODEL = os.getenv("MEMORY_EXTRACTOR_MODEL", "claude-sonnet-5")
-WORKOUT_LOG_TIMEOUT_HOURS = 4                  # stale-session auto-finalize threshold
-WORKOUT_LOG_EXIT_SUMMARY = "silent"            # "silent" | "brief" | "full" — default per user
-WORKOUT_LOG_ACK_VERBOSE = False                # if True, ack shows "✓ bench 185x5"; if False, just "✓"
-WORKOUT_LOGGING_ENABLED = os.getenv("WORKOUT_LOGGING_ENABLED", "true").lower() == "true"
 
 # Phase 2 — single agent loop (inbound). Separate model key from the legacy
 # COACH_MODEL (kept separate until Phase 6 unifies the surfaces): the loop runs
