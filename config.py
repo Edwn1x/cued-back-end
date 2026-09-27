@@ -366,6 +366,11 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 HEARTBEAT_MEAL_GAP_ENABLED = os.getenv("HEARTBEAT_MEAL_GAP_ENABLED", "false").lower() == "true"
 # Gates only the every_hours affordance on set_reminder (water); the engine is inert without rows.
 WATER_REMINDERS_ENABLED = os.getenv("WATER_REMINDERS_ENABLED", "false").lower() == "true"
+# Interval (water) reminders respect the SAME quiet-hours + calendar-block gates the
+# heartbeat applies to proactive nudges — a water ping fired at 3am and one mid-exam
+# (live incidents). Explicit "remind me at HH:MM" rows always fire (the user asked).
+# Protective by default; inert in tests because standing quiet is off there and no events exist.
+WATER_REMINDER_GATES_ENABLED = os.getenv("WATER_REMINDER_GATES_ENABLED", "true").lower() == "true"
 # Quiet = sleep-30min .. wake+15min from the user's own 'HH:MM' profile times, else the global window.
 QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED", "false").lower() == "true"
 # MORNING OPEN / EVENING CLOSE standing conditions: the rhythm the disabled legacy briefings left behind.
