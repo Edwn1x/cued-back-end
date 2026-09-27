@@ -1593,7 +1593,6 @@ def _finalize_onboarding_profile(user_row):
 def _complete_onboarding(user, incoming_message: str) -> bool:
     """Finalize onboarding — calculate targets, store confirmed decisions, schedule, send kickoff message."""
     from models import get_session, User as UserModel
-    from scheduler import schedule_user
 
     targets = calculate_targets(user)
 
@@ -1619,11 +1618,6 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
 
         session.commit()
         logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
-
-        try:
-            schedule_user(user_row)
-        except Exception as e:
-            logger.error(f"Scheduling failed for {user_row.name}: {e}")
 
         profile_link = profile_url(user_row)
         system_prompt = _build_system_prompt(user_row)

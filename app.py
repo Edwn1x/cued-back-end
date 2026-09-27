@@ -12,7 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from coach import get_coach_response, parse_workout_log
-from scheduler import start_scheduler, schedule_user
+from scheduler import start_scheduler
 import config
 from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
@@ -2140,7 +2140,6 @@ def activate_sms():
         if not user:
             return jsonify({"status": "error", "message": "User not found."})
 
-        schedule_user(user)
         start_onboarding(user)
 
         logger.info(f"SMS activated for existing user: {user.name} ({user.phone})")
@@ -2822,10 +2821,8 @@ def admin_activate_waitlist(user_id):
         session.commit()
         # Refresh from a new session so start_onboarding sees the committed state.
         fresh = session.get(User, user_id)
-        # start_onboarding ONLY. Do NOT also call schedule_user — wake_time is
-        # None until onboarding completes, so schedule_user would just log a
-        # warning and no-op. The existing onboarding-completion path re-calls
-        # schedule_user once wake_time is set.
+        # start_onboarding ONLY — the heartbeat is the proactive path now; there
+        # is no per-user templated cron to register.
         start_onboarding(fresh)
         logger.info("WAITLIST_ACTIVATE user_id=%s phone=%s name=%r",
                     fresh.id, fresh.phone, fresh.name)
