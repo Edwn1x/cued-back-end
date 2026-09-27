@@ -683,28 +683,6 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <h1>Agent Pipeline</h1>
     <p>Routing breakdown — where messages are going</p>
   </div>
-  <div class="grid grid-4">
-    <div class="stat-card">
-      <div class="stat-label">Nutrition Agent</div>
-      <div class="stat-val green">{{ route_nutrition }}</div>
-      <div class="stat-sub">messages routed</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Training Agent</div>
-      <div class="stat-val blue">{{ route_training }}</div>
-      <div class="stat-sub">messages routed</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Readiness Agent</div>
-      <div class="stat-val accent">{{ route_readiness }}</div>
-      <div class="stat-sub">messages routed</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Legacy (Personality)</div>
-      <div class="stat-val">{{ route_legacy }}</div>
-      <div class="stat-sub">messages to monolith</div>
-    </div>
-  </div>
   <div class="section">
     <div class="section-title">Message Type Breakdown</div>
     <div class="table-wrap">
