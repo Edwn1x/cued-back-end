@@ -137,6 +137,15 @@ def build_loop_context(user, session) -> str:
         if menus:
             parts.append(menus)
 
+    # Cross-turn image persistence: what recent inbound photos showed (the image itself
+    # is gone next turn — this is the durable trace so a later turn references it instead
+    # of mislabeling it, denying it was sent, or re-asking what it already answered).
+    if config.RECENT_MEDIA_ENABLED:
+        from recent_media import render_recent_photos_block
+        photos = render_recent_photos_block(getattr(user, "recent_photos", None))
+        if photos:
+            parts.append(photos)
+
     # 3. Events, lifecycle-aware (memory-freshness Fix 1). Upcoming vs passed is a
     # FACT computed from the row's datetimes — the model must never infer it from a
     # timeless string (that's how a Jul 31 interview resurfaced Aug 3 as upcoming).
@@ -525,6 +534,35 @@ def _gym_mentioned(text: str, user) -> bool:
 # "240 cal", "27g", "27 g protein", "~1,250 kcal" — a stated macro number in a reply.
 _MACRO_NUMBER_RE = re.compile(r"\b\d[\d,]{0,4}\s?(?:k?cal(?:ories)?|g\b|grams?\b)", re.IGNORECASE)
 
+# U+FFFC OBJECT REPLACEMENT CHARACTER — what Photon leaves behind when an inline image
+# is stripped upstream (attachments=0). A message that is ESSENTIALLY only these marks
+# is a failed image, not text: the picture didn't come through.
+_OBJ_REPLACEMENT = "￼"
+
+
+def _persist_recent_photo(user_id: int, image_data, caption: str, reply: str) -> None:
+    """Cross-turn image persistence: on an image turn, store a compact note of what the
+    coach read off the photo (its caption + this turn's reply as the read), so a later
+    turn can reference it. Meal/fact writes already persist on their own rows; this covers
+    the ambiguous / conversational-only photo. Never breaks a turn."""
+    if not (image_data and config.READ_IMAGE_ENABLED and config.RECENT_MEDIA_ENABLED):
+        return
+    try:
+        from recent_media import record_photo
+        record_photo(user_id, caption or "", reply or "")
+    except Exception as e:  # noqa: BLE001 — persistence is best-effort, never fatal
+        logger.warning("RECENT_MEDIA_PERSIST_FAILED user=%s err=%s", user_id, e)
+
+
+def _is_failed_image_text(text: str) -> bool:
+    """True when `text` is essentially just ￼ placeholder(s) with no real words — an
+    image that didn't come through. Must contain at least one ￼ and, once ￼ and
+    whitespace/punctuation are stripped, have no alphanumeric content left."""
+    if not text or _OBJ_REPLACEMENT not in text:
+        return False
+    stripped = text.replace(_OBJ_REPLACEMENT, "")
+    return not re.search(r"[A-Za-z0-9]", stripped)
+
 
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
                    message_id: str = None, image_data_list: list = None) -> str:
@@ -598,6 +636,17 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # read_image off: don't send vision; note it so the coach can ask, never invent.
         user_content = ((combined_body or "")
                         + "\n[the user sent an image you can't see — ask them what it shows]")
+    elif (config.INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED
+          and _is_failed_image_text(combined_body)):
+        # An image arrived as inline ￼ (U+FFFC) placeholder(s) with attachments=0 — the
+        # picture was stripped upstream (Photon), so there is nothing to see. Replace the
+        # ￼ body with an explicit note so the coach says the pic didn't come through and
+        # asks for a resend, NEVER confabulates its contents.
+        logger.info("AGENT_LOOP_FAILED_IMAGE user=%s — ￼ placeholder, attachments=0", user.id)
+        user_content = ("[a picture didn't come through — their message was just an image "
+                        "placeholder with no attachment (stripped before it reached you). "
+                        "Tell them the pic didn't come through and ask them to resend it; do "
+                        "NOT describe or guess what it might have shown.]")
     else:
         user_content = combined_body
 
@@ -686,7 +735,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
     # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.
-    peek_turn_state(user.id)["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
+    _st = peek_turn_state(user.id)
+    _st["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
+    # The caption stays on the turn so the photo-reread delete guard (manage_log) can tell
+    # a deliberate "delete this" from a bare re-interpreted photo (config guard).
+    _st["caption"] = combined_body or ""
 
     messages = [{"role": "user", "content": user_content}]
     last_text = ""
@@ -828,6 +881,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 logger.info("AGENT_LOOP_EMOJI_TEXT_AS_REACTION user=%s emoji=%r", user.id, text.strip())
                 return ""
         if text:
+            _persist_recent_photo(user.id, image_data, combined_body, text)
             return text
 
         # A reaction-only turn: the tapback WAS the reply. Empty text is the correct
