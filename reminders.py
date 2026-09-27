@@ -415,6 +415,29 @@ def fire_due(now: datetime | None = None) -> int:
     return sent
 
 
+def _interval_gate_reason(user, now: datetime) -> str | None:
+    """Quiet-hours / calendar-block gate for interval (water) reminders — the SAME gates
+    the heartbeat applies to proactive nudges (spec §1.3). Interval rows are the coach's
+    own rhythm pings, not an explicit "remind me at HH:MM" the user asked for, so a 3am
+    ping or one mid-exam is noise. Returns the reason (defer) or None (fire). `now` is
+    naive UTC. Inert unless WATER_REMINDER_GATES_ENABLED."""
+    if not config.WATER_REMINDER_GATES_ENABLED or user is None:
+        return None
+    try:
+        from heartbeat import _in_standing_quiet_hours
+        if _in_standing_quiet_hours(user, now=now):
+            return "quiet_hours"
+    except Exception as e:  # noqa: BLE001 — a gate import/eval failure must never drop the ping
+        logger.warning("INTERVAL_GATE_QUIET_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    try:
+        from events import calendar_block_soon
+        if calendar_block_soon(user.id, now=now):
+            return "calendar_block"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("INTERVAL_GATE_CALENDAR_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    return None
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -438,6 +461,17 @@ def _fire_one(rid: int, now: datetime) -> bool:
             row.active = False
             session.commit()
             return False
+        # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
+        # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
+        if row.every_hours:
+            reason = _interval_gate_reason(user, now)
+            if reason:
+                nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=%s next=%s", row.user_id, rid,
+                            reason, row.fire_at if row.active else None)
+                return False
         text = _compose(user, row)
         send_sms(user.phone, text, user_id=user.id, message_type="reminder")
         row.last_sent_at = now

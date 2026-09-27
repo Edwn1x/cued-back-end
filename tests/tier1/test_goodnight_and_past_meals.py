@@ -48,6 +48,25 @@ def test_explicit_signoffs_count_any_hour_implicit_only_in_the_evening():
     assert not is_goodnight_signal("ok goodnight but first can you tell me what to eat tomorrow morning before class", local_hour=23)
 
 
+def test_sleep_uncertainty_or_inability_is_never_a_goodnight():
+    """Live 2026-09-26: "idek if ima sleep tn tho" (venting about stress) matched
+    "ima sleep" and fired the wind-down. Uncertainty / inability to sleep is the
+    opposite of turning in — it must not signoff at any hour."""
+    from app import is_goodnight_signal
+    for body in ("idek if ima sleep tn tho", "idk if i'll sleep tonight", "not sure if i sleep",
+                 "might not sleep tbh", "cant sleep", "can't sleep rn", "prob wont sleep",
+                 "no idea if i sleep tonight", "so stressed i can't sleep"):
+        for h in (1, 23):
+            assert not is_goodnight_signal(body, local_hour=h), (body, h)
+
+
+def test_genuine_signoff_still_winds_down():
+    from app import is_goodnight_signal
+    assert is_goodnight_signal("night, going to bed", local_hour=23)
+    assert is_goodnight_signal("goodnight", local_hour=23)
+    assert is_goodnight_signal("ima sleep", local_hour=23)
+
+
 def test_webhook_does_not_send_a_goodnight_for_last_night_in_the_afternoon(db, driver, sms_capture, anthropic_stub, monkeypatch):
     import app
     monkeypatch.setattr(app.config, "SINGLE_AGENT_LOOP_ENABLED", True)
