@@ -94,6 +94,14 @@ MEMORY_WRITE_DEDUP_ENABLED = os.getenv("MEMORY_WRITE_DEDUP_ENABLED", "true").low
 # uses=0) must not be the first evicted while the stale entry it replaced (uses>0)
 # survives. Protects freshly-written / just-superseding ids from the eviction pass.
 MEMORY_EVICT_PROTECT_FRESH_ENABLED = os.getenv("MEMORY_EVICT_PROTECT_FRESH_ENABLED", "true").lower() == "true"
+# Fix 6 — semantic update tier: the fuzzy matcher (Fix 1) is LEXICAL (topic-token
+# overlap) so it still misses SYNONYM-level paraphrases ("Bedtime: 23:00" vs "going to
+# sleep around 12am") that share no literal token. When BOTH the literal substring match
+# AND the lexical fuzzy match miss AND the category has candidate entries, do ONE cheap
+# Haiku call to pick the entry the new fact supersedes (or 'none'). Fail-open: any
+# error/junk falls back to today's add. Never a call on an empty/one-off add; safety
+# entries are never offered as candidates. Flag is the rollback lever.
+MEMORY_SEMANTIC_UPDATE_ENABLED = os.getenv("MEMORY_SEMANTIC_UPDATE_ENABLED", "true").lower() == "true"
 
 # Phase C1/C1.5 — prompt caching + cost telemetry.
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.

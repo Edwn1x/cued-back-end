@@ -477,6 +477,68 @@ def _find_topic_supersession_target(entries: list, candidate_text: str):
     return matches[0] if len(matches) == 1 else None
 
 
+# memory-update-recall Fix 6 — SEMANTIC update tier. Fix 1's fuzzy matcher is lexical
+# (shared non-numeric tokens), so it still misses synonym-level paraphrases that share
+# NO literal token — the parity-eval failure "Bedtime: 23:00" vs "going to sleep around
+# 12am (midnight) due to work" (bedtime/sleep/midnight overlap nothing). Only reached
+# when BOTH the literal and lexical matchers miss AND the category has non-safety
+# candidates — so it's never a model call on an empty / one-off add. One Haiku call,
+# fail-open, safety entries never offered as candidates.
+
+
+def _find_semantic_update_target(entries: list, new_text: str, *,
+                                 category=None, user_id=None):
+    """Ask Haiku which existing same-category entry (if any) the new fact
+    supersedes/replaces. Returns the matched entry dict or None. Non-safety
+    candidates only. Fail-open: on any error, empty candidate set, junk output, or
+    'none', returns None so the caller adds the fact exactly as it does today. At
+    most one model call per invocation."""
+    if not config.MEMORY_SEMANTIC_UPDATE_ENABLED:
+        return None
+    candidates = [e for e in entries
+                  if not e.get("safety") and (e.get("text") or "").strip() and e.get("id")]
+    if not candidates:
+        return None  # cost guard: never a model call with nothing to match against
+    try:
+        client = make_client()
+        listing = "\n".join(f"{e['id']}: {e['text']}" for e in candidates)
+        prompt = (
+            "A user just stated a new durable fact about themselves. Decide whether it "
+            "REPLACES / SUPERSEDES exactly one of the existing facts below — i.e. it's the "
+            "SAME topic with an updated value (e.g. a changed bedtime, schedule, goal, "
+            "weight target, or preference), even if worded completely differently. If it "
+            "does, reply with ONLY that fact's id. If the new fact is about something "
+            "DIFFERENT and does not replace any of them, reply with ONLY the word: none\n\n"
+            f"New fact: {new_text}\n\n"
+            f"Existing facts (id: text):\n{listing}\n\n"
+            "Answer with a single id, or none."
+        )
+        resp = client.messages.create(
+            model=config.HAIKU_MODEL,
+            max_tokens=16,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        try:
+            from cost_tracking import track
+            track(user_id, "memory.semantic_update", config.HAIKU_MODEL, resp)
+        except Exception:  # noqa: BLE001 — cost telemetry must never break the write
+            pass
+        raw = ""
+        for block in (resp.content or []):
+            raw += getattr(block, "text", "") or ""
+        raw = raw.strip().strip("\"'`.").lower()
+        if not raw or "none" in raw.split():
+            return None
+        for e in candidates:
+            if e["id"].lower() in raw:
+                return e
+        return None
+    except Exception as e:  # noqa: BLE001 — fail-open: never crash apply_facts
+        logger.warning("MEMORY_SEMANTIC_UPDATE_FAILED user_id=%s category=%s err=%s",
+                       user_id, category, e)
+        return None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -762,6 +824,17 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
                             "replaces_text=%r matched=%r",
                             user_id, category, replaces_text, target.get("text"),
                         )
+                if target is None and config.MEMORY_SEMANTIC_UPDATE_ENABLED and not is_safety:
+                    # Fix 6: literal + lexical both missed — try the semantic tier for a
+                    # synonym-level paraphrase ("Bedtime: 23:00" vs "sleeps ~12am now").
+                    target = _find_semantic_update_target(entries, text,
+                                                          category=category, user_id=user_id)
+                    if target is not None:
+                        logger.info(
+                            "MEMORY_UPDATE_SEMANTIC_MATCH user_id=%s category=%s "
+                            "replaces_text=%r matched=%r",
+                            user_id, category, replaces_text, target.get("text"),
+                        )
                 if target is not None:
                     # Substring OR fuzzy match. Invalidate the old value (history-
                     # preserving, auditable) and add the new one.
@@ -827,6 +900,11 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
                 stats["updated"] += 1
                 continue
 
+        # NOTE: the Fix 6 semantic (Haiku) tier is deliberately NOT wired into this
+        # plain-add path. It would fire a model call on EVERY novel same-category add
+        # (most of which are genuinely new facts), adding latency under the row lock and
+        # cost on the common path. It runs only on an explicit `update` above — the exact
+        # spot where a synonym-level paraphrase logs MEMORY_UPDATE_MISMATCH.
         _append(entries, text, is_safety)
         stats["added"] += 1
 

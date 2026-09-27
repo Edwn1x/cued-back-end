@@ -284,3 +284,96 @@ def test_routine_untruncated_full_parse_unaffected(anthropic_stub):
     anthropic_stub.reply_with(lambda kw: full)
     out = parse_routine("paste", user_id=1)
     assert set(out) == {"push", "pull"}
+
+
+# ─── Fix 6: semantic update tier (synonym-level paraphrase) ───────────────────
+
+def _seed_bedtime(profile_from):
+    from memory import apply_facts
+    profile, _ = apply_facts(profile_from, [{
+        "action": "add", "category": "schedule", "text": "Bedtime: 23:00",
+        "replaces_text": None, "safety_critical": False,
+    }])
+    return profile
+
+
+def test_semantic_update_supersedes_synonym_paraphrase(db, anthropic_stub):
+    """The lexical matchers miss (bedtime / sleep / midnight share no literal token);
+    Haiku returns the matching id → supersede, NO duplicate."""
+    from memory import apply_facts, HISTORY_KEY
+
+    profile = _seed_bedtime(None)
+    target_id = profile["schedule"][0]["id"]
+    anthropic_stub.reply_with(lambda kw: target_id)
+
+    profile, stats = apply_facts(profile, [{
+        "action": "update", "category": "schedule",
+        "text": "going to sleep around 12am (midnight) due to work",
+        "replaces_text": "their usual sleep time",   # 0 literal overlap with "Bedtime: 23:00"
+        "safety_critical": False,
+    }])
+
+    live = profile["schedule"]
+    assert len(live) == 1 and "midnight" in live[0]["text"], [e["text"] for e in live]
+    assert stats["updated"] == 1 and stats["mismatched"] == 0
+    assert len(profile[HISTORY_KEY]) == 1 and "23:00" in profile[HISTORY_KEY][0]["text"]
+
+
+def test_semantic_update_none_falls_back_to_add(db, anthropic_stub):
+    from memory import apply_facts
+
+    profile = _seed_bedtime(None)
+    anthropic_stub.reply_with(lambda kw: "none")
+
+    profile, stats = apply_facts(profile, [{
+        "action": "update", "category": "schedule",
+        "text": "has a dentist appointment next tuesday",
+        "replaces_text": "their usual sleep time",
+        "safety_critical": False,
+    }])
+    assert stats["mismatched"] == 1 and stats["added"] == 1
+    assert len(profile["schedule"]) == 2
+
+
+def test_semantic_update_fails_open_on_model_error(db, anthropic_stub):
+    from memory import apply_facts
+
+    profile = _seed_bedtime(None)
+
+    def boom(kw):
+        raise RuntimeError("haiku down")
+    anthropic_stub.reply_with(boom)
+
+    profile, stats = apply_facts(profile, [{
+        "action": "update", "category": "schedule",
+        "text": "sleeps at midnight now that work shifted",
+        "replaces_text": "their usual sleep time",
+        "safety_critical": False,
+    }])
+    # fail-open: no crash, behaves exactly like today's add
+    assert stats["mismatched"] == 1 and stats["added"] == 1
+    assert len(profile["schedule"]) == 2
+
+
+def test_semantic_update_never_targets_safety(db, anthropic_stub):
+    """A safety entry is never offered as a candidate (the listing is empty), so even
+    if the model names its id nothing is closed."""
+    from memory import apply_facts, HISTORY_KEY
+
+    profile, _ = apply_facts(None, [{
+        "action": "add", "category": "constraints", "text": "severe peanut allergy",
+        "replaces_text": None, "safety_critical": True,
+    }])
+    allergy_id = profile["constraints"][0]["id"]
+    anthropic_stub.reply_with(lambda kw: allergy_id)  # model (wrongly) names the safety id
+
+    profile, stats = apply_facts(profile, [{
+        "action": "update", "category": "constraints",
+        "text": "enjoys peanut butter these days",
+        "replaces_text": "the peanut thing",
+        "safety_critical": False,
+    }])
+    live = [e["text"] for e in profile["constraints"]]
+    assert "severe peanut allergy" in live, "safety entry was machine-closed by the semantic pass"
+    assert not profile.get(HISTORY_KEY)
+    assert stats["mismatched"] == 1
