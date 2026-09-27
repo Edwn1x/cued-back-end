@@ -9,15 +9,20 @@ coach feel human instead of instant.
 import threading
 import random
 import logging
+import time
 from datetime import datetime, timezone
 
 import config
 
 logger = logging.getLogger("cued.buffer")
 
-# In-memory buffer: phone_number -> {"messages": [...], "timer": Timer, "user_id": int}
+# In-memory buffer: phone_number -> {"messages": [...], "timer": Timer, "user_id": int, "token": object}
 _buffers = {}
 _lock = threading.Lock()
+
+# phone -> monotonic timestamp of the last flush, so a message arriving right
+# after a flush (the timer-vs-append race) can be spotted and logged.
+_last_flush = {}
 
 # Delay range in seconds (randomized to feel human)
 MIN_DELAY = 90
@@ -54,7 +59,16 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
             })
             logger.info(f"Appended to buffer for {phone} ({len(_buffers[phone]['messages'])} messages)")
         else:
-            # Create new buffer entry
+            # Create new buffer entry. If this phone was flushed a heartbeat ago,
+            # this message raced the timer that just fired — the previous turn is
+            # already committed, so it can't join that flush. Log it; the outbound
+            # dedup layer (sms._is_duplicate_send) is what stops the user from
+            # seeing two near-identical replies for the split thought.
+            last = _last_flush.get(phone)
+            if last is not None and (time.monotonic() - last) < config.BUFFER_JOIN_WINDOW_S:
+                logger.warning(
+                    "BUFFER_LATE_APPEND phone=%s within=%.2fs of last flush — new turn; "
+                    "outbound dedup guards the reply", phone, time.monotonic() - last)
             _buffers[phone] = {
                 "messages": [{
                     "body": body,
@@ -67,24 +81,41 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
             }
             logger.info(f"New buffer created for {phone}")
 
-        # Start a new timer
+        # Start a new timer, tagged with a unique token. The token is how a flush
+        # tells "I am the current timer" from "I was superseded by a later append
+        # but fired anyway because cancel() lost the race" — see _flush_buffer.
+        token = object()
+        _buffers[phone]["token"] = token
         delay = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
-        timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback])
+        timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback, token])
         timer.daemon = True
         _buffers[phone]["timer"] = timer
         timer.start()
         logger.info(f"Timer set for {phone}: {delay}s")
 
 
-def _flush_buffer(phone: str, process_callback):
+def _flush_buffer(phone: str, process_callback, token=None):
     """
     Timer expired — combine all buffered messages and process them.
+
+    `token` guards the timer-vs-append race: a late append cancels this timer and
+    starts a new one, but threading.Timer.cancel() is a no-op once the timer has
+    already begun firing. Without the guard that stale timer would pop and process
+    the buffer, and the new timer (or a new turn) would then double-reply. So a
+    flush only proceeds when its token still matches the buffer's current token;
+    a superseded timer returns quietly and lets the current timer flush both
+    messages as one turn.
     """
     with _lock:
         if phone not in _buffers:
             return
 
+        if token is not None and _buffers[phone].get("token") is not token:
+            logger.info("Flush skipped for %s — superseded by a later append (race guard)", phone)
+            return
+
         buffer_data = _buffers.pop(phone)
+        _last_flush[phone] = time.monotonic()
 
     messages = buffer_data["messages"]
     user_id = buffer_data["user_id"]
