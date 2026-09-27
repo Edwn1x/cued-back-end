@@ -44,18 +44,21 @@ def test_sync_upserts_skips_and_deletes(db, monkeypatch):
     monkeypatch.setattr(gcal, "list_calendars", lambda tok: [{"id": "primary", "summary": "Primary"}])
 
     soon = datetime.now(timezone.utc) + timedelta(days=2)
+    # all-day events use relative dates so the fixture never rots at date rollover
+    ad0 = soon.date().isoformat()
+    ad1 = (soon + timedelta(days=1)).date().isoformat()
     gevents = [
         {"id": "keep1", "status": "confirmed", "summary": "ochem midterm",
          "start": {"dateTime": _iso(soon)}, "end": {"dateTime": _iso(soon + timedelta(hours=2))}},
         {"id": "allday", "status": "confirmed", "summary": "trip",
-         "start": {"date": "2026-09-25"}, "end": {"date": "2026-09-26"}},
+         "start": {"date": ad0}, "end": {"date": ad1}},
         {"id": "declined", "status": "confirmed", "summary": "meeting",
          "start": {"dateTime": _iso(soon)}, "end": {"dateTime": _iso(soon + timedelta(hours=1))},
          "attendees": [{"self": True, "responseStatus": "declined"}]},
         {"id": "free", "status": "confirmed", "summary": "focus", "transparency": "transparent",
          "start": {"dateTime": _iso(soon)}, "end": {"dateTime": _iso(soon + timedelta(hours=1))}},
         {"id": "bday", "status": "confirmed", "summary": "birthday", "eventType": "birthday",
-         "start": {"date": "2026-09-25"}, "end": {"date": "2026-09-26"}},
+         "start": {"date": ad0}, "end": {"date": ad1}},
         {"id": "toolong", "status": "confirmed", "summary": "semester",
          "start": {"dateTime": _iso(soon)}, "end": {"dateTime": _iso(soon + timedelta(days=40))}},
     ]
