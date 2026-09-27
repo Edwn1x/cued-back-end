@@ -268,6 +268,29 @@ RECEIPT_EXTRACTOR_MAX_TOKENS = int(os.getenv("RECEIPT_EXTRACTOR_MAX_TOKENS", "80
 # bound tokens/cost (~1–1.5k tokens/image). Flag off = first-image-only (legacy).
 MULTI_IMAGE_ENABLED = os.getenv("MULTI_IMAGE_ENABLED", "true").lower() == "true"
 MAX_INBOUND_IMAGES = int(os.getenv("MAX_INBOUND_IMAGES", "5"))
+# Cross-turn image persistence (recent_media.py): the image itself is gone next turn,
+# so a compact "you were sent a photo, here's what you read off it" note is persisted
+# per user (users.recent_photos JSON) and injected into the loop context. Fixes the
+# 2026-09-26 incident where the coach lost a photo across turns, mislabeled it ("the
+# banana pic"), denied a pic was sent, and re-asked answered questions. Capped + TTL'd.
+RECENT_MEDIA_ENABLED = os.getenv("RECENT_MEDIA_ENABLED", "true").lower() == "true"
+RECENT_MEDIA_MAX = int(os.getenv("RECENT_MEDIA_MAX", "3"))           # most-recent N kept
+RECENT_MEDIA_TTL_HOURS = int(os.getenv("RECENT_MEDIA_TTL_HOURS", "24"))
+# Inline-image failed-send guard: images intermittently arrive as text containing only
+# the ￼ (U+FFFC) object-replacement char with attachments=0 (stripped upstream by
+# Photon). Without a guard the coach confabulates the "image" contents. When on, a
+# message that is essentially just ￼ placeholders with no real attachment is treated as
+# "an image didn't come through" — the coach says so and asks for a resend, never guesses.
+INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED = os.getenv(
+    "INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED", "true").lower() == "true"
+# Photo-reread delete guard: deleting/replacing an already-logged meal must be an
+# intentional action, never a side-effect of re-interpreting a NEW photo. When on, a
+# manage_log delete of a meal on a turn that carries an image is refused unless the
+# user's caption expresses delete intent — the coach is steered to ADD the new food as a
+# separate item instead. Fixes the 2026-09-26 incident (a yogurt photo deleted the
+# correct banana entry to "replace" it).
+PHOTO_REREAD_DELETE_GUARD_ENABLED = os.getenv(
+    "PHOTO_REREAD_DELETE_GUARD_ENABLED", "true").lower() == "true"
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public

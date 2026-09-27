@@ -1302,6 +1302,28 @@ def _naive_utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# Explicit "delete/replace this" intent in the user's own words — the ONLY thing that
+# authorizes deleting an already-logged meal on a turn that also carries a new photo.
+_DELETE_INTENT_RE = re.compile(
+    r"\b(delete|remove|get rid|take (?:it|that|this)?\s*off|take off|scrap|undo|cancel|"
+    r"did ?n[o']t eat|never (?:ate|had)|was ?n[o']t|wasnt|not that|that'?s not|thats not|"
+    r"mistake|ignore that|drop that|nvm|nevermind|never mind|replace)\b", re.IGNORECASE)
+
+
+def _photo_reread_blocks_delete(user_id: int, entity: str) -> bool:
+    """Guard for the 2026-09-26 incident: a NEW photo re-read must be able to ADD a meal
+    but NOT silently DELETE a prior confirmed one. True (block the delete) when the guard
+    is on, this turn carried an image, the target is a meal, and the user's caption shows
+    no explicit delete/replace intent. Explicit intent (or a text-only turn) passes."""
+    if not config.PHOTO_REREAD_DELETE_GUARD_ENABLED or entity != "meal":
+        return False
+    state = _TURN_STATE.get(user_id, {})
+    if not state.get("has_image"):
+        return False
+    caption = state.get("caption") or ""
+    return not _DELETE_INTENT_RE.search(caption)
+
+
 def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """List / edit / soft-delete the user's records by short id. Deletes are soft;
     meal changes recompute today's totals. Returns 'ok:...' ONLY on real success —
@@ -1343,6 +1365,17 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             return f"error: no active {entity} with id {entry_id} (already deleted or wrong id)"
 
         if action == "delete":
+            # Photo-reread guard: a new photo can ADD a meal but must not silently DELETE
+            # a prior confirmed one just because it re-reads as something else (the yogurt
+            # photo that deleted the correct banana entry). Refuse; steer to ADD instead.
+            if _photo_reread_blocks_delete(user_id, entity):
+                logger.info("MANAGE_LOG_PHOTO_DELETE_BLOCKED user=%s id=%s desc=%r",
+                            user_id, entry_id, getattr(row, "description", "")[:40])
+                return (f"error: not deleting meal id={entry_id} ('{getattr(row, 'description', '')}') "
+                        "off a photo. A new photo ADDS food — it doesn't replace what's already "
+                        "logged. If this photo shows a DIFFERENT food than what's logged, call "
+                        "log_meal for the new item as a SEPARATE entry (log both). Only delete when "
+                        "the user explicitly says to (e.g. 'delete that', 'i didn't eat that').")
             row.deleted_at = _naive_utcnow()
             session.commit()
             day = ""
@@ -1666,7 +1699,12 @@ def handle_match_dining_item(user_id: int, tool_input: dict, *, message_id=None)
         serving = f", per {it.serving_size}" if it.serving_size else ""
         lines.append(f"{it.item_name} ({it.hall} {it.meal_period}): "
                      f"{'/'.join(macros)}{serving}")
-    return "ok: menu matches:\n" + "\n".join(lines)
+    # Affordance-in-tool-result: naming a dining hall for a meal that's ALREADY LOGGED
+    # (an eyeballed estimate) is a correction waiting to be written — the menu numbers
+    # should REFINE the logged row, not just get read out and dropped ("from crossroads"
+    # ×3, coach 👍'd then "i'll leave it"). Same writeback machinery as usda_food_lookup.
+    overlap = _logged_rows_overlapping(user_id, query)
+    return "ok: menu matches:\n" + "\n".join(lines) + overlap
 
 
 USDA_FOOD_LOOKUP_TOOL = {
