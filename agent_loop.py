@@ -117,8 +117,13 @@ def build_loop_context(user, session) -> str:
     def _d(dt):
         return render_date(dt, user) if _local else f"{dt:%m-%d}"
 
-    # 1. Unified memory (ALL categories, safety appended universally).
-    mem_text, _ids = render_categories(profile, CATEGORIES, include_safety_universal=True)
+    # 1. Unified memory (ALL categories, safety appended universally). Fix 2: expose
+    # each fact's [id:…] so the model can update/invalidate a specific entry precisely
+    # (invalidate needs an entry_id; without ids shown it could only use the fragile
+    # substring update). The ids are threaded into the injected block via render_categories.
+    mem_text, _ids = render_categories(
+        profile, CATEGORIES, include_safety_universal=True,
+        show_ids=config.MEMORY_ENTRY_IDS_IN_PROMPT_ENABLED)
     if mem_text:
         parts.append(f"## WHAT YOU REMEMBER ABOUT {user.name.upper()}\n{mem_text}")
 
