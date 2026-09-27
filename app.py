@@ -9,16 +9,14 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
-from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, get_session_state, claim_message_sid, release_message_sid
+from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
-from coach import get_coach_response, parse_workout_log
 from scheduler import start_scheduler
 import config
 from onboarding_agent import start_onboarding, handle_onboarding_reply
 from admin_dashboard import ADMIN_HTML
 from admin_system import admin_system_bp
 from engagement_tracker import reset_unanswered
-from tone_analyzer import maybe_update_style
 from message_buffer import buffer_message
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
 from events import apply_event_signals_task
@@ -1244,9 +1242,6 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
 
     # Reset engagement decay counter on any reply
     reset_unanswered(user.id)
-
-    # Update mirroring style
-    maybe_update_style(user.id)
 
     # Resolve pending clarification
     resolve_pending_clarification(user.id, body)

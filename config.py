@@ -103,13 +103,15 @@ ONBOARDING_EXTRACTOR_MODEL = os.getenv("ONBOARDING_EXTRACTOR_MODEL", "claude-son
 # backstop under whichever model runs here.
 MEMORY_EXTRACTOR_MODEL = os.getenv("MEMORY_EXTRACTOR_MODEL", "claude-sonnet-5")
 
-# Phase 2 — single agent loop (inbound). Separate model key from the legacy
-# COACH_MODEL (kept separate until Phase 6 unifies the surfaces): the loop runs
-# on Opus 4.8, which REJECTS temperature/top_p/top_k and manual budget_tokens
-# with a 400. Loop passes no sampling params; adaptive thinking + low effort
-# held constant (see rewrite/phase-2/INVESTIGATION.md §5). Env-overridable as
-# the rollback lever.
+# Phase 2 — single agent loop (inbound). The loop runs on Opus 4.8, which REJECTS
+# temperature/top_p/top_k and manual budget_tokens with a 400. Loop passes no sampling
+# params; adaptive thinking + low effort held constant (see
+# rewrite/phase-2/INVESTIGATION.md §5). Env-overridable.
 AGENT_LOOP_MODEL = os.getenv("AGENT_LOOP_MODEL", "claude-opus-4-8")
+# Phase 6 Commit C retired the legacy pipeline, so the loop is the sole responder.
+# This flag is kept as a permanently-on lever (many tests toggle it, and turning it
+# off is a deliberate kill-switch that now routes to the safe minimal error reply
+# rather than any legacy path). Prod sets it true via env.
 SINGLE_AGENT_LOOP_ENABLED = os.getenv("SINGLE_AGENT_LOOP_ENABLED", "false").lower() == "true"
 # The loop's output ceiling is SEPARATE from MAX_RESPONSE_TOKENS (the SMS reply
 # governor, used by legacy). A loop turn must fit adaptive-thinking tokens + one or
