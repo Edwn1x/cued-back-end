@@ -2332,8 +2332,32 @@ def handle_set_card_delivery(user_id: int, tool_input: dict, *, message_id=None)
     return "ok: back to the tappable card" + (" — re-sent the current one" if resent else "")
 
 
+SEND_GYM_LINE_LINK_TOOL = {
+    "name": "send_gym_line_link",
+    "description": (
+        "Text the user the RSF virtual-line JOIN link (one tap → name/phone → in the "
+        "line). Fire it the moment you offer the line link or they ask for it ('send the "
+        "line link', 'can u put me in the rsf line', 'gym's packed, get me in'). This is "
+        "the ON-DEMAND path for the SAME Waitwell link the automatic heading-out flow "
+        "sends — the real capability behind 'here's the line link'. NEVER say 'here's the "
+        "link' / 'tap it' without firing this in the same turn: the link goes out as its "
+        "own bubble and your reply is the sentence around it, not the URL. If this tool "
+        "isn't available to you, you CANNOT send the line link — say so plainly, don't "
+        "pretend you sent one. Takes no arguments."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def handle_send_gym_line_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Send the RSF virtual-line JOIN link on demand (gym_beats.send_line_link)."""
+    from gym_beats import send_line_link
+    return send_line_link(user_id)
+
+
 _HANDLERS = {
     "react_to_message": handle_react_to_message,
+    "send_gym_line_link": handle_send_gym_line_link,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
     "set_card_delivery": handle_set_card_delivery,
