@@ -72,6 +72,29 @@ FOOD_ON_HAND_TTL_DAYS = int(os.getenv("FOOD_ON_HAND_TTL_DAYS", "14"))
 # (every closure logs at WARNING); the flag is the rollback lever.
 MEMORY_SAFETY_SUPERSESSION_ENABLED = os.getenv("MEMORY_SAFETY_SUPERSESSION_ENABLED", "true").lower() == "true"
 
+# memory-update-recall — the `remember` tool recalled stated facts WORSE than legacy
+# extraction (parity eval 40% vs 47%) because updates duplicated instead of replacing,
+# then the fresh copy got evicted. These four flags gate the fixes; all default ON with
+# the flag as the rollback lever (ship-on culture).
+#
+# Fix 1 — fuzzy update matching: when remember(action="update") passes a PARAPHRASED
+# replaces_text that isn't a literal substring of any stored entry, fall back to a
+# topic-token overlap match (unique non-safety entry only) and REPLACE it, instead of
+# logging MEMORY_UPDATE_MISMATCH and adding a duplicate.
+MEMORY_FUZZY_UPDATE_ENABLED = os.getenv("MEMORY_FUZZY_UPDATE_ENABLED", "true").lower() == "true"
+# Fix 2 — expose short entry ids in the injected memory block so the model can target
+# an existing fact precisely with update/invalidate (invalidate needs an entry_id; the
+# render used to emit none, so the model could only use the fragile substring update).
+MEMORY_ENTRY_IDS_IN_PROMPT_ENABLED = os.getenv("MEMORY_ENTRY_IDS_IN_PROMPT_ENABLED", "true").lower() == "true"
+# Fix 3 — write-time dedup of a plain add that clearly contradicts/supersedes a unique
+# same-topic non-safety entry (e.g. a changed preferred gym), so the two don't coexist.
+# Conservative (high overlap + unique match required); never machine-closes safety.
+MEMORY_WRITE_DEDUP_ENABLED = os.getenv("MEMORY_WRITE_DEDUP_ENABLED", "true").lower() == "true"
+# Fix 4 — eviction protection: a just-added fact (esp. one that just superseded another,
+# uses=0) must not be the first evicted while the stale entry it replaced (uses>0)
+# survives. Protects freshly-written / just-superseding ids from the eviction pass.
+MEMORY_EVICT_PROTECT_FRESH_ENABLED = os.getenv("MEMORY_EVICT_PROTECT_FRESH_ENABLED", "true").lower() == "true"
+
 # Phase C1/C1.5 — prompt caching + cost telemetry.
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
 MODEL_PRICING = {
@@ -96,6 +119,14 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"      # per-set parse uses Haiku (3x ch
 # wrong field here steers every meal suggestion for the whole relationship; onboarding
 # is one conversation per user, so the cost delta is noise.
 ONBOARDING_EXTRACTOR_MODEL = os.getenv("ONBOARDING_EXTRACTOR_MODEL", "claude-sonnet-5")
+# memory-update-recall Fix 5 — routine parse output ceiling. A long pasted split
+# (six body-part days, every exercise) blew the old hardcoded 3000-token cap →
+# stop_reason=max_tokens → the whole paste was dropped. Raised to 8000 (matching the
+# PR #97 receipt-extractor precedent) so a full routine fits.
+ROUTINE_PARSE_MAX_TOKENS = int(os.getenv("ROUTINE_PARSE_MAX_TOKENS", "8000"))
+# Even 8000 can truncate a truly huge paste; when it does, salvage the day-objects that
+# parsed fully instead of returning {} (all-or-nothing) and losing the whole routine.
+ROUTINE_PARSE_SALVAGE_ENABLED = os.getenv("ROUTINE_PARSE_SALVAGE_ENABLED", "true").lower() == "true"
 # Post-turn memory extraction (app.extract_and_store_memory): same story, same fix.
 # Live 2026-09-11 (user 27) on Haiku: constraints=["messed up"] clipped from a sentence
 # (constraints render into EVERY prompt), "Thursday, Sep 12, 2026" (a Saturday) for

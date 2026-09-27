@@ -415,6 +415,68 @@ def _find_substring_match(entries: list, fragment: str):
     return matches[0] if len(matches) == 1 else None
 
 
+# memory-update-recall Fix 1 — fuzzy/topic update matching. When the model's
+# `replaces_text` is a paraphrase (not a literal substring of any stored entry),
+# _find_substring_match misses and the update used to fall through to ADD → a
+# duplicate (stale + new coexist), which then blows the cap and gets the FRESH copy
+# evicted. This recovers the intended entry by non-numeric topic-token overlap of
+# BOTH the paraphrased replaces_text AND the new text against each stored entry.
+# A UNIQUE non-safety winner (no tie) is required; safety entries are never fuzzy
+# targets (they close only via the explicit trigger-guarded invalidate).
+_FUZZY_UPDATE_MIN_OVERLAP = 2
+
+
+def _find_fuzzy_update_target(entries: list, replaces_text: str, new_text: str,
+                              *, min_overlap: int = _FUZZY_UPDATE_MIN_OVERLAP):
+    """Topic-overlap update fallback for a paraphrased replaces_text. Returns the
+    unique non-safety entry sharing the most content (non-numeric) tokens with the
+    combined (replaces_text + new_text) query, provided the overlap clears
+    min_overlap and there's a single clear winner. Zero, thin, or tied -> None so
+    the caller logs MEMORY_UPDATE_MISMATCH and never guesses."""
+    query = _nonnumeric_core(replaces_text) | _nonnumeric_core(new_text)
+    if len(query) < min_overlap:
+        return None
+    scored = []
+    for e in entries:
+        if e.get("safety"):
+            continue
+        overlap = len(query & _nonnumeric_core(e.get("text", "")))
+        if overlap >= min_overlap:
+            scored.append((overlap, e))
+    if not scored:
+        return None
+    scored.sort(key=lambda t: t[0], reverse=True)
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None  # ambiguous tie -> don't guess
+    return scored[0][1]
+
+
+# memory-update-recall Fix 3 — write-time supersession of a plain add that
+# CONTRADICTS an existing same-topic fact but carries no numeric divergence for
+# _find_supersession_target to catch (e.g. a changed preferred gym / training time
+# where the value word, not a number, changed). Conservative by construction:
+# requires a HIGH non-numeric core Jaccard AND a single unique non-safety match, so
+# distinct-but-related facts ("likes oatmeal for breakfast" vs "likes eggs for
+# breakfast", ~0.5) are NOT collapsed. Safety/allergy entries are never targeted.
+_TOPIC_SUPERSEDE_THRESHOLD = 0.6
+
+
+def _find_topic_supersession_target(entries: list, candidate_text: str):
+    """A unique non-safety same-category entry whose non-numeric core is highly
+    similar (>= _TOPIC_SUPERSEDE_THRESHOLD) to the candidate — a same-topic fact
+    whose value changed without a numeric to key on. Zero or >1 match -> None."""
+    cand_core = _nonnumeric_core(candidate_text)
+    if len(cand_core) < 2:
+        return None
+    matches = []
+    for e in entries:
+        if e.get("safety"):
+            continue
+        if _jaccard(cand_core, _nonnumeric_core(e.get("text", ""))) >= _TOPIC_SUPERSEDE_THRESHOLD:
+            matches.append(e)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -442,7 +504,7 @@ def _category_chars(entries: list) -> int:
 
 
 def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
-               reason: str = "global_cap") -> bool:
+               reason: str = "global_cap", protected_ids=None) -> bool:
     """
     Evict the single lowest-value non-safety entry across all categories
     (or within `prefer_category` if given). Eviction order: lowest `uses`,
@@ -450,8 +512,18 @@ def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
 
     Never evicts safety:true. Logs every eviction with {user_id, category,
     text, reason} so we can tune caps.
+
+    memory-update-recall Fix 4: `protected_ids` are entries just written in the
+    current write pass (a fresh add, or the fresh side of a supersession). Their
+    uses=0 made them the FIRST eviction target under the lowest-uses rule — so the
+    correct new fact got evicted while the stale entry it replaced (uses>0) survived,
+    the main recall drain. Protected entries are evicted only as a LAST resort, when
+    every non-protected non-safety entry is already gone (so a hard cap can still be
+    enforced). Gated by MEMORY_EVICT_PROTECT_FRESH_ENABLED.
     """
-    candidates = []  # (uses, ts, category, idx, entry)
+    protect = (protected_ids or set()) if config.MEMORY_EVICT_PROTECT_FRESH_ENABLED else set()
+    primary = []    # (uses, ts, category, idx, entry) — non-protected
+    fallback = []   # protected: only touched if nothing else is evictable
     targets = ([prefer_category] if prefer_category
                else [c for c in profile.keys() if c != HISTORY_KEY])
     for cat in targets:
@@ -459,7 +531,9 @@ def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
         for i, e in enumerate(entries):
             if e.get("safety"):
                 continue
-            candidates.append((e.get("uses", 0), e.get("ts", ""), cat, i, e))
+            row = (e.get("uses", 0), e.get("ts", ""), cat, i, e)
+            (fallback if e.get("id") in protect else primary).append(row)
+    candidates = primary or fallback
     if not candidates:
         return False
     candidates.sort(key=lambda t: (t[0], t[1]))
@@ -472,7 +546,7 @@ def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
     return True
 
 
-def _enforce_caps(profile: dict, user_id=None) -> None:
+def _enforce_caps(profile: dict, user_id=None, *, protected_ids=None) -> None:
     """
     Enforce per-category soft cap then global hard cap. Soft cap evicts within
     the overflowing category; hard cap evicts globally. Safety entries are
@@ -487,11 +561,13 @@ def _enforce_caps(profile: dict, user_id=None) -> None:
             continue
         while _category_chars(profile.get(cat) or []) > soft:
             if not _evict_one(profile, prefer_category=cat,
-                              user_id=user_id, reason="category_soft_cap"):
+                              user_id=user_id, reason="category_soft_cap",
+                              protected_ids=protected_ids):
                 break
 
     while _profile_total_chars(profile) > hard:
-        if not _evict_one(profile, user_id=user_id, reason="global_hard_cap"):
+        if not _evict_one(profile, user_id=user_id, reason="global_hard_cap",
+                          protected_ids=protected_ids):
             break
 
 
@@ -633,6 +709,17 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
     stats = {"added": 0, "updated": 0, "skipped": 0,
              "deduped": 0, "mismatched": 0, "invalid": 0}
 
+    # Fix 4: ids written in THIS pass are protected from the eviction pass below so a
+    # fresh add / the fresh side of a supersession (uses=0) isn't evicted ahead of the
+    # stale entry it just replaced.
+    protected_ids = set()
+
+    def _append(entry_list, fact_text, safety):
+        entry = _new_entry(fact_text, safety=safety)
+        entry_list.append(entry)
+        protected_ids.add(entry["id"])
+        return entry
+
     for fact in (facts or []):
         action = (fact.get("action") or "").lower()
         category = fact.get("category")
@@ -663,14 +750,24 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
         if action == "update":
             if replaces_text:
                 target = _find_substring_match(entries, replaces_text)
+                if target is None and config.MEMORY_FUZZY_UPDATE_ENABLED and not is_safety:
+                    # Fix 1: the substring match missed (a paraphrased replaces_text).
+                    # Recover the intended entry by topic-token overlap so a paraphrase
+                    # REPLACES rather than duplicating. Safety targets stay excluded
+                    # (they close only via the explicit trigger-guarded invalidate).
+                    target = _find_fuzzy_update_target(entries, replaces_text, text)
+                    if target is not None:
+                        logger.info(
+                            "MEMORY_UPDATE_FUZZY_MATCH user_id=%s category=%s "
+                            "replaces_text=%r matched=%r",
+                            user_id, category, replaces_text, target.get("text"),
+                        )
                 if target is not None:
-                    # Distinctive-substring match (was byte-exact). Invalidate the
-                    # old value (history-preserving, auditable) and add the new one.
-                    # Safety targets are excluded by _find_substring_match — a safety
-                    # fact closes only via the explicit trigger-guarded invalidate.
+                    # Substring OR fuzzy match. Invalidate the old value (history-
+                    # preserving, auditable) and add the new one.
                     invalidate_entry(profile, target["id"], by="superseded",
                                      trigger=(f"user_id:{user_id}" if user_id else "apply_facts_update"))
-                    entries.append(_new_entry(text, safety=is_safety))
+                    _append(entries, text, is_safety)
                     stats["updated"] += 1
                     continue
                 logger.warning(
@@ -709,28 +806,52 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
             if super_target is not None:
                 invalidate_entry(profile, super_target["id"], by="superseded_by_recency",
                                  trigger=(f"user_id:{user_id}" if user_id else "apply_facts_add"))
-                entries.append(_new_entry(text, safety=is_safety))
+                _append(entries, text, is_safety)
                 stats["updated"] += 1
                 continue
 
-        entries.append(_new_entry(text, safety=is_safety))
+        # Fix 3: a plain add that CONTRADICTS a unique same-topic non-safety entry
+        # (value word changed, no numeric to key on — e.g. changed preferred gym)
+        # supersedes it rather than coexisting. Conservative: high overlap + a single
+        # unique match required, so distinct-but-related facts are never collapsed.
+        if not is_safety and config.MEMORY_WRITE_DEDUP_ENABLED:
+            topic_target = _find_topic_supersession_target(entries, text)
+            if topic_target is not None:
+                logger.info(
+                    "MEMORY_TOPIC_SUPERSEDE user_id=%s category=%s old=%r new=%r",
+                    user_id, category, topic_target.get("text"), text,
+                )
+                invalidate_entry(profile, topic_target["id"], by="superseded_by_topic",
+                                 trigger=(f"user_id:{user_id}" if user_id else "apply_facts_add"))
+                _append(entries, text, is_safety)
+                stats["updated"] += 1
+                continue
+
+        _append(entries, text, is_safety)
         stats["added"] += 1
 
     # Fix 3: a recovery fact added above closes the same-topic transient states it
     # supersedes, in the same write — before caps, so the freed room is real.
     supersede_resolved_safety(profile, user_id=user_id)
 
-    _enforce_caps(profile, user_id=user_id)
+    _enforce_caps(profile, user_id=user_id, protected_ids=protected_ids)
     return profile, stats
 
 
-def render_categories(profile, categories, *, include_safety_universal=True):
+def render_categories(profile, categories, *, include_safety_universal=True,
+                      show_ids=False):
     """
     Render a list of categories' entries as a single text block. Categories
     not in the profile are silently skipped. If include_safety_universal is
     True (default), all safety:true entries from `constraints` are appended
     regardless of whether 'constraints' is in `categories` — implementing the
     A4 "safety facts are always injected" rule.
+
+    memory-update-recall Fix 2: with show_ids=True each fact is rendered as
+    "- text [id:<id>]" so the model can target it precisely with
+    remember(action="update"/"invalidate", entry_id=<id>). The id shown is the
+    entry's own id — exactly what invalidate_entry expects. Off by default so
+    non-loop read paths keep their id-free rendering.
 
     Returns (rendered_text, injected_ids). The injected_ids list lets the
     caller queue the async `uses` bump from A4.
@@ -740,12 +861,15 @@ def render_categories(profile, categories, *, include_safety_universal=True):
     lines = []
     injected_ids = []
 
+    def _fmt(entry):
+        return f"- {entry['text']} [id:{entry['id']}]" if show_ids else f"- {entry['text']}"
+
     for cat in categories:
         for e in profile.get(cat) or []:
             if e.get("id") in seen_ids:
                 continue
             seen_ids.add(e["id"])
-            lines.append(f"- {e['text']}")
+            lines.append(_fmt(e))
             injected_ids.append(e["id"])
 
     if include_safety_universal:
@@ -756,7 +880,7 @@ def render_categories(profile, categories, *, include_safety_universal=True):
             if e.get("id") in seen_ids:
                 continue
             seen_ids.add(e["id"])
-            safety_extras.append(f"- {e['text']}")
+            safety_extras.append(_fmt(e))
             injected_ids.append(e["id"])
         if safety_extras:
             lines.append("")

@@ -195,6 +195,105 @@ def _split_for(keys) -> str | None:
     return "custom" if keys else None
 
 
+def _scan_json_string(raw: str, i: int):
+    """Scan a JSON string starting at raw[i]=='\"'. Return (value, next_index) or
+    (None, i) if the string never closes (truncation)."""
+    assert raw[i] == '"'
+    j = i + 1
+    n = len(raw)
+    buf = []
+    while j < n:
+        c = raw[j]
+        if c == '\\':
+            if j + 1 >= n:
+                return None, i
+            buf.append(raw[j:j + 2])
+            j += 2
+            continue
+        if c == '"':
+            return "".join(buf), j + 1
+        buf.append(c)
+        j += 1
+    return None, i  # unterminated -> truncated
+
+
+def _scan_json_array(raw: str, i: int):
+    """Scan a balanced JSON array starting at raw[i]=='['. Return (array_text,
+    next_index) or (None, i) if it never closes (truncation). String-aware so
+    brackets inside strings don't confuse the depth counter."""
+    assert raw[i] == '['
+    depth = 0
+    j = i
+    n = len(raw)
+    in_str = False
+    while j < n:
+        c = raw[j]
+        if in_str:
+            if c == '\\':
+                j += 2
+                continue
+            if c == '"':
+                in_str = False
+            j += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == '[':
+            depth += 1
+        elif c == ']':
+            depth -= 1
+            if depth == 0:
+                return raw[i:j + 1], j + 1
+        j += 1
+    return None, i  # never balanced -> truncated
+
+
+def _salvage_partial_days(raw: str) -> dict:
+    """Fix 5: recover the complete day-objects from a truncated parse_routine JSON
+    blob. Walks the "days" object key-by-key, keeping each day whose exercise array
+    closed fully before the truncation point; stops at the first array cut off
+    mid-stream. Returns {"days": {key: [rows...]}} (only the recovered days) or {}
+    when nothing is recoverable — so a truncated paste keeps the days that parsed
+    instead of losing the whole routine."""
+    if not raw:
+        return {}
+    m = re.search(r'"days"\s*:\s*\{', raw)
+    if not m:
+        return {}
+    i = m.end()
+    n = len(raw)
+    days: dict = {}
+    while i < n:
+        while i < n and raw[i] in ' \t\r\n,':
+            i += 1
+        if i >= n or raw[i] == '}':
+            break
+        if raw[i] != '"':
+            break  # malformed / truncated mid-key
+        key, i = _scan_json_string(raw, i)
+        if key is None:
+            break
+        while i < n and raw[i] in ' \t\r\n':
+            i += 1
+        if i >= n or raw[i] != ':':
+            break
+        i += 1
+        while i < n and raw[i] in ' \t\r\n':
+            i += 1
+        if i >= n or raw[i] != '[':
+            break
+        arr_text, i = _scan_json_array(raw, i)
+        if arr_text is None:
+            break  # this day's array was cut off -> everything after is truncated
+        try:
+            rows = json.loads(arr_text)
+        except Exception:  # noqa: BLE001
+            break
+        if isinstance(rows, list):
+            days[key] = rows
+    return {"days": days} if days else {}
+
+
 def parse_routine(text: str, user_id: int | None = None) -> dict:
     """Sonnet JSON → validated custom_templates dict ({key: [rows]}); {} on failure."""
     try:
@@ -202,17 +301,24 @@ def parse_routine(text: str, user_id: int | None = None) -> dict:
         from cost_tracking import track
         from llm_client import make_client
         client = make_client()
-        resp = client.messages.create(model=config.ONBOARDING_EXTRACTOR_MODEL, max_tokens=3000,
+        resp = client.messages.create(model=config.ONBOARDING_EXTRACTOR_MODEL,
+                                      max_tokens=config.ROUTINE_PARSE_MAX_TOKENS,
                                       messages=[{"role": "user", "content": _PARSE_PROMPT.format(text=text[:6000])}])
         try:
             track(user_id, "routine.parse", config.ONBOARDING_EXTRACTOR_MODEL, resp)
         except Exception as e:  # noqa: BLE001
             logger.warning("ROUTINE_COST_TRACK_FAILED user=%s err=%s", user_id, e)
+        raw = (_join_text(resp.content) or "").replace("```json", "").replace("```", "").strip()
         if getattr(resp, "stop_reason", None) == "max_tokens":
             logger.warning("ROUTINE_PARSE_TRUNCATED user=%s", user_id)
-            return {}
-        raw = (_join_text(resp.content) or "").replace("```json", "").replace("```", "").strip()
-        data = json.loads(raw) if raw else {}
+            if not config.ROUTINE_PARSE_SALVAGE_ENABLED:
+                return {}
+            data = _salvage_partial_days(raw)
+            if not (isinstance(data, dict) and data.get("days")):
+                return {}
+            logger.warning("ROUTINE_PARSE_SALVAGED user=%s days=%d", user_id, len(data["days"]))
+        else:
+            data = json.loads(raw) if raw else {}
     except Exception as e:  # noqa: BLE001
         logger.warning("ROUTINE_PARSE_FAILED user=%s err=%s", user_id, e)
         return {}
