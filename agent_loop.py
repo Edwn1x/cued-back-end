@@ -682,6 +682,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # identity/voice.md; the link bubble is an allowed URL exception.
         from agent_tools import SEND_CONNECT_LINK_TOOL
         tools.append(SEND_CONNECT_LINK_TOOL)
+    if config.SEND_GYM_LINE_LINK_TOOL_ENABLED:
+        # On-demand RSF virtual-line JOIN link (the same Waitwell link the automatic
+        # heading-out flow sends) so the coach never fakes 'here's the line link'.
+        from agent_tools import SEND_GYM_LINE_LINK_TOOL
+        tools.append(SEND_GYM_LINE_LINK_TOOL)
 
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it

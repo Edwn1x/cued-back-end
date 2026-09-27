@@ -286,6 +286,85 @@ def test_dead_beat_only_with_a_planned_untrained_day_and_once(db, rsf_on, monkey
         s.close()
 
 
+def test_an_active_session_suppresses_the_proactive_beat(db, rsf_on, monkeypatch):
+    """A beat while they're mid-workout ('gym's dead, quick pull?' during an active push)
+    is contradictory + redundant — an IN-PROGRESS (status='active') session gates it."""
+    import gym_beats
+    from models import get_session, User, WorkoutSession
+    user = make_user(db, **FOUNDER)
+    _reading(db, 18)                                  # genuinely dead → would beat
+    s = get_session()
+    try:
+        u = s.get(User, user.id)
+        assert gym_beats.propose(u, s, _now_local(15)) is not None   # no active session yet
+        s.add(WorkoutSession(user_id=user.id, status="active",
+                             date=_utc(datetime(2026, 9, 14, 14, 30, tzinfo=TZ)),
+                             started_at=_utc(datetime(2026, 9, 14, 14, 30, tzinfo=TZ))))
+        s.commit()
+        assert gym_beats.propose(u, s, _now_local(15)) is None       # mid-workout → suppressed
+    finally:
+        s.close()
+
+
+def test_forty_five_percent_is_not_called_dead(db, rsf_on, monkeypatch):
+    """2026-09-26 incident: a 'gym's dead' beat fired at 45% (the top of the 'light' band).
+    Below GYM_DEAD_MAX_PCT the beat wording matches the real reading; 45% doesn't fire."""
+    import gym_beats
+    from models import get_session, User
+    user = make_user(db, **FOUNDER)
+    s = get_session()
+    try:
+        u = s.get(User, user.id)
+        _reading(db, 45)
+        assert gym_beats.propose(u, s, _now_local(15)) is None            # 45% ≠ dead, no beat
+        _reading(db, 18)
+        b = gym_beats.propose(u, s, _now_local(15))
+        assert b and b.kind == "dead" and b.text == "gym's dead right now. quick legs?"  # <25 stays 'dead'
+    finally:
+        s.close()
+    # a fresh user (clear of the one-per-day gate) sees the honest 'quiet' word in the light band
+    other = make_user(db, **dict(FOUNDER, phone="+15550009999"))
+    s = get_session()
+    try:
+        _reading(db, 30)
+        b = gym_beats.propose(s.get(User, other.id), s, _now_local(15))
+        assert b and b.kind == "dead" and b.text == "gym's quiet right now. quick legs?"
+    finally:
+        s.close()
+
+
+def test_send_line_link_tool_sends_the_real_join_link_on_demand(db, rsf_on, sms_capture):
+    """The on-demand path (agent_tools.send_gym_line_link → gym_beats.send_line_link):
+    the coach can actually SEND the Waitwell join link instead of faking the offer."""
+    import gym_beats, agent_tools
+    from integrations.waitwell import client as ww
+    user = make_user(db, **FOUNDER)
+    # line on → the D1 line that quotes the live % and carries the FORM link
+    _reading(db, 96)
+    out = gym_beats.send_line_link(user.id)
+    assert out == "ok: sent the rsf virtual-line link"
+    assert sms_capture[-1][0] == user.phone and ww.JOIN_URL in sms_capture[-1][1]
+    assert "line's on" in sms_capture[-1][1]
+    # no live reading → still sends the join link (a plain one-tap line), never nothing
+    _reading(db, 96, minutes_ago=45)                       # stale → occupancy.now() is None
+    out = agent_tools.dispatch_tool("send_gym_line_link", {}, user.id)
+    assert out == "ok: sent the rsf virtual-line link"
+    assert ww.JOIN_URL in sms_capture[-1][1] and ww.JOIN_URL.endswith("/join/48")
+
+
+def test_send_line_link_tool_is_assembled_and_claimed():
+    """It rides its own flag in agent_loop and is claimed by the rsf_line capability
+    (the coverage test enforces the claim; this pins the flag + the tool name)."""
+    import config
+    from agent_tools import SEND_GYM_LINE_LINK_TOOL, _HANDLERS
+    from capabilities import CAPABILITIES
+    assert SEND_GYM_LINE_LINK_TOOL["name"] == "send_gym_line_link"
+    assert "send_gym_line_link" in _HANDLERS
+    assert config.SEND_GYM_LINE_LINK_TOOL_ENABLED is True          # default ON
+    claimed = {t for cap in CAPABILITIES for t in cap.tools}
+    assert "send_gym_line_link" in claimed
+
+
 def test_line_beat_asks_opt_in_once_then_d1_then_d2_on_yes(db, rsf_on, monkeypatch, sms_capture):
     import gym_beats
     from integrations.waitwell import client as ww

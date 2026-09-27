@@ -280,6 +280,15 @@ DENSITY_DISPLAY_ID = os.getenv("DENSITY_DISPLAY_ID", "dsp_956223069054042646")
 RSF_CONTACT_EMAIL = os.getenv("RSF_CONTACT_EMAIL", "enrr865@gmail.com")
 RSF_TIMEOUT_S = int(os.getenv("RSF_TIMEOUT_S", "10"))
 RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
+# On-demand coach tool that texts the RSF virtual-line JOIN link (agent_tools.
+# SEND_GYM_LINE_LINK_TOOL → gym_beats.send_line_link). The real capability behind
+# "here's the line link" so the coach never fakes the offer. Default ON.
+SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "true").lower() == "true"
+# Below this occupancy a proactive gym beat may call the weight room quiet enough for
+# a quick session. Sits below the light/busy midpoint so ~45% (the "light" band tops
+# out at 49%) is NEVER called "dead" (2026-09-26 incident: a "gym's dead, quick pull?"
+# beat fired at 45%). Labels: dead <25 · light <50 · busy <75 · packed <95 · line ≥95.
+GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
 
 # ─── Integrations (OAuth: Google Calendar, Strava, bCourses) ──────────────────
 # Shared plumbing (integrations/ package). Every flag defaults OFF; the whole
