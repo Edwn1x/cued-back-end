@@ -767,12 +767,66 @@ def _morning_open_signal(user, session, *, now=None) -> str | None:
     ev_txt = ", ".join(f"{(e.raw_text or e.event_type or 'event').strip()[:40]} at "
                        f"{_clock(to_local(e.occurred_at, user))}" for e in evs) or "none logged"
     mins = int((local - wake_dt).total_seconds() // 60)
-    return ("## MORNING OPEN (standing condition — code-computed)\n"
+    base = ("## MORNING OPEN (standing condition — code-computed)\n"
             f"It's {_clock(local)} {local.strftime('%A')}, ~{mins} min after their {_clock_hm(wake)} wake, and "
-            f"nobody has texted since they woke. Today: {plan}; events today: {ev_txt}.\n"
+            f"nobody has texted since they woke. Today: {plan}; events today: {ev_txt}.\n")
+
+    # Feature 4 — daily briefing: extend MORNING OPEN into a concise rundown (classes +
+    # due dates + a suggested gym window + nutrition status) in ONE short message. Only
+    # when the feature is on; otherwise the friend's-morning-line behaviour is unchanged.
+    if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DAILY_BRIEFING_ENABLED:
+        brief = _daily_briefing_extras(user, session, now=now)
+        return (base + brief +
+                "A daily briefing: ONE short, warm rundown — the day's shape in a couple lines "
+                "(what's on, what's due, a good gym window, where nutrition stands), not a dashboard "
+                "and not a question stack. Once — if TICK HISTORY / RECENT PROACTIVE MESSAGES show a "
+                "morning text already today, this is not a reason to speak.")
+
+    return (base +
             "One short line — a friend's morning text, not a briefing: no plan dump, no totals, no "
             "question stack. Once — if TICK HISTORY / RECENT PROACTIVE MESSAGES show a morning text "
             "already today, this is not a reason to speak.")
+
+
+def _daily_briefing_extras(user, session, *, now=None) -> str:
+    """The extra briefing material MORNING OPEN adds under the daily-briefing feature:
+    due dates, a suggested gym window, and nutrition status — all code-computed, read-only,
+    fail-open (a failing piece is simply omitted)."""
+    lines = []
+    try:
+        from schedule import deadline_items
+        items = deadline_items(user.id, session, days=7, now=now)
+        if items:
+            now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+            due = "; ".join(f"{d.title} ({'today' if d.days_until(now_utc) < 1 else f'{d.days_until(now_utc):.0f}d'})"
+                            for d in items[:3])
+            lines.append(f"Due soon: {due}.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BRIEFING_DEADLINES_FAILED user=%s err=%s", user.id, e)
+    try:
+        from schedule import free_blocks, timed_schedule
+        if timed_schedule(user.id, session, now=now):
+            blocks = [b for b in free_blocks(user.id, session, now=now) if b.minutes >= 60]
+            if blocks:
+                b = blocks[0]
+                lines.append(f"Suggested gym window: {_cal_local_clock(b.start, user)}–"
+                             f"{_cal_local_clock(b.end, user)}.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BRIEFING_GYM_FAILED user=%s err=%s", user.id, e)
+    try:
+        from timefmt import local_day_bounds
+        d0, d1 = local_day_bounds(user, now=_ref(now))
+        meals = (active(session, Meal, user_id=user.id)
+                 .filter(Meal.eaten_at >= d0, Meal.eaten_at < d1).all())
+        cal = sum(m.calories or 0 for m in meals)
+        pro = sum(m.protein_g or 0 for m in meals)
+        tgt = ""
+        if user.calorie_target or user.protein_target:
+            tgt = f" (target {user.calorie_target or '?'} cal / {user.protein_target or '?'}g)"
+        lines.append(f"Nutrition so far: {cal} cal / {pro}g protein across {len(meals)} meal(s){tgt}.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BRIEFING_NUTRITION_FAILED user=%s err=%s", user.id, e)
+    return ("Briefing material: " + " ".join(lines) + "\n") if lines else ""
 
 
 def _evening_close_signal(user, session, *, now=None) -> str | None:
@@ -833,6 +887,134 @@ def _checkin_level_block(user) -> str | None:
             "'normal' = as designed.")
 
 
+# ─── calendar assistant standing conditions (read-only on Events) ─────────────
+# Each is flag-gated (master CALENDAR_ASSISTANT_ENABLED + its own feature flag),
+# code-computed, and FAIL-OPEN (any error / no calendar data → None, the tick
+# proceeds exactly as today). They are context ADDITIONS the same decide() weighs —
+# never a new send path — so every one still routes through guardrail_reason (daily
+# cap, quiet hours, anti-stack, in_class, calendar_block). Read-only on the Event
+# store: nothing here writes an event or touches a sync / write-back path.
+
+# Prompt guidance appended to HEARTBEAT_PROMPT in decide() only when the high-load
+# tone feature is on — so the prompt is byte-for-byte unchanged with it off. Degrades
+# to a no-op when no ACADEMIC LOAD block is present.
+_HIGH_LOAD_GUIDANCE = """ACADEMIC LOAD — act on it, don't recite it (only when an ACADEMIC LOAD block is present below):
+- An exam or a dense cluster of deadlines within ~48h is a demanding stretch. PRIORITISE sleep and recovery, SOFTEN accountability, and HOLD a demanding training nudge (a hard push, a "why'd you skip") — like the poor-recovery gate, ease up. This is a tone choice, not a license to invent a text out of nothing.
+- If you do bring up training, bias toward a LIGHTER / SHORTER session (a quick lift, a walk, a mobility break to reset), never a hard "you're behind".
+- Offer real stress/recovery support the night before — a check-in, a nudge to eat and sleep — not a lecture. Combine with the RECOVERY block when both are present.
+- Never nag about fitness during their crunch; the deadline is the priority and a good friend knows it."""
+
+
+def _cal_local_clock(dt_naive_utc, user) -> str:
+    """Naive-UTC instant → a short local 'Tue 2:15pm' for calendar rendering."""
+    from timefmt import to_local
+    loc = to_local(dt_naive_utc, user)
+    return loc.strftime("%a %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+
+
+def _cal_day_clock(dt_naive_utc, user, *, all_day=False) -> str:
+    from timefmt import to_local
+    loc = to_local(dt_naive_utc, user)
+    if all_day:
+        return loc.strftime("%a %b %-d")
+    return loc.strftime("%a %b %-d, %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+
+
+def _deadline_radar_signal(user, session, *, now=None) -> str | None:
+    """Feature 1 (+ 6). Surface upcoming deadlines + cluster density so the coach can
+    PROACTIVELY raise them and offer to help plan — not just answer on demand. None
+    when there are no deadlines on the calendar."""
+    if not (config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DEADLINE_RADAR_ENABLED):
+        return None
+    from schedule import deadline_items, cluster_count, deadlines_within
+    items = deadline_items(user.id, session, now=now)
+    if not items:
+        return None
+    now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+    lines = []
+    for d in items[:6]:
+        hrs = d.hours_until(now_utc)
+        when = (f"in {hrs:.0f}h" if hrs < 48 else f"in {d.days_until(now_utc):.0f}d")
+        tag = " [EXAM]" if d.is_exam else ""
+        lines.append(f"- {d.title}{tag} — due {_cal_day_clock(d.when, user, all_day=d.all_day)} ({when})")
+    n_48 = len(deadlines_within(items, config.CALENDAR_HIGH_LOAD_HOURS, now=now))
+    n_week = cluster_count(items, hours=7 * 24, now=now)
+    density = f"{n_week} due in the next 7 days" + (f", {n_48} within 48h" if n_48 else "")
+    offer = ""
+    if config.CALENDAR_DEADLINE_REMINDERS_ENABLED:
+        offer = (" You can OFFER to set a reminder to start one of these, or to block study time "
+                 "(via the reminders you already set for them) — an offer, once, never an auto-spam.")
+    return ("## DEADLINE RADAR (upcoming — code-computed from their calendar)\n"
+            + "\n".join(lines) + f"\n{density}.\n"
+            "A real upcoming deadline is proactive material NOW, not 'closer to the day': flag the "
+            "nearest / a cluster and offer to help plan or break it down — one short line, grounded "
+            "in the specific item, not a to-do dump." + offer)
+
+
+def _free_window_signal(user, session, *, now=None) -> str | None:
+    """Feature 2 (gym windows) + Feature 5 (meal timing). Surfaces today's/tomorrow's
+    open windows as candidate gym/study time, and flags a long back-to-back run of
+    blocks that leaves no eating gap. Inert (None) when the user has no timed calendar
+    events — an empty calendar is not a schedule to plan around."""
+    if not (config.CALENDAR_ASSISTANT_ENABLED and
+            (config.CALENDAR_SCHEDULE_TRAINING_ENABLED or config.CALENDAR_MEAL_TIMING_ENABLED)):
+        return None
+    from schedule import timed_schedule, free_blocks, busy_runs
+    if not timed_schedule(user.id, session, now=now):
+        return None
+    now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+    parts = []
+    if config.CALENDAR_SCHEDULE_TRAINING_ENABLED:
+        blocks = [b for b in free_blocks(user.id, session, now=now) if b.minutes >= 45][:3]
+        if blocks:
+            wins = "; ".join(f"{_cal_local_clock(b.start, user)}–{_cal_local_clock(b.end, user)} "
+                             f"(~{b.minutes // 60}h{b.minutes % 60:02d}m)" for b in blocks)
+            parts.append(f"Open windows (candidate gym/study time): {wins}.")
+    if config.CALENDAR_MEAL_TIMING_ENABLED:
+        thresh = timedelta(hours=config.CALENDAR_MEAL_TIMING_BLOCK_HOURS)
+        long_runs = [(s, e) for (s, e) in busy_runs(user.id, session, now=now)
+                     if e - s >= thresh and e > now_utc]
+        if long_runs:
+            s, e = long_runs[0]
+            parts.append(f"Back-to-back blocks {_cal_local_clock(s, user)}–{_cal_local_clock(e, user)} "
+                         "leave no real eating gap — worth a heads-up to eat before it.")
+    if not parts:
+        return None
+    return ("## SCHEDULE (today/tomorrow — code-computed, read-only)\n"
+            + " ".join(parts) + "\n"
+            "Use these to make training/eating fit their real day — suggest a specific window a "
+            "friend would ('good gap 2–4, wanna hit legs then?'), or a heads-up to eat before a long "
+            "stretch. One short line, only if it's genuinely useful; never a schedule readout.")
+
+
+def _high_load_signal(user, session, *, now=None) -> str | None:
+    """Feature 2 (training soften) + Feature 3 (tone + recovery). On high_load_soon (an
+    exam or a dense deadline cluster within ~48h) render a SOFT tone gate — ease training
+    intensity, prioritise sleep, soften accountability, offer stress support. Never a hard
+    suppress; a real open thread / win still speaks. None when load is not high."""
+    if not (config.CALENDAR_ASSISTANT_ENABLED and
+            (config.CALENDAR_SCHEDULE_TRAINING_ENABLED or config.CALENDAR_HIGH_LOAD_TONE_ENABLED)):
+        return None
+    from schedule import deadline_items, high_load_soon, deadlines_within
+    items = deadline_items(user.id, session, now=now)
+    if not items or not high_load_soon(user.id, session, now=now, items=items):
+        return None
+    now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+    soon = deadlines_within(items, config.CALENDAR_HIGH_LOAD_HOURS, now=now)
+    exams = [d for d in soon if d.is_exam]
+    if exams:
+        d = exams[0]
+        basis = f"{d.title} in {d.hours_until(now_utc):.0f}h"
+    else:
+        basis = f"{len(soon)} deadlines within {config.CALENDAR_HIGH_LOAD_HOURS}h"
+    return ("## ACADEMIC LOAD (standing condition — code-computed from their calendar)\n"
+            f"High load soon: {basis}. SOFT tone gate: prioritise sleep + recovery, SOFTEN "
+            "accountability, and HOLD a demanding training nudge (downgrade a hard push to a light "
+            "session or a gentle check-in) — a friend eases up during a crunch. NOT a hard block: a "
+            "genuine open thread, a real win, or warm stress/recovery support (eat, sleep, you've got "
+            "this) still speaks. Combine with the RECOVERY block if present.")
+
+
 def _proactive_context(user, session) -> str:
     parts = [build_loop_context(user, session)]
 
@@ -862,6 +1044,18 @@ def _proactive_context(user, session) -> str:
             blk = None
         if blk:
             parts.append(blk)
+
+    # Calendar assistant standing conditions (each flag-gated + fail-open inside; inert
+    # without calendar data). Read-only on Events, weighed by the same decide().
+    for fn in (_deadline_radar_signal, _free_window_signal, _high_load_signal):
+        try:
+            blk = fn(user, session)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("CALENDAR_SIGNAL_FAILED fn=%s user=%s err=%s", fn.__name__, user.id, e)
+            blk = None
+        if blk:
+            parts.append(blk)
+
     lvl = _checkin_level_block(user)
     if lvl:
         parts.append(lvl)
@@ -961,7 +1155,11 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
 
     prompt = HEARTBEAT_PROMPT
     if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
-        prompt = HEARTBEAT_PROMPT + "\n\n" + _WEARABLE_GUIDANCE
+        prompt = prompt + "\n\n" + _WEARABLE_GUIDANCE
+    # High-load academic tone guidance — appended only when the feature is on, so the
+    # prompt is byte-for-byte unchanged with it off; a no-op with no ACADEMIC LOAD block.
+    if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_HIGH_LOAD_TONE_ENABLED:
+        prompt = prompt + "\n\n" + _HIGH_LOAD_GUIDANCE
     system = [
         {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": prompt + "\n\n" + context},
