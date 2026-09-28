@@ -591,6 +591,14 @@ SIDECAR_TIMEOUT_NO_FAILOVER = os.getenv("SIDECAR_TIMEOUT_NO_FAILOVER", "true").l
 # produced two near-identical turns ("same 4 messages"). See sms._is_duplicate_send.
 OUTBOUND_DEDUP_ENABLED = os.getenv("OUTBOUND_DEDUP_ENABLED", "true").lower() == "true"
 OUTBOUND_DEDUP_WINDOW_S = int(os.getenv("OUTBOUND_DEDUP_WINDOW_S", "90"))
+# Byte-identical is not the only shape the buffer race takes: the coach also sent
+# PARAPHRASED near-duplicates moments apart ("got it — so pullups, then u alternate
+# bis and back" vs "got it — pullups, then bi/back alternating"). Also suppress a
+# reply whose token-set (Jaccard) similarity to the last one is at/above this HIGH
+# threshold, within the same window + same user. Conservative by design — genuinely
+# distinct replies stay well below it. Fail-open. See sms._is_duplicate_send.
+OUTBOUND_NEAR_DEDUP_ENABLED = os.getenv("OUTBOUND_NEAR_DEDUP_ENABLED", "true").lower() == "true"
+OUTBOUND_NEAR_DEDUP_THRESHOLD = float(os.getenv("OUTBOUND_NEAR_DEDUP_THRESHOLD", "0.85"))
 # A message landing within this many seconds of the buffer timer firing is a
 # candidate for the timer-vs-append race; logged for observability. The actual
 # absorption is done by the per-timer token guard in message_buffer._flush_buffer.
