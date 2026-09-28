@@ -588,6 +588,44 @@ HEARTBEAT_WEB_SEARCH = os.getenv("HEARTBEAT_WEB_SEARCH", "true").lower() == "tru
 # over timefmt.local_day_bounds (no denormalized counter to drift).
 HEARTBEAT_SEARCH_MAX_PER_DAY = int(os.getenv("HEARTBEAT_SEARCH_MAX_PER_DAY", "3"))
 
+# ─── Calendar assistant (proactive, cross-domain; READ-ONLY on calendar data) ──
+# Turns the passive Event calendar (gcal / bcourses / canvas / model) into proactive
+# heartbeat material. Every piece below is a heartbeat standing-condition / _proactive_
+# context addition weighed by the SAME decide() call and routed through the SAME
+# guardrail_reason (daily cap, quiet hours, anti-stack, in_class, calendar_block) —
+# there is no second scheduler and no new send path. All read-only on the Event store:
+# nothing here writes an event or touches the gcal/bcourses/canvas SYNC path or the
+# google_health WRITE path. Fail-open: any error or missing calendar data → the signal
+# is None / empty and the tick is byte-for-byte what it is today. ON by default,
+# mirroring the other heartbeat gates (HEARTBEAT_WEARABLE_AWARE_ENABLED etc.).
+# CALENDAR_ASSISTANT_ENABLED is the master kill switch; each feature also has its own.
+CALENDAR_ASSISTANT_ENABLED = os.getenv("CALENDAR_ASSISTANT_ENABLED", "true").lower() == "true"
+# Feature 1 — deadline radar: surface upcoming deadlines + clusters into context.
+CALENDAR_DEADLINE_RADAR_ENABLED = os.getenv("CALENDAR_DEADLINE_RADAR_ENABLED", "true").lower() == "true"
+# Feature 2 — schedule-aware training: surface free_blocks as candidate gym windows,
+# and on high_load ease intensity + hold demanding training-gap nudges (soft gate).
+CALENDAR_SCHEDULE_TRAINING_ENABLED = os.getenv("CALENDAR_SCHEDULE_TRAINING_ENABLED", "true").lower() == "true"
+# Feature 3 — exam/deadline-aware tone + recovery: on high_load, prioritise sleep,
+# soften accountability, offer stress/recovery support (combines with _recovery_signal).
+CALENDAR_HIGH_LOAD_TONE_ENABLED = os.getenv("CALENDAR_HIGH_LOAD_TONE_ENABLED", "true").lower() == "true"
+# Feature 4 — daily briefing: a concise morning rundown (classes + due dates + a
+# suggested gym window + nutrition status) extending the existing MORNING OPEN condition.
+CALENDAR_DAILY_BRIEFING_ENABLED = os.getenv("CALENDAR_DAILY_BRIEFING_ENABLED", "true").lower() == "true"
+# Feature 5 — meal timing around schedule: when back-to-back blocks leave no eating gap.
+CALENDAR_MEAL_TIMING_ENABLED = os.getenv("CALENDAR_MEAL_TIMING_ENABLED", "true").lower() == "true"
+# Feature 6 — deadline-driven reminders: let the coach OFFER to remind/block study time
+# (set via the existing reminders mechanism; offer only, never an auto-spam).
+CALENDAR_DEADLINE_REMINDERS_ENABLED = os.getenv("CALENDAR_DEADLINE_REMINDERS_ENABLED", "true").lower() == "true"
+# Tunables (guardrail class where relevant — the cluster/exam windows).
+CALENDAR_FREE_BLOCK_MIN_MINUTES = int(os.getenv("CALENDAR_FREE_BLOCK_MIN_MINUTES", "60"))   # min gap = candidate window
+CALENDAR_FREE_BLOCK_HORIZON_HOURS = int(os.getenv("CALENDAR_FREE_BLOCK_HORIZON_HOURS", "36"))  # today + tomorrow
+CALENDAR_DEADLINE_DAYS = int(os.getenv("CALENDAR_DEADLINE_DAYS", "14"))                     # deadline_items horizon
+CALENDAR_HIGH_LOAD_HOURS = int(os.getenv("CALENDAR_HIGH_LOAD_HOURS", "48"))                 # exam/cluster window
+CALENDAR_HIGH_LOAD_CLUSTER = int(os.getenv("CALENDAR_HIGH_LOAD_CLUSTER", "3"))              # N deadlines in-window = dense
+# Eating-gap threshold for meal-timing: a run of back-to-back blocks longer than this
+# with no free gap ≥ the free-block minimum means "eat before it".
+CALENDAR_MEAL_TIMING_BLOCK_HOURS = float(os.getenv("CALENDAR_MEAL_TIMING_BLOCK_HOURS", "3.5"))
+
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent
 # cross-night drift. All default off/safe.
