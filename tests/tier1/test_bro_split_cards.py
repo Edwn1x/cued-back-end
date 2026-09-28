@@ -210,7 +210,7 @@ def test_pasted_bro_split_routine_keeps_body_part_days_and_their_order(db, anthr
     anthropic_stub.reply_with(lambda kw: json.dumps(parsed))
     u = make_user(db, current_split="bro_split")
     r = save_routine(u.id, "back/tris\nlat pulldown 4x10\nskullcrushers 3x12\nchest/bis\nbench 4x6\nhammer curls 3x10\nlegs+shoulders\nsquat 4x6", source="model")
-    assert r == {"days": {"back_triceps": 2, "chest_biceps": 2, "legs_shoulders": 1}, "split": "bro_split"}
+    assert r["days"] == {"back_triceps": 2, "chest_biceps": 2, "legs_shoulders": 1} and r["split"] == "bro_split"
     db.expire_all(); u = db.get(User, u.id)
     assert u.split_days == ["back_triceps", "chest_biceps", "legs_shoulders"]          # the order they pasted
     assert [t.slug for t in day_template(u, "chest_biceps")] == ["bench_press", "hammer_curls"]

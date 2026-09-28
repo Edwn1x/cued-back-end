@@ -176,10 +176,13 @@ def test_start_session_card_refused_falls_to_exercise_messages(db, imessage_on, 
 
 def test_start_tool_result_tells_the_model_to_stay_silent(db, imessage_on, sidecar_ok, card_ok):
     from agent_tools import dispatch_tool
-    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    # legs is THEIR saved day → the silent contract holds (a no-routine day now offers capture
+    # instead, covered in test_routine_capture_fix).
+    legs = [{"slug": "squat", "label": "squat", "sets": 4, "reps": 5, "default_weight": 155, "plate_step": 10}]
+    user = make_user(db, preferred_channel="imessage", custom_templates={"legs": legs}, **FOUNDER)
     assert dispatch_tool("start_workout_session", {"template_key": "tuesday"}, user.id).startswith("error: unknown template")
     out = dispatch_tool("start_workout_session", {}, user.id)
-    assert out.startswith("ok: legs session #") and "sent as a card (16 sets)" in out and out.endswith("Reply with exactly [silent].")
+    assert out.startswith("ok: legs session #") and "sent as a card (4 sets)" in out and out.endswith("Reply with exactly [silent].")
     # A second start replaces the empty active session instead of dead-ending (gym-deadlock fix).
     assert dispatch_tool("start_workout_session", {}, user.id).startswith("ok: ")
 

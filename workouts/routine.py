@@ -58,10 +58,12 @@ Rules:
 - Keep the days in the ORDER they were written.
 - If the same key appears twice (a high-volume and a low-volume week), keep the FIRST occurrence.
 - For each exercise: name (as written, cleaned), sets (int), reps (int; for a range like "8-10" use the low end; for a time like "1 min" or "3 min song" give seconds as reps and set "timed": true), and "bodyweight": true for pull ups, planks, dead hangs, dips, push ups, hanging/ab work with no load, forearm squeezes.
-- Ignore warm-up notes, "(goal x10)", "+ (warmup)", runs, swims, and "rest day" lines.
+- ALTERNATIVES ARE ONE MOVEMENT, NOT SEVERAL. When the user lists options for a single slot — "ez bar curls OR seated db curls OR cable curls", "either lat pulldown or pull ups", "rotate between X and Y", "X / Y / Z (pick one)" — they do ONE of them per session, so return a SINGLE exercise object: set "name" to the first option and add "options": ["<first option>", "<second>", "<third>", ...] listing every alternative in order. Do NOT emit one object per option. This is different from a comma/newline LIST of distinct exercises they all do ("lat pulldown, seated rows, back extensions") — those are separate objects.
+- A movement the user names as a WARM-UP is still an exercise: "start off with pull ups to warm up", "begin with face pulls", "warm up with light rows" → keep it as the FIRST object of that day (use 2 sets and, if reps aren't given, 10 reps). Only DROP vague warm-up lines with no named movement ("warm up first", "5 min bike", "stretch, then lift") and "(warmup)"/"(goal x10)" tags appended to another exercise.
+- If sets or reps aren't stated for a movement, leave them out (omit the key) rather than guessing — code fills a sensible default. Ignore "(goal x10)", runs, swims, and "rest day" lines.
 - Keep the order as written.
 
-Return: {{"days": {{"push": [{{"name": "...", "sets": 3, "reps": 10, "bodyweight": false, "timed": false}}, ...], "pull": [...], ...}}}}"""
+Return: {{"days": {{"push": [{{"name": "...", "sets": 3, "reps": 10, "bodyweight": false, "timed": false}}, ...], "pull": [{{"name": "ez bar curl", "options": ["ez bar curl", "seated db curl", "cable curl"], "sets": 3, "reps": 10}}, ...], ...}}}}"""
 
 
 # Conservative starting loads for movements the global templates don't know. Plate-
@@ -158,18 +160,64 @@ def _starting_load(name: str) -> tuple[float, float]:
     return 30.0, 5.0
 
 
-def _row(ex: dict) -> dict | None:
-    name = str(ex.get("name") or "").strip()
+# set_logs.exercise_label is VARCHAR(60); keep the folded-alternatives label under it so a
+# session card can be built (a longer label would fail the INSERT). Extras elide with "…".
+_ALT_LABEL_MAX = 56
+
+
+def _alt_label(primary: str, options) -> str | None:
+    """"A or B or C" → one slot's label: "a (or b / c)". The primary movement drives the
+    slug/weights; the alternatives ride along in the label so the card, describe_routine and
+    the reflect-back all show them, without exploding into N slots. Length-capped."""
+    if not config.ROUTINE_ALTERNATIVES_ENABLED or not isinstance(options, list):
+        return None
+    seen, opts = set(), []
+    for o in options:
+        s = str(o or "").strip().lower()
+        if s and s not in seen:
+            seen.add(s)
+            opts.append(s)
+    alts = [o for o in opts if o != (primary or "").strip().lower()]
+    if not alts:
+        return None
+    label = f"{(primary or '').strip().lower()} (or {' / '.join(alts)})"
+    if len(label) > _ALT_LABEL_MAX:                       # keep as many alternatives as fit
+        kept = []
+        for a in alts:
+            trial = f"{(primary or '').strip().lower()} (or {' / '.join(kept + [a])} …)"
+            if len(trial) > _ALT_LABEL_MAX and kept:
+                break
+            kept.append(a)
+        label = f"{(primary or '').strip().lower()} (or {' / '.join(kept)}{' …' if len(kept) < len(alts) else ''})"
+    return label
+
+
+def _int_or_default(raw, default: int):
+    """Missing/None → the default (a dictated routine rarely states counts); a present but
+    unparseable value ("lots") → None so the row is dropped as malformed."""
+    if raw is None:
+        return default if config.ROUTINE_DEFAULT_SETS_REPS_ENABLED else 0
     try:
-        sets, reps = int(ex.get("sets") or 0), int(ex.get("reps") or 0)
+        return int(raw)
     except (TypeError, ValueError):
         return None
-    if not name or sets <= 0 or reps <= 0:
+
+
+def _row(ex: dict) -> dict | None:
+    name = str(ex.get("name") or "").strip()
+    if not name:
         return None
     bodyweight, timed = bool(ex.get("bodyweight")), bool(ex.get("timed"))
-    label = name.lower()
+    # timed work is measured in seconds; don't invent a default duration.
+    sets = _int_or_default(ex.get("sets"), config.ROUTINE_DEFAULT_SETS)
+    reps = _int_or_default(ex.get("reps"), 0 if timed else config.ROUTINE_DEFAULT_REPS)
+    if sets is None or reps is None or sets <= 0 or reps <= 0:
+        return None
+    alt = _alt_label(name, ex.get("options"))
+    label = alt or name.lower()
     if timed and "sec" not in label:
         label = f"{label} (sec)"
+    label = label[:60]                      # set_logs.exercise_label is VARCHAR(60); never overflow the card insert
     # A slug the global templates know keeps its history/plate-step contract — but
     # only through the explicit alias table (see _GLOBAL_ALIASES / _ALIAS_BLOCKERS).
     slug = _global_slug_for(name) or _slugify(name)
@@ -368,9 +416,13 @@ def save_routine(user_id: int, text: str, *, source: str) -> dict:
             flag_modified(user, "split_days")
         session.commit()
         summary = {k: len(v) for k, v in valid.items()}
+        # The ACTUAL saved exercises per day (read back from the validated template, the same
+        # reader the card uses) so the coach reflects the real list — a dropped warmup or a
+        # collapsed set of alternatives is visible instead of a blind "that's your card now".
+        exercises = {k: [e.label for e in valid[k]] for k in valid}
         logger.info("ROUTINE_SAVED user=%s source=%s days=%s split=%s cycle=%s",
                     user_id, source, summary, user.current_split, user.split_days)
-        return {"days": summary, "split": user.current_split}
+        return {"days": summary, "split": user.current_split, "exercises": exercises}
     finally:
         session.close()
 

@@ -283,7 +283,18 @@ remembering; saying it back to the user saves nothing.
 - **Their own routine, pasted or described** (days + exercises + sets×reps, "this is what I
   do") → **save_routine** so their cards show THEIR program. Code sets the starting weights
   from what they've said they lift and their stats; they can fix any number on the card.
-  Don't rebuild it from memory later.
+  Don't rebuild it from memory later. When a movement has ALTERNATIVES they rotate ("ez bar
+  curls or cable curls or two-hand curls", "either pulldowns or pull ups") that's ONE slot,
+  not three — pass it as they said it and code stores a single slot whose label carries the
+  options. A movement they name as a warm-up ("start with pull ups") is the first exercise,
+  not a throwaway. After it saves, the tool hands you the EXACT saved list — read it back to
+  them ("saved: pull ups, then ez bar / cable curls, lat pulldown, rows…") so they can catch a
+  dropped warmup or a mangled option; never just say "that's your card now" without showing it.
+- **They ask for a card / to start a day and NO routine is on file for it** (your context says
+  "THEIR ROUTINE: none on file", or start_workout_session tells you the card is starting
+  defaults) → the card that goes out is GENERIC defaults, not their exercises. Say so in one
+  line and ask what they actually run that day, then **save_routine** it. A default card is
+  fine as a starting point — just don't pass it off as their real routine.
 - **A working weight they state** ("i bench 135", "squat's around 185 for 5", "ohp 95") →
   **set_lift_anchors**, never remember. That's what their first card is built from (bench
   sets incline / fly / pushdown too). A goal ("wanna hit 225") is not an anchor.

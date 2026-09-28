@@ -135,6 +135,23 @@ ROUTINE_PARSE_MAX_TOKENS = int(os.getenv("ROUTINE_PARSE_MAX_TOKENS", "8000"))
 # Even 8000 can truncate a truly huge paste; when it does, salvage the day-objects that
 # parsed fully instead of returning {} (all-or-nothing) and losing the whole routine.
 ROUTINE_PARSE_SALVAGE_ENABLED = os.getenv("ROUTINE_PARSE_SALVAGE_ENABLED", "true").lower() == "true"
+# routine-capture-fix (2026-09-27, live incident user 31): a dictated pull day saved WRONG —
+# four bicep OPTIONS ("ez bar OR seated db OR cable bayesian OR two-hand") became four separate
+# curl slots on every card, and the stated "pull ups to warm up" first slot was dropped.
+# ROUTINE_ALTERNATIVES_ENABLED: "A or B or C" for one movement is ONE slot whose label carries
+# the alternatives ("ez bar curl (or cable curl / two-hand cable curl)"), never N slots.
+ROUTINE_ALTERNATIVES_ENABLED = os.getenv("ROUTINE_ALTERNATIVES_ENABLED", "true").lower() == "true"
+# ROUTINE_DEFAULT_SETS_REPS_ENABLED: a dictated routine ("lat pulldown, seated rows, back
+# extensions") often has no sets×reps — default a MISSING count to 3×10 so the movement is
+# captured, not dropped. A present-but-unparseable count ("lots") stays malformed → dropped.
+ROUTINE_DEFAULT_SETS_REPS_ENABLED = os.getenv("ROUTINE_DEFAULT_SETS_REPS_ENABLED", "true").lower() == "true"
+ROUTINE_DEFAULT_SETS = int(os.getenv("ROUTINE_DEFAULT_SETS", "3"))
+ROUTINE_DEFAULT_REPS = int(os.getenv("ROUTINE_DEFAULT_REPS", "10"))
+# ROUTINE_CAPTURE_OFFER_ENABLED: when a card falls back to the GENERIC default for a day the
+# user has no saved routine for, surface that state (loop context + start_workout_session tool
+# result) so the coach labels it "starting defaults" and offers to capture their real exercises,
+# instead of silently claiming the generic card is theirs.
+ROUTINE_CAPTURE_OFFER_ENABLED = os.getenv("ROUTINE_CAPTURE_OFFER_ENABLED", "true").lower() == "true"
 # Post-turn memory extraction (app.extract_and_store_memory): same story, same fix.
 # Live 2026-09-11 (user 27) on Haiku: constraints=["messed up"] clipped from a sentence
 # (constraints render into EVERY prompt), "Thursday, Sep 12, 2026" (a Saturday) for

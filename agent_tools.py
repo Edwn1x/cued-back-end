@@ -322,6 +322,16 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
     if r.get("first"):
         first = (" First card: the intro already told them the weights are a guess from their stats they can edit."
                  if r.get("estimated") else " First card: the intro already said the weights are from what they told you.")
+    if r.get("used_default"):
+        # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
+        # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
+        # to capture the real ones is the whole point (live incident user 31: generic pull card
+        # passed off as "their card").
+        return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
+                f"NO routine on file for {r['template_key']} — these are STARTING DEFAULT exercises, not their "
+                f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
+                f"{r['template_key']} day so you can save it (save_routine). Don't call it 'their card' and don't "
+                f"reply [silent].")
     return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
             f"Reply with exactly [silent].")
 
@@ -1205,8 +1215,15 @@ def handle_save_routine(user_id: int, tool_input: dict, *, message_id=None) -> s
     if "error" in r:
         return f"error: {r['error']}"
     days = ", ".join(f"{k} ({n} exercises)" for k, n in r["days"].items())
-    return (f"ok: routine saved to their cards — {days}; split={r['split']}. Weights are placeholders "
-            f"until they log real sets — tell them that.")
+    # Reflect back the ACTUAL saved exercises (read from the template) so a mismatch — a dropped
+    # warmup, alternatives that got mangled — is visible, not hidden behind "that's your card now".
+    exercises = r.get("exercises") or {}
+    detail = "; ".join(f"{day_label(k)}: {', '.join(labels)}" for k, labels in exercises.items())
+    reflect = (f" Here's EXACTLY what saved — read it back to them so they can catch anything wrong "
+               f"(a missing warmup, alternatives that should be one slot): {detail}." if detail else "")
+    return (f"ok: routine saved to their cards — {days}; split={r['split']}.{reflect} Weights are "
+            f"placeholders until they log real sets — tell them that. Don't claim it's right without "
+            f"reflecting the real list back.")
 
 
 def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:

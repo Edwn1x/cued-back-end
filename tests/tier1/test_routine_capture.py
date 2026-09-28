@@ -124,7 +124,9 @@ def test_save_routine_merges_by_day_and_sets_the_split(db, anthropic_stub):
     u = make_user(db, current_split=None, custom_templates={"upper": [{"slug": "x", "label": "x", "sets": 3, "reps": 8, "default_weight": 50}]})
     anthropic_stub.reply_with(lambda kw: json.dumps(PARSED))
     r = save_routine(u.id, ALEX_PASTE, source="model")
-    assert r == {"days": {"upper": 1, "push": 7, "pull": 3, "legs": 3}, "split": "ppl"}  # upper kept
+    assert r["days"] == {"upper": 1, "push": 7, "pull": 3, "legs": 3} and r["split"] == "ppl"  # upper kept
+    # the return also carries the ACTUAL saved exercises per day (for the reflect-back)
+    assert r["exercises"]["push"][:2] == ["dumbbell incline press", "shoulder press"]
     db.expire_all(); u = db.get(User, u.id)
     assert set(u.custom_templates) == {"upper", "push", "pull", "legs"}   # upper kept, days merged
     assert u.current_split == "ppl"

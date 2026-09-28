@@ -210,6 +210,11 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
                 old.status = "abandoned"
                 session.commit()
             logger.info("WORKOUT_SESSION_REPLANNED user=%s old=%s key=%s", user_id, reuse_from, key)
+        # No saved routine for this day → the card is the GENERIC default. Surface it so the
+        # coach labels it "starting defaults" and offers to capture their real exercises,
+        # instead of silently passing off the default day as theirs (live incident user 31).
+        from workouts.templates import custom_templates_for
+        used_default = bool(config.ROUTINE_CAPTURE_OFFER_ENABLED and key not in custom_templates_for(user))
         phone, workout_time = user.phone, user.workout_time
     finally:
         session.close()
@@ -259,7 +264,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s",
                 user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
-            "first": first, "estimated": estimated, "setup": setup}
+            "first": first, "estimated": estimated, "setup": setup, "used_default": used_default}
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,
