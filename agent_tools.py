@@ -2516,6 +2516,51 @@ def handle_lookup_events(user_id: int, tool_input: dict, *, message_id=None) -> 
     return "ok: found:\n" + "\n".join(_fmt(e) for e in rows)
 
 
+SCHEDULE_RUNDOWN_TOOL = {
+    "name": "schedule_rundown",
+    "description": (
+        "Get a COMPLETE, day-by-day rundown of the user's schedule for a window — use it "
+        "for EVERY multi-day / 'what do I have' schedule question: 'what's my week', 'rest "
+        "of the week', 'this week', 'next week', 'what's due', 'what do I have Friday', or "
+        "an N-day span. The rundown is built in CODE from their full connected calendar "
+        "(gcal / bcourses / canvas / things you logged): every event grouped by their local "
+        "day, duplicate calendar copies merged, recurring classes collapsed, and — critically "
+        "— EVERY deadline enumerated in a dedicated section that is never trimmed. RELAY what "
+        "it returns as the answer (you may lightly reword the intro, but keep every day and "
+        "every deadline). This is how you avoid listing the first few days and dropping the "
+        "tail. `window` = the phrase they used ('rest of the week', 'this week', 'next week', "
+        "'today', 'tomorrow', 'what's due'); `days` = an explicit N-day span if they gave a "
+        "number. Returns finished text, or an honest 'nothing on your calendar' when empty."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "window": {"type": "string",
+                       "description": "the window phrase, e.g. 'rest of the week', 'this week', "
+                                      "'next week', 'today', 'tomorrow', 'what's due'"},
+            "days": {"type": "integer", "description": "explicit N-day span (optional)"},
+        },
+    },
+}
+
+
+def handle_schedule_rundown(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: hand the coach a deterministic, complete, deadline-safe rundown for the
+    requested window so the answer's completeness never depends on model summarization."""
+    from schedule import build_rundown
+    ti = tool_input or {}
+    window = ti.get("window")
+    if isinstance(window, str):
+        window = window.strip() or None
+    days = ti.get("days")
+    try:
+        days = int(days) if days is not None else None
+    except (TypeError, ValueError):
+        days = None
+    text = build_rundown(user_id, window, days=days)
+    return "ok: relay this rundown as-is (keep every day + every deadline):\n" + text
+
+
 SET_CARD_DELIVERY_TOOL = {
     "name": "set_card_delivery",
     "description": (
@@ -2711,6 +2756,7 @@ _HANDLERS = {
     "save_menu": handle_save_menu,
     "set_card_delivery": handle_set_card_delivery,
     "lookup_events": handle_lookup_events,
+    "schedule_rundown": handle_schedule_rundown,
     "send_connect_link": handle_send_connect_link,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,

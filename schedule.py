@@ -347,3 +347,296 @@ def high_load_soon(user_id: int, session=None, *, now=None, items: list[Deadline
     except Exception as e:  # noqa: BLE001
         logger.warning("HIGH_LOAD_SOON_FAILED user=%s err=%s", user_id, e)
         return False
+
+
+# ─── deterministic rundown ──────────────────────────────────────────────────────
+#
+# The rundown is the fix for the 2026-09-28 "rest of the week" bug: the model had all
+# 21 events in context (incl. a Friday CS61C deadline + the weekend) but truncated the
+# list for brevity, dropped the tail, and asserted "that's the week." Nothing was
+# missing from the DATA — completeness was left to model summarization and it failed.
+#
+# So completeness is computed HERE, in code, and handed to the coach as finished text:
+#   • ALL deadlines in the window are enumerated in a dedicated section and can NEVER
+#     be dropped (a message-length cap only ever trims *routine* one-off events).
+#   • events are grouped by the user's LOCAL day (naive-UTC storage → user tz), so a
+#     late-night event can't land on the wrong calendar day (this repo's recurring
+#     UTC-vs-local bug).
+#   • duplicate copies of the same event across calendars are de-duplicated.
+#   • recurring classes/blocks collapse to one "Mon/Wed/Fri 11–12" line instead of
+#     being listed under every day.
+# Read-only over the Event store; fail-open (any error → an honest short string).
+
+_RUNDOWN_DEFAULT_DAYS = 7
+
+
+@dataclass
+class RundownEvent:
+    id: int
+    title: str
+    start: datetime            # naive UTC
+    end: datetime | None       # naive UTC (effective end may differ; see event_end)
+    all_day: bool
+    is_deadline: bool
+    is_exam: bool
+    passed: bool
+    source: str
+
+
+def _to_local(user, dt: datetime):
+    from timefmt import to_local
+    return to_local(dt, user)
+
+
+def _fmt_hm(user, dt: datetime) -> str:
+    return _to_local(user, dt).strftime("%-I:%M %p").lstrip("0")
+
+
+def _fmt_daylabel(user, dt: datetime) -> str:
+    d = _to_local(user, dt)
+    return f"{d:%a %b} {d.day}"
+
+
+def _fmt_span(user, e: RundownEvent) -> str:
+    if e.all_day:
+        return "all day"
+    if e.end and e.end > e.start:
+        return f"{_fmt_hm(user, e.start)}–{_fmt_hm(user, e.end)}"
+    return _fmt_hm(user, e.start)
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (t or "").lower())
+
+
+def _local_midnight_utc(tz: ZoneInfo, d) -> datetime:
+    return datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def resolve_window(phrase: str, user, *, days: int = None, now=None) -> tuple[datetime, datetime, str, bool]:
+    """Map a natural window phrase → (lo, hi) naive-UTC bounds, a human label, and a
+    `deadlines_only` flag. Sensible defaults: "this week"/"rest of the week" run through
+    the coming Sunday (local); an unrecognised phrase → the next
+    config.SCHEDULE_RUNDOWN_DEFAULT_DAYS days. An explicit `days` always wins."""
+    now_utc = _now_naive_utc(now)
+    tz = _tz(user)
+    today = now_utc.replace(tzinfo=timezone.utc).astimezone(tz).date()
+
+    def mid(d):
+        return _local_midnight_utc(tz, d)
+
+    if days:
+        d = max(1, int(days))
+        return now_utc, now_utc + timedelta(days=d), f"the next {d} days", False
+
+    p = (phrase or "").strip().lower()
+    wd = today.weekday()                                  # Mon=0 … Sun=6
+    next_monday = today + timedelta(days=(7 - wd) or 7)   # start of next week (local)
+
+    if "next week" in p:
+        return mid(next_monday), mid(next_monday + timedelta(days=7)), "next week", False
+    if "rest of" in p and ("week" in p or "day" not in p):
+        return mid(today), mid(next_monday), "the rest of the week", False
+    if "tomorrow" in p:
+        d = today + timedelta(days=1)
+        return mid(d), mid(d + timedelta(days=1)), "tomorrow", False
+    if "today" in p or "tonight" in p:
+        return mid(today), mid(today + timedelta(days=1)), "today", False
+    if "week" in p:                                       # "this week" / "my week"
+        return mid(today), mid(next_monday), "this week", False
+    if "due" in p or "deadline" in p:                     # "what's due" (no week word)
+        d = config.CALENDAR_DEADLINE_DAYS
+        return now_utc, now_utc + timedelta(days=d), "what's due", True
+
+    d = config.SCHEDULE_RUNDOWN_DEFAULT_DAYS
+    return now_utc, now_utc + timedelta(days=d), f"the next {d} days", False
+
+
+def _any_calendar_connected(user_id: int, session) -> bool:
+    """Read-only: does the user have any connected calendar provider (gcal/bcourses/
+    canvas)? Distinguishes "nothing scheduled" from "you never connected a calendar"."""
+    try:
+        from models import Integration
+        row = (session.query(Integration)
+               .filter(Integration.user_id == user_id,
+                       Integration.provider.in_(("gcal", "bcourses", "canvas")),
+                       Integration.status == "connected")
+               .first())
+        return row is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def collect_rundown(user_id: int, *, lo: datetime, hi: datetime, now=None, session=None) -> list[RundownEvent]:
+    """All active calendar events overlapping [lo, hi), de-duplicated across calendars,
+    sorted by start. Dedup key = (local day, local start clock / all-day, normalised
+    title) — this collapses the two gcal copies of an event into one. Read-only; []
+    on error."""
+    own = session is None
+    try:
+        from models import get_session, active, Event
+        session = session or get_session()
+        now_utc = _now_naive_utc(now)
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source.in_(CALENDAR_SOURCES),
+                        Event.occurred_at.isnot(None),
+                        Event.occurred_at >= lo,
+                        Event.occurred_at < hi)
+                .order_by(Event.occurred_at).limit(500).all())
+        out: list[RundownEvent] = []
+        seen: set = set()
+        for e in rows:
+            is_dl, is_exam = _is_deadline(e)
+            title = (getattr(e, "title", None) or getattr(e, "raw_text", None)
+                     or getattr(e, "event_type", None) or "event").strip()[:160]
+            all_day = bool(getattr(e, "all_day", False))
+            # dedup key: same instant (naive UTC == same local instant) + title. All-day
+            # copies key on the date; timed copies on the exact start.
+            key = (e.occurred_at.date() if all_day else None,
+                   None if all_day else e.occurred_at.replace(microsecond=0),
+                   all_day, _norm_title(title))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(RundownEvent(
+                id=e.id, title=title, start=e.occurred_at,
+                end=getattr(e, "ends_at", None), all_day=all_day,
+                is_deadline=is_dl, is_exam=is_exam,
+                passed=(event_end(e) < now_utc), source=e.source))
+        return out
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("COLLECT_RUNDOWN_FAILED user=%s err=%s", user_id, ex)
+        return []
+    finally:
+        if own and session is not None:
+            session.close()
+
+
+def _split_recurring(user, events: list[RundownEvent]) -> tuple[list, list[RundownEvent]]:
+    """Partition non-deadline events into (recurring_groups, one_off). A group is
+    recurring when the same title at the same local clock time appears on ≥2 distinct
+    local days in the window — collapse it to one 'Mon/Wed/Fri 11–12' line instead of
+    listing it under every day. Deadlines are never passed in here."""
+    from collections import OrderedDict
+    groups: "OrderedDict[tuple, list[RundownEvent]]" = OrderedDict()
+    for e in events:
+        local = _to_local(user, e.start)
+        clock = "allday" if e.all_day else local.strftime("%H:%M")
+        groups.setdefault((_norm_title(e.title), clock), []).append(e)
+
+    recurring, one_off = [], []
+    for _key, evs in groups.items():
+        local_days = sorted({_to_local(user, e.start).date() for e in evs})
+        if len(local_days) >= 2:
+            reps = sorted(evs, key=lambda e: e.start)
+            wds = [_to_local(user, e.start) for e in reps]
+            # unique weekday abbreviations in week order
+            seen_wd, day_abbr = set(), []
+            for w in sorted(wds, key=lambda d: (d.weekday())):
+                a = w.strftime("%a")
+                if a not in seen_wd:
+                    seen_wd.add(a)
+                    day_abbr.append(a)
+            recurring.append({
+                "title": reps[0].title,
+                "days_str": "/".join(day_abbr),
+                "time_str": _fmt_span(user, reps[0]),
+            })
+        else:
+            one_off.extend(evs)
+    return recurring, one_off
+
+
+def format_rundown(user, events: list[RundownEvent], *, label: str, lo: datetime,
+                   hi: datetime, now=None, deadlines_only: bool = False) -> str:
+    """Render a complete, day-grouped rundown. Deadlines are ALWAYS enumerated in full;
+    only routine one-off events are ever capped (config.SCHEDULE_RUNDOWN_MAX_EVENTS)."""
+    lo_l = _to_local(user, lo)
+    hi_l = _to_local(user, hi - timedelta(seconds=1))
+    rng = f"{lo_l:%a %b} {lo_l.day}"
+    if (hi_l.year, hi_l.month, hi_l.day) != (lo_l.year, lo_l.month, lo_l.day):
+        rng += f" – {hi_l:%a %b} {hi_l.day}"
+    lines = [f"{label} ({rng}):"]
+
+    deadlines = sorted([e for e in events if e.is_deadline], key=lambda e: e.start)
+    others = [e for e in events if not e.is_deadline]
+
+    if deadlines:
+        lines.append("")
+        lines.append("deadlines:")
+        for e in deadlines:
+            day = _fmt_daylabel(user, e.start)
+            mark = " (passed)" if e.passed else ""
+            if e.all_day:
+                lines.append(f"• {day} — {e.title}{mark}")
+            else:
+                lines.append(f"• {day}, {_fmt_hm(user, e.start)} — {e.title}{mark}")
+
+    if deadlines_only:
+        return "\n".join(lines)
+
+    recurring, one_off = _split_recurring(user, others)
+    if recurring:
+        lines.append("")
+        lines.append("regular:")
+        for g in recurring:
+            lines.append(f"• {g['title']} — {g['days_str']} {g['time_str']}")
+
+    if one_off:
+        cap = config.SCHEDULE_RUNDOWN_MAX_EVENTS
+        one_off = sorted(one_off, key=lambda e: e.start)
+        overflow = 0
+        if len(one_off) > cap:
+            overflow = len(one_off) - cap
+            one_off = one_off[:cap]
+        # group by local day, preserving chronological order
+        from collections import OrderedDict
+        by_day: "OrderedDict[tuple, list[RundownEvent]]" = OrderedDict()
+        for e in one_off:
+            d = _to_local(user, e.start)
+            by_day.setdefault((d.year, d.month, d.day), []).append(e)
+        for (_y, _m, _d), evs in by_day.items():
+            lines.append("")
+            lines.append(f"{_fmt_daylabel(user, evs[0].start)}:")
+            for e in evs:
+                mark = " (passed)" if e.passed else ""
+                lines.append(f"• {_fmt_span(user, e)} — {e.title}{mark}")
+        if overflow:
+            lines.append(f"• (+{overflow} more)")
+
+    return "\n".join(lines)
+
+
+def build_rundown(user_id: int, phrase: str = None, *, days: int = None,
+                  now=None, session=None) -> str:
+    """The one entry point the coach's tool calls: a COMPLETE, day-grouped, deadline-
+    safe rundown for the requested window, as finished text to relay. Honest on an empty
+    window; offers to connect if no calendar is linked at all. Read-only; fail-open."""
+    if not config.SCHEDULE_RUNDOWN_ENABLED:
+        return ""
+    own = session is None
+    try:
+        from models import get_session, User
+        session = session or get_session()
+        user = session.get(User, user_id)
+        if not user:
+            return "i can't see your calendar right now."
+        lo, hi, label, deadlines_only = resolve_window(phrase, user, days=days, now=now)
+        events = collect_rundown(user_id, lo=lo, hi=hi, now=now, session=session)
+        if deadlines_only:
+            events = [e for e in events if e.is_deadline]
+        if not events:
+            if not _any_calendar_connected(user_id, session):
+                return ("your calendar isn't connected yet, so i can't see your schedule — "
+                        "want me to send the link to hook it up?")
+            if deadlines_only:
+                return f"nothing due in {label}."
+            return f"nothing on your calendar for {label}."
+        return format_rundown(user, events, label=label, lo=lo, hi=hi,
+                              now=now, deadlines_only=deadlines_only)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BUILD_RUNDOWN_FAILED user=%s err=%s", user_id, e)
+        return "i hit a snag pulling your schedule — try me again in a sec?"
+    finally:
+        if own and session is not None:
+            session.close()
