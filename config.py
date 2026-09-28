@@ -486,6 +486,29 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 # Fail-open: with GOOGLE_HEALTH_ENABLED off, no wearable rows, or stale data it is inert
 # (behaviour identical to today). ON by default, mirroring the other heartbeat gates.
 HEARTBEAT_WEARABLE_AWARE_ENABLED = os.getenv("HEARTBEAT_WEARABLE_AWARE_ENABLED", "true").lower() == "true"
+
+# ─── Recovery thresholds (SHARED by both surfaces) ────────────────────────────
+# The wearable "recovery" read used to be ONE-SIDED: the coach only flagged recovery
+# when WORSE than baseline (soften/hold a nudge), never when genuinely BETTER. These
+# constants define BOTH sides symmetrically and are read by BOTH surfaces so they always
+# agree:
+#   • REACTIVE  — integrations/google_health_sync.wearable_context (the `## WEARABLE` block)
+#   • PROACTIVE — wearable_read.recovery_read → heartbeat._recovery_signal (`## RECOVERY`)
+# "worse than baseline":  resting HR >= avg + RHR_WORSE_DELTA  OR  HRV <= avg * HRV_WORSE_RATIO.
+# "better / strong recovery" mirrors it:  resting HR <= avg - RHR_BETTER_DELTA  OR
+#   HRV >= avg * HRV_BETTER_RATIO  OR  last-night sleep >= avg * SLEEP_BETTER_RATIO
+#   (with a GOOD_NIGHT_MIN absolute floor so a short night above a low baseline never counts).
+# BETTER_RECOVERY_ENABLED gates ONLY the new positive/"strong recovery" framing; the worse
+# side is untouched. Default ON, mirroring the other wearable gates. Fail-open: with no /
+# stale wearable data neither side fires (behaviour identical to today).
+BETTER_RECOVERY_ENABLED = os.getenv("BETTER_RECOVERY_ENABLED", "true").lower() == "true"
+RECOVERY_RHR_WORSE_DELTA = int(os.getenv("RECOVERY_RHR_WORSE_DELTA", "4"))        # resting HR >= avg + this (bpm)
+RECOVERY_RHR_BETTER_DELTA = int(os.getenv("RECOVERY_RHR_BETTER_DELTA", "4"))      # resting HR <= avg - this (bpm)
+RECOVERY_HRV_WORSE_RATIO = float(os.getenv("RECOVERY_HRV_WORSE_RATIO", "0.85"))   # HRV <= avg * this
+RECOVERY_HRV_BETTER_RATIO = float(os.getenv("RECOVERY_HRV_BETTER_RATIO", "1.15")) # HRV >= avg * this
+RECOVERY_SLEEP_BETTER_RATIO = float(os.getenv("RECOVERY_SLEEP_BETTER_RATIO", "1.05"))  # sleep >= avg * this
+RECOVERY_GOOD_NIGHT_MIN = int(os.getenv("RECOVERY_GOOD_NIGHT_MIN", "420"))        # absolute floor for a "good" night (min asleep)
+
 # When ON, the TDEE activity multiplier prefers a trailing average of REAL wearable
 # steps (wearable_read.recent_step_avg) over the static onboarding user.avg_steps,
 # for users with a connected wearable and recent data. DEFAULT OFF: this changes

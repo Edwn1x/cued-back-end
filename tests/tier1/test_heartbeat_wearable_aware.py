@@ -176,6 +176,46 @@ def test_recovery_signal_inert_without_rows_or_connection(db):
     assert _recovery_signal(db.get(User, other.id), db) is None
 
 
+def test_recovery_signal_strong_recovery_is_push_hook(db):
+    """A day better than baseline on all three markers (lower resting HR, higher HRV, more
+    sleep) reads GOOD and surfaces the positive push hook, not the poor soften/hold."""
+    from heartbeat import _recovery_signal
+    from models import User
+    user = make_user(db)
+    _connect(db, user.id)
+    _baseline_week(db, user.id)  # sleep 440, rhr 55, hrv 40
+    _day(db, user.id, _d(0), sleep_minutes=500, resting_hr=50, hrv_rmssd=48.0, steps=10500)
+    db.expire_all()
+    blk = _recovery_signal(db.get(User, user.id), db)
+    assert blk is not None and "GOOD" in blk
+    assert "better than baseline" in blk
+    assert "push" in blk.lower()
+    assert "POOR" not in blk
+
+
+def test_recovery_signal_strong_recovery_inert_when_better_flag_off(db, monkeypatch):
+    """With BETTER_RECOVERY_ENABLED off, a strong-recovery day is silent (pre-feature
+    behaviour: only the POOR side speaks) — but a POOR night still triggers soften/hold."""
+    from heartbeat import _recovery_signal
+    from models import User
+    monkeypatch.setattr(config, "BETTER_RECOVERY_ENABLED", False)
+    # good-recovery day → no signal when the better flag is off
+    good = make_user(db)
+    _connect(db, good.id)
+    _baseline_week(db, good.id)
+    _day(db, good.id, _d(0), sleep_minutes=500, resting_hr=50, hrv_rmssd=48.0, steps=10500)
+    db.expire_all()
+    assert _recovery_signal(db.get(User, good.id), db) is None
+    # poor night → still fires (the worse side is never gated by BETTER_RECOVERY_ENABLED)
+    poor = make_user(db)
+    _connect(db, poor.id)
+    _baseline_week(db, poor.id)
+    _day(db, poor.id, _d(0), sleep_minutes=300, resting_hr=55, hrv_rmssd=40.0, steps=4000)
+    db.expire_all()
+    blk = _recovery_signal(db.get(User, poor.id), db)
+    assert blk is not None and "POOR" in blk
+
+
 # ─── measured slept-in EXTENDS the standing quiet floor ───────────────────────
 
 @pytest.fixture

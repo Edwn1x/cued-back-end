@@ -290,3 +290,60 @@ def test_wearable_block_reaches_the_loop_context(db, monkeypatch):
     assert "## WEARABLE (fitbit)" in ctx and "## INTEGRATIONS\ngoogle_health connected" in ctx
     monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", False)
     assert "## WEARABLE" not in build_loop_context(u, db)
+
+
+# ─── symmetric "strong recovery" (better than baseline) — the reactive side ────
+
+def test_wearable_context_flags_strong_recovery_vs_baseline(db):
+    """A genuinely BETTER-than-baseline day (lower resting HR, higher HRV, more sleep than
+    the 7-day average) surfaces the positive 'recovery looks strong' hook — and never the
+    worse flag."""
+    from integrations.google_health_sync import wearable_context
+    from models import User
+    user = make_user(db)
+    _connected(db, user.id, updated_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=8))
+    for i in range(1, 7):
+        _day(db, user.id, _d(-i), steps=9000, resting_hr=56, hrv_rmssd=40.0, sleep_minutes=430)
+    _day(db, user.id, _d(0), steps=9200, resting_hr=50, hrv_rmssd=48.0, sleep_minutes=480,
+         sleep_start=_utc(f"{_d(-1)}T22:30:00"), sleep_end=_utc(f"{_d(0)}T06:30:00"))
+    db.expire_all()
+    ctx = wearable_context(db.get(User, user.id), db)
+    assert "recovery looks strong vs baseline" in ctx
+    assert "resting HR" in ctx and "HRV" in ctx and "sleep" in ctx  # all three markers listed
+    assert "good day to push" in ctx
+    assert "worse than their baseline" not in ctx
+
+
+def test_wearable_context_strong_recovery_inert_when_flag_off(db, monkeypatch):
+    """With BETTER_RECOVERY_ENABLED off the positive hook never renders (today's behaviour);
+    the worse side and the rest of the block are untouched."""
+    from integrations.google_health_sync import wearable_context
+    from models import User
+    monkeypatch.setattr(config, "BETTER_RECOVERY_ENABLED", False)
+    user = make_user(db)
+    _connected(db, user.id, updated_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=8))
+    for i in range(1, 7):
+        _day(db, user.id, _d(-i), steps=9000, resting_hr=56, hrv_rmssd=40.0, sleep_minutes=430)
+    _day(db, user.id, _d(0), steps=9200, resting_hr=50, hrv_rmssd=48.0, sleep_minutes=480,
+         sleep_start=_utc(f"{_d(-1)}T22:30:00"), sleep_end=_utc(f"{_d(0)}T06:30:00"))
+    db.expire_all()
+    ctx = wearable_context(db.get(User, user.id), db)
+    assert "recovery looks strong" not in ctx
+    assert ctx.startswith("## WEARABLE (fitbit)")  # block itself still renders
+
+
+def test_wearable_context_neutral_day_flags_neither(db):
+    """A middling day (HR/HRV/sleep all near baseline) surfaces neither the worse nor the
+    strong-recovery flag."""
+    from integrations.google_health_sync import wearable_context
+    from models import User
+    user = make_user(db)
+    _connected(db, user.id, updated_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=8))
+    for i in range(1, 7):
+        _day(db, user.id, _d(-i), steps=9000, resting_hr=55, hrv_rmssd=40.0, sleep_minutes=430)
+    _day(db, user.id, _d(0), steps=9100, resting_hr=55, hrv_rmssd=40.0, sleep_minutes=432,
+         sleep_start=_utc(f"{_d(-1)}T23:00:00"), sleep_end=_utc(f"{_d(0)}T06:12:00"))
+    db.expire_all()
+    ctx = wearable_context(db.get(User, user.id), db)
+    assert "recovery looks strong" not in ctx
+    assert "worse than their baseline" not in ctx
