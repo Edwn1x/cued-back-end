@@ -282,6 +282,18 @@ def build_loop_context(user, session) -> str:
     if card_line:
         parts.append(card_line)
 
+    # 4b. The in-progress session's REAL type + start + logged-set count. Kills the
+    # confabulation where the coach called the pull session it had just created "a push
+    # session from earlier" — it never saw the active session's actual template_key.
+    if config.ACTIVE_SESSION_CONTEXT_ENABLED:
+        try:
+            from workouts.session_ops import active_session_brief
+            brief = active_session_brief(user)
+        except Exception:  # noqa: BLE001 — never let this block break the turn
+            brief = None
+        if brief:
+            parts.append(brief)
+
     # 5. Coaching summary + delivered points.
     if (user.coaching_summary or "").strip():
         parts.append(f"## COACHING SUMMARY\n{user.coaching_summary.strip()}")
@@ -689,6 +701,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])
+        if config.RESET_SESSION_TOOL_ENABLED:
+            from agent_tools import RESET_WORKOUT_SESSION_TOOL
+            tools.append(RESET_WORKOUT_SESSION_TOOL)
         if config.CARD_LINK_FALLBACK_ENABLED:
             from agent_tools import SET_CARD_DELIVERY_TOOL
             tools.append(SET_CARD_DELIVERY_TOOL)

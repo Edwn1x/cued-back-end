@@ -283,6 +283,15 @@ SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"
+# Workout-session lifecycle (the gym deadlock fix, 2026-09-27): reset_workout_session — an
+# on-demand tool that CLEARS the user's active session so a fresh card can go out (finalizes
+# it if sets are logged so work is never lost, else abandons it). Also lets start_workout_session
+# REPLACE an active-but-empty session instead of dead-ending on the open-session guard.
+RESET_SESSION_TOOL_ENABLED = os.getenv("RESET_SESSION_TOOL_ENABLED", "true").lower() == "true"
+# Active-session visibility in the loop context: inject the in-progress session's REAL
+# template_key + start + logged-set count so the coach stops confabulating the day (it called
+# a pull session "push"). Inert with no open session.
+ACTIVE_SESSION_CONTEXT_ENABLED = os.getenv("ACTIVE_SESSION_CONTEXT_ENABLED", "true").lower() == "true"
 # Card web-link fallback: some users don't want the Spectrum iMessage extension (needed to
 # tap sets in-thread). When a user prefers it, send the card as a plain browser link (the
 # card_page web app works extension-free) instead of the Photon extension card. set_card_delivery

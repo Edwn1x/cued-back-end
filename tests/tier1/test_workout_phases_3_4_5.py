@@ -137,8 +137,10 @@ def test_start_session_named_day_and_no_pointer_and_open_session_guard(db, imess
     assert infer_template(user) == "push"                       # no pointer → first day of the cycle
     r = start_workout_session(user.id, "upper")                  # they named it
     assert r["template_key"] == "upper"
-    with pytest.raises(ValueError, match="already open"):
-        start_workout_session(user.id)
+    # An EMPTY active session no longer dead-ends — a fresh ask REPLACES it (gym-deadlock fix,
+    # 2026-09-27). It only refuses once real sets are logged (see test_workout_session_lifecycle).
+    r2 = start_workout_session(user.id)
+    assert r2["session_id"] != r["session_id"]
     nosplit = make_user(db, preferred_channel="imessage", **dict(FOUNDER, current_split=None, split_pointer_day=None))
     assert infer_template(nosplit) == "full_body"
 
@@ -178,7 +180,8 @@ def test_start_tool_result_tells_the_model_to_stay_silent(db, imessage_on, sidec
     assert dispatch_tool("start_workout_session", {"template_key": "tuesday"}, user.id).startswith("error: unknown template")
     out = dispatch_tool("start_workout_session", {}, user.id)
     assert out.startswith("ok: legs session #") and "sent as a card (16 sets)" in out and out.endswith("Reply with exactly [silent].")
-    assert dispatch_tool("start_workout_session", {}, user.id).startswith("error: a session is already open")
+    # A second start replaces the empty active session instead of dead-ending (gym-deadlock fix).
+    assert dispatch_tool("start_workout_session", {}, user.id).startswith("ok: ")
 
 
 # ─── Phase 4: texted deviations + close ──────────────────────────────────────
