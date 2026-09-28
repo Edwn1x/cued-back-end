@@ -35,6 +35,8 @@ target. Lean users are untouched (the founder's 139 lb / 139 g stays).
 import logging
 import re
 
+import config
+
 logger = logging.getLogger("cued.macros")
 
 TEN_HAAF_MIN_DAYS = 5
@@ -223,11 +225,34 @@ def apply_goal(tdee: int, goal: str, *, age=None, bmi=None, experience=None, tra
             "limits": limits}
 
 
-def calculate_targets(user) -> dict:
+def _effective_avg_steps(user, session=None):
+    """The step count the activity multiplier should use. Normally the static
+    onboarding user.avg_steps; but when TDEE_WEARABLE_STEPS_ENABLED is on AND a
+    session is available AND the user has recent wearable step data, prefer a
+    trailing average of those REAL steps. Fail-open to avg_steps on any miss."""
+    static = getattr(user, "avg_steps", None)
+    if not config.TDEE_WEARABLE_STEPS_ENABLED or session is None:
+        return static
+    try:
+        from wearable_read import recent_step_avg
+        real = recent_step_avg(user, session)
+        if real:
+            return round(real)
+    except Exception:
+        pass
+    return static
+
+
+def calculate_targets(user, session=None) -> dict:
     """
     Calculate calorie and protein targets based on user profile.
     Uses Mifflin-St Jeor for BMR, activity multiplier for TDEE,
     then adjusts based on goal.
+
+    `session` is optional and read-only: when supplied AND
+    TDEE_WEARABLE_STEPS_ENABLED is on, the activity multiplier prefers a trailing
+    average of REAL wearable steps over the static onboarding avg_steps. Every
+    existing caller passing no session gets exactly today's behaviour.
     """
     # Defaults if data is somehow missing
     weight_kg = (user.weight_lbs or 150) * 0.453592
@@ -240,7 +265,8 @@ def calculate_targets(user) -> dict:
 
     days_count = training_days_per_week(user.workout_days)
     is_male = gender in ("male", "prefer_not_to_say")
-    level = activity_level_index(getattr(user, "avg_steps", None), days_count)
+    eff_steps = _effective_avg_steps(user, session)
+    level = activity_level_index(eff_steps, days_count)
     if age <= TEEN_MAX_AGE:
         # Teen: the EER IS the maintenance number. `bmr` reports the sedentary
         # (PA=1.0) requirement — the closest analog for the log line and the
@@ -261,9 +287,8 @@ def calculate_targets(user) -> dict:
             bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
 
     if age > TEEN_MAX_AGE:
-        # Adult activity multiplier — avg_steps when known (objective), else training days.
-        avg_steps = getattr(user, "avg_steps", None)
-        if avg_steps:
+        # Adult activity multiplier — steps when known (objective), else training days.
+        if eff_steps:
             multiplier = (1.2, 1.375, 1.55, 1.725)[level]
         else:
             if days_count <= 2:
@@ -322,7 +347,9 @@ def recompute_targets(user_id: int) -> dict:
         user = session.get(User, user_id)
         if not user:
             return {"error": "user not found"}
-        t = calculate_targets(user)
+        # Pass the session so the wearable-steps path (flag-gated, default off) can
+        # read recent real steps; no-op when the flag is off.
+        t = calculate_targets(user, session)
         old = (user.calorie_target, user.protein_target)
         user.calorie_target_computed = t["calories"]
         user.protein_target_computed = t["protein"]

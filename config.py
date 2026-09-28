@@ -474,6 +474,13 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 # Fail-open: with GOOGLE_HEALTH_ENABLED off, no wearable rows, or stale data it is inert
 # (behaviour identical to today). ON by default, mirroring the other heartbeat gates.
 HEARTBEAT_WEARABLE_AWARE_ENABLED = os.getenv("HEARTBEAT_WEARABLE_AWARE_ENABLED", "true").lower() == "true"
+# When ON, the TDEE activity multiplier prefers a trailing average of REAL wearable
+# steps (wearable_read.recent_step_avg) over the static onboarding user.avg_steps,
+# for users with a connected wearable and recent data. DEFAULT OFF: this changes
+# users' calorie targets, so it stays off until the founder reviews and enables it.
+# Fail-open — with the flag off, no wearable, or too few days it uses avg_steps
+# exactly as today.
+TDEE_WEARABLE_STEPS_ENABLED = os.getenv("TDEE_WEARABLE_STEPS_ENABLED", "false").lower() == "true"
 
 # Daily rhythm (rewrite/daily-rhythm/CHANGESPEC.md) — user 32: "check-ups are way too far
 # apart". All five default OFF; flipped in prod after the deploy.
