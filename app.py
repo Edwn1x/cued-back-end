@@ -1602,7 +1602,15 @@ def classify_message(body: str, has_image: bool = False) -> str:
         ]
         if any(kw in body_lower for kw in receipt_keywords):
             return "receipt_photo"
-        return "food_photo"  # Default assumption for images — most common use case
+        # An image with no explicit food/progress/form/receipt caption is NOT assumed
+        # to be food. Live 2026-09-27: a photo of an EZ curl bar (gym equipment) was
+        # tagged food_photo. The label only stamps the outbound reply row (admin +
+        # analytics) — no food path gates on it — so a neutral "image" is safe, and the
+        # agent loop (which sees the photo) decides if it's food and logs it via
+        # log_meal. Fail-safe to the old food_photo default when the flag is off.
+        if config.NEUTRAL_IMAGE_TYPE_ENABLED:
+            return "image"
+        return "food_photo"  # legacy default assumption for images
 
     if body_lower in ("w", "workout", "send workout"):
         return "workout_request"

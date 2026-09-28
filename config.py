@@ -346,6 +346,18 @@ RECENT_MEDIA_TTL_HOURS = int(os.getenv("RECENT_MEDIA_TTL_HOURS", "24"))
 # "an image didn't come through" — the coach says so and asks for a resend, never guesses.
 INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED = os.getenv(
     "INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED", "true").lower() == "true"
+# Neutral inbound image type: classify_message used to DEFAULT every captionless /
+# non-food-keyword image to "food_photo" (live 2026-09-27: a photo of an EZ curl bar
+# was tagged food_photo). That label is cosmetic — it only stamps the outbound reply
+# row (admin view + analytics); no food/meal path gates on it (meal logging, the meal
+# estimation prompt, the receipt pre-classifier and the photo buffer band all key on
+# image PRESENCE + the in-loop vision model, never on message_type). When on, an image
+# with no explicit food caption is labeled neutral "image" and the agent loop — which
+# actually sees the photo — decides if it's food and logs it via log_meal. A caption
+# with real food words still labels food_photo. Fail-safe: off = the old food_photo
+# default.
+NEUTRAL_IMAGE_TYPE_ENABLED = os.getenv(
+    "NEUTRAL_IMAGE_TYPE_ENABLED", "true").lower() == "true"
 # Photo-reread delete guard: deleting/replacing an already-logged meal must be an
 # intentional action, never a side-effect of re-interpreting a NEW photo. When on, a
 # manage_log delete of a meal on a turn that carries an image is refused unless the
