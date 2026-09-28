@@ -457,6 +457,19 @@ INTEGRATIONS_HTTP_TIMEOUT_S = int(os.getenv("INTEGRATIONS_HTTP_TIMEOUT_S", "15")
 # the flag is rollback insurance if the context reshape ever regresses. See timefmt.py.
 CONTEXT_LOCAL_TIME_ENABLED = os.getenv("CONTEXT_LOCAL_TIME_ENABLED", "true").lower() == "true"
 
+# Late-hour / near-sleep priority flip for REACTIVE nutrition nudging. Live 2026-09-28
+# ~4am (founder, user 31): late-night snack logs + a low protein day → the coach kept
+# pushing "eat some actual protein bro" / "it's 4am… eat some of that beef" toward the
+# daily target, ignoring that it was 4am. The heartbeat has sleep/quiet-hours awareness,
+# but the reactive replies to the user's own food logs didn't carry a late-hour →
+# sleep-first priority. When ON and it's the user's small hours (past their sleep
+# pattern), build_loop_context surfaces a compact "prioritize sleep over macro-completion"
+# signal so the coach nudges SLEEP and frames remaining protein as a tomorrow thing,
+# instead of pushing more food. Advisory only: logging still works and a direct
+# food/macro question is still answered honestly. Fail-open (no/unparseable sleep data →
+# a small-hours default; any error → today's behavior). See agent_loop._is_late_hour.
+LATE_HOUR_SLEEP_FIRST_ENABLED = os.getenv("LATE_HOUR_SLEEP_FIRST_ENABLED", "true").lower() == "true"
+
 # Legacy templated scheduler (morning briefing, pre/post-workout, evening wrap,
 # weigh-in, meal-adherence). Disabled by default so the heartbeat is the ONLY
 # proactive system during burn-in — two uncoordinated proactive systems double-
