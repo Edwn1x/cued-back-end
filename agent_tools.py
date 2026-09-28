@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
+import uuid
 
 from datetime import datetime, date, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -687,11 +688,17 @@ MANAGE_LOG_TOOL = {
             "id": {"type": "integer", "description": "the short id of the entry (delete/edit)"},
             "fields": {"type": "object",
                        "description": "for edit: only the fields to change (others untouched). "
-                       "meal: calories/protein_g/carbs_g/fat_g/description/notes. "
+                       "meal: calories/protein_g/carbs_g/fat_g/description/notes/date. "
                        "workout: workout_type/notes. event: description/starts_at/ends_at/date "
                        "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"}; `date` moves "
-                       "the event to a new day — 'today'/'tomorrow'/'YYYY-MM-DD' — keeping its "
-                       "existing time unless starts_at/ends_at are also given in the same call)."},
+                       "the meal/event to a new day — 'today'/'yesterday'/'tomorrow'/'YYYY-MM-DD' "
+                       "— keeping its existing time. To MOVE a meal to another day, EDIT its "
+                       "`date` (never delete-and-relog — that double-logs)."},
+            "scope": {"type": "string", "enum": ["item", "meal"], "default": "item",
+                      "description": "meal only. 'meal' applies the delete or `date` move to the "
+                      "WHOLE meal this id was logged with (every item from the same log_meal "
+                      "batch) in one atomic op — use it for 'move/delete the <X> meal'. 'item' "
+                      "(default) touches only this one row (use for a single item's macros)."},
             "from_app": {"type": "string",
                          "description": "edit only: the numbers come from a screenshot of THEIR food-app diary "
                                         "(myfitnesspal | mynetdiary | cronometer | loseit | macrofactor | other). "
@@ -916,6 +923,11 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from_photo = bool(_TURN_STATE.get(user_id, {}).get("has_image"))
     source = "app" if from_app else ("photo" if from_photo else "text")
 
+    # One group id per log_meal call → the items eaten together are one meal that
+    # manage_log(scope='meal') can move/delete as a unit. Only items genuinely logged in
+    # THIS batch share it; a later separate call gets its own id (never merges meals).
+    group_id = uuid.uuid4().hex if config.MEAL_GROUP_ENABLED else None
+
     logged, guessed = [], []
     session = get_session()
     try:
@@ -931,7 +943,7 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                 carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
                 source=source, log_type="app_reported" if from_app else "user_reported",
                 confidence="high" if from_app else ("low" if is_guess else None),
-                notes=notes, eaten_at=when,
+                notes=notes, eaten_at=when, meal_group_id=group_id,
             )
             session.add(meal)
             session.flush()
@@ -1285,7 +1297,10 @@ _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
 _EDIT_FIELDS = {
     "meal": {"calories": ("calories", "int"), "protein_g": ("protein_g", "int"),
              "carbs_g": ("carbs_g", "int"), "fat_g": ("fat_g", "int"),
-             "description": ("description", "str"), "notes": ("notes", "str")},
+             "description": ("description", "str"), "notes": ("notes", "str"),
+             # "date" moves eaten_at to a new local day, keeping its time-of-day — a
+             # one-op day move (never add-new-then-delete-old, which double-logged).
+             "date": ("eaten_at", "meal_date")},
     "workout": {"workout_type": ("workout_type", "str"),
                 "user_notes": ("user_notes", "str"), "notes": ("user_notes", "str")},
     "event": {"description": ("raw_text", "str"),
@@ -1312,19 +1327,80 @@ _DELETE_INTENT_RE = re.compile(
     r"did ?n[o']t eat|never (?:ate|had)|was ?n[o']t|wasnt|not that|that'?s not|thats not|"
     r"mistake|ignore that|drop that|nvm|nevermind|never mind|replace)\b", re.IGNORECASE)
 
+# Explicit MOVE / re-date directive in the user's words — "switch the eggs to yesterday",
+# "move it to monday", "reassign to today", "put the rice on yesterday's log", "change it
+# to friday", "log those for yesterday", "count that as yesterday". A move is a user
+# command, not a silent photo re-read, so it must never be blocked by the photo guard even
+# when the turn also carries an image (the 2026-09-27 eggs-move incident, PR meal-edit-fixes).
+_DAY_WORD = (r"(?:yesterday|today|tomorrow|last ?night|tonight|"
+             r"mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|"
+             r"fri(?:day)?|sat(?:urday)?|sun(?:day)?|\d{4}-\d{2}-\d{2})")
+_MOVE_INTENT_RE = re.compile(
+    r"\b(move|moved|moving|switch|switched|reassign|re-?date|re-?log|shift|"
+    r"push(?:ed)?)\b"
+    r"|\b(?:put|change|log|count|make)\b.*\b(?:to|on|for|as|into|onto|back to)\b\s*" + _DAY_WORD
+    + r"|\b(?:to|on|for)\b\s+(?:the\s+)?" + _DAY_WORD + r"(?:'?s)?\s+(?:log|day)"
+    + r"|\bfor\s+" + _DAY_WORD + r"'?s?\s+log\b",
+    re.IGNORECASE)
+
 
 def _photo_reread_blocks_delete(user_id: int, entity: str) -> bool:
     """Guard for the 2026-09-26 incident: a NEW photo re-read must be able to ADD a meal
     but NOT silently DELETE a prior confirmed one. True (block the delete) when the guard
     is on, this turn carried an image, the target is a meal, and the user's caption shows
-    no explicit delete/replace intent. Explicit intent (or a text-only turn) passes."""
+    no explicit delete/replace/MOVE intent. Explicit intent (or a text-only turn) passes —
+    a user who says 'switch the eggs to yesterday' is giving a directive, not being
+    silently re-read into a deletion."""
     if not config.PHOTO_REREAD_DELETE_GUARD_ENABLED or entity != "meal":
         return False
     state = _TURN_STATE.get(user_id, {})
     if not state.get("has_image"):
         return False
     caption = state.get("caption") or ""
-    return not _DELETE_INTENT_RE.search(caption)
+    if _DELETE_INTENT_RE.search(caption):
+        return False
+    # An explicit move/switch/reassign is a user command — never a photo re-read side
+    # effect — so it passes the guard even on a photo turn.
+    if config.MEAL_DAY_MOVE_ENABLED and _MOVE_INTENT_RE.search(caption):
+        return False
+    return True
+
+
+def _user_tz(session, user_id: int) -> ZoneInfo:
+    u = session.get(User, user_id)
+    tz_str = (u.user_timezone if u else None) or "America/Los_Angeles"
+    try:
+        return ZoneInfo(tz_str)
+    except Exception:
+        return ZoneInfo("America/Los_Angeles")
+
+
+def _apply_meal_day_move(row, tz: ZoneInfo, new_day) -> str:
+    """Move a meal row's eaten_at to `new_day`, keeping its local time-of-day — a day move,
+    not a time move. Appends the change to the row's audit and returns the new day iso."""
+    old = getattr(row, "eaten_at", None) or _naive_utcnow()
+    local_time = old.replace(tzinfo=timezone.utc).astimezone(tz).time()
+    newval = (datetime.combine(new_day, local_time, tzinfo=tz)
+              .astimezone(timezone.utc).replace(tzinfo=None))
+    audit = list(row.edits or [])
+    audit.append({"at": _naive_utcnow().isoformat(), "field": "date",
+                  "old": _ser(old), "new": _ser(newval)})
+    row.edits = audit
+    flag_modified(row, "edits")
+    setattr(row, "eaten_at", newval)
+    return new_day.isoformat()
+
+
+def _meal_group_rows(session, user_id: int, row):
+    """The active meal rows that make up the same logged meal as `row` — its whole
+    meal_group_id batch. Falls back to just [row] when the row has no group (legacy /
+    grouping off) so callers can always operate on the returned list."""
+    gid = getattr(row, "meal_group_id", None)
+    if not (config.MEAL_GROUP_ENABLED and gid):
+        return [row]
+    rows = (active(session, Meal, user_id=user_id)
+            .filter(Meal.meal_group_id == gid).all())
+    return rows or [row]
 
 
 def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str:
@@ -1367,6 +1443,13 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         if row is None:
             return f"error: no active {entity} with id {entry_id} (already deleted or wrong id)"
 
+        # scope='meal' operates on the WHOLE logged meal (row + everything logged with it in
+        # the same log_meal batch, via meal_group_id) — one atomic move/delete instead of
+        # item-by-item. Only meaningful for meals; a legacy/ungrouped row resolves to itself.
+        scope = (tool_input.get("scope") or "item").lower()
+        group_scope = scope == "meal" and entity == "meal" and config.MEAL_GROUP_ENABLED
+        targets = _meal_group_rows(session, user_id, row) if group_scope else [row]
+
         if action == "delete":
             # Photo-reread guard: a new photo can ADD a meal but must not silently DELETE
             # a prior confirmed one just because it re-reads as something else (the yogurt
@@ -1379,21 +1462,53 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                         "logged. If this photo shows a DIFFERENT food than what's logged, call "
                         "log_meal for the new item as a SEPARATE entry (log both). Only delete when "
                         "the user explicitly says to (e.g. 'delete that', 'i didn't eat that').")
-            row.deleted_at = _naive_utcnow()
+            for r in targets:
+                r.deleted_at = _naive_utcnow()
             session.commit()
             day = ""
             if entity == "meal":
                 recompute_daily_totals(user_id)
-                _clear_pending_writeback(user_id, entry_id)
+                for r in targets:
+                    _clear_pending_writeback(user_id, r.id)
                 day = _day_total_suffix(user_id)  # fresh total so the coach quotes it, not head math
             note = _rollback_pointer_for_deleted_workout(user_id, row) if entity == "workout" else None
-            logger.info("MANAGE_LOG user=%s delete %s id=%s", user_id, entity, entry_id)
+            logger.info("MANAGE_LOG user=%s delete %s id=%s scope=%s n=%s",
+                        user_id, entity, entry_id, scope, len(targets))
+            if len(targets) > 1:
+                ids = [int(r.id) for r in targets]
+                return f"ok: deleted meal ({len(targets)} items, ids {ids})" + day
             return f"ok: deleted {entity} id={entry_id}" + (f"; {note}" if note else "") + day
+
+        # Whole-meal day move: scope='meal' + a `date` edit re-dates every item logged with
+        # this one in a single op. Group edits are date-only — macros/description are
+        # per-item (editing them across a group would clobber distinct foods), so steer
+        # those back to item scope.
+        fields = tool_input.get("fields") or {}
+        if group_scope and len(targets) > 1:
+            if not fields or any(f != "date" for f in fields):
+                return ("error: a whole-meal move (scope='meal') only supports `date` — to fix "
+                        "one item's macros/description, call manage_log edit on that item's id "
+                        "with scope='item'.")
+            try:
+                tz = _user_tz(session, user_id)
+                new_day = _resolve_local_date(tz, str(fields["date"]), strict=True)
+            except ValueError:
+                return "error: date must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
+            for r in targets:
+                _apply_meal_day_move(r, tz, new_day)
+            session.commit()
+            recompute_daily_totals(user_id)
+            for r in targets:
+                _clear_pending_writeback(user_id, r.id)
+            day = _day_total_suffix(user_id)
+            ids = [int(r.id) for r in targets]
+            logger.info("MANAGE_LOG user=%s move meal group ids=%s -> %s",
+                        user_id, ids, new_day.isoformat())
+            return f"ok: moved meal ({len(targets)} items, ids {ids}) to {new_day.isoformat()}" + day
 
         # edit — field-level, ID-targeted, AUDITED. Only supplied fields change; each
         # change captures its prior value into row.edits (an edited row otherwise silently
         # claims to have always held its new value). Recompute totals, never patch a delta.
-        fields = tool_input.get("fields") or {}
         spec = _EDIT_FIELDS.get(entity, {})
         applied, audit, tz_str = {}, list(row.edits or []), None
         from_app = _canon_app(tool_input.get("from_app")) if entity == "meal" else None
@@ -1439,6 +1554,32 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                     audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
                                   "old": _ser(old), "new": _ser(newcol)})
                     setattr(row, col, newcol)
+                applied[mfield] = new_day.isoformat()
+                continue
+            elif kind == "meal_date":
+                # Move a single meal to another day by re-dating eaten_at (keeping its local
+                # time-of-day) — a one-op move, never add-new-then-delete-old. Flag-off →
+                # skip so `applied` stays empty and the call errors cleanly.
+                if not config.MEAL_DAY_MOVE_ENABLED:
+                    continue
+                if tz_str is None:
+                    u = session.get(User, user_id)
+                    tz_str = (u.user_timezone if u else None) or "America/Los_Angeles"
+                try:
+                    tz = ZoneInfo(tz_str)
+                except Exception:
+                    tz = ZoneInfo("America/Los_Angeles")
+                try:
+                    new_day = _resolve_local_date(tz, str(value), strict=True)
+                except ValueError:
+                    return f"error: {mfield} must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
+                old = getattr(row, column, None) or _naive_utcnow()
+                local_time = old.replace(tzinfo=timezone.utc).astimezone(tz).time()
+                newcol = (datetime.combine(new_day, local_time, tzinfo=tz)
+                          .astimezone(timezone.utc).replace(tzinfo=None))
+                audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
+                              "old": _ser(old), "new": _ser(newcol)})
+                setattr(row, column, newcol)
                 applied[mfield] = new_day.isoformat()
                 continue
             elif kind == "event_time":

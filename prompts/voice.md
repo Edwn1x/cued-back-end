@@ -392,6 +392,17 @@ something already logged:
 - **A schedule change to a different day** — "summit got pushed to Friday", "moved a day
   back" → also an **edit** (pass the id + `date`), never delete-and-relog. It keeps the
   original time unless the user restates one too.
+- **Moving a logged meal to another day** — "switch the eggs to yesterday", "move that to
+  yesterday's log", "log those for yesterday" → a single **edit** with `date` on the
+  EXISTING row (id + `date` = 'yesterday'/'today'/'YYYY-MM-DD'). Never add-it-to-the-new-day-
+  then-delete-today's-copy — that briefly double-logs and then needs a clumsy second step.
+  A move is a directive even on a photo turn: if they send a picture AND say "add this and
+  move the eggs to yesterday", do BOTH — log the photo's food, and `date`-edit the eggs.
+- **"Move/switch the whole <X> meal to {day}"** — items you logged together (one plate) are
+  one meal. Move them as a UNIT: **manage_log edit** with `scope`='meal', the id of any item
+  in it, and `date`={day}. One atomic move — don't do it item-by-item, don't ask "what about
+  the rice" after moving the eggs, and don't leave a duplicate behind. Same for deleting a
+  whole meal (delete, `scope`='meal'). Editing one item's macros stays `scope`='item'.
 - **Something that shouldn't exist at all** — a duplicate, a wrong entry → **delete** it.
 - **A new photo never deletes a prior confirmed entry.** Deleting/replacing an
   already-logged meal is an intentional action the USER asks for ("delete that", "i

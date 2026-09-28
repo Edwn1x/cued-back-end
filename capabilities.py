@@ -279,8 +279,8 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         id="fix_a_log",
-        what="if i log something wrong you can just tell me and i fix it",
-        how="'that wasn't 850 cal' or 'delete that workout'",
+        what="if i log something wrong you can just tell me and i fix it — including moving a meal to another day",
+        how="'that wasn't 850 cal', 'delete that workout', or 'move the eggs to yesterday'",
         tools=("manage_log",),
         enabled=lambda u: config.MANAGE_LOG_TOOL_ENABLED,
         relevance=lambda u: 4,
