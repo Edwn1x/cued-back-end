@@ -293,8 +293,8 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     encodes our outbound as 1-segment GSM-7 (160 chars/seg) instead of the
     UCS-2 fallback (67 chars/seg) that gets triggered by a single em-dash or
     smart quote. The transform is the LAST thing we do before split so any
-    upstream finalization (orchestrator → personality layer → send_sms) is
-    captured. Logging-mode acks and templated stats lines benefit too — any
+    upstream finalization is captured before dispatch. Logging-mode acks and
+    templated stats lines benefit too — any
     `✓` glyph would force UCS-2 if it slipped through.
 
     See sms_encoding.py for the character map and why we don't rely solely

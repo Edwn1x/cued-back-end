@@ -840,11 +840,10 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         ).start()
 
         # A4: async uses-bump for memory entries that were rendered into the
-        # agent's context this turn. We don't know which agent the orchestrator
-        # routed to without surfacing it back up, so we collect ids for every
-        # agent map and dedupe — bump_uses is keyed by id, so duplicates are
-        # free. Pure-Python (no DB) so this is cheap to compute synchronously
-        # before queueing the actual DB write to the daemon thread.
+        # agent's context this turn. We collect ids for every agent map and
+        # dedupe — bump_uses is keyed by id, so duplicates are free. Pure-Python
+        # (no DB) so this is cheap to compute synchronously before queueing the
+        # actual DB write to the daemon thread.
         try:
             injected_ids = set()
             for _atype in ("nutrition", "training", "readiness", "coach"):
