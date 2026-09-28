@@ -379,20 +379,39 @@ def wearable_context(user, session) -> str:
     rhr_avg = _avg([r.resting_hr for r in rows if r.resting_hr])
     hrv_today = (t.hrv_rmssd if t else None) or (night.hrv_rmssd if night else None)
     hrv_avg = _avg([r.hrv_rmssd for r in rows if r.hrv_rmssd])
-    hr_bits, worse = [], []
+    # Thresholds are the SHARED source of truth in config.RECOVERY_* so this reactive block
+    # and the proactive RECOVERY signal (wearable_read) always agree. The "better/strong
+    # recovery" side mirrors the "worse than baseline" side symmetrically and is gated on
+    # BETTER_RECOVERY_ENABLED; the worse side is untouched.
+    hr_bits, worse, better = [], [], []
     if rhr_today:
         hr_bits.append(f"resting HR: {rhr_today}" + (f" (7-day avg {int(round(rhr_avg))})" if rhr_avg else ""))
-        if rhr_avg and rhr_today >= rhr_avg + 4:
+        if rhr_avg and rhr_today >= rhr_avg + config.RECOVERY_RHR_WORSE_DELTA:
             worse.append("HR")
+        elif rhr_avg and rhr_today <= rhr_avg - config.RECOVERY_RHR_BETTER_DELTA:
+            better.append("resting HR")
     if hrv_today:
         hr_bits.append(f"HRV {hrv_today:.0f}ms" + (f" (7-day avg {hrv_avg:.0f}ms)" if hrv_avg else ""))
-        if hrv_avg and hrv_today <= hrv_avg * 0.85:
+        if hrv_avg and hrv_today <= hrv_avg * config.RECOVERY_HRV_WORSE_RATIO:
             worse.append("HRV")
+        elif hrv_avg and hrv_today >= hrv_avg * config.RECOVERY_HRV_BETTER_RATIO:
+            better.append("HRV")
+    # last-night sleep meaningfully above baseline (same symmetric threshold both surfaces use)
+    night_sleep = night.sleep_minutes if night else None
+    if (config.BETTER_RECOVERY_ENABLED and night_sleep and sleep_avg
+            and night_sleep >= config.RECOVERY_GOOD_NIGHT_MIN
+            and night_sleep >= sleep_avg * config.RECOVERY_SLEEP_BETTER_RATIO):
+        better.append("sleep")
     if hr_bits:
         s = " · ".join(hr_bits)
         if worse:
             s += " — " + (" and ".join(worse)) + " worse than their baseline"
         lines.append(s)
+    # Symmetric positive side — only when NOTHING is worse (a mixed night isn't "strong").
+    if config.BETTER_RECOVERY_ENABLED and better and not worse:
+        lines.append("recovery looks strong vs baseline (" + ", ".join(better) + ") — a good day to "
+                     "push / go for it lands well IF there's real, specific material; never generic "
+                     "praise from the numbers alone.")
     if not lines:
         return ""
     synced = integ.updated_at

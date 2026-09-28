@@ -25,15 +25,12 @@ from models import WearableDay
 # the sync module — it must never be edited by, or edit, that pipeline.
 SOURCE = "google_health"
 FRESH_MAX_AGE_DAYS = 3        # no row newer than this → treat as stale, fall back
-# "worse than baseline" thresholds mirror the reactive block exactly.
-RHR_WORSE_DELTA = 4           # resting HR >= 7-day avg + 4 bpm
-HRV_WORSE_RATIO = 0.85        # HRV <= 85% of 7-day avg
-# poor-night thresholds (conservative)
+# "worse / better than baseline" thresholds are the SHARED source of truth in config.RECOVERY_*
+# so this proactive read and the reactive `## WEARABLE` block always agree. Do NOT fork the
+# numbers here — read them from config at compute time (below).
+# poor-night thresholds (conservative; local to the poor-night definition)
 SHORT_NIGHT_MIN = 360        # < 6h absolute
 POOR_VS_BASELINE = 0.80      # or < 80% of their 7-day sleep baseline
-# good-recovery thresholds
-GOOD_NIGHT_MIN = 420         # >= 7h
-GOOD_VS_BASELINE = 0.95      # and >= 95% of baseline
 
 
 def _tz(user) -> ZoneInfo:
@@ -76,6 +73,9 @@ class Recovery:
     hrv_baseline: float | None
     rhr_worse: bool
     hrv_worse: bool
+    rhr_better: bool                   # resting HR clearly below baseline (symmetric to rhr_worse)
+    hrv_better: bool                   # HRV clearly above baseline (symmetric to hrv_worse)
+    sleep_better: bool                 # last night meaningfully above the 7-day sleep baseline
     fresh: bool                        # a row within FRESH_MAX_AGE_DAYS exists
 
     @property
@@ -94,11 +94,13 @@ class Recovery:
 
     @property
     def good_recovery(self) -> bool:
-        if self.sleep_minutes is None or self.sleep_minutes < GOOD_NIGHT_MIN:
+        # Symmetric to poor_recovery: never "good" if any marker is WORSE than baseline,
+        # and require a real POSITIVE signal (not merely "not worse") — a night meaningfully
+        # above the sleep baseline, OR resting HR / HRV clearly better than baseline. Uses
+        # the SAME shared thresholds as the reactive block (computed in recovery_read).
+        if self.rhr_worse or self.hrv_worse:
             return False
-        if self.sleep_baseline and self.sleep_minutes < self.sleep_baseline * GOOD_VS_BASELINE:
-            return False
-        return not self.rhr_worse and not self.hrv_worse
+        return bool(self.sleep_better or self.rhr_better or self.hrv_better)
 
 
 def recovery_read(user, session, *, now=None) -> Recovery | None:
@@ -130,7 +132,7 @@ def recovery_read(user, session, *, now=None) -> Recovery | None:
         fresh = any(r.day >= fresh_cutoff for r in rows)
         if not fresh:
             return Recovery(None, None, None, None, None, None, None, None, None, None,
-                            False, False, False)
+                            False, False, False, False, False, False)
 
         by_day = {r.day: r for r in rows}
         today_s = today.isoformat()
@@ -151,8 +153,19 @@ def recovery_read(user, session, *, now=None) -> Recovery | None:
         hrv_today = (t.hrv_rmssd if t else None) or (night.hrv_rmssd if night else None)
         hrv_baseline = _avg([r.hrv_rmssd for r in rows if r.hrv_rmssd])
 
-        rhr_worse = bool(rhr_today and rhr_baseline and rhr_today >= rhr_baseline + RHR_WORSE_DELTA)
-        hrv_worse = bool(hrv_today and hrv_baseline and hrv_today <= hrv_baseline * HRV_WORSE_RATIO)
+        # Shared thresholds (config.RECOVERY_*) — same numbers the reactive block uses.
+        rhr_worse = bool(rhr_today and rhr_baseline and
+                         rhr_today >= rhr_baseline + config.RECOVERY_RHR_WORSE_DELTA)
+        hrv_worse = bool(hrv_today and hrv_baseline and
+                         hrv_today <= hrv_baseline * config.RECOVERY_HRV_WORSE_RATIO)
+        # Symmetric "better than baseline" side.
+        rhr_better = bool(rhr_today and rhr_baseline and
+                          rhr_today <= rhr_baseline - config.RECOVERY_RHR_BETTER_DELTA)
+        hrv_better = bool(hrv_today and hrv_baseline and
+                          hrv_today >= hrv_baseline * config.RECOVERY_HRV_BETTER_RATIO)
+        sleep_better = bool(sleep_minutes and sleep_baseline and
+                            sleep_minutes >= config.RECOVERY_GOOD_NIGHT_MIN and
+                            sleep_minutes >= sleep_baseline * config.RECOVERY_SLEEP_BETTER_RATIO)
 
         return Recovery(
             sleep_minutes=sleep_minutes, sleep_baseline=sleep_baseline,
@@ -160,7 +173,9 @@ def recovery_read(user, session, *, now=None) -> Recovery | None:
             steps_today=steps_today, steps_baseline=steps_baseline,
             rhr_today=rhr_today, rhr_baseline=rhr_baseline,
             hrv_today=hrv_today, hrv_baseline=hrv_baseline,
-            rhr_worse=rhr_worse, hrv_worse=hrv_worse, fresh=True)
+            rhr_worse=rhr_worse, hrv_worse=hrv_worse,
+            rhr_better=rhr_better, hrv_better=hrv_better, sleep_better=sleep_better,
+            fresh=True)
     except Exception:
         # Fail-open: a reader error must never crash a heartbeat tick.
         return None
