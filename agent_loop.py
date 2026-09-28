@@ -97,6 +97,62 @@ def _known_gaps(user) -> list[str]:
     return gaps
 
 
+# Late-hour / near-sleep detection for the REACTIVE nudging priority-flip. Small-hours
+# default when the user has no parseable sleep pattern: 1am–6am local. A late-night
+# sleep_time only shifts the START later (someone who sleeps 2am isn't "past sleep" at
+# 1am); an evening sleep_time (10pm) does NOT make 10pm "too late to eat dinner" — the
+# 1am floor governs then. See config.LATE_HOUR_SLEEP_FIRST_ENABLED.
+LATE_HOUR_DEFAULT_START = 1   # 1am local
+LATE_HOUR_DEFAULT_END = 6     # 6am local
+
+
+def _late_clock() -> datetime:
+    """The reactive loop's clock (aware UTC). Patched in tests to freeze a wall time so
+    the late-hour signal is deterministic (never assert against real now — date-fragile)."""
+    return datetime.now(timezone.utc)
+
+
+def _late_hour_window(user) -> tuple[int, int]:
+    """(start_hour, end_hour) local — the small-hours 'past sleep' window. Uses the user's
+    sleep_time as the start when it parses to a genuine late-night hour (midnight–6am) and
+    wake_time as the end when it parses to a morning hour; otherwise the 1am–6am default.
+    Always returns a clean small-hours window (falls back to the default if the derived
+    bounds would be degenerate)."""
+    from heartbeat import _parse_hour
+    start, end = LATE_HOUR_DEFAULT_START, LATE_HOUR_DEFAULT_END
+    hs = _parse_hour(getattr(user, "sleep_time", None))
+    hw = _parse_hour(getattr(user, "wake_time", None))
+    # Only a small-hours sleep_time moves the start (a 2am sleeper isn't "past sleep" at
+    # 1am). An evening/late-evening sleep_time is ignored here — the 1am floor still holds.
+    if hs is not None and 0 <= hs <= LATE_HOUR_DEFAULT_END:
+        start = hs
+    # A morning wake_time (up to 8am) tightens the end to it; a late waker keeps the 6am
+    # cap so we never tell someone who's clearly awake and texting at, say, 10am to sleep.
+    if hw is not None and 0 <= hw <= 8:
+        end = hw
+    if not (0 <= start < end <= 12):
+        start, end = LATE_HOUR_DEFAULT_START, LATE_HOUR_DEFAULT_END
+    return start, end
+
+
+def _is_late_hour(user, *, now: datetime = None) -> bool:
+    """True when the user's LOCAL time is in the small hours past their sleep pattern —
+    the moment reactive nutrition nudging should prioritize sleep over macro-completion.
+    Flag-gated + fail-open: any error → False (today's behavior)."""
+    if not config.LATE_HOUR_SLEEP_FIRST_ENABLED:
+        return False
+    try:
+        from timefmt import resolve_tz
+        ref = now if now is not None else _late_clock()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        local_hour = ref.astimezone(resolve_tz(user)).hour
+        start, end = _late_hour_window(user)
+        return start <= local_hour < end
+    except Exception:  # noqa: BLE001 — a clock/tz hiccup must never break a turn
+        return False
+
+
 def build_loop_context(user, session) -> str:
     """The VOLATILE per-user block, injected AFTER the cached voice prefix.
 
@@ -407,6 +463,29 @@ def build_loop_context(user, session) -> str:
         "instead, since this block was built before the change. State the number plainly, as "
         "your own knowledge; NEVER say \"quote from context\", \"per the totals\", or "
         "otherwise announce that you're reading it — that narration is a bug, not a reply.")
+
+    # 7a2. Late-hour / near-sleep priority flip (LATE_HOUR_SLEEP_FIRST). Live 2026-09-28
+    # ~4am: with an unmet protein target the coach kept pushing "eat some actual protein"
+    # toward the daily number at 4am. The reasoning to say "go to sleep, protein can wait"
+    # existed (the coach agreed when asked) but wasn't applied PROACTIVELY. In the user's
+    # small hours this compact signal flips the priority: nudge SLEEP, frame remaining
+    # macros as a tomorrow thing, don't push a big meal. Advisory only — logging still
+    # works (never refuse a log) and a direct food/macro question is still answered
+    # honestly. Placed right after TODAY'S TOTALS so it reframes the "protein remaining"
+    # line that would otherwise drive the 4am harping.
+    if _is_late_hour(user):
+        unmet = ""
+        if user.protein_target and (user.protein_target - tot_pro) > 0:
+            unmet = (f" They're ~{user.protein_target - tot_pro}g of protein short of "
+                     "today's target — that's fine, it resets at local midnight.")
+        parts.append(
+            "## LATE / PAST SLEEP WINDOW — PRIORITIZE SLEEP OVER MACRO-COMPLETION\n"
+            "It's the small hours for them (past their sleep pattern)." + unmet +
+            " Do NOT harp on unmet macros or push more food / a big meal at this hour — "
+            "protein can wait till tomorrow. The nudge here is SLEEP, not eating. If they "
+            "report food, still LOG it normally (never refuse a log); just change the "
+            "nudging PRIORITY. If they explicitly ask about food or their macros, answer "
+            "honestly and plainly — don't proactively push them to eat to hit a target now.")
 
     # 7b. YESTERDAY's meals — ids for corrections, never for today's math. Live
     # 2026-09-19: the muffin she disputed was yesterday's row; with only today's ids in
