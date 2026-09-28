@@ -1122,6 +1122,31 @@ class Reminder(Base):
     window_end = Column(String(5), default=None)
 
 
+class HeldOutbound(Base):
+    """A coach message parked on an opted-in user's iMessage line while Photon is
+    down (2026-09-28: "one number" — never hop to Twilio for someone who is on
+    their line). The drain job (held_outbound.drain) re-tries in id order per user
+    and delivers once Photon answers again; `message_ids` are the 'held' Message
+    rows written at hold time (the conversation window sees them), flipped to
+    'sent' + provider ids on delivery, or 'failed' if the hold expires. Timestamps
+    are naive UTC. Auto-surfaced by the admin console's table browser."""
+    __tablename__ = "held_outbound"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    phone = Column(String(20), nullable=False)
+    body = Column(Text, nullable=False)                       # the full coach message (pre-split)
+    message_type = Column(String(30), default="freeform")
+    reply_to_sid = Column(String(80), default=None)           # threaded-reply target, if any
+    status = Column(String(12), default="held", index=True)   # held | sending | sent | expired
+    attempts = Column(Integer, default=0)
+    last_error = Column(String(300), default=None)
+    message_ids = Column(JSON, default=list)                  # 'held' Message row ids, bubble order
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    next_attempt_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), index=True)
+    expires_at = Column(DateTime, nullable=False)
+    sent_at = Column(DateTime, default=None)
+
+
 def init_db():
     """Create all tables."""
     Base.metadata.create_all(engine)

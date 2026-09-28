@@ -695,6 +695,38 @@ SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
 # ALSO failed silently leaves that one message undelivered — the rare cost of
 # never double-sending. See sms.send_sms.
 SIDECAR_TIMEOUT_NO_FAILOVER = os.getenv("SIDECAR_TIMEOUT_NO_FAILOVER", "true").lower() == "true"
+# ─── One number: hold on the line during a Photon outage (2026-09-28) ─────────
+# Live 2026-09-28 04:44 UTC: Photon's upstream answered "Service temporarily
+# unavailable" for ~14 min. The first bubble hard-failed, we fell over to Twilio,
+# tripped the breaker, and three green texts landed in the user's OLD thread from
+# a different number. For a user who has opted in to their line (imessage_opted_in_at
+# set) that line IS their number — so a transient sidecar failure now retries
+# briefly on the same line, then HOLDS the message (held_outbound) and the drain
+# job delivers it once Photon answers again, prefixed by a light heads-up when it
+# waited a while. The breaker is NOT tripped and Twilio is NOT used. The consent
+# gate ("Target not allowed") keeps the SMS path: that user has never seen the
+# line, so Twilio is the number they're on. Off → the pre-2026-09-28 failover.
+IMESSAGE_HOLD_ON_OUTAGE = os.getenv("IMESSAGE_HOLD_ON_OUTAGE", "true").lower() == "true"
+# Inline retries on the same line before holding (seconds between attempts).
+IMESSAGE_HOLD_RETRY_BACKOFF_S = [float(x) for x in os.getenv("IMESSAGE_HOLD_RETRY_BACKOFF_S", "2,5").split(",") if x.strip()]
+# While an outage is flagged (a send just failed transiently), new sends for
+# opted-in users skip the inline retries and queue straight behind — one probe
+# per drain tick, not every reply burning its own retries.
+IMESSAGE_HOLD_OUTAGE_COOLDOWN_S = int(os.getenv("IMESSAGE_HOLD_OUTAGE_COOLDOWN_S", "60"))
+# Drain cadence + how long a held message stays deliverable. Proactive types
+# (heartbeat, reminder, goodnight, gym beat, session probe) go stale fast — a
+# "water break" an hour late is noise, so they expire sooner and are simply
+# dropped (Message row → 'failed', never re-sent). Replies wait much longer.
+IMESSAGE_HOLD_DRAIN_SECONDS = int(os.getenv("IMESSAGE_HOLD_DRAIN_SECONDS", "30"))
+IMESSAGE_HOLD_MAX_AGE_MIN = int(os.getenv("IMESSAGE_HOLD_MAX_AGE_MIN", "720"))
+IMESSAGE_HOLD_PROACTIVE_MAX_AGE_MIN = int(os.getenv("IMESSAGE_HOLD_PROACTIVE_MAX_AGE_MIN", "60"))
+# The heads-up bubble goes out before the first held message only when it waited
+# at least this long — a 20-second blip needs no explanation.
+IMESSAGE_HOLD_NOTE_MIN_AGE_S = int(os.getenv("IMESSAGE_HOLD_NOTE_MIN_AGE_S", "120"))
+IMESSAGE_HOLD_NOTE = os.getenv(
+    "IMESSAGE_HOLD_NOTE",
+    "heads up, my texts got stuck on my end for a bit. all good now, here's what i was gonna say",
+)
 # Suppress a coach reply that is (normalized) identical to the last one sent to
 # the same user inside this window — the backstop for the buffer race that
 # produced two near-identical turns ("same 4 messages"). See sms._is_duplicate_send.

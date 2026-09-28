@@ -189,6 +189,13 @@ def start_scheduler():
     scheduler.add_job(reminders_fire_due, trigger=_IT3(seconds=60), id="reminders_fire",
                       replace_existing=True, coalesce=True, max_instances=1)
 
+    # Held outbound (Photon outage): messages parked on an opted-in user's line
+    # are re-tried here and delivered in order once Photon answers again; stale
+    # ones expire. Cheap no-op when nothing is held. See held_outbound.drain.
+    from held_outbound import drain as held_outbound_drain
+    scheduler.add_job(held_outbound_drain, trigger=_IT3(seconds=config.IMESSAGE_HOLD_DRAIN_SECONDS),
+                      id="held_outbound_drain", replace_existing=True, coalesce=True, max_instances=1)
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell

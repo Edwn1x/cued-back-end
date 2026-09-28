@@ -118,11 +118,13 @@ def _log_message(user_id: int, body: str, message_type: str,
     (engagement_tracker.increment_unanswered) reads — write them, never skip them."""
     session = get_session()
     try:
-        session.add(Message(
+        row = Message(
             user_id=user_id, direction="out", body=body, message_type=message_type,
             channel=channel, provider_sid=provider_sid, delivery_status=delivery_status,
-        ))
+        )
+        session.add(row)
         session.commit()
+        return row.id
     finally:
         session.close()
 
@@ -270,6 +272,149 @@ def _is_consent_gate(err) -> bool:
     return CONSENT_GATE_MARKER.lower() in str(err).lower()
 
 
+# ─── One number: hold on the line during a Photon outage (2026-09-28) ─────────
+# An opted-in iMessage user is on ONE number — their Photon line. Live 04:44 UTC
+# Photon's upstream answered "Service temporarily unavailable" for ~14 min; the
+# old failover carried the reply to Twilio and tripped the breaker, so three green
+# texts landed in the user's OLD thread from a different number. Now, for a user
+# who has texted their line (imessage_opted_in_at), a hard first-bubble failure
+# that isn't the consent gate → brief inline retries on the same line → HOLD
+# (held_outbound + 'held' Message rows). held_outbound.drain delivers in order once
+# Photon answers, prefixed by a light heads-up if it waited a while. The breaker
+# is untouched and Twilio is never used. A user who has NOT opted in keeps the
+# old path: Twilio IS the number they're on.
+
+TRANSIENT_MARKERS = ("temporarily unavailable", "[upstream]", "not connected", "unavailable",
+                     "econnrefused", "econnreset", "timed out", "timeout", "bad gateway")
+REPLY_TARGET_MISSING_MARKER = "reply_to message not found"
+
+
+def _is_transient_sidecar_error(err) -> bool:
+    """Photon/sidecar down (retry later) vs. a request Photon rejected on purpose."""
+    if isinstance(err, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    s = str(err).lower()
+    if re.search(r"sidecar /send 50[234]\b", s):
+        return True
+    return any(m in s for m in TRANSIENT_MARKERS)
+
+
+def _is_reply_target_missing(err) -> bool:
+    """The threaded-reply target id is stale/unknown on the sidecar — not an outage;
+    the same text sends fine as a plain bubble."""
+    return REPLY_TARGET_MISSING_MARKER in str(err).lower()
+
+
+_outage_lock = threading.Lock()
+_outage_until = 0.0  # monotonic; > now() means "a send just failed transiently"
+
+
+def note_outage():
+    """A transient sidecar failure just happened: for the cooldown, new sends to
+    opted-in users queue straight behind instead of each burning inline retries."""
+    global _outage_until
+    with _outage_lock:
+        _outage_until = time.monotonic() + config.IMESSAGE_HOLD_OUTAGE_COOLDOWN_S
+
+
+def clear_outage():
+    global _outage_until
+    with _outage_lock:
+        _outage_until = 0.0
+
+
+def outage_active() -> bool:
+    with _outage_lock:
+        return time.monotonic() < _outage_until
+
+
+def _hold_eligible(user_id) -> bool:
+    """Hold (never hop numbers) only for a user who is actually ON their line."""
+    if not user_id or not config.IMESSAGE_HOLD_ON_OUTAGE:
+        return False
+    session = get_session()
+    try:
+        row = session.query(User.imessage_opted_in_at).filter(User.id == user_id).first()
+    finally:
+        session.close()
+    return bool(row and row[0])
+
+
+def _send_bubbles(phone: str, bubbles: list[str], reply_to_sid, user_id, message_type: str,
+                  row_ids: list | None = None):
+    """Send each bubble in order, threading the first on `reply_to_sid`. Returns
+    (first_sid, first_err, first_err_is_read_timeout).
+
+    Rows: a landed bubble is logged 'sent' (or, with `row_ids`, the pre-written
+    'held' row at that index is flipped to sent + stamped now). A later bubble
+    failing logs/flips its row and stops — the earlier bubbles landed. A first
+    bubble that hard-fails writes NO row here: the caller decides whether that is
+    'failed' (SMS failover) or 'held' (outage hold). A first-bubble READ timeout
+    is "maybe delivered" and is logged 'sent' (send-reliability, 2026-09-26)."""
+    first_sid = None
+    for i, part in enumerate(bubbles):
+        rid = row_ids[i] if row_ids and i < len(row_ids) else None
+        try:
+            sid = (_send_imessage(phone, part, reply_to_sid) if (i == 0 and reply_to_sid)
+                   else _send_imessage(phone, part))
+            if rid:
+                _flip_row(rid, provider_sid=sid, delivery_status="sent")
+            else:
+                _log_message(user_id, part, message_type,
+                             channel="imessage", provider_sid=sid, delivery_status="sent")
+            if i == 0:
+                first_sid = sid
+            if i < len(bubbles) - 1:
+                time.sleep(bubble_delay(part))
+        except Exception as e:  # noqa: BLE001
+            is_read_timeout = (config.SIDECAR_TIMEOUT_NO_FAILOVER
+                               and isinstance(e, requests.exceptions.ReadTimeout))
+            if i == 0 and not is_read_timeout:
+                return None, e, False
+            status = "sent" if is_read_timeout else "failed"
+            if rid:
+                _flip_row(rid, provider_sid=None, delivery_status=status)
+            else:
+                _log_message(user_id, part, message_type, channel="imessage",
+                             provider_sid=None, delivery_status=status)
+            if i == 0:
+                return None, e, True
+            if is_read_timeout:
+                logger.warning("IMESSAGE_BUBBLE_TIMEOUT user_id=%s idx=%s — maybe delivered; "
+                               "earlier bubbles landed, not failing over", user_id, i)
+            else:
+                logger.warning("IMESSAGE_BUBBLE_FAILED user_id=%s idx=%s err=%s — earlier bubbles landed",
+                               user_id, i, e)
+            return first_sid, None, False
+    return first_sid, None, False
+
+
+def _flip_row(row_id: int, provider_sid, delivery_status: str):
+    """A held Message row just landed (or definitively didn't). Stamp created_at to
+    now so the conversation window orders it where the user actually saw it."""
+    from datetime import datetime, timezone
+    session = get_session()
+    try:
+        row = session.get(Message, row_id)
+        if row is None:
+            return
+        row.provider_sid = provider_sid
+        row.delivery_status = delivery_status
+        if delivery_status == "sent":
+            row.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        session.commit()
+    finally:
+        session.close()
+
+
+def _typing_stop(user_id):
+    try:
+        from typing_indicator import typing_stop
+        typing_stop(user_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 IMESSAGE_INVITE = "ps — i can text you on iMessage instead. tap this once and say hey: {link}"
 
 
@@ -318,78 +463,89 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         return None
 
     # Photon migration 4A: route first. iMessage → sidecar, one call, full body.
-    # On ANY failure: write the `failed` row FIRST (the keystone reads it), trip
-    # the breaker, then fall through to Twilio so the same message still lands.
+    # On a hard failure for a user who is NOT on their line yet: write the `failed`
+    # row FIRST (the keystone reads it), trip the breaker, then fall through to
+    # Twilio so the same message still lands. For a user who IS on their line
+    # (opted in): retry, then hold on that line — never a different number.
     if _resolve_channel(user_id) == "imessage":
         # Each `---` part is its own blue bubble, threaded on the first only. The first
-        # bubble is the failover pivot: if IT fails the pipe is down and the whole
-        # message falls over to SMS (below, with the consent-gate handling intact); a
-        # later bubble failing logs a failed row and stops — the earlier bubbles landed.
+        # bubble is the pivot: if IT fails the pipe is down and the WHOLE message takes
+        # the failure path; a later bubble failing logs its row and stops — the earlier
+        # bubbles landed.
         bubbles = [_imessage_body(b) for b in split_bubbles(body)]
-        first_sid = None
-        first_err = None
-        first_err_timeout = False
-        for i, part in enumerate(bubbles):
-            try:
-                sid = (_send_imessage(phone, part, reply_to_sid) if (i == 0 and reply_to_sid)
-                       else _send_imessage(phone, part))
-                _log_message(user_id, part, message_type,
-                             channel="imessage", provider_sid=sid, delivery_status="sent")
-                if i == 0:
-                    first_sid = sid
-                if i < len(bubbles) - 1:
-                    time.sleep(bubble_delay(part))
-            except Exception as e:  # noqa: BLE001
-                # A READ timeout is "maybe delivered": we sent the request and just
-                # didn't get the ack in time — Photon likely still landed it. Mark
-                # the row as landed (NOT 'failed', which the keystone reads as a
-                # miss) so we neither double-count nor, below, double-send. A real
-                # failure (non-2xx, ok=false, connect error) keeps the 'failed' row.
-                is_read_timeout = (config.SIDECAR_TIMEOUT_NO_FAILOVER
-                                   and isinstance(e, requests.exceptions.ReadTimeout))
-                _log_message(user_id, part, message_type, channel="imessage",
-                             provider_sid=None,
-                             delivery_status="sent" if is_read_timeout else "failed")
-                if i == 0:
-                    first_err = e
-                    first_err_timeout = is_read_timeout
-                    break
-                if is_read_timeout:
-                    logger.warning("IMESSAGE_BUBBLE_TIMEOUT user_id=%s idx=%s — maybe delivered; "
-                                   "earlier bubbles landed, not failing over", user_id, i)
-                    return first_sid
-                logger.warning("IMESSAGE_BUBBLE_FAILED user_id=%s idx=%s err=%s — earlier bubbles landed",
-                               user_id, i, e)
-                return first_sid
-        if first_err is None:
+        hold_ok = _hold_eligible(user_id)
+        if hold_ok:
+            from held_outbound import hold, pending_count, drain_user
+            # Order + economy: while Photon is known-down, or earlier messages to
+            # this user are still parked, this one queues straight behind them
+            # (one probe per drain tick, and they read in the order the coach
+            # said them). If the backlog drains right now, send live.
+            if outage_active():
+                hold(user_id, phone, body, bubbles, message_type, reply_to_sid,
+                     reason="outage_active")
+                return None
+            if pending_count(user_id) and not drain_user(user_id):
+                hold(user_id, phone, body, bubbles, message_type, reply_to_sid,
+                     reason="queued_behind")
+                return None
+
+        first_sid, e, is_timeout = _send_bubbles(phone, bubbles, reply_to_sid, user_id, message_type)
+        if e is None:
             return first_sid
-        e = first_err
         # First bubble failed → clear the dots.
-        try:
-            from typing_indicator import typing_stop
-            typing_stop(user_id)
-        except Exception:  # noqa: BLE001
-            pass
+        _typing_stop(user_id)
         # A read timeout on the first bubble: the request was sent, so Photon may
         # have delivered it. Falling over to SMS here is what double-sends the
         # message, and a slow ack is not a dead pipe — so do NOT trip the breaker
         # and do NOT fall through to Twilio. (A connect error / non-2xx is a hard
-        # failure and takes the failover path below, as before.)
-        if first_err_timeout:
+        # failure and takes the failure path below.)
+        if is_timeout:
             logger.warning("IMESSAGE_SEND_TIMEOUT user_id=%s message_type=%s err=%s — sidecar may "
                            "have delivered; NOT failing over to SMS, NOT tripping breaker",
                            user_id, message_type, e)
             return first_sid
-        # First bubble hard-failed → fall the WHOLE message over to SMS.
+        # A stale threaded-reply target is not an outage: the same text goes as a
+        # plain bubble. Only then judge the result.
+        if reply_to_sid and _is_reply_target_missing(e):
+            logger.info("IMESSAGE_REPLY_TARGET_MISSING user_id=%s target=%s — resending unthreaded",
+                        user_id, reply_to_sid)
+            reply_to_sid = None
+            first_sid, e, is_timeout = _send_bubbles(phone, bubbles, None, user_id, message_type)
+            if e is None or is_timeout:
+                return first_sid
         if _is_consent_gate(e):
+            # They haven't texted their line yet → Twilio IS their number. Unchanged.
+            _log_message(user_id, bubbles[0], message_type, channel="imessage",
+                         provider_sid=None, delivery_status="failed")
             logger.info("IMESSAGE_NOT_OPTED_IN user_id=%s message_type=%s — they haven't texted "
                         "their line yet; falling over to SMS", user_id, message_type)
             if message_type in ("onboarding", "onboarding_bigask"):
                 body = _with_imessage_invite(user_id, body)
+            _mark_failed_over(user_id)
+        elif hold_ok:
+            # One number. Retry briefly on the same line, then park it there.
+            for delay in config.IMESSAGE_HOLD_RETRY_BACKOFF_S:
+                time.sleep(delay)
+                first_sid, e, is_timeout = _send_bubbles(phone, bubbles, reply_to_sid, user_id, message_type)
+                if e is None or is_timeout:
+                    logger.info("IMESSAGE_SEND_RECOVERED user_id=%s message_type=%s after retry",
+                                user_id, message_type)
+                    return first_sid
+            transient = _is_transient_sidecar_error(e)
+            logger.log(logging.WARNING if transient else logging.ERROR,
+                       "IMESSAGE_HELD user_id=%s message_type=%s transient=%s err=%s — holding on "
+                       "their line, NOT falling over to SMS, NOT tripping breaker",
+                       user_id, message_type, transient, e)
+            note_outage()
+            hold(user_id, phone, body, bubbles, message_type, reply_to_sid,
+                 reason="transient" if transient else "hard", error=str(e))
+            return None
         else:
+            _log_message(user_id, bubbles[0], message_type, channel="imessage",
+                         provider_sid=None, delivery_status="failed")
             logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
                          user_id, message_type, e)
-        _mark_failed_over(user_id)
+            _mark_failed_over(user_id)
 
     # Last transform before dispatch — normalize once on the full body so the
     # warning log (next 6 lines) reports per-logical-message, not per-segment.

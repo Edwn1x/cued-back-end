@@ -627,3 +627,109 @@ describe("inbound debug log (series §3.0 experiment a)", () => {
     expect(built).toBeNull();
   });
 });
+
+// ─── inbound retry queue (Photon outage, 2026-09-28) ─────────────────────────
+
+import { createInboundRetryQueue } from "./index.ts";
+
+describe("buildInbound skipAttachments", () => {
+  test("text-only build never calls read(); the count rides in attachments_unavailable", async () => {
+    let reads = 0;
+    const msg = fakeMessage({
+      content: {
+        type: "group",
+        items: [
+          { content: { type: "text", text: "the meals for today" } },
+          { content: { type: "attachment", id: "a1", name: "IMG_1.heic", mimeType: "image/heic", read: async () => { reads += 1; return new Uint8Array(1); } } },
+          { content: { type: "attachment", id: "a2", name: "IMG_2.heic", mimeType: "image/heic", read: async () => { reads += 1; return new Uint8Array(1); } } },
+        ],
+      },
+    });
+    const out = await buildInbound(fakeSpace, msg, { skipAttachments: true });
+    expect(reads).toBe(0);
+    expect(out!.files).toHaveLength(0);
+    expect(out!.payload.text).toBe("the meals for today");
+    expect(out!.payload.attachments).toEqual([]);
+    expect(out!.payload.attachments_unavailable).toBe(2);
+  });
+
+  test("a normal build has no attachments_unavailable key", async () => {
+    const out = await buildInbound(fakeSpace, fakeMessage());
+    expect("attachments_unavailable" in out!.payload).toBe(false);
+  });
+});
+
+describe("createInboundRetryQueue", () => {
+  const upstreamDown = new Error("ConnectionError: [upstream] Service temporarily unavailable. Please retry.");
+
+  function harness(failFor: number, backoffMs = [10, 20, 30]) {
+    let clock = 1_000;
+    const attempts: { id: string; skip: boolean | undefined }[] = [];
+    let n = 0;
+    const q = createInboundRetryQueue({
+      backoffMs,
+      now: () => clock,
+      process: async (_space, message, build) => {
+        attempts.push({ id: message.id, skip: build.skipAttachments });
+        n += 1;
+        if (n <= failFor) throw upstreamDown;
+      },
+    });
+    return { q, attempts, advance: (ms: number) => { clock += ms; } };
+  }
+
+  test("a parked tick is retried after its backoff and forwarded once Photon answers", async () => {
+    const { q, attempts, advance } = harness(1);
+    q.push(fakeSpace, fakeMessage({ id: "m1" }), upstreamDown);
+    expect(q.size()).toBe(1);
+
+    await q.tick();                       // not due yet
+    expect(attempts).toEqual([]);
+
+    advance(10); await q.tick();          // due → fails again → re-armed
+    expect(attempts).toEqual([{ id: "m1", skip: false }]);
+    expect(q.size()).toBe(1);
+
+    advance(5); await q.tick();           // not due (next backoff is 20ms)
+    expect(attempts).toHaveLength(1);
+
+    advance(20); await q.tick();          // Photon back → forwarded with bytes
+    expect(attempts).toEqual([{ id: "m1", skip: false }, { id: "m1", skip: false }]);
+    expect(q.size()).toBe(0);
+  });
+
+  test("the last attempt forwards text-only, then the tick is dropped", async () => {
+    const { q, attempts, advance } = harness(2);   // fails on the first two, OK on the third
+    q.push(fakeSpace, fakeMessage({ id: "m2" }), upstreamDown);
+    advance(10); await q.tick();
+    advance(20); await q.tick();
+    advance(30); await q.tick();
+    expect(attempts.map((a) => a.skip)).toEqual([false, false, true]);
+    expect(q.size()).toBe(0);
+  });
+
+  test("still failing on the text-only attempt → dropped, not retried forever", async () => {
+    const { q, attempts, advance } = harness(99);
+    q.push(fakeSpace, fakeMessage({ id: "m3" }), upstreamDown);
+    for (const ms of [10, 20, 30, 1000]) { advance(ms); await q.tick(); }
+    expect(attempts).toHaveLength(3);
+    expect(q.size()).toBe(0);
+  });
+
+  test("the same message id is parked once", () => {
+    const { q } = harness(0);
+    const m = fakeMessage({ id: "dup" });
+    q.push(fakeSpace, m, upstreamDown);
+    q.push(fakeSpace, m, upstreamDown);
+    expect(q.size()).toBe(1);
+  });
+
+  test("entries keep their order across users and a tick never throws", async () => {
+    const { q, attempts, advance } = harness(0);
+    q.push(fakeSpace, fakeMessage({ id: "first" }), upstreamDown);
+    q.push(fakeSpace, fakeMessage({ id: "second" }), upstreamDown);
+    advance(10);
+    await expect(q.tick()).resolves.toBeUndefined();
+    expect(attempts.map((a) => a.id)).toEqual(["first", "second"]);
+  });
+});

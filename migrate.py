@@ -469,6 +469,28 @@ MIGRATIONS = [
     # NULL and are treated as ungrouped (operate on just that row). Idempotent.
     "ALTER TABLE meals ADD COLUMN IF NOT EXISTS meal_group_id VARCHAR(36)",
     "CREATE INDEX IF NOT EXISTS idx_meals_user_group ON meals (user_id, meal_group_id)",
+    # One number (2026-09-28): messages parked on an opted-in user's iMessage line
+    # during a Photon outage, delivered by held_outbound.drain once it recovers.
+    # Matches models.HeldOutbound so create_all and migrate agree on a fresh DB.
+    """CREATE TABLE IF NOT EXISTS held_outbound (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        phone VARCHAR(20) NOT NULL,
+        body TEXT NOT NULL,
+        message_type VARCHAR(30) DEFAULT 'freeform',
+        reply_to_sid VARCHAR(80),
+        status VARCHAR(12) DEFAULT 'held',
+        attempts INTEGER DEFAULT 0,
+        last_error VARCHAR(300),
+        message_ids JSON,
+        created_at TIMESTAMP,
+        next_attempt_at TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        sent_at TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_held_outbound_user_id ON held_outbound (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_held_outbound_status ON held_outbound (status)",
+    "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
 ]
 
 def wait_for_db(retries=10, delay=3):

@@ -1545,6 +1545,18 @@ def internal_inbound():
         if norm is not None:
             image_list.append(norm)
     image_data = image_list[0] if image_list else None
+    # The sidecar gave up fetching the attachment bytes (Photon outage outlasted its
+    # inbound retry window) and forwarded text-only with the count. Keep the marker:
+    # the stored row must say a picture came, so the coach can say it didn't get it
+    # (the ￼-failed-image guard) instead of "nothing came through".
+    try:
+        unavailable = int(payload.get("attachments_unavailable") or 0)
+    except (TypeError, ValueError):
+        unavailable = 0
+    if unavailable > 0 and image_name is None:
+        image_name = "attachment (unavailable)"
+        logger.warning("IMESSAGE_INBOUND_ATTACHMENTS_UNAVAILABLE from=%s n=%d id=%s",
+                       _last4(raw_handle), unavailable, provider_message_id)
 
     session = get_session()
     try:
