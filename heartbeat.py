@@ -98,7 +98,7 @@ If any part of your reasoning concludes a text is warranted, call send_text. NEV
 # rather than recite them; degrades to a no-op when there is no wearable data.
 _WEARABLE_GUIDANCE = """WEARABLE / RECOVERY — act on it, don't recite it (only when a WEARABLE or RECOVERY block is present below):
 - A measured SHORT or POOR night → prefer a gentler check-in, and HOLD a demanding accountability nudge (a hard push, a "why'd you skip") for a better day. A real friend eases up after a rough night. This is a tone choice, NOT a license to invent a text out of nothing.
-- A clearly GOOD-recovery day → a warm win hook, or the day's session, lands well IF there's real, specific material for it (never generic praise from the numbers alone).
+- A clearly GOOD-recovery day (well-rested / recovered strong vs baseline) → a warm win hook, or framing it as a good day to PUSH (go a little harder, chase a PR, take the harder session), lands well IF there's real, specific material for it (an open training thread, today's planned session). Never generic praise from the numbers alone, and it's an OPENING not a demand — a good-recovery day never becomes a hard "why'd you skip".
 - LOW steps on a REST day → an optional, warm movement nudge (a short walk), never a scold.
 - Never diagnose from HR/HRV, never call it a health issue; bring up one number only when it changes the plan. Missing or absent wearable data changes nothing — decide exactly as you would today."""
 
@@ -435,7 +435,11 @@ def _recovery_signal(user, session) -> str | None:
         return None
     if not rec or not rec.fresh:
         return None
-    if not (rec.poor_recovery or rec.good_recovery):
+    # The GOOD-recovery positive framing is the new symmetric side — gate it on
+    # BETTER_RECOVERY_ENABLED. With that flag off we behave exactly as before it shipped:
+    # only the POOR side (soften/hold) speaks. The poor side is never gated here.
+    show_good = rec.good_recovery and config.BETTER_RECOVERY_ENABLED
+    if not (rec.poor_recovery or show_good):
         return None
     bits = []
     if rec.sleep_minutes is not None:
@@ -450,6 +454,15 @@ def _recovery_signal(user, session) -> str | None:
         worse.append("HRV")
     if worse:
         bits.append(" and ".join(worse) + " worse than baseline")
+    better = []
+    if rec.rhr_better:
+        better.append("resting HR")
+    if rec.hrv_better:
+        better.append("HRV")
+    if rec.sleep_better:
+        better.append("sleep")
+    if better and config.BETTER_RECOVERY_ENABLED and not worse:
+        bits.append(" and ".join(better) + " better than baseline")
     if rec.steps_today is not None:
         st = f"steps today {rec.steps_today:,}"
         if rec.steps_baseline:
@@ -463,9 +476,12 @@ def _recovery_signal(user, session) -> str | None:
                     "on. NOT a hard block: a genuine open thread, a safety item, or real warm material "
                     "still speaks. One number only if it changes the plan; never diagnose from HR/HRV.")
     else:
-        guidance = ("Recovery reads GOOD (well-rested). A warm win hook or the day's session lands well "
-                    "IF there's specific, real material for it — never generic praise from the numbers "
-                    "alone. One number only if it changes the plan; never diagnose.")
+        guidance = ("Recovery reads GOOD (well-rested / recovered strong vs baseline). A warm win hook, or "
+                    "framing today as a good day to PUSH — go a little harder, chase a PR, take the harder "
+                    "session — lands well IF there's specific, real material for it (an open training thread, "
+                    "today's planned session). Never generic praise from the numbers alone, and NOT a demand: "
+                    "it's a positive framing/opening, not a hard obligation. One number only if it changes the "
+                    "plan; never diagnose.")
     return ("## RECOVERY (wearable — code-computed; act on it, never a readout)\n"
             f"{facts}.\n{guidance}")
 

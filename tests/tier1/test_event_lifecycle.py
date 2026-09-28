@@ -122,15 +122,29 @@ def test_passed_prior_day_event_recently_passed_then_ages_out(db):
 
 # ── 4. render: today's passed event is marked PASSED in place ────────────────
 
-def test_todays_passed_event_carries_passed_suffix(db):
+def test_todays_passed_event_carries_passed_suffix(db, monkeypatch):
     """Same-day: a 2:15pm event at 6pm must not render identically to one at 9pm.
-    (Times are real-now-relative with small offsets — the same trade the episodic
-    quiet-gate tests make.)"""
+    Clock is FROZEN to mid-afternoon local so both offsets stay on the same local
+    day — was wall-clock-fragile (near local midnight the +80min event rolled into
+    tomorrow and dropped out of TODAY'S EVENTS)."""
     from tests.factories import make_user
     from events import record_event
+    import events as _events
+    import agent_loop as _agent_loop
 
-    user = make_user(db)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    _tz = ZoneInfo("America/Los_Angeles")
+    _fixed = datetime.now(_tz).replace(hour=14, minute=0, second=0, microsecond=0)
+
+    class _FrozenDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _fixed.astimezone(tz) if tz is not None else _fixed.replace(tzinfo=None)
+    # Freeze BOTH the day-windowing (events) and the PASSED comparison (agent_loop._now_utc)
+    monkeypatch.setattr(_events, "datetime", _FrozenDT)
+    monkeypatch.setattr(_agent_loop, "datetime", _FrozenDT)
+
+    now_utc = _fixed.astimezone(timezone.utc).replace(tzinfo=None)
     record_event(user.id, "scheduled", source="model", raw_text="advising appt",
                  occurred_at=now_utc - timedelta(minutes=40),
                  ends_at=now_utc - timedelta(minutes=20))

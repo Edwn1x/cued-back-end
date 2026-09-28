@@ -346,6 +346,18 @@ RECENT_MEDIA_TTL_HOURS = int(os.getenv("RECENT_MEDIA_TTL_HOURS", "24"))
 # "an image didn't come through" — the coach says so and asks for a resend, never guesses.
 INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED = os.getenv(
     "INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED", "true").lower() == "true"
+# Neutral inbound image type: classify_message used to DEFAULT every captionless /
+# non-food-keyword image to "food_photo" (live 2026-09-27: a photo of an EZ curl bar
+# was tagged food_photo). That label is cosmetic — it only stamps the outbound reply
+# row (admin view + analytics); no food/meal path gates on it (meal logging, the meal
+# estimation prompt, the receipt pre-classifier and the photo buffer band all key on
+# image PRESENCE + the in-loop vision model, never on message_type). When on, an image
+# with no explicit food caption is labeled neutral "image" and the agent loop — which
+# actually sees the photo — decides if it's food and logs it via log_meal. A caption
+# with real food words still labels food_photo. Fail-safe: off = the old food_photo
+# default.
+NEUTRAL_IMAGE_TYPE_ENABLED = os.getenv(
+    "NEUTRAL_IMAGE_TYPE_ENABLED", "true").lower() == "true"
 # Photo-reread delete guard: deleting/replacing an already-logged meal must be an
 # intentional action, never a side-effect of re-interpreting a NEW photo. When on, a
 # manage_log delete of a meal on a turn that carries an image is refused unless the
@@ -474,6 +486,29 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 # Fail-open: with GOOGLE_HEALTH_ENABLED off, no wearable rows, or stale data it is inert
 # (behaviour identical to today). ON by default, mirroring the other heartbeat gates.
 HEARTBEAT_WEARABLE_AWARE_ENABLED = os.getenv("HEARTBEAT_WEARABLE_AWARE_ENABLED", "true").lower() == "true"
+
+# ─── Recovery thresholds (SHARED by both surfaces) ────────────────────────────
+# The wearable "recovery" read used to be ONE-SIDED: the coach only flagged recovery
+# when WORSE than baseline (soften/hold a nudge), never when genuinely BETTER. These
+# constants define BOTH sides symmetrically and are read by BOTH surfaces so they always
+# agree:
+#   • REACTIVE  — integrations/google_health_sync.wearable_context (the `## WEARABLE` block)
+#   • PROACTIVE — wearable_read.recovery_read → heartbeat._recovery_signal (`## RECOVERY`)
+# "worse than baseline":  resting HR >= avg + RHR_WORSE_DELTA  OR  HRV <= avg * HRV_WORSE_RATIO.
+# "better / strong recovery" mirrors it:  resting HR <= avg - RHR_BETTER_DELTA  OR
+#   HRV >= avg * HRV_BETTER_RATIO  OR  last-night sleep >= avg * SLEEP_BETTER_RATIO
+#   (with a GOOD_NIGHT_MIN absolute floor so a short night above a low baseline never counts).
+# BETTER_RECOVERY_ENABLED gates ONLY the new positive/"strong recovery" framing; the worse
+# side is untouched. Default ON, mirroring the other wearable gates. Fail-open: with no /
+# stale wearable data neither side fires (behaviour identical to today).
+BETTER_RECOVERY_ENABLED = os.getenv("BETTER_RECOVERY_ENABLED", "true").lower() == "true"
+RECOVERY_RHR_WORSE_DELTA = int(os.getenv("RECOVERY_RHR_WORSE_DELTA", "4"))        # resting HR >= avg + this (bpm)
+RECOVERY_RHR_BETTER_DELTA = int(os.getenv("RECOVERY_RHR_BETTER_DELTA", "4"))      # resting HR <= avg - this (bpm)
+RECOVERY_HRV_WORSE_RATIO = float(os.getenv("RECOVERY_HRV_WORSE_RATIO", "0.85"))   # HRV <= avg * this
+RECOVERY_HRV_BETTER_RATIO = float(os.getenv("RECOVERY_HRV_BETTER_RATIO", "1.15")) # HRV >= avg * this
+RECOVERY_SLEEP_BETTER_RATIO = float(os.getenv("RECOVERY_SLEEP_BETTER_RATIO", "1.05"))  # sleep >= avg * this
+RECOVERY_GOOD_NIGHT_MIN = int(os.getenv("RECOVERY_GOOD_NIGHT_MIN", "420"))        # absolute floor for a "good" night (min asleep)
+
 # When ON, the TDEE activity multiplier prefers a trailing average of REAL wearable
 # steps (wearable_read.recent_step_avg) over the static onboarding user.avg_steps,
 # for users with a connected wearable and recent data. DEFAULT OFF: this changes
