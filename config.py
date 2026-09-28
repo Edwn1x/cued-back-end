@@ -354,6 +354,14 @@ INLINE_IMAGE_PLACEHOLDER_GUARD_ENABLED = os.getenv(
 # correct banana entry to "replace" it).
 PHOTO_REREAD_DELETE_GUARD_ENABLED = os.getenv(
     "PHOTO_REREAD_DELETE_GUARD_ENABLED", "true").lower() == "true"
+# Meal day-move (2026-09-27): move a logged meal to another day by EDITING eaten_at's
+# local date on the EXISTING row(s) — a one-op move, never add-new-then-delete-old (which
+# double-logged). Also broadens the photo-reread guard so an explicit move/switch/reassign
+# directive is never blocked on a photo turn (the eggs-move incident).
+MEAL_DAY_MOVE_ENABLED = os.getenv("MEAL_DAY_MOVE_ENABLED", "true").lower() == "true"
+# Meal grouping (2026-09-27): items logged in one log_meal batch share a meal_group_id so
+# "move the eggs meal to yesterday" moves ALL of them atomically, not item-by-item.
+MEAL_GROUP_ENABLED = os.getenv("MEAL_GROUP_ENABLED", "true").lower() == "true"
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public

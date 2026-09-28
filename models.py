@@ -341,6 +341,8 @@ class Meal(Base):
     notes = Column(Text)  # any clarifying details
     deleted_at = Column(DateTime, default=None)  # soft delete — filter via models.active()
     edits = Column(JSON, default=None)  # append-only manage_log edit audit: [{at,field,old,new}]
+    meal_group_id = Column(String(36))  # items logged in one log_meal batch share this →
+                                        # manage_log scope='meal' moves/deletes them as one unit
 
     user = relationship("User", back_populates="meals")
 

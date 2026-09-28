@@ -464,6 +464,11 @@ MIGRATIONS = [
     # ADD CONSTRAINT has no IF NOT EXISTS in Postgres; already_applied() pre-checks the
     # constraint name so a current schema skips it WITHOUT taking a lock (deploy hardening).
     "ALTER TABLE events ADD CONSTRAINT uq_events_user_source_external UNIQUE (user_id, source, external_id)",
+    # Meal grouping (2026-09-27): items logged in one log_meal batch share a group id so a
+    # whole meal can be moved/deleted as a unit (manage_log scope='meal'). Legacy rows keep
+    # NULL and are treated as ungrouped (operate on just that row). Idempotent.
+    "ALTER TABLE meals ADD COLUMN IF NOT EXISTS meal_group_id VARCHAR(36)",
+    "CREATE INDEX IF NOT EXISTS idx_meals_user_group ON meals (user_id, meal_group_id)",
 ]
 
 def wait_for_db(retries=10, delay=3):
