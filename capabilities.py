@@ -268,6 +268,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they mention something coming up with a date",
     ),
     Capability(
+        id="block_time",
+        what="i can drop a gym or study block straight onto your google calendar",
+        how="say 'block a lift at 4' or 'add a study block 2-4 before the exam' — i'll confirm, then add it",
+        tools=("create_calendar_event",),
+        enabled=lambda u: config.CALENDAR_WRITE_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
+        used=None,
+        reveal_when="they say they need to make time for training or studying, or ask you to put something on their calendar",
+    ),
+    Capability(
         id="weigh_ins",
         what="tell me your weight now and then and i'll track the trend and tune your calories off real data",
         how="'weighed in at 141' or a scale screenshot; once a week is plenty",
