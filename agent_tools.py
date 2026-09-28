@@ -2589,7 +2589,122 @@ def handle_send_gym_line_link(user_id: int, tool_input: dict, *, message_id=None
     return send_line_link(user_id)
 
 
+CREATE_CALENDAR_EVENT_TOOL = {
+    "name": "create_calendar_event",
+    "description": (
+        "ADD a new event to the user's connected Google Calendar — block a gym session, "
+        "a study block, a meal-prep slot ('block a lift at 4pm', 'add a study block 2-4pm "
+        "before the exam'). CREATE-ONLY: you can add net-new events, you CANNOT move or "
+        "delete anything already on their calendar. ALWAYS confirm first: reflect back "
+        "exactly what you'll add (title + day + time) and get a yes BEFORE writing — call "
+        "this with confirmed=false (or omitted) to stage it, then call again with "
+        "confirmed=true once they've agreed. Never write silently. Times are the user's "
+        "LOCAL time, 24-hour 'HH:MM'. If the user only connected read access, this returns "
+        "a 'reconnect to let me add to it' message — relay that honestly, do NOT claim you "
+        "added it. This writes to their real Google Calendar AND mirrors into your own "
+        "context so it shows up right away."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "the event title, e.g. 'gym — push' or 'study for orgo'"},
+            "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h)"},
+            "ends_at": {"type": "string", "description": "local end time 'HH:MM' (24h, optional if duration_minutes given)"},
+            "duration_minutes": {"type": "integer", "description": "length in minutes if no ends_at (default 60)"},
+            "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+            "description": {"type": "string", "description": "optional longer note for the event body"},
+            "confirmed": {"type": "boolean",
+                          "description": "false/omitted = stage it and confirm with the user first; "
+                                         "true = they've agreed, actually create it"},
+        },
+        "required": ["summary", "starts_at"],
+    },
+}
+
+
+def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Create a timed event on the user's PRIMARY Google Calendar (create-only) after an
+    explicit confirm, then mirror it into the local Event store so context/heartbeat see it
+    immediately. Honest degrade: not-connected and readonly-only (403) both return a clear
+    signal, never a fake success."""
+    from integrations import gcal
+
+    ti = tool_input or {}
+    summary = (ti.get("summary") or "").strip()
+    if not summary:
+        return "error: summary required"
+    starts_hhmm = ti.get("starts_at")
+    if not starts_hhmm:
+        return "error: starts_at required (local 'HH:MM')"
+
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz_str = (user.user_timezone if user else None) or "America/Los_Angeles"
+    finally:
+        session.close()
+
+    start_utc = _parse_local_dt(tz_str, ti.get("date"), starts_hhmm)
+    if start_utc is None:
+        return "error: couldn't read the start time — give it as local 'HH:MM'"
+    end_utc = _parse_local_dt(tz_str, ti.get("date"), ti.get("ends_at"))
+    if end_utc is None:
+        try:
+            dur = int(ti.get("duration_minutes") or 60)
+        except (TypeError, ValueError):
+            dur = 60
+        dur = max(5, min(dur, 24 * 60))
+        end_utc = start_utc + timedelta(minutes=dur)
+    if end_utc <= start_utc:
+        end_utc = start_utc + timedelta(minutes=60)
+
+    # Reflect-back window (local time) for the confirm string.
+    try:
+        tz = ZoneInfo(tz_str)
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    e_loc = end_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    when = (s_loc.strftime("%a %b %-d %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+            + "–" + e_loc.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm"))
+
+    # Confirm-before-write: no write happens until confirmed is explicitly true.
+    if not bool(ti.get("confirmed")):
+        return (f"not created yet — confirm with the user first: adding '{summary}' {when} "
+                f"to their calendar. reflect that back, and once they say yes call "
+                f"create_calendar_event again with confirmed=true.")
+
+    desc = (ti.get("description") or "").strip() or None
+    try:
+        ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc)
+    except gcal.NotConnected:
+        return ("can't add it — no google calendar connected yet. offer to send the connect "
+                "link (send_connect_link) so you can start adding things.")
+    except gcal.WriteAccessDenied:
+        return ("i can read your calendar but can't add to it yet — the connection is "
+                "read-only. tell them that honestly (\"reconnect and i can add to it\") and "
+                "offer to re-send the connect link (send_connect_link) so they can grant add "
+                "access. do NOT say it was added.")
+    except Exception as e:  # noqa: BLE001 — a write failure must never read as success
+        logger.warning("CREATE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+        return f"error: couldn't add it to the calendar ({e}); tell them it didn't go through"
+
+    # Mirror into the local Event store keyed the SAME way gcal_sync keys primary events
+    # (source='gcal', external_id='primary:<id>'), so the next sync updates this row
+    # instead of duplicating it, and context/heartbeat see it right away.
+    eid = ev.get("id")
+    try:
+        from events import upsert_external_event
+        upsert_external_event(user_id, source="gcal", external_id=f"primary:{eid}",
+                              title=summary, occurred_at=start_utc, ends_at=end_utc, all_day=False)
+    except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
+        logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
+    logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s summary=%r when=%s", user_id, eid, summary[:40], when)
+    return f"ok: added '{summary}' {when} to their google calendar"
+
+
 _HANDLERS = {
+    "create_calendar_event": handle_create_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
     "set_day_reset": handle_set_day_reset,

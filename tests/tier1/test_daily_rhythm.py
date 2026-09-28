@@ -46,6 +46,10 @@ def rhythm_on(monkeypatch):
               "SET_CHECKIN_LEVEL_TOOL_ENABLED"):
         monkeypatch.setattr(config, f, True)
     monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    # The calendar-assistant daily briefing (default ON) extends MORNING OPEN into a
+    # rundown; these rhythm tests assert the base "friend's morning text" wording, so
+    # keep the briefing off here — it has its own coverage in test_calendar_assistant.
+    monkeypatch.setattr(config, "CALENDAR_DAILY_BRIEFING_ENABLED", False)
 
 
 def _ctx_user(db, **kw):
