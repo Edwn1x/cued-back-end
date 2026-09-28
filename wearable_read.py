@@ -172,4 +172,44 @@ def _hm(minutes) -> str:
     return f"{int(minutes) // 60}h{int(minutes) % 60:02d}m"
 
 
-__all__ = ["recovery_read", "Recovery", "SOURCE"]
+# Trailing-window + minimum-days for the TDEE step average (kept LOCAL, like the
+# recovery thresholds above — this reader stays decoupled from the sync module).
+STEP_AVG_WINDOW_DAYS = 14   # trailing local days considered
+STEP_AVG_MIN_DAYS = 3       # need at least this many days WITH steps to be trustworthy
+
+
+def recent_step_avg(user, session, *, now=None) -> float | None:
+    """Trailing average of REAL daily steps from wearable_days, for the TDEE
+    activity multiplier — or None when there is nothing trustworthy to use (so
+    the caller falls back to the static onboarding avg_steps).
+
+    Read-only: a single SELECT over WearableDay for this user's last
+    STEP_AVG_WINDOW_DAYS local days. Never writes, never calls the sync module.
+    Fail-open: flag off / not connected / too few days → None."""
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return None
+    try:
+        from integrations.base import get_integration
+        integ = get_integration(session, user.id, SOURCE)
+        if integ is None or integ.status not in ("connected", "error"):
+            return None
+
+        today = _local_today(user, now=now)
+        since = (today - timedelta(days=STEP_AVG_WINDOW_DAYS)).isoformat()
+        rows = (session.query(WearableDay)
+                .filter(WearableDay.user_id == user.id, WearableDay.provider == SOURCE,
+                        WearableDay.day >= since)
+                .all())
+        # Only count days that actually recorded steps (a 0/None day is usually a
+        # non-wear gap, not a genuinely sedentary day — averaging it in would drag
+        # the multiplier down artificially).
+        steps = [r.steps for r in rows if r.steps]
+        if len(steps) < STEP_AVG_MIN_DAYS:
+            return None
+        return sum(steps) / len(steps)
+    except Exception:
+        # Fail-open: a reader error must never change (or crash) target computation.
+        return None
+
+
+__all__ = ["recovery_read", "recent_step_avg", "Recovery", "SOURCE"]

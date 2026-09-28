@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import logging
 import re
@@ -17,11 +18,13 @@ logger = logging.getLogger("cued.sms")
 client = Client(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
 
 # ─── Outbound dedup (buffer-race backstop) ────────────────────────────────────
-# user_id -> (normalized_body_hash, monotonic_ts) of the last reply we sent. When
-# the buffer race spawns a second, topically identical turn, the coach produces a
-# near-identical reply moments later; suppressing the byte-for-byte repeat inside
-# OUTBOUND_DEDUP_WINDOW_S is what the user experiences as "not getting the same
-# messages twice". Keyed by user_id so it spans both channels (iMessage + SMS).
+# user_id -> (normalized_body, monotonic_ts) of the last reply we sent. When the
+# buffer race spawns a second, topically identical turn, the coach produces a
+# near-identical reply moments later; suppressing it inside OUTBOUND_DEDUP_WINDOW_S
+# is what the user experiences as "not getting the same messages twice". We keep
+# the normalized TEXT (not just a hash) so we can also catch PARAPHRASED
+# near-duplicates, not only byte-for-byte repeats. Keyed by user_id so it spans
+# both channels (iMessage + SMS).
 _recent_out: dict = {}
 _recent_out_lock = threading.Lock()
 
@@ -32,19 +35,52 @@ def _norm_body(body: str) -> str:
     return " ".join((body or "").split()).lower()
 
 
+def _similarity(a: str, b: str) -> float:
+    """Max of three cheap similarity signals on two normalized bodies, so a
+    paraphrase that any one signal misses is still caught:
+      • token-set Jaccard   — word overlap, order-blind
+      • char SequenceMatcher ratio — edit-distance-ish, punctuation/order aware
+      • token-SORT ratio     — reordered-but-same-words paraphrases
+    Returns 0.0..1.0. The reported live paraphrase ("so pullups, then u alternate
+    bis and back / what are the actual bi and back moves" vs "pullups, then bi/back
+    alternating / what are the actual back and bicep moves u run") scores ~0.88
+    here, while genuinely distinct replies sit near ~0.3 — a wide margin."""
+    if not a or not b:
+        return 0.0
+    ta, tb = a.split(), b.split()
+    sa, sb = set(ta), set(tb)
+    jac = len(sa & sb) / len(sa | sb) if (sa or sb) else 0.0
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    tsort = difflib.SequenceMatcher(
+        None, " ".join(sorted(ta)), " ".join(sorted(tb))).ratio()
+    return max(jac, ratio, tsort)
+
+
 def _is_duplicate_send(user_id, body) -> bool:
-    """True when this exact (normalized) body was just sent to this user inside
-    the dedup window. Records the send as a side effect so the NEXT call can see
-    it. No-op (never suppresses) without a user_id or when the flag is off."""
+    """True when this body duplicates the one just sent to this user inside the
+    dedup window — either NORMALIZED-IDENTICAL, or (when OUTBOUND_NEAR_DEDUP_ENABLED)
+    a HIGH-SIMILARITY paraphrase at/above OUTBOUND_NEAR_DEDUP_THRESHOLD. Records the
+    send as a side effect so the NEXT call can see it. No-op (never suppresses)
+    without a user_id or when OUTBOUND_DEDUP_ENABLED is off."""
     if not user_id or not config.OUTBOUND_DEDUP_ENABLED:
         return False
-    digest = hashlib.sha256(_norm_body(body).encode("utf-8")).hexdigest()
+    norm = _norm_body(body)
     now = time.monotonic()
     with _recent_out_lock:
         prev = _recent_out.get(user_id)
-        if prev and prev[0] == digest and (now - prev[1]) < config.OUTBOUND_DEDUP_WINDOW_S:
-            return True
-        _recent_out[user_id] = (digest, now)
+        if prev and (now - prev[1]) < config.OUTBOUND_DEDUP_WINDOW_S:
+            prev_norm = prev[0]
+            if prev_norm == norm:
+                return True
+            if config.OUTBOUND_NEAR_DEDUP_ENABLED and prev_norm and norm:
+                try:
+                    if _similarity(prev_norm, norm) >= config.OUTBOUND_NEAR_DEDUP_THRESHOLD:
+                        logger.info("OUTBOUND_NEAR_DEDUP user=%s suppressed near-duplicate", user_id)
+                        return True
+                except Exception:
+                    # Fail open: a similarity error must never block a real send.
+                    pass
+        _recent_out[user_id] = (norm, now)
     return False
 
 
@@ -257,8 +293,8 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
     encodes our outbound as 1-segment GSM-7 (160 chars/seg) instead of the
     UCS-2 fallback (67 chars/seg) that gets triggered by a single em-dash or
     smart quote. The transform is the LAST thing we do before split so any
-    upstream finalization (orchestrator → personality layer → send_sms) is
-    captured. Logging-mode acks and templated stats lines benefit too — any
+    upstream finalization is captured before dispatch. Logging-mode acks and
+    templated stats lines benefit too — any
     `✓` glyph would force UCS-2 if it slipped through.
 
     See sms_encoding.py for the character map and why we don't rely solely

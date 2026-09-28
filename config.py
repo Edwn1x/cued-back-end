@@ -474,6 +474,13 @@ HEARTBEAT_QUIET_END_HOUR = int(os.getenv("HEARTBEAT_QUIET_END_HOUR", "8"))      
 # Fail-open: with GOOGLE_HEALTH_ENABLED off, no wearable rows, or stale data it is inert
 # (behaviour identical to today). ON by default, mirroring the other heartbeat gates.
 HEARTBEAT_WEARABLE_AWARE_ENABLED = os.getenv("HEARTBEAT_WEARABLE_AWARE_ENABLED", "true").lower() == "true"
+# When ON, the TDEE activity multiplier prefers a trailing average of REAL wearable
+# steps (wearable_read.recent_step_avg) over the static onboarding user.avg_steps,
+# for users with a connected wearable and recent data. DEFAULT OFF: this changes
+# users' calorie targets, so it stays off until the founder reviews and enables it.
+# Fail-open — with the flag off, no wearable, or too few days it uses avg_steps
+# exactly as today.
+TDEE_WEARABLE_STEPS_ENABLED = os.getenv("TDEE_WEARABLE_STEPS_ENABLED", "false").lower() == "true"
 
 # Daily rhythm (rewrite/daily-rhythm/CHANGESPEC.md) — user 32: "check-ups are way too far
 # apart". All five default OFF; flipped in prod after the deploy.
@@ -591,6 +598,14 @@ SIDECAR_TIMEOUT_NO_FAILOVER = os.getenv("SIDECAR_TIMEOUT_NO_FAILOVER", "true").l
 # produced two near-identical turns ("same 4 messages"). See sms._is_duplicate_send.
 OUTBOUND_DEDUP_ENABLED = os.getenv("OUTBOUND_DEDUP_ENABLED", "true").lower() == "true"
 OUTBOUND_DEDUP_WINDOW_S = int(os.getenv("OUTBOUND_DEDUP_WINDOW_S", "90"))
+# Byte-identical is not the only shape the buffer race takes: the coach also sent
+# PARAPHRASED near-duplicates moments apart ("got it — so pullups, then u alternate
+# bis and back" vs "got it — pullups, then bi/back alternating"). Also suppress a
+# reply whose token-set (Jaccard) similarity to the last one is at/above this HIGH
+# threshold, within the same window + same user. Conservative by design — genuinely
+# distinct replies stay well below it. Fail-open. See sms._is_duplicate_send.
+OUTBOUND_NEAR_DEDUP_ENABLED = os.getenv("OUTBOUND_NEAR_DEDUP_ENABLED", "true").lower() == "true"
+OUTBOUND_NEAR_DEDUP_THRESHOLD = float(os.getenv("OUTBOUND_NEAR_DEDUP_THRESHOLD", "0.85"))
 # A message landing within this many seconds of the buffer timer firing is a
 # candidate for the timer-vs-append race; logged for observability. The actual
 # absorption is done by the per-timer token guard in message_buffer._flush_buffer.
