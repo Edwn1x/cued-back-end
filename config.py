@@ -415,6 +415,13 @@ CONNECT_TOKEN_SECRET = os.getenv("CONNECT_TOKEN_SECRET", "")
 INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-production-90171c.up.railway.app")
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
+# Google Calendar WRITE-BACK (create events). OFF by default: turning it on requires
+# adding the calendar.events (read/WRITE) scope to the OAuth consent screen AND every
+# existing user RE-CONNECTING (readonly grants can't create). When ON, the gcal
+# authorize_url requests the write scope and the coach gets the create_calendar_event
+# tool. CREATE-ONLY — never modifies or deletes existing events. See the PR founder
+# setup section for the exact Google Cloud Console steps.
+CALENDAR_WRITE_ENABLED = os.getenv("CALENDAR_WRITE_ENABLED", "false").lower() == "true"
 BCOURSES_ENABLED = os.getenv("BCOURSES_ENABLED", "false").lower() == "true"
 # Canvas personal access token (Part 1.4b): the richer bCourses connection — planner
 # API with submission status. Sits ON TOP of the feed: while a token is valid it

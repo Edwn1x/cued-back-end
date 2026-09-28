@@ -730,6 +730,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOOKUP_EVENTS_TOOL_ENABLED:
         from agent_tools import LOOKUP_EVENTS_TOOL
         tools.append(LOOKUP_EVENTS_TOOL)
+    if config.CALENDAR_WRITE_ENABLED:
+        # Create-only Google Calendar write-back. OFF by default — needs the write scope
+        # on the consent screen + a user re-consent (readonly grants 403 on insert, which
+        # the tool surfaces as an honest reconnect prompt).
+        from agent_tools import CREATE_CALENDAR_EVENT_TOOL
+        tools.append(CREATE_CALENDAR_EVENT_TOOL)
     if config.REMINDERS_ENABLED:
         from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL, set_reminder_tool  # noqa: F401
         # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance

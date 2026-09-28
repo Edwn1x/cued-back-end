@@ -36,6 +36,12 @@ CAL_API = "https://www.googleapis.com/calendar/v3"
 # still no write, no calendar.readonly (that one exposes ACLs/settings).
 SCOPE = ("https://www.googleapis.com/auth/calendar.events.readonly "
          "https://www.googleapis.com/auth/calendar.calendarlist.readonly")
+# Read/WRITE events scope — a SUPERSET of calendar.events.readonly. Requested ONLY
+# when CALENDAR_WRITE_ENABLED (see authorize_url): it's a Google "sensitive" scope that
+# has to be on the consent screen or the whole consent 400s, so we never ask for it
+# until the founder has wired it up. It is ADDED to (never replaces) the readonly scopes,
+# so read keeps working; existing readonly-only grants are untouched and still sync.
+WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
 
 def _timeout() -> int:
@@ -57,12 +63,20 @@ class GCalProvider(Provider):
     def enabled(self) -> bool:
         return bool(config.GCAL_ENABLED)
 
+    def _requested_scope(self) -> str:
+        """The scope string this connect asks for. Read scopes always; the read/WRITE
+        events scope is appended only when CALENDAR_WRITE_ENABLED so a NEW/re-consented
+        grant can create events. Flag off → exactly the readonly scopes (unchanged)."""
+        if getattr(config, "CALENDAR_WRITE_ENABLED", False):
+            return f"{self.scopes} {WRITE_SCOPE}"
+        return self.scopes
+
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
         params = {
             "client_id": config.GOOGLE_OAUTH_CLIENT_ID,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": self.scopes,
+            "scope": self._requested_scope(),
             "access_type": "offline",   # get a refresh token
             "prompt": "consent",        # ensure the refresh token comes every time
             "include_granted_scopes": "true",
@@ -194,6 +208,56 @@ def list_events(access_token: str, calendar_id: str, *, sync_token: str | None =
             continue
         next_sync = body.get("nextSyncToken")
         return out, next_sync
+
+
+# ─── Calendar API client (WRITE) — create-only, behind CALENDAR_WRITE_ENABLED ──
+
+class NotConnected(Exception):
+    """No connected gcal for this user (or the token refresh failed) — nothing to write to."""
+
+
+class WriteAccessDenied(Exception):
+    """403 / insufficient scope on events.insert — the grant is readonly (never granted
+    calendar.events write). The user must RE-CONNECT to add write; we surface this as an
+    honest 'reconnect to let me' rather than a silent failure or a fake success."""
+
+
+def _rfc3339_utc(dt: datetime) -> str:
+    """A datetime -> RFC3339 in UTC with a 'Z' suffix (what events.insert wants).
+    Naive datetimes are treated as UTC (our whole event store is naive UTC)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetime,
+                 description: str | None = None) -> dict:
+    """Create ONE timed event on the user's PRIMARY calendar (events.insert). CREATE-ONLY
+    by design — there is deliberately no modify/delete path here, to keep the blast radius
+    of write access to net-new events the coach explicitly added.
+
+    Raises NotConnected if the user has no usable token, WriteAccessDenied on a 403/
+    insufficient-scope (readonly grant). Returns the created event JSON (with `id`)."""
+    token = base.get_valid_access_token(user_id, "gcal")
+    if not token:
+        raise NotConnected(user_id)
+    body = {
+        "summary": summary,
+        "start": {"dateTime": _rfc3339_utc(start_dt)},
+        "end": {"dateTime": _rfc3339_utc(end_dt)},
+    }
+    if description:
+        body["description"] = description
+    r = requests.post(f"{CAL_API}/calendars/primary/events",
+                      headers={"Authorization": f"Bearer {token}"},
+                      json=body, timeout=_timeout())
+    if r.status_code in (401, 403):
+        # 403 insufficient permission (readonly grant) — and 401 with a valid token here
+        # means the same missing-write-scope class of problem. Either way: reconnect.
+        logger.warning("GCAL_CREATE_EVENT_DENIED user=%s status=%s", user_id, r.status_code)
+        raise WriteAccessDenied(r.status_code)
+    r.raise_for_status()
+    return r.json()
 
 
 base.register(GCalProvider())
