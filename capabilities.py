@@ -268,6 +268,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they mention something coming up with a date",
     ),
     Capability(
+        id="schedule_rundown",
+        what="ask me what your week looks like and i'll lay out the whole thing — every day, every deadline",
+        how="'what's my week', 'rest of the week', 'what's due' — i pull your full calendar and give you all of it, nothing dropped",
+        tools=("schedule_rundown",),
+        enabled=lambda u: config.SCHEDULE_RUNDOWN_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
+        used=None,
+        reveal_when="they ask what's coming up, what their week looks like, or what's due",
+    ),
+    Capability(
         id="block_time",
         what="i can drop a gym or study block straight onto your google calendar",
         how="say 'block a lift at 4' or 'add a study block 2-4 before the exam' — i'll confirm, then add it",

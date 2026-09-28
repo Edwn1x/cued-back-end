@@ -267,6 +267,15 @@ LOG_EVENT_TOOL_ENABLED = os.getenv("LOG_EVENT_TOOL_ENABLED", "false").lower() ==
 # context window (a due date weeks out is synced but not in the prompt). Read-only.
 LOOKUP_EVENTS_TOOL_ENABLED = os.getenv("LOOKUP_EVENTS_TOOL_ENABLED", "true").lower() == "true"
 LOOKUP_EVENTS_MAX_DAYS = int(os.getenv("LOOKUP_EVENTS_MAX_DAYS", "120"))
+# schedule_rundown: a DETERMINISTIC, complete, day-grouped rundown for range questions
+# ("what's my week", "rest of the week", "what's due"). Completeness — especially
+# deadlines — is computed in code and relayed as finished text, so the model can't
+# truncate the week and drop a Friday deadline (live 2026-09-28, user 31). Read-only.
+SCHEDULE_RUNDOWN_ENABLED = os.getenv("SCHEDULE_RUNDOWN_ENABLED", "true").lower() == "true"
+SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
+# Message-length guard for very large calendars: cap the *routine one-off* events listed
+# per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
+SCHEDULE_RUNDOWN_MAX_EVENTS = int(os.getenv("SCHEDULE_RUNDOWN_MAX_EVENTS", "40"))
 # Reminders (reminders.py): set_reminder/cancel_reminder tools, onboarding capture, and the
 # 60s firing sweep. Ships ON (founder rule: capabilities ship on + budgeted + instrumented);
 # one flag covers all three so a revert is one var.

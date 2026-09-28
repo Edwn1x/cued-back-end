@@ -809,6 +809,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.LOOKUP_EVENTS_TOOL_ENABLED:
         from agent_tools import LOOKUP_EVENTS_TOOL
         tools.append(LOOKUP_EVENTS_TOOL)
+    if config.SCHEDULE_RUNDOWN_ENABLED:
+        # Deterministic, complete, deadline-safe rundown for range questions ("what's my
+        # week / rest of the week / what's due") — completeness computed in code so the
+        # model can't truncate the week and drop a Friday deadline (live 2026-09-28).
+        from agent_tools import SCHEDULE_RUNDOWN_TOOL
+        tools.append(SCHEDULE_RUNDOWN_TOOL)
     if config.CALENDAR_WRITE_ENABLED:
         # Create-only Google Calendar write-back. OFF by default — needs the write scope
         # on the consent screen + a user re-consent (readonly grants 403 on insert, which
