@@ -204,8 +204,9 @@ def test_trained_users_first_card_asks_for_their_numbers_first(db, monkeypatch):
     assert out.startswith("ok: saved bench press 185×5") and "push session #" in out and out.endswith("Reply with exactly [silent].")
     assert sent[0].startswith("push day. starting u at 185 on bench press — first card, weights are off what u told me")
     assert "bench press · 185 × 5 × 4" in sent
-    # a second start is the normal open-session guard, not another ask
-    assert handle_start_workout_session(user.id, {"template_key": "push"}).startswith("error: a session is already open")
+    # a second start replaces the empty session rather than re-asking or dead-ending
+    # (gym-deadlock fix, 2026-09-27): anchors are saved, so it just sends the card again.
+    assert handle_start_workout_session(user.id, {"template_key": "push"}).startswith("ok: ")
 
 
 def test_pending_card_expires_and_a_plain_anchor_sends_nothing(db, monkeypatch):

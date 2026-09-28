@@ -322,8 +322,53 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
     if r.get("first"):
         first = (" First card: the intro already told them the weights are a guess from their stats they can edit."
                  if r.get("estimated") else " First card: the intro already said the weights are from what they told you.")
+    if r.get("used_default"):
+        # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
+        # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
+        # to capture the real ones is the whole point (live incident user 31: generic pull card
+        # passed off as "their card").
+        return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
+                f"NO routine on file for {r['template_key']} — these are STARTING DEFAULT exercises, not their "
+                f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
+                f"{r['template_key']} day so you can save it (save_routine). Don't call it 'their card' and don't "
+                f"reply [silent].")
     return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
             f"Reply with exactly [silent].")
+
+
+RESET_WORKOUT_SESSION_TOOL = {
+    "name": "reset_workout_session",
+    "description": (
+        "Clear the user's CURRENT active workout session so you can send a fresh card — use it when "
+        "a card won't send because a session is already open (they want to re-send today's card, "
+        "restart, iterate on the routine, or switch days). It NEVER loses logged work: if any sets "
+        "are already logged it FINALIZES the session (the summary goes out) and then it's clear; if "
+        "nothing is logged it just clears the empty one. After 'ok: finalized …' or 'ok: cleared …', "
+        "call start_workout_session to send the new card. If the result says the session has logged "
+        "sets, that means they were saved — don't warn about losing them. Never invent what day the "
+        "open session was; the ACTIVE WORKOUT SESSION block in your context has its real type."
+    ),
+    "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
+
+def handle_reset_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.session_ops import reset_active_session
+    try:
+        r = reset_active_session(user_id)
+    except Exception as e:  # noqa: BLE001 — a reset failure must not crash the turn
+        logger.error("RESET_WORKOUT_SESSION_FAILED user=%s err=%s", user_id, e, exc_info=True)
+        return f"error: couldn't reset the session ({e})"
+    if r["status"] == "none":
+        return "ok: no active session to clear — you're free to start_workout_session for a fresh card."
+    key = r.get("template_key") or "workout"
+    if r["status"] == "finalized":
+        n = r["sets_logged"]
+        return (f"ok: finalized their {key} session (#{r['session_id']}) with {n} logged "
+                f"set{'s' if n != 1 else ''} — the summary already went out, nothing lost. "
+                f"Now clear to start_workout_session for a fresh card.")
+    return (f"ok: cleared the empty {key} session (#{r['session_id']}) — nothing was logged, so "
+            f"nothing lost. Now clear to start_workout_session for a fresh card.")
 
 
 SET_LIFT_ANCHORS_TOOL = {
@@ -1170,8 +1215,15 @@ def handle_save_routine(user_id: int, tool_input: dict, *, message_id=None) -> s
     if "error" in r:
         return f"error: {r['error']}"
     days = ", ".join(f"{k} ({n} exercises)" for k, n in r["days"].items())
-    return (f"ok: routine saved to their cards — {days}; split={r['split']}. Weights are placeholders "
-            f"until they log real sets — tell them that.")
+    # Reflect back the ACTUAL saved exercises (read from the template) so a mismatch — a dropped
+    # warmup, alternatives that got mangled — is visible, not hidden behind "that's your card now".
+    exercises = r.get("exercises") or {}
+    detail = "; ".join(f"{day_label(k)}: {', '.join(labels)}" for k, labels in exercises.items())
+    reflect = (f" Here's EXACTLY what saved — read it back to them so they can catch anything wrong "
+               f"(a missing warmup, alternatives that should be one slot): {detail}." if detail else "")
+    return (f"ok: routine saved to their cards — {days}; split={r['split']}.{reflect} Weights are "
+            f"placeholders until they log real sets — tell them that. Don't claim it's right without "
+            f"reflecting the real list back.")
 
 
 def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
@@ -2413,6 +2465,7 @@ _HANDLERS = {
     "set_targets": lambda user_id, tool_input, **kw: handle_set_targets(user_id, tool_input, **kw),
     "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
+    "reset_workout_session": handle_reset_workout_session,
     "log_event": handle_log_event,
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,
