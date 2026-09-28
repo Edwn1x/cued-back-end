@@ -259,6 +259,23 @@ def build_loop_context(user, session) -> str:
             f"Derive today's likely day from this and the split; if the source is "
             f"'inferred', hedge (ask/confirm) rather than assert."
         )
+    # 4a. Their own routine (custom_templates) if they've given one — so the coach never
+    # re-asks and can name the real exercises — else the no-routine state, so a "send my
+    # push day" gets a captured routine instead of a generic default silently passed off as
+    # theirs (live incident user 31). Only the day cycle they've stated is defaults-only.
+    try:
+        from workouts.routine import describe_routine
+        routine_desc = describe_routine(getattr(user, "custom_templates", None))
+    except Exception:  # noqa: BLE001
+        routine_desc = None
+    if routine_desc:
+        parts.append("## THEIR ROUTINE (on their workout cards — the real exercises; don't re-ask)\n"
+                     + routine_desc)
+    elif config.ROUTINE_CAPTURE_OFFER_ENABLED and config.START_WORKOUT_TOOL_ENABLED:
+        parts.append("## THEIR ROUTINE\nnone on file — their workout cards fall back to GENERIC default "
+                     "exercises for each day. When they ask for a card / start a session, tell them it's "
+                     "starting defaults and offer to save what they actually run (save_routine with "
+                     "routine_text). Don't pass a default day off as their real routine.")
     # What they've told us they lift — the first card's numbers come from this. When
     # nothing is on file the card is estimated from their stats; a stated weight in
     # conversation ("i bench 135") belongs in set_lift_anchors, not remember.
@@ -281,6 +298,18 @@ def build_loop_context(user, session) -> str:
         card_line = None
     if card_line:
         parts.append(card_line)
+
+    # 4b. The in-progress session's REAL type + start + logged-set count. Kills the
+    # confabulation where the coach called the pull session it had just created "a push
+    # session from earlier" — it never saw the active session's actual template_key.
+    if config.ACTIVE_SESSION_CONTEXT_ENABLED:
+        try:
+            from workouts.session_ops import active_session_brief
+            brief = active_session_brief(user)
+        except Exception:  # noqa: BLE001 — never let this block break the turn
+            brief = None
+        if brief:
+            parts.append(brief)
 
     # 5. Coaching summary + delivered points.
     if (user.coaching_summary or "").strip():
@@ -689,6 +718,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])
+        if config.RESET_SESSION_TOOL_ENABLED:
+            from agent_tools import RESET_WORKOUT_SESSION_TOOL
+            tools.append(RESET_WORKOUT_SESSION_TOOL)
         if config.CARD_LINK_FALLBACK_ENABLED:
             from agent_tools import SET_CARD_DELIVERY_TOOL
             tools.append(SET_CARD_DELIVERY_TOOL)

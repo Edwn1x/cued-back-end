@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 
+import config
 from models import get_session, User, WorkoutSession, SetLog
 from sms import send_sms, _resolve_channel
 from workouts.plan import build_session
@@ -140,12 +141,16 @@ def _untouched(session, session_id: int) -> bool:
 def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False,
                           setup: bool = False) -> dict:
     """→ {"session_id", "template_key", "surface": "card"|"messages"|"refused", "sets", "first", "setup"}.
-    Raises ValueError on an unknown template or an already-open session, and
-    NeedsAnchors (a ValueError) on a trained user's first loaded card when nothing
-    is known about their lifts — unless `no_anchors` (they don't know / said start light).
+    Raises ValueError on an unknown template, and NeedsAnchors (a ValueError) on a trained
+    user's first loaded card when nothing is known about their lifts — unless `no_anchors`
+    (they don't know / said start light).
+    Open-session handling (RESET_SESSION_TOOL_ENABLED, the gym-deadlock fix): an EMPTY open
+    session (planned setup card OR an active 'heading to the gym' card with no logged sets) is
+    abandoned and its bubble reused for today's day instead of dead-ending. An open session
+    WITH logged sets raises ValueError telling the model to finalize it (reset_workout_session)
+    or keep logging — logged work is never discarded to send a new card.
     `setup` = the onboarding setup step (workouts/card_setup.py): 'tap it now' intro, no
-    per-exercise fallback. An UNTOUCHED planned session (a card they only looked at) is
-    retired and its bubble edited in place to the new day instead of refusing."""
+    per-exercise fallback."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -154,13 +159,28 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         open_id = active_session_id(user_id)
         reuse_from = None
         if open_id:
-            # Only a PLANNED (never started — the setup card) untouched session yields;
-            # an active one is the normal guard even if untouched, else a double
-            # "starting push" re-sends the whole day (13 texts on SMS).
             old = session.get(WorkoutSession, open_id)
-            if old.status != "planned" or not _untouched(session, open_id):
-                raise ValueError(f"a session is already open (#{open_id}) — finish or abandon it first")
-            reuse_from = open_id
+            untouched = _untouched(session, open_id)
+            if not config.RESET_SESSION_TOOL_ENABLED:
+                # Legacy guard (flag off): only a PLANNED untouched setup card yields; an active
+                # one dead-ends, else a double "starting push" re-sends the whole day.
+                if old.status != "planned" or not untouched:
+                    raise ValueError(f"a session is already open (#{open_id}) — finish or abandon it first")
+                reuse_from = open_id
+            elif not untouched:
+                # HAS logged sets — never silently discard. Tell the model to confirm + finalize
+                # (reset_workout_session) or keep logging, so a re-card can't drop real work.
+                n = session.query(SetLog.id).filter(SetLog.session_id == open_id, SetLog.done.is_(True)).count()
+                raise ValueError(
+                    f"a {day_label(old.template_key)} session (#{open_id}) is already open with {n} "
+                    f"logged set{'s' if n != 1 else ''} — don't drop it: confirm with them, then "
+                    f"reset_workout_session finalizes it (summary sends) so a fresh card can go out, "
+                    f"or they keep logging into this one")
+            else:
+                # Empty session — a PLANNED setup card they only looked at OR an ACTIVE 'heading to
+                # the gym' card they never logged on. Replace it instead of dead-locking: abandon it,
+                # reuse its bubble for today's day. This kills the gym deadlock (2026-09-27).
+                reuse_from = open_id
         else:
             # The newest session timed out untouched (the 6h abandon sweep) but its bubble
             # is still in the thread → edit that bubble to today's card instead.
@@ -190,6 +210,11 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
                 old.status = "abandoned"
                 session.commit()
             logger.info("WORKOUT_SESSION_REPLANNED user=%s old=%s key=%s", user_id, reuse_from, key)
+        # No saved routine for this day → the card is the GENERIC default. Surface it so the
+        # coach labels it "starting defaults" and offers to capture their real exercises,
+        # instead of silently passing off the default day as theirs (live incident user 31).
+        from workouts.templates import custom_templates_for
+        used_default = bool(config.ROUTINE_CAPTURE_OFFER_ENABLED and key not in custom_templates_for(user))
         phone, workout_time = user.phone, user.workout_time
     finally:
         session.close()
@@ -239,7 +264,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s",
                 user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
-            "first": first, "estimated": estimated, "setup": setup}
+            "first": first, "estimated": estimated, "setup": setup, "used_default": used_default}
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,

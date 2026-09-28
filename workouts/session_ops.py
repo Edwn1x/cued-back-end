@@ -36,6 +36,81 @@ def active_session_id(user_id: int) -> int | None:
         session.close()
 
 
+def has_logged_sets(session, ws_id: int) -> bool:
+    """Real logged work on the session: any done set (card / text / tapback / coach).
+    The line between FINALIZE (keep it) and abandon (nothing to keep)."""
+    return session.query(SetLog.id).filter(SetLog.session_id == ws_id, SetLog.done.is_(True)).first() is not None
+
+
+def reset_active_session(user_id: int) -> dict:
+    """Clear the user's ACTIVE workout session so a fresh card can go out on demand
+    (the gym-deadlock fix). NEVER discards logged work: a session with any done set is
+    FINALIZED (status='done' + the normal summary + legacy mirror); an empty one is
+    abandoned. Returns {"status": "finalized"|"abandoned"|"none", "session_id",
+    "template_key", "sets_logged"} so the coach can relay it plainly."""
+    ws_id = active_session_id(user_id)
+    if not ws_id:
+        return {"status": "none", "session_id": None, "template_key": None, "sets_logged": 0}
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, ws_id)
+        key = ws.template_key if ws else None
+        logged = has_logged_sets(session, ws_id)
+        n = (session.query(SetLog.id).filter(SetLog.session_id == ws_id, SetLog.done.is_(True)).count()
+             if logged else 0)
+    finally:
+        session.close()
+    if logged:
+        # finalize — same path as a normal close: summary text + legacy mirror. Work is kept.
+        close_session(ws_id, via="reset")
+        logger.info("WORKOUT_SESSION_RESET_FINALIZED user=%s session=%s key=%s sets=%s", user_id, ws_id, key, n)
+        return {"status": "finalized", "session_id": ws_id, "template_key": key, "sets_logged": n}
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, ws_id)
+        if ws and ws.status in ("planned", "active"):
+            ws.status = "abandoned"
+            session.commit()
+    finally:
+        session.close()
+    logger.info("WORKOUT_SESSION_RESET_ABANDONED user=%s session=%s key=%s", user_id, ws_id, key)
+    return {"status": "abandoned", "session_id": ws_id, "template_key": key, "sets_logged": 0}
+
+
+def active_session_brief(user) -> str | None:
+    """A compact loop-context block naming the CURRENT in-progress session's REAL type,
+    start time, and logged-set count — so the coach stops confabulating the day (it called
+    a pull session 'push'). None when nothing is open. Read-only."""
+    from workouts.templates import day_label
+    ws_id = active_session_id(user.id)
+    if not ws_id:
+        return None
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, ws_id)
+        if not ws:
+            return None
+        n = session.query(SetLog.id).filter(SetLog.session_id == ws_id, SetLog.done.is_(True)).count()
+        key = ws.template_key
+        started = ws.started_at or ws.date
+    finally:
+        session.close()
+    when = ""
+    try:
+        import config as _cfg
+        if started and getattr(_cfg, "CONTEXT_LOCAL_TIME_ENABLED", True):
+            from timefmt import render_time
+            when = f", started {render_time(started, user, relative=False)}"
+    except Exception:  # noqa: BLE001 — a time-format hiccup must not drop the block
+        when = ""
+    logged = f"{n} set{'s' if n != 1 else ''} logged" if n else "no sets logged yet"
+    return ("## ACTIVE WORKOUT SESSION\n"
+            f"{day_label(key)} day (session #{ws_id}){when} — {logged}. This is the in-progress "
+            f"session RIGHT NOW; refer to it as {day_label(key)}, never a different day. To send a "
+            f"fresh card you must clear it first with reset_workout_session (it finalizes the session "
+            f"if sets are logged so nothing is lost, else clears the empty one).")
+
+
 def _session_exercises(session, ws_id: int) -> list[tuple[str, str]]:
     seen, out = set(), []
     for s in session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all():
