@@ -244,6 +244,14 @@ MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lowe
 # scraped dining menu (estimation direction), not eyeballed. get_dining_menu stays the
 # recommendation direction.
 DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lower() == "true"
+# Dining-photo refine: when a user NAMES a scraped dining hall AND logs food (esp. a
+# plate PHOTO), the model eyeballs the items and — the 2026-09-28 live nit — often does
+# NOT look them up against that hall's scraped menu (mexican rice logged 210 cal vs the
+# menu's 120). After log_meal writes the eyeballed rows, this runs a PRECISION-FIRST
+# menu-match pass (dining_scraper.confident_menu_match) and replaces macros/label ONLY on
+# an unmistakable match; a weak/ambiguous match keeps the eyeball. Fails open: no hall
+# named / no menu data / no confident match → today's eyeball behavior unchanged.
+DINING_PHOTO_REFINE_ENABLED = os.getenv("DINING_PHOTO_REFINE_ENABLED", "true").lower() == "true"
 # Macro-accuracy Phase D — usda_food_lookup tool: per-100g reference macros for
 # identifiable-but-generic foods (USDA FoodData Central; free data.gov key). Empty key
 # means the tool answers "not configured" and the coach estimates normally — fails safe
