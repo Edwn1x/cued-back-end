@@ -26,9 +26,10 @@ def _landed():
     (increment_unanswered) applied to the gates that decide whether the coach
     stays quiet. Without it a sidecar outage mutes the coach for every
     iMessage user. NULL (legacy) counts as landed; only an explicit 'failed'
-    is excluded."""
+    (never landed) or 'held' (not landed YET — waiting out a Photon outage in
+    held_outbound; flips to 'sent' on delivery) is excluded."""
     return and_(
-        or_(Message.delivery_status.is_(None), Message.delivery_status != "failed"),
+        or_(Message.delivery_status.is_(None), Message.delivery_status.notin_(("failed", "held"))),
         _not_reaction(),
     )
 
@@ -203,8 +204,8 @@ def increment_unanswered(user_id: int):
         )
         if not last_out:
             return
-        if last_out.delivery_status == "failed":
-            return  # keystone: we know it didn't land — not the user's silence
+        if last_out.delivery_status in ("failed", "held"):
+            return  # keystone: we know it didn't land (yet) — not the user's silence
 
         # Check if any inbound reply came after it
         reply = (

@@ -59,6 +59,12 @@ All routes: `X-Internal-Secret` required, else `401`.
 - With attachment: `multipart/form-data` with a `payload` field (the same JSON,
   `attachments` filled with `{name, mime_type, size}`) and `attachment_0…N` file parts.
 - 5xx / network errors retry (3 attempts, 1s/3s). 4xx is not retried.
+- A tick whose build or forward throws (Photon upstream down — `attachment.read()`
+  fails; live 2026-09-28) is parked in the inbound retry queue and re-tried on a
+  5s/15s/30s/60s/120s/300s backoff. The last attempt forwards text-only with
+  `attachments_unavailable: N` so the words still land; only then is it dropped
+  (`inbound dropped after retries`). Logs: `inbound parked for retry`,
+  `inbound retry ok`, `inbound retry failed`.
 - Skipped, never forwarded: our own outbound echoes, non-iMessage platforms,
   reactions / typing / read receipts / polls.
 

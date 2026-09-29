@@ -325,8 +325,17 @@ export type InboundPayload = {
   /** Set when the inbound is a tapback/emoji reaction on one of our messages
    *  (workout logger Phase 5: 👍 on a per-exercise message). text is "" then. */
   reaction?: { emoji: string; target_id: string | null };
+  /** Set when the inbound retry queue gave up fetching attachment bytes (Photon
+   *  outage outlasted its window) and forwarded text-only: how many were lost.
+   *  Flask keeps the "a picture came" marker so the coach can say it didn't get it. */
+  attachments_unavailable?: number;
 };
 export type InboundFile = { name: string; mimeType: string; bytes: Uint8Array };
+export type BuildInboundOpts = {
+  /** Don't call `read()` on attachments; count them into `attachments_unavailable`
+   *  instead. The retry queue's last resort — the text still reaches Flask. */
+  skipAttachments?: boolean;
+};
 
 /**
  * Turn one `[space, message]` tick into the Flask payload. Returns null for
@@ -336,6 +345,7 @@ export type InboundFile = { name: string; mimeType: string; bytes: Uint8Array };
 export async function buildInbound(
   space: Space,
   message: Message,
+  opts: BuildInboundOpts = {},
 ): Promise<{ payload: InboundPayload; files: InboundFile[] } | null> {
   if (message.direction === "outbound") return null;
   if (message.platform !== "imessage") return null;
@@ -379,6 +389,7 @@ export async function buildInbound(
   }
 
   const files: InboundFile[] = [];
+  let unavailable = 0;
   const acc: { body: string; reaction?: InboundPayload["reaction"] } = { body: "" };
 
   // Pull ONE content node into the accumulator. Returns true if it was a kind we
@@ -392,6 +403,12 @@ export async function buildInbound(
     }
     if (node.type === "attachment") {
       const a = node as unknown as { name: string; mimeType: string; read: () => Promise<Uint8Array> };
+      if (opts.skipAttachments) {
+        unavailable += 1;
+        return true;
+      }
+      // `read()` fetches the bytes from Photon — the call that fails during an
+      // upstream outage (live 2026-09-28: "Service temporarily unavailable").
       files.push({ name: a.name, mimeType: a.mimeType, bytes: await a.read() });
       return true;
     }
@@ -440,8 +457,84 @@ export async function buildInbound(
       timestamp: message.timestamp.toISOString(),
       attachments: files.map((f) => ({ name: f.name, mime_type: f.mimeType, size: f.bytes.byteLength || null })),
       ...(reaction ? { reaction } : {}),
+      ...(unavailable ? { attachments_unavailable: unavailable } : {}),
     },
     files,
+  };
+}
+
+// ─── Inbound retry queue (Photon outage) ─────────────────────────────────────
+// Live 2026-09-28 04:44 UTC: Photon's upstream was down for ~14 min. The stream
+// kept delivering ticks, but `attachment.read()` (and any Photon call inside the
+// build) threw, the loop logged "inbound forward failed" and moved on — two of
+// the user's messages were silently lost. Now a failed tick is parked here and
+// re-tried on a backoff (default ≈ 8.5 min total). On the last attempt the text
+// is forwarded WITHOUT attachment bytes (`attachments_unavailable`) so at least
+// the words land and Flask can be honest about the picture. Only then is it
+// dropped — loudly.
+
+export type InboundRetryEntry = {
+  space: Space;
+  message: Message;
+  attempts: number;
+  dueAt: number;
+  firstError: string;
+};
+export type InboundRetryQueue = {
+  push: (space: Space, message: Message, err: unknown) => void;
+  /** Process every due entry once. Safe to call on a timer; never throws. */
+  tick: () => Promise<void>;
+  size: () => number;
+};
+
+export function createInboundRetryQueue(opts: {
+  /** Build + forward one tick. Throws on failure (same contract as the live path). */
+  process: (space: Space, message: Message, build: BuildInboundOpts) => Promise<void>;
+  backoffMs?: number[];
+  now?: () => number;
+}): InboundRetryQueue {
+  const backoff = opts.backoffMs ?? [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+  const now = opts.now ?? Date.now;
+  const entries: InboundRetryEntry[] = [];
+  let ticking = false;
+
+  return {
+    push: (space, message, err) => {
+      if (entries.some((e) => e.message.id === message.id)) return;
+      entries.push({ space, message, attempts: 0, dueAt: now() + backoff[0]!, firstError: String(err) });
+      log("warn", "inbound parked for retry", { id: message.id, error: String(err), retry_in_ms: backoff[0] });
+    },
+    tick: async () => {
+      if (ticking) return; // a slow retry must not overlap the next timer fire
+      ticking = true;
+      try {
+        for (const e of [...entries]) {
+          if (e.dueAt > now()) continue;
+          const last = e.attempts >= backoff.length - 1;
+          try {
+            // Last attempt: text-only, so the words land even if Photon still
+            // won't serve the bytes.
+            await opts.process(e.space, e.message, { skipAttachments: last });
+            entries.splice(entries.indexOf(e), 1);
+            log("info", "inbound retry ok", { id: e.message.id, attempts: e.attempts + 1, text_only: last });
+          } catch (err) {
+            e.attempts += 1;
+            if (e.attempts >= backoff.length) {
+              entries.splice(entries.indexOf(e), 1);
+              log("error", "inbound dropped after retries", {
+                id: e.message.id, attempts: e.attempts, first_error: e.firstError, last_error: String(err),
+              });
+              continue;
+            }
+            e.dueAt = now() + backoff[e.attempts]!;
+            log("warn", "inbound retry failed", { id: e.message.id, attempts: e.attempts, error: String(err), retry_in_ms: backoff[e.attempts] });
+          }
+        }
+      } finally {
+        ticking = false;
+      }
+    },
+    size: () => entries.length,
   };
 }
 
@@ -613,9 +706,26 @@ async function main() {
   Bun.serve({ hostname: "::", port, fetch: createHandler(deps) });
   log("info", "http listening", { port, hostname: "::", flask: flaskUrl });
 
+  // One inbound tick → Flask. Shared by the live loop and the retry queue.
+  const processInbound = async (space: Space, message: Message, build: BuildInboundOpts = {}) => {
+    const built = await buildInbound(space, message, build);
+    if (!built) return;
+    const { payload, files } = built;
+    log("info", "inbound", {
+      from: last4(payload.phone), id: payload.provider_message_id,
+      chars: payload.text.length, attachments: files.length, service: payload.service,
+      ...(payload.attachments_unavailable ? { attachments_unavailable: payload.attachments_unavailable } : {}),
+    });
+    const res = await forwardInbound(payload, files, { flaskUrl, secret });
+    if (!res.ok) log("warn", "flask rejected inbound", { status: res.status, id: payload.provider_message_id });
+  };
+  const retryQueue = createInboundRetryQueue({ process: processInbound });
+  setInterval(() => { retryQueue.tick().catch((err) => log("error", "inbound retry tick failed", { error: String(err) })); }, 5_000);
+
   // Stream loop with reconnect-and-backoff. One thrown error must never end
-  // the process; a per-message failure (Flask down) is logged and the stream
-  // keeps draining so the next inbound isn't lost behind it.
+  // the process; a per-message failure (Flask down, Photon upstream down) is
+  // parked in the retry queue and the stream keeps draining so the next
+  // inbound isn't lost behind it.
   let backoffMs = 1000;
   for (;;) {
     let app: App | null = null;
@@ -635,17 +745,10 @@ async function main() {
           log("info", "stream tick", { id: message.id, platform: message.platform, content_type: ct, ...(inner ? { inner_type: inner } : {}) });
         }
         try {
-          const built = await buildInbound(space, message);
-          if (!built) continue;
-          const { payload, files } = built;
-          log("info", "inbound", {
-            from: last4(payload.phone), id: payload.provider_message_id,
-            chars: payload.text.length, attachments: files.length, service: payload.service,
-          });
-          const res = await forwardInbound(payload, files, { flaskUrl, secret });
-          if (!res.ok) log("warn", "flask rejected inbound", { status: res.status, id: payload.provider_message_id });
+          await processInbound(space, message);
         } catch (err) {
           log("error", "inbound forward failed", { error: String(err), id: message.id });
+          retryQueue.push(space, message, err);
         }
       }
       log("warn", "spectrum stream ended; reconnecting");
