@@ -112,16 +112,37 @@ def _late_clock() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _late_hour_window(user) -> tuple[int, int]:
+def _measured_late_hours(user, session):
+    """(bed_hour, wake_hour) local from the MEASURED sleep window, or None → static
+    profile times. Flag-gated by MEASURED_SLEEP_WINDOW_ENABLED; fail-open."""
+    if session is None or not config.MEASURED_SLEEP_WINDOW_ENABLED:
+        return None
+    try:
+        from wearable_read import measured_sleep_window
+        w = measured_sleep_window(user, session)
+        if not w:
+            return None
+        return w.bed_hm[0], w.wake_hm[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _late_hour_window(user, session=None) -> tuple[int, int]:
     """(start_hour, end_hour) local — the small-hours 'past sleep' window. Uses the user's
     sleep_time as the start when it parses to a genuine late-night hour (midnight–6am) and
     wake_time as the end when it parses to a morning hour; otherwise the 1am–6am default.
-    Always returns a clean small-hours window (falls back to the default if the derived
-    bounds would be degenerate)."""
+    When a MEASURED sleep window is available (typical bed/wake from the watch), its hours
+    REPLACE the static profile hours — same small-hours constraints. Always returns a clean
+    small-hours window (falls back to the default if the derived bounds would be
+    degenerate)."""
     from heartbeat import _parse_hour
     start, end = LATE_HOUR_DEFAULT_START, LATE_HOUR_DEFAULT_END
-    hs = _parse_hour(getattr(user, "sleep_time", None))
-    hw = _parse_hour(getattr(user, "wake_time", None))
+    measured = _measured_late_hours(user, session)
+    if measured is not None:
+        hs, hw = measured
+    else:
+        hs = _parse_hour(getattr(user, "sleep_time", None))
+        hw = _parse_hour(getattr(user, "wake_time", None))
     # Only a small-hours sleep_time moves the start (a 2am sleeper isn't "past sleep" at
     # 1am). An evening/late-evening sleep_time is ignored here — the 1am floor still holds.
     if hs is not None and 0 <= hs <= LATE_HOUR_DEFAULT_END:
@@ -135,10 +156,12 @@ def _late_hour_window(user) -> tuple[int, int]:
     return start, end
 
 
-def _is_late_hour(user, *, now: datetime = None) -> bool:
+def _is_late_hour(user, *, now: datetime = None, session=None) -> bool:
     """True when the user's LOCAL time is in the small hours past their sleep pattern —
     the moment reactive nutrition nudging should prioritize sleep over macro-completion.
-    Flag-gated + fail-open: any error → False (today's behavior)."""
+    When a `session` is given the window prefers the user's MEASURED bed/wake (flag-gated),
+    else the static profile times. Flag-gated + fail-open: any error → False (today's
+    behavior)."""
     if not config.LATE_HOUR_SLEEP_FIRST_ENABLED:
         return False
     try:
@@ -147,7 +170,7 @@ def _is_late_hour(user, *, now: datetime = None) -> bool:
         if ref.tzinfo is None:
             ref = ref.replace(tzinfo=timezone.utc)
         local_hour = ref.astimezone(resolve_tz(user)).hour
-        start, end = _late_hour_window(user)
+        start, end = _late_hour_window(user, session)
         return start <= local_hour < end
     except Exception:  # noqa: BLE001 — a clock/tz hiccup must never break a turn
         return False
@@ -473,7 +496,7 @@ def build_loop_context(user, session) -> str:
     # works (never refuse a log) and a direct food/macro question is still answered
     # honestly. Placed right after TODAY'S TOTALS so it reframes the "protein remaining"
     # line that would otherwise drive the 4am harping.
-    if _is_late_hour(user):
+    if _is_late_hour(user, session=session):
         unmet = ""
         if user.protein_target and (user.protein_target - tot_pro) > 0:
             unmet = (f" They're ~{user.protein_target - tot_pro}g of protein short of "
@@ -591,6 +614,18 @@ def build_loop_context(user, session) -> str:
                 parts.append(_wb)
         except Exception as e:  # noqa: BLE001
             logger.warning("WEARABLE_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
+    # Recent-activity awareness (advisory): today's measured steps/active minutes so the
+    # coach acknowledges real movement and doesn't imply they've been sedentary or over-
+    # push exercise. Flag-gated + fail-open (inert with no wearable / no today row).
+    if config.WEARABLE_ACTIVITY_CONTEXT_ENABLED and (getattr(user, "onboarding_step", 0) or 0) >= 3:
+        try:
+            from wearable_read import activity_context
+            _act = activity_context(user, session)
+            if _act:
+                parts.append(_act)
+        except Exception as e:  # noqa: BLE001 — never break a turn over an advisory hint
+            logger.warning("WEARABLE_ACTIVITY_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     # Contextual reveals: capabilities they haven't touched yet (capabilities.py).
     # Post-onboarding only; the voice rule limits it to one clause when it fits.

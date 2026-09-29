@@ -546,6 +546,26 @@ RECOVERY_GOOD_NIGHT_MIN = int(os.getenv("RECOVERY_GOOD_NIGHT_MIN", "420"))      
 # exactly as today.
 TDEE_WEARABLE_STEPS_ENABLED = os.getenv("TDEE_WEARABLE_STEPS_ENABLED", "false").lower() == "true"
 
+# Prefer the MEASURED sleep/wake window (typical bed + wake hour from recent wearable
+# sleep, via wearable_read.measured_sleep_window) over the static onboarding
+# sleep_time/wake_time wherever the coach reasons about sleep/quiet hours: the heartbeat
+# standing quiet-hours gate (#116) and the reactive late-hour "sleep-first" window (#141).
+# Irregular sleepers drift far from what they typed at onboarding; a robust MEDIAN over
+# their last ~10 nights tracks reality. Only REPLACES the hours fed into the SAME gates —
+# never weakens a guardrail. ON by default, mirroring the other wearable gates. Fail-open:
+# with GOOGLE_HEALTH_ENABLED off, not connected, or too few fresh nights it uses the static
+# profile times EXACTLY as today. See wearable_read.measured_sleep_window.
+MEASURED_SLEEP_WINDOW_ENABLED = os.getenv("MEASURED_SLEEP_WINDOW_ENABLED", "true").lower() == "true"
+
+# Surface a compact, advisory "ACTIVITY TODAY" block (today's steps + active minutes, and a
+# coarse "notably active" flag) in build_loop_context so the coach acknowledges real
+# movement and doesn't imply someone's been sedentary or over-nudge exercise when the watch
+# shows they've clearly been moving. Advisory only. ON by default; fail-open (no wearable /
+# no today row → inert, identical to today). See wearable_read.activity_context.
+WEARABLE_ACTIVITY_CONTEXT_ENABLED = os.getenv("WEARABLE_ACTIVITY_CONTEXT_ENABLED", "true").lower() == "true"
+WEARABLE_ACTIVE_STEPS_THRESHOLD = int(os.getenv("WEARABLE_ACTIVE_STEPS_THRESHOLD", "6000"))     # steps ≥ this → "notably active"
+WEARABLE_ACTIVE_MINUTES_THRESHOLD = int(os.getenv("WEARABLE_ACTIVE_MINUTES_THRESHOLD", "30"))   # active min ≥ this → "notably active"
+
 # Daily rhythm (rewrite/daily-rhythm/CHANGESPEC.md) — user 32: "check-ups are way too far
 # apart". All five default OFF; flipped in prod after the deploy.
 # MEAL GAP standing condition: an unlogged lunch at 2pm was never a reason to speak.
