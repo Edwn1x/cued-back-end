@@ -378,6 +378,39 @@ def build_loop_context(user, session) -> str:
     if card_line:
         parts.append(card_line)
 
+    # 4a-ii. A one-time form-demo link for a movement on their card they haven't been
+    # shown yet (exercise_demos.py). Resolver is PURE (no DB write); we mark seen in a
+    # background thread ONLY for the demo we actually inject, so it never repeats. Flag-
+    # gated + fail-open: off flag or any error injects nothing and never breaks the turn.
+    if config.EXERCISE_DEMOS_ENABLED:
+        try:
+            from exercise_demos import unseen_demos_for, mark_demos_seen, _resolve
+            names = []
+            for _day_exs in (getattr(user, "custom_templates", None) or {}).values():
+                if isinstance(_day_exs, list):
+                    for _ex in _day_exs:
+                        if isinstance(_ex, dict):
+                            # label first so the human-readable name is what we show if it
+                            # resolves; slug/name are fallbacks (unseen_demos_for dedups by
+                            # the resolved canonical key, so the first form to resolve wins).
+                            for _k in ("label", "slug", "name"):
+                                if _ex.get(_k):
+                                    names.append(str(_ex[_k]))
+            demos = unseen_demos_for(user, names, limit=1)
+            if demos:
+                _lines = "\n".join(f"{ex}: {url}" for ex, url in demos.items())
+                parts.append(
+                    "## FORM DEMO (share naturally if it fits — one time only)\n"
+                    f"{_lines}\n"
+                    "Drop this link in your own voice ONLY when it fits — programming this "
+                    "movement, sending/discussing the card, or if they ask how to do it. "
+                    "Don't force it, don't list it robotically, and offer it just this once."
+                )
+                _keys = [k for k in (_resolve(ex) for ex in demos) if k]
+                mark_demos_seen(user.id, _keys)
+        except Exception as e:  # noqa: BLE001 — a form-demo hint must never break a turn
+            logger.warning("EXERCISE_DEMOS_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # 4b. The in-progress session's REAL type + start + logged-set count. Kills the
     # confabulation where the coach called the pull session it had just created "a push
     # session from earlier" — it never saw the active session's actual template_key.

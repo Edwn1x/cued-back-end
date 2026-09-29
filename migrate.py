@@ -382,6 +382,9 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200)",
     # Per-user routine override for the workout card (user 42's pasted PPL, 2026-09-22)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_templates JSON",
+    # Exercise demos already shown to this user (exercise_demos.py): {canonical_key: true}.
+    # Gates the one-time per-movement form link so it never repeats.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS seen_exercise_demos JSON",
     # The user's own split days, in order (user 43's stated bro split, 2026-09-22)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS split_days JSON",
     # Stated lifts for first-card calibration (user 33's bench-135-did-35 card, 2026-09-23)
