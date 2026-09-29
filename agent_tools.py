@@ -2495,6 +2495,75 @@ def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
     return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
 
 
+GET_WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": (
+        "Get the CURRENT weather for the user's resolved location (their set city, else the "
+        "Berkeley default) — call this when they ask 'what's the weather', 'do i need a jacket', "
+        "'is it gonna rain', or you want to ground a training/clothing suggestion in today's "
+        "conditions. Returns temp, sky, today's high/low, and a short actionable hint. Free, "
+        "no key; if it can't pull the weather it says so — never make up conditions. Turn the "
+        "result into a friend's reply, not a forecast dump. If they TOLD you where they are in "
+        "the same breath, call set_weather_location FIRST so this reads the right city."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+SET_WEATHER_LOCATION_TOOL = {
+    "name": "set_weather_location",
+    "description": (
+        "Store where the user is so the morning-brief weather line and get_weather read the "
+        "RIGHT city. Call this the moment they state their location — 'i'm in LA this week', "
+        "'i'm based in seattle now', 'back home in chicago'. `city` = whatever they said (a "
+        "city, optionally with state/country: 'austin', 'portland, maine'). We geocode it (no "
+        "key) and remember it. Everyone defaults to Berkeley silently, so ONLY call this on an "
+        "explicit location statement — never guess from an area code or a passing mention of a "
+        "place they aren't in."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "the place they said they're in, e.g. 'LA' or 'seattle'"},
+        },
+        "required": ["city"],
+    },
+}
+
+
+def handle_get_weather(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Reactive weather answer for the user's resolved location. Fail-open: an honest
+    'can't pull it' string, never an exception, never invented conditions."""
+    if not config.WEATHER_ENABLED:
+        return "error: weather is not enabled"
+    from models import get_session, User
+    import weather
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            return "error: user not found"
+        summary = weather.weather_summary(user)
+    finally:
+        session.close()
+    logger.info("GET_WEATHER user=%s -> %r", user_id, summary)
+    return f"ok: {summary}"
+
+
+def handle_set_weather_location(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Geocode the stated city and store it on the user for weather resolution."""
+    if not config.WEATHER_ENABLED:
+        return "error: weather is not enabled"
+    city = str((tool_input or {}).get("city") or "").strip()
+    if not city:
+        return "error: city is required (whatever place they said they're in)"
+    import weather
+    label = weather.set_weather_location_for_user(user_id, city)
+    if not label:
+        return f"error: couldn't find '{city}' — ask them to say the city again"
+    return f"ok: weather location set to {label} — the brief + get_weather now use it"
+
+
 def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Mint a single-use connect token, record it on the pending Integration row,
     and text the user the /c/<provider> link as its own bubble. Returns a status
@@ -2845,6 +2914,8 @@ _HANDLERS = {
     "send_gym_line_link": handle_send_gym_line_link,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
+    "get_weather": handle_get_weather,
+    "set_weather_location": handle_set_weather_location,
     "set_card_delivery": handle_set_card_delivery,
     "lookup_events": handle_lookup_events,
     "schedule_rundown": handle_schedule_rundown,

@@ -314,6 +314,16 @@ SAVE_MENU_TOOL_ENABLED = os.getenv("SAVE_MENU_TOOL_ENABLED", "true").lower() == 
 SAVED_MENU_TTL_DAYS = int(os.getenv("SAVED_MENU_TTL_DAYS", "14"))
 SAVED_MENU_MAX = int(os.getenv("SAVED_MENU_MAX", "5"))            # most-recent N kept
 SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
+# Weather (open-meteo — FREE, NO API KEY): a concise weather line in the morning brief
+# plus a reactive get_weather answer + a correctable set_weather_location. Location
+# resolves per-user (weather_lat/lng/place) else the Berkeley default. Short HTTP timeout,
+# per-process TTL cache, fail-open (no line / honest "can't pull it" when the API is down).
+WEATHER_ENABLED = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
+WEATHER_TIMEOUT_S = float(os.getenv("WEATHER_TIMEOUT_S", "4"))
+WEATHER_CACHE_TTL_S = int(os.getenv("WEATHER_CACHE_TTL_S", "900"))   # 15 min per-process cache
+WEATHER_DEFAULT_LAT = float(os.getenv("WEATHER_DEFAULT_LAT", "37.8715"))    # Berkeley
+WEATHER_DEFAULT_LNG = float(os.getenv("WEATHER_DEFAULT_LNG", "-122.2730"))
+WEATHER_DEFAULT_PLACE = os.getenv("WEATHER_DEFAULT_PLACE", "Berkeley")
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"

@@ -92,6 +92,12 @@ class User(Base):
     # "the photo you sent showed X" instead of re-asking or denying a pic was sent.
     # [{"at": iso, "caption": str, "summary": str}] — capped + TTL'd in context.
     recent_photos = Column(JSON, default=None)
+    # Weather location (weather.py): per-user override for the morning-brief weather line
+    # and the get_weather answer. Null → Berkeley default (config.WEATHER_DEFAULT_*). Set
+    # via set_weather_location when the user says where they are ("I'm in LA this week").
+    weather_lat = Column(Float, default=None)
+    weather_lng = Column(Float, default=None)
+    weather_place = Column(String(120), default=None)
     # Workout card delivery: True = send cards as a plain browser link (no Spectrum
     # extension needed to tap sets); False (default) = the Photon extension card. See
     # workouts/card.py + set_card_delivery.

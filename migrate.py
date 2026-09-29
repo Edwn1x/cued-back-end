@@ -253,6 +253,11 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS recent_photos JSON",
     # Workout card web-link fallback (set_card_delivery / workouts/card.py).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS prefers_card_link BOOLEAN DEFAULT FALSE",
+    # Weather location override (weather.py / set_weather_location). Null → Berkeley default
+    # (config.WEATHER_DEFAULT_*). Powers the morning-brief weather line + get_weather answer.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS weather_lat DOUBLE PRECISION",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS weather_lng DOUBLE PRECISION",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS weather_place VARCHAR(120)",
     # STOP opt-out (iMessage): unsubscribed state + pending-confirmation flag. See optout.py.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_optout_confirm BOOLEAN DEFAULT FALSE",
