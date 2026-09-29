@@ -603,6 +603,22 @@ def build_loop_context(user, session) -> str:
         except Exception as e:  # noqa: BLE001 — never break a turn over a hint
             logger.warning("UNUSED_CAPABILITIES_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
+    # Anti-nagging: which standing nudges the coach has ALREADY raised today. Every
+    # proactive path (reactive replies AND the heartbeat) writes an outbound Message
+    # row, so scanning recent outbound catches them all in one place. Live 2026-09-28
+    # (user 31): the coach re-derived "eat some protein" ~5× in a day with no memory it
+    # had said it. Surfacing the already-raised topics lets it vary the angle or let a
+    # gap rest instead of restating the same line. Flag-gated + fail-open inside; also
+    # reaches the heartbeat, whose _proactive_context begins with build_loop_context.
+    if config.NUDGE_REPETITION_GUARD_ENABLED:
+        try:
+            from nudge_guard import nudge_guard_block
+            _ng = nudge_guard_block(user, session)
+            if _ng:
+                parts.append(_ng)
+        except Exception as e:  # noqa: BLE001 — never break a turn over a hint
+            logger.warning("NUDGE_GUARD_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     if _local:
         parts.append(f"## NOW\n{now_anchor(user)}")
     else:
