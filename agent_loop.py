@@ -845,6 +845,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SAVE_MENU_TOOL_ENABLED:
         from agent_tools import SAVE_MENU_TOOL
         tools.append(SAVE_MENU_TOOL)
+    if config.WEATHER_ENABLED:
+        # Reactive weather answer + correctable location. The morning-brief weather line
+        # rides the heartbeat brief, not a tool. open-meteo, no key, fail-open.
+        from agent_tools import GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL
+        tools.extend([GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL])
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])

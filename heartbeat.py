@@ -823,6 +823,14 @@ def _daily_briefing_extras(user, session, *, now=None) -> str:
     due dates, a suggested gym window, and nutrition status — all code-computed, read-only,
     fail-open (a failing piece is simply omitted)."""
     lines = []
+    if config.WEATHER_ENABLED:
+        try:
+            from weather import weather_line
+            wl = weather_line(user)
+            if wl:
+                lines.append(f"Weather: {wl}.")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("BRIEFING_WEATHER_FAILED user=%s err=%s", user.id, e)
     try:
         from schedule import deadline_items
         items = deadline_items(user.id, session, days=7, now=now)

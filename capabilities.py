@@ -381,6 +381,16 @@ CAPABILITIES: list[Capability] = [
         used=None,
         reveal_when="they mention their calendar, a busy week, strava, a run/ride, their fitbit or watch, how they slept, or their steps",
     ),
+    Capability(
+        id="weather",
+        what="i keep an eye on the weather where you are — the morning brief calls it, and you can just ask 'do i need a jacket'",
+        how="ask me the weather anytime; tell me where you are ('i'm in LA this week') and i'll switch to that city — otherwise i assume berkeley",
+        tools=("get_weather", "set_weather_location"),
+        enabled=lambda u: config.WEATHER_ENABLED,
+        relevance=lambda u: 4,
+        used=lambda session, u: getattr(u, "weather_place", None) is not None,
+        reveal_when="they ask about the weather, mention rain/cold/heat, travel, or say where they are",
+    ),
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.
