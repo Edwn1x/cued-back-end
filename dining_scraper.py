@@ -524,3 +524,56 @@ def match_dining_items(description: str, hall: str = None, meal_period: str = No
         scored.append((containment, period_pref, jaccard(query, tokens), it))
     scored.sort(key=lambda t: (-t[0], -t[1], -t[2]))
     return [it for _c, _p, _j, it in scored[:DINING_MAX_MATCHES]], True
+
+
+# ── Dining-photo refine: precision-first menu match ──────────────────────────
+# match_dining_items above answers the model's ON-DEMAND lookup and is tuned for
+# RECALL (one-way containment >= 0.6 surfaces a verbose menu name from compressed
+# phrasing). The photo-refine pass instead REWRITES a logged row's macros
+# automatically, so it must be tuned for PRECISION: replace an eyeball estimate only
+# when the menu row is unmistakably the same dish. Containment alone is too loose here
+# — a bare "chicken" is fully contained in "Roasted Garlic Halal Chicken Rice Bowl"
+# (containment 1.0) yet is a weak identification, and "roasted carrots + sweet potato"
+# must NOT silently become "Carrot Sticks". So the guard requires two meaningful words
+# in common OR a tight two-way (Jaccard) overlap, and refuses when two differently
+# named dishes are both plausible (keep the eyeball — precision over recall).
+DINING_REFINE_MIN_OVERLAP = 2      # meaningful words shared between desc and item name
+DINING_REFINE_JACCARD = 0.5        # ...or a tight two-way overlap (near-exact name)
+
+
+def confident_menu_match(description: str, hall: str, meal_period: str = None):
+    """Return the ONE menu row that unmistakably matches `description` in `hall` from
+    today's scrape, else None. Never guesses between competing dishes and never fires
+    on a single generic word (see the guard rationale above). Read-only."""
+    from meal_history import normalize_tokens, jaccard
+
+    if not hall:
+        return None
+    q = normalize_tokens(description)
+    if not q:
+        return None
+    matches, had_data = match_dining_items(description, hall=hall, meal_period=meal_period)
+    if not had_data or not matches:
+        return None
+
+    strong = []
+    for it in matches:
+        t = normalize_tokens(it.item_name or "")
+        overlap = q & t
+        if not overlap:
+            continue
+        if len(overlap) >= DINING_REFINE_MIN_OVERLAP or jaccard(q, t) >= DINING_REFINE_JACCARD:
+            strong.append(it)
+    if not strong:
+        return None
+
+    top = strong[0]  # match_dining_items already sorts best-containment first
+    # Ambiguity guard: if a differently named dish is also strong we can't be sure
+    # which they ate — keep the eyeball rather than force a pick.
+    top_name = (top.item_name or "").strip().lower()
+    for other in strong[1:]:
+        if (other.item_name or "").strip().lower() != top_name:
+            return None
+    if top.calories is None:
+        return None  # nothing to write — leave the estimate
+    return top

@@ -244,6 +244,14 @@ MEAL_HISTORY_TOOL_ENABLED = os.getenv("MEAL_HISTORY_TOOL_ENABLED", "false").lowe
 # scraped dining menu (estimation direction), not eyeballed. get_dining_menu stays the
 # recommendation direction.
 DINING_MATCH_TOOL_ENABLED = os.getenv("DINING_MATCH_TOOL_ENABLED", "false").lower() == "true"
+# Dining-photo refine: when a user NAMES a scraped dining hall AND logs food (esp. a
+# plate PHOTO), the model eyeballs the items and — the 2026-09-28 live nit — often does
+# NOT look them up against that hall's scraped menu (mexican rice logged 210 cal vs the
+# menu's 120). After log_meal writes the eyeballed rows, this runs a PRECISION-FIRST
+# menu-match pass (dining_scraper.confident_menu_match) and replaces macros/label ONLY on
+# an unmistakable match; a weak/ambiguous match keeps the eyeball. Fails open: no hall
+# named / no menu data / no confident match → today's eyeball behavior unchanged.
+DINING_PHOTO_REFINE_ENABLED = os.getenv("DINING_PHOTO_REFINE_ENABLED", "true").lower() == "true"
 # Macro-accuracy Phase D — usda_food_lookup tool: per-100g reference macros for
 # identifiable-but-generic foods (USDA FoodData Central; free data.gov key). Empty key
 # means the tool answers "not configured" and the coach estimates normally — fails safe
@@ -478,6 +486,23 @@ CONTEXT_LOCAL_TIME_ENABLED = os.getenv("CONTEXT_LOCAL_TIME_ENABLED", "true").low
 # food/macro question is still answered honestly. Fail-open (no/unparseable sleep data →
 # a small-hours default; any error → today's behavior). See agent_loop._is_late_hour.
 LATE_HOUR_SLEEP_FIRST_ENABLED = os.getenv("LATE_HOUR_SLEEP_FIRST_ENABLED", "true").lower() == "true"
+
+# Anti-nagging / nudge-repetition guard. Live 2026-09-28 (founder, user 31): the
+# coach delivered essentially the SAME standing nudge ~5× in one day across separate
+# interactions ("eat some protein / you got beef and eggs" — reactive replies AND the
+# morning brief). It re-derives the same standing exhortation every turn with no
+# awareness it already said it → reads as nagging. (Distinct from the per-flush send
+# dedup, which only catches identical consecutive SENDS in one flush; this is the same
+# nudge TOPIC re-issued across separate turns over hours, on both surfaces.) When ON,
+# build_loop_context (and, through it, the heartbeat's _proactive_context) scans the
+# user's own recent OUTBOUND messages, classifies them into coarse nudge topics
+# (protein/eat/water/sleep/workout/weigh-in), and surfaces an "ALREADY NUDGED TODAY"
+# line so the coach varies the angle or lets it rest instead of restating the same line.
+# Advisory only (a real number update is still fine). Cheap: ONE bounded query.
+# Fail-open: any query error → today's behavior (no block). See nudge_guard.py.
+NUDGE_REPETITION_GUARD_ENABLED = os.getenv("NUDGE_REPETITION_GUARD_ENABLED", "true").lower() == "true"
+NUDGE_GUARD_LOOKBACK_HOURS = int(os.getenv("NUDGE_GUARD_LOOKBACK_HOURS", "14"))  # clamp within today
+NUDGE_GUARD_MAX_SCAN = int(os.getenv("NUDGE_GUARD_MAX_SCAN", "40"))             # cap outbound rows scanned
 
 # Legacy templated scheduler (morning briefing, pre/post-workout, evening wrap,
 # weigh-in, meal-adherence). Disabled by default so the heartbeat is the ONLY

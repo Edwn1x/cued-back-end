@@ -867,6 +867,73 @@ def _day_total_suffix(user_id: int) -> str:
         session.close()
 
 
+def _dining_hall_from_turn(user_id: int):
+    """The scraped dining hall named on THIS turn (photo caption or plain text), or
+    None. The photo turn carries its caption in _TURN_STATE (agent_loop sets it); a hall
+    named there ("From crossroads") is the signal that the plate is dining-hall food to be
+    menu-matched, not eyeballed."""
+    from dining_scraper import detect_halls
+    text = (_TURN_STATE.get(user_id, {}).get("caption") or "")
+    halls = detect_halls(text)
+    return halls[0] if halls else None
+
+
+def _with_menu_match_note(notes, hall: str) -> str:
+    tag = f"{hall} menu match"
+    if notes and tag in notes:
+        return notes
+    return f"{notes}; {tag}" if notes else tag
+
+
+def _refine_meals_against_menu(user_id: int, logged: list, hall: str, meal_period=None) -> list:
+    """Menu-match refine over the rows THIS log_meal call just wrote (the dining-photo
+    path: the model eyeballed the plate and named the hall but didn't look items up). For
+    each row, if today's `hall` menu has a CONFIDENT match (dining_scraper —
+    precision-first guard), replace the eyeball macros with the menu's, adopt the menu's
+    dish name, mark the row, and lift confidence off 'low'. A weak/ambiguous match keeps
+    the eyeball. Returns applied changes: (meal_id, new_desc, new_cal, new_pro, old_cal)."""
+    from dining_scraper import confident_menu_match
+    matched = []  # resolve read-only matches before opening the write session
+    for mid, desc, _cal, _pro, _saw in logged:
+        item = confident_menu_match(desc, hall, meal_period)
+        if item is not None:
+            matched.append((mid, desc, item))
+    if not matched:
+        return []
+
+    changes = []
+    session = get_session()
+    try:
+        for mid, desc, item in matched:
+            m = session.get(Meal, mid)
+            if not m:
+                continue
+            old_cal = m.calories or 0
+            m.calories = item.calories
+            if item.protein_g is not None:
+                m.protein_g = item.protein_g
+            if item.carbs_g is not None:
+                m.carbs_g = item.carbs_g
+            if item.fat_g is not None:
+                m.fat_g = item.fat_g
+            menu_name = (item.item_name or "").strip()
+            # Item ID: adopt the menu's OWN dish name (never invented) so the log reads
+            # "Lemongrass Pork Chop", not the eyeballed "chicken".
+            if menu_name:
+                m.description = menu_name
+            m.notes = _with_menu_match_note(m.notes, hall)
+            m.confidence = "high"  # the macros are the menu's now, not a guess
+            changes.append((mid, menu_name or desc, item.calories or 0,
+                            item.protein_g or 0, old_cal))
+            logger.info("DINING_PHOTO_REFINE user=%s meal_id=%s hall=%s %r->%r %scal->%scal",
+                        user_id, mid, hall, desc[:40], (menu_name or desc)[:40],
+                        old_cal, item.calories)
+        session.commit()
+    finally:
+        session.close()
+    return changes
+
+
 def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Create Meal(s) and recompute today's totals ONCE. Accepts a single meal or an
     `items` list (a multi-item plate). Records saw_similar so an intentional
@@ -1000,6 +1067,25 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     finally:
         session.close()
 
+    # Dining-photo refine: if the user named a scraped hall this turn (photo caption or
+    # text), menu-match the eyeballed rows against that hall's LATEST scrape and replace
+    # macros/label on a confident match — BEFORE recompute so the day total reflects the
+    # menu numbers. Fails open (no hall / no data / no confident match → eyeball stands).
+    refined = []
+    if config.DINING_PHOTO_REFINE_ENABLED and not from_app:
+        hall = _dining_hall_from_turn(user_id)
+        if hall:
+            from dining_scraper import _detect_meal_period
+            mp = _detect_meal_period(_TURN_STATE.get(user_id, {}).get("caption") or "")
+            refined = _refine_meals_against_menu(user_id, logged, hall, mp)
+    if refined:
+        by_id = {r[0]: r for r in refined}
+        logged = [(by_id[mid][0], by_id[mid][1], by_id[mid][2], by_id[mid][3], saw)
+                  if mid in by_id else (mid, desc, cal, pro, saw)
+                  for (mid, desc, cal, pro, saw) in logged]
+        refined_ids = set(by_id)
+        guessed = [(m, d) for (m, d) in guessed if m not in refined_ids]
+
     day = ""
     if is_today:
         recompute_daily_totals(user_id)  # once, after all inserts — a past-day meal leaves today alone
@@ -1011,6 +1097,11 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         logger.info("LOG_MEAL user=%s meal_id=%s source=%s desc=%r", user_id, mid, source, desc[:40])
 
     tail = day
+    if refined:
+        names = ", ".join(f"'{nd}' ({nc}cal)" for _m, nd, nc, _np, _old in refined)
+        tail += (f" | menu-matched to {hall}: {names} — these are the {hall} menu's real "
+                 "numbers (not eyeballed); the menu is your source for them. Any item with "
+                 "no good menu match stayed an estimate — call those out as estimated.")
     if from_app:
         tail += f" | source: their {from_app} screenshot"
         if config.FOOD_LOGGER_BRIDGE_ENABLED:
