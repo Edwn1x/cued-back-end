@@ -173,6 +173,10 @@ class User(Base):
     # and for its family (bench → incline / fly / pushdown). Live 2026-09-15 (user 33):
     # a 137 lb never-trained woman got bench 135 on her first card and did 35.
     lift_anchors = Column(JSON, default=None)
+    # Exercise demos already shown to this user (exercise_demos.py): {canonical_key: true}.
+    # A movement's one-time form link is offered only if its key isn't in here yet, then
+    # marked so it never repeats. Null → nothing shown yet.
+    seen_exercise_demos = Column(JSON, default=None)
 
     # Berkeley-specific profile fields
     which_gym = Column(String(50), default=None)         # rsf / dorm / apartment / off_campus

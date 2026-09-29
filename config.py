@@ -320,6 +320,12 @@ SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
 # per-process TTL cache, fail-open (no line / honest "can't pull it" when the API is down).
 WEATHER_ENABLED = os.getenv("WEATHER_ENABLED", "true").lower() == "true"
 WEATHER_TIMEOUT_S = float(os.getenv("WEATHER_TIMEOUT_S", "4"))
+
+# Exercise demo video library (exercise_demos.py). One-time per-movement form link the
+# coach can drop inline when programming / discussing an exercise the user hasn't been
+# shown yet; marked seen (users.seen_exercise_demos) so it never repeats. Default ON;
+# set EXERCISE_DEMOS_ENABLED=false to disable (context injection goes inert, fail-open).
+EXERCISE_DEMOS_ENABLED = os.getenv("EXERCISE_DEMOS_ENABLED", "true").lower() == "true"
 WEATHER_CACHE_TTL_S = int(os.getenv("WEATHER_CACHE_TTL_S", "900"))   # 15 min per-process cache
 WEATHER_DEFAULT_LAT = float(os.getenv("WEATHER_DEFAULT_LAT", "37.8715"))    # Berkeley
 WEATHER_DEFAULT_LNG = float(os.getenv("WEATHER_DEFAULT_LNG", "-122.2730"))
