@@ -390,7 +390,10 @@ def build_loop_context(user, session) -> str:
                 if isinstance(_day_exs, list):
                     for _ex in _day_exs:
                         if isinstance(_ex, dict):
-                            for _k in ("slug", "label", "name"):
+                            # label first so the human-readable name is what we show if it
+                            # resolves; slug/name are fallbacks (unseen_demos_for dedups by
+                            # the resolved canonical key, so the first form to resolve wins).
+                            for _k in ("label", "slug", "name"):
                                 if _ex.get(_k):
                                     names.append(str(_ex[_k]))
             demos = unseen_demos_for(user, names, limit=1)

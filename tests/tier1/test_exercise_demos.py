@@ -157,3 +157,60 @@ def test_mark_demos_seen_noop_when_flag_off(monkeypatch):
     monkeypatch.setattr(models, "get_session", _boom)
     exercise_demos.mark_demos_seen(1, ["pull_up"])  # must not spawn/write
     assert called["n"] == 0
+
+
+# ─── build_loop_context injection path (create path) ─────────────────────────
+# These exercise the WIRING in agent_loop.build_loop_context — a real user with a
+# card whose exercises resolve to a demo — not just the resolver in isolation.
+
+from tests.factories import make_user
+
+_PULL_DAY = {"pull": [{"slug": "pull_up", "label": "pull up", "sets": 3, "reps": 8}]}
+_PULL_URL = EXERCISE_DEMO_LINKS["pull_up"]
+
+
+def test_build_loop_context_injects_form_demo_block(db, monkeypatch):
+    monkeypatch.setattr(config, "EXERCISE_DEMOS_ENABLED", True)
+    # keep the background write out of the test DB; assert it's asked for the right key
+    marked = {}
+    monkeypatch.setattr(exercise_demos, "mark_demos_seen",
+                        lambda uid, keys: marked.update(user_id=uid, keys=list(keys)))
+    from agent_loop import build_loop_context
+    u = make_user(db, custom_templates=_PULL_DAY)
+    ctx = build_loop_context(u, db)
+    assert "## FORM DEMO (share naturally if it fits — one time only)" in ctx
+    assert f"pull up: {_PULL_URL}" in ctx
+    # only the injected movement is marked seen
+    assert marked.get("keys") == ["pull_up"] and marked.get("user_id") == u.id
+
+
+def test_build_loop_context_no_form_demo_when_flag_off(db, monkeypatch):
+    monkeypatch.setattr(config, "EXERCISE_DEMOS_ENABLED", False)
+    from agent_loop import build_loop_context
+    u = make_user(db, custom_templates=_PULL_DAY)
+    ctx = build_loop_context(u, db)
+    assert "## FORM DEMO" not in ctx
+
+
+def test_build_loop_context_suppresses_already_seen_demo(db, monkeypatch):
+    monkeypatch.setattr(config, "EXERCISE_DEMOS_ENABLED", True)
+    monkeypatch.setattr(exercise_demos, "mark_demos_seen", lambda uid, keys: None)
+    from agent_loop import build_loop_context
+    u = make_user(db, custom_templates=_PULL_DAY, seen_exercise_demos={"pull_up": True})
+    ctx = build_loop_context(u, db)
+    assert "## FORM DEMO" not in ctx
+    assert _PULL_URL not in ctx
+
+
+def test_build_loop_context_fail_open_when_resolver_raises(db, monkeypatch):
+    monkeypatch.setattr(config, "EXERCISE_DEMOS_ENABLED", True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("resolver blew up")
+
+    monkeypatch.setattr(exercise_demos, "unseen_demos_for", _boom)
+    from agent_loop import build_loop_context
+    u = make_user(db, custom_templates=_PULL_DAY)
+    ctx = build_loop_context(u, db)          # must not raise
+    assert "## FORM DEMO" not in ctx
+    assert isinstance(ctx, str) and ctx      # normal context still produced
