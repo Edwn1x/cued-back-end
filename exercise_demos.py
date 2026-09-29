@@ -2,10 +2,16 @@
 Exercise demo video library — a one-time form link the coach can drop inline.
 ============================================================================
 
-Every entry points at ONE compilation video (https://youtu.be/S6rqpxVGKZ4) with a
-per-movement `?t=` timestamp that jumps straight to that exercise's segment. When the
-coach programs / discusses a movement the user hasn't seen a demo for yet, it may share
-the link once; we then mark it seen (users.seen_exercise_demos) so it never repeats.
+The original 25 entries point at ONE compilation video (https://youtu.be/S6rqpxVGKZ4)
+with a per-movement `?t=` timestamp that jumps straight to that exercise's segment.
+That compilation (Jeff Nippard, "The Only 25 Exercises You Ever Need") has exactly 25
+chapters — all already mapped — so it can't cover the movements our default/beginner
+templates prescribe that aren't among those 25 (barbell row, lat pulldown, the whole
+bodyweight set, etc.). Those get one focused single-exercise tutorial each, from
+reputable form channels, verified live via YouTube's oEmbed endpoint before shipping.
+When the coach programs / discusses a movement the user hasn't seen a demo for yet, it
+may share the link once; we then mark it seen (users.seen_exercise_demos) so it never
+repeats.
 
 Originally shipped in the legacy multi-agent pipeline (agents/training.py, commit
 ee939db) and lost as collateral when that pipeline was deleted. This is a clean port
@@ -56,17 +62,55 @@ EXERCISE_DEMO_LINKS = {
     "neck_curls_and_extensions": "https://youtu.be/S6rqpxVGKZ4?t=172",
     "cable_crunch": "https://youtu.be/S6rqpxVGKZ4?t=224",
     "deadlift": "https://youtu.be/S6rqpxVGKZ4?t=506",
+    # ── Template-coverage expansion (PR: exercise-demo-expansion) ──────────────
+    # One focused single-exercise tutorial per movement our default/beginner templates
+    # (workouts/templates.py) prescribe that Nippard's 25-exercise compilation doesn't
+    # cover. Every URL below was verified LIVE via YouTube oEmbed (title + channel) at
+    # build time; channel + title recorded in the PR. Keyed by the template `slug` so
+    # unseen_demos_for resolves a card's exercises directly.
+    #
+    # Full-gym TEMPLATES movements ---------------------------------------------
+    "incline_db_press": "https://youtu.be/hChjZQhX1Ls",       # ScottHermanFitness — Dumbbell Incline Press | 3 GOLDEN RULES
+    "cable_fly": "https://youtu.be/8Um35Es-ROE",              # ScottHermanFitness — Cable Fly (High-To-Low) | 3 GOLDEN RULES
+    "tricep_pushdown": "https://youtu.be/_w-HpW70nSQ",        # ScottHermanFitness — Cable Triceps Pushdown | 3 Golden Rules
+    "barbell_row": "https://youtu.be/kBWAon7ItDw",            # Jeremy Ethier — How To PROPERLY Barbell Row
+    "lat_pulldown": "https://youtu.be/CAwf7n6Luuc",           # ScottHermanFitness — Lat Pulldown | 3 GOLDEN RULES
+    "face_pull": "https://youtu.be/rep-qVOkqgk",              # ScottHermanFitness — Face Pull
+    "barbell_curl": "https://youtu.be/QZEqB6wUPxQ",           # ScottHermanFitness — Barbell Bicep Curl | 3 GOLDEN RULES
+    "leg_press": "https://youtu.be/CHPHn-OnTqE",              # Colossus Fitness — How to PROPERLY Leg Press
+    #
+    # Bodyweight BODYWEIGHT_TEMPLATES movements --------------------------------
+    "pushup": "https://youtu.be/vh72hbUqqfs",                 # ScottHermanFitness — Push Up | 3 GOLDEN RULES
+    "pike_pushup": "https://youtu.be/pHR5yG6xBps",            # Gymless Fitness — Pike Push Up Tutorial For Beginners
+    "chair_dip": "https://youtu.be/c3ZGl4pAwZ4",             # ScottHermanFitness — Bench Dip (same movement as a chair dip)
+    "diamond_pushup": "https://youtu.be/J0DnG1_S92I",         # ScottHermanFitness — Diamond Push-Up
+    "inverted_row": "https://youtu.be/Fl0UMfdEzsE",          # Zack Henderson — Inverted Rows (Beginner to Advanced)
+    "superman": "https://youtu.be/UXUGfiNL1lI",              # Colossus Fitness — How to PROPERLY Do a Superman Exercise
+    "reverse_snow_angel": "https://youtu.be/Q-nAkTZb49g",    # Simple Simon's Education — Reverse Snow Angels (bodyweight)
+    "plank": "https://youtu.be/mwlp75MS6Rg",                 # NASM — How to do a Plank | Proper Form & Technique
+    "air_squat": "https://youtu.be/P-yaD24bUE8",             # Runna — Bodyweight Squat Tutorial
+    "reverse_lunge": "https://youtu.be/94AXT7D3bKY",         # Airrosti Rehab Centers — Perfect Reverse Lunge
+    "glute_bridge": "https://youtu.be/L9KZfxT654Y",          # Runna — Glute Bridge Tutorial
+    "wall_sit": "https://youtu.be/y-wV4Venusw",              # ScottHermanFitness — Wall-Sit
+    #
+    # Common novice near-miss lifts (not in a default template, but frequently named) --
+    "back_extension": "https://youtu.be/CgbmrF-DRSE",        # Enterprise Fitness — How To Do Hyperextensions With Perfect Form
+    "goblet_squat": "https://youtu.be/gm4ln6PO4rc",          # Colossus Fitness — How to PROPERLY Goblet Squat
+    "dumbbell_shoulder_press": "https://youtu.be/qEwKCR5JCog",  # ScottHermanFitness — Dumbbell Shoulder Press
+    "hammer_curl": "https://youtu.be/zC3nLlEvin4",           # ScottHermanFitness — Dumbbell Hammer Curl
+    "seated_cable_row": "https://youtu.be/GZbfZ033f74",      # ScottHermanFitness — Seated Low Row (LF Cable)
 }
 
 # Real-world names / slugs the card and conversation use → the canonical key above.
 # CONSERVATIVE by design: an alias must be the SAME movement. A missing demo is fine;
-# a WRONG-movement demo is a correctness bug. So we deliberately DO NOT map, e.g.,
-# "lat pulldown" (a vertical pull) to machine_lat_pullover (a straight-arm pullover),
-# "barbell curl" / "bicep curl" to any curl entry (bayesian_cable_curl and preacher_curl
-# are specific variations — there is no generic curl), or "back extension" /
-# "hyperextension", "seated calf raise", "lying leg curl", generic "t-bar row" — those
-# have no genuinely-matching canonical key, so they MISS. Keys here are normalized at
-# module load (same normalize as the input), so spacing/hyphen/case don't matter.
+# a WRONG-movement demo is a correctness bug. lat pulldown, barbell curl, back extension
+# etc. now have their OWN dedicated tutorial keys above, so they resolve directly (we
+# still never point "lat pulldown" at machine_lat_pullover — a straight-arm pullover).
+# We deliberately still DO NOT map movements with no genuinely-matching key, e.g.
+# "seated calf raise" (different emphasis from standing_calf_raise), "lying leg curl"
+# (a prone variant — only the seated machine curl has a demo), or a generic "t-bar row"
+# (only the chest-supported variation is mapped) — those MISS. Keys here are normalized
+# at module load (same normalize as the input), so spacing/hyphen/case don't matter.
 _ALIASES = {
     # pull_up — bodyweight vertical pull (chin-up is the supinated-grip same movement)
     "pullup": "pull_up",
@@ -135,6 +179,116 @@ _ALIASES = {
     # dumbbell_shrugs
     "db shrugs": "dumbbell_shrugs",
     "dumbbell shrug": "dumbbell_shrugs",
+    # ── Template-coverage expansion aliases ───────────────────────────────────
+    # SAME-movement aliases with no new video: reuse a key we already have a demo for.
+    "leg_curl": "seated_leg_curl",            # full-gym generic default → seated machine curl
+    "leg curls": "seated_leg_curl",
+    "calf_raise": "standing_calf_raise",      # generic calf raise = the standing demo
+    "calf raises": "standing_calf_raise",
+    "bodyweight_calf_raise": "standing_calf_raise",  # bodyweight template slug — same movement
+    "bodyweight calf raise": "standing_calf_raise",
+    # incline_db_press
+    "incline db press": "incline_db_press",
+    "incline dumbbell press": "incline_db_press",
+    "incline dumbbell bench press": "incline_db_press",
+    # cable_fly
+    "cable flys": "cable_fly",
+    "cable flyes": "cable_fly",
+    "cable flye": "cable_fly",
+    # tricep_pushdown
+    "tricep pushdowns": "tricep_pushdown",
+    "triceps pushdown": "tricep_pushdown",
+    "tricep pressdown": "tricep_pushdown",
+    "cable pushdown": "tricep_pushdown",
+    "pushdowns": "tricep_pushdown",
+    # barbell_row
+    "barbell rows": "barbell_row",
+    "bent over row": "barbell_row",
+    "bent-over row": "barbell_row",
+    "bent over barbell row": "barbell_row",
+    "bb row": "barbell_row",
+    # lat_pulldown
+    "lat pulldowns": "lat_pulldown",
+    "lat pull down": "lat_pulldown",
+    "pulldown": "lat_pulldown",
+    "pulldowns": "lat_pulldown",
+    # face_pull
+    "face pulls": "face_pull",
+    # barbell_curl (now a dedicated key — a generic barbell/bicep curl demo)
+    "barbell curls": "barbell_curl",
+    "bb curl": "barbell_curl",
+    "bicep curl": "barbell_curl",
+    "biceps curl": "barbell_curl",
+    "bicep curls": "barbell_curl",
+    "barbell bicep curl": "barbell_curl",
+    # leg_press
+    "leg presses": "leg_press",
+    # pushup
+    "push up": "pushup",
+    "push ups": "pushup",
+    "pushups": "pushup",
+    "push-ups": "pushup",
+    # pike_pushup
+    "pike push up": "pike_pushup",
+    "pike push ups": "pike_pushup",
+    "pike pushups": "pike_pushup",
+    # chair_dip (bench dip / tricep dip are the same movement)
+    "chair dips": "chair_dip",
+    "bench dip": "chair_dip",
+    "bench dips": "chair_dip",
+    "tricep dip": "chair_dip",
+    "tricep dips": "chair_dip",
+    # diamond_pushup
+    "diamond push up": "diamond_pushup",
+    "diamond push ups": "diamond_pushup",
+    "diamond pushups": "diamond_pushup",
+    "close grip pushup": "diamond_pushup",
+    # inverted_row
+    "inverted row": "inverted_row",
+    "inverted rows": "inverted_row",
+    "bodyweight row": "inverted_row",
+    "australian pull up": "inverted_row",
+    # superman
+    "supermans": "superman",
+    "superman exercise": "superman",
+    # reverse_snow_angel
+    "reverse snow angels": "reverse_snow_angel",
+    "prone snow angel": "reverse_snow_angel",
+    # plank
+    "planks": "plank",
+    # air_squat
+    "air squats": "air_squat",
+    "bodyweight squat": "air_squat",
+    "bodyweight squats": "air_squat",
+    # reverse_lunge
+    "reverse lunges": "reverse_lunge",
+    # glute_bridge
+    "glute bridges": "glute_bridge",
+    "hip bridge": "glute_bridge",
+    # wall_sit
+    "wall sits": "wall_sit",
+    # back_extension (dedicated key; hyperextension = same movement)
+    "back extensions": "back_extension",
+    "hyperextension": "back_extension",
+    "hyperextensions": "back_extension",
+    "hyper extension": "back_extension",
+    # goblet_squat
+    "goblet squats": "goblet_squat",
+    # dumbbell_shoulder_press
+    "dumbbell shoulder press": "dumbbell_shoulder_press",
+    "db shoulder press": "dumbbell_shoulder_press",
+    "dumbbell overhead press": "dumbbell_shoulder_press",
+    "seated dumbbell press": "dumbbell_shoulder_press",
+    # hammer_curl
+    "hammer curls": "hammer_curl",
+    "dumbbell hammer curl": "hammer_curl",
+    # seated_cable_row
+    "seated cable row": "seated_cable_row",
+    "seated cable rows": "seated_cable_row",
+    "cable row": "seated_cable_row",
+    "seated row": "seated_cable_row",
+    "seated low row": "seated_cable_row",
+    "low row": "seated_cable_row",
 }
 
 

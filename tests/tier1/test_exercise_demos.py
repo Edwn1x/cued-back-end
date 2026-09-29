@@ -16,6 +16,7 @@ import pytest
 import config
 import exercise_demos
 from exercise_demos import EXERCISE_DEMO_LINKS, _normalize, unseen_demos_for
+from workouts.templates import TEMPLATES, BODYWEIGHT_TEMPLATES
 
 
 @pytest.fixture(autouse=True)
@@ -71,29 +72,77 @@ def test_alias_resolves_to_same_movement(name, key):
 
 
 # ─── misses: no SAME-movement key → return {}, NEVER a wrong-movement link ────
+# NOTE: barbell curl, back extension/hyperextension, lat pulldown, face pull and leg
+# press USED to miss and now have their OWN dedicated demo keys (see the coverage test).
+# What remains a deliberate MISS is any movement with no genuinely-same key.
 
 @pytest.mark.parametrize("name", [
-    "barbell curl",      # no generic curl entry (bayesian_cable_curl is a specific variation)
-    "bb curl",
-    "bicep curl",
-    "back extension",    # no entry
-    "back extensions",
-    "hyperextension",
-    "lat pulldown",      # a vertical pull — NOT machine_lat_pullover (a straight-arm pullover)
-    "lat_pulldown",
-    "seated calf raise", # only standing_calf_raise exists (different emphasis)
-    "lying leg curl",    # only seated_leg_curl exists
-    "face pull",
-    "leg press",
+    "seated calf raise",   # only standing_calf_raise exists (different emphasis)
+    "lying leg curl",      # a prone variant — only the seated machine curl has a demo
+    "t-bar row",           # only the chest-supported variation is mapped
+    "hack squat",          # no matching key
+    "sumo deadlift",       # a distinct variant, not the conventional deadlift demo
+    "concentration curl",  # no matching key (barbell_curl is a different movement)
 ])
 def test_unmapped_movements_miss(name):
     assert unseen_demos_for(_user(), [name]) == {}
 
 
-def test_lat_pulldown_never_returns_pullover_link():
+def test_lat_pulldown_resolves_to_its_own_key_never_pullover():
+    # lat pulldown now has a dedicated tutorial; it must resolve to THAT, and must never
+    # be the straight-arm machine_lat_pullover link (a different movement).
     out = unseen_demos_for(_user(), ["lat pulldown"])
-    assert out == {}
+    assert out == {"lat pulldown": EXERCISE_DEMO_LINKS["lat_pulldown"]}
     assert EXERCISE_DEMO_LINKS["machine_lat_pullover"] not in out.values()
+
+
+# ─── template coverage (THE regression guard) ────────────────────────────────
+# Every movement a novice can be prescribed by a default/beginner template must have a
+# form demo. If a future template adds a movement with no demo, this fails.
+
+def _default_template_slugs():
+    """Unique exercise slugs across full-gym TEMPLATES and BODYWEIGHT_TEMPLATES."""
+    slugs: set[str] = set()
+    for day in (*TEMPLATES.values(), *BODYWEIGHT_TEMPLATES.values()):
+        for ex in day:
+            slugs.add(ex.slug)
+    return sorted(slugs)
+
+
+def test_every_default_template_slug_has_a_demo():
+    slugs = _default_template_slugs()
+    missing = []
+    for slug in slugs:
+        out = unseen_demos_for(_user(), [slug])
+        if not out.get(slug):
+            missing.append(slug)
+    assert missing == [], f"{len(missing)}/{len(slugs)} template movements have no demo: {missing}"
+
+
+@pytest.mark.parametrize("slug", [
+    # full-gym TEMPLATES
+    "incline_db_press", "cable_fly", "tricep_pushdown", "barbell_row", "lat_pulldown",
+    "face_pull", "barbell_curl", "leg_press", "leg_curl", "calf_raise",
+    # bodyweight BODYWEIGHT_TEMPLATES
+    "pushup", "pike_pushup", "chair_dip", "diamond_pushup", "inverted_row", "superman",
+    "reverse_snow_angel", "plank", "air_squat", "reverse_lunge", "glute_bridge",
+    "wall_sit", "bodyweight_calf_raise",
+    # near-miss lifts added alongside the templates
+    "back_extension", "goblet_squat", "dumbbell_shoulder_press", "hammer_curl",
+    "seated_cable_row",
+])
+def test_expansion_slug_resolves_to_a_demo(slug):
+    out = unseen_demos_for(_user(), [slug])
+    assert out.get(slug), f"{slug} should resolve to a demo link"
+    assert out[slug].startswith("https://")
+
+
+def test_same_movement_aliases_reuse_known_good_links():
+    # the alias cases from the plan reuse a key we already had a demo for (no new video)
+    assert unseen_demos_for(_user(), ["leg_curl"]) == {"leg_curl": EXERCISE_DEMO_LINKS["seated_leg_curl"]}
+    assert unseen_demos_for(_user(), ["calf_raise"]) == {"calf_raise": EXERCISE_DEMO_LINKS["standing_calf_raise"]}
+    assert unseen_demos_for(_user(), ["bodyweight_calf_raise"]) == {
+        "bodyweight_calf_raise": EXERCISE_DEMO_LINKS["standing_calf_raise"]}
 
 
 # ─── seen-tracking ───────────────────────────────────────────────────────────
