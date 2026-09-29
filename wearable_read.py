@@ -227,4 +227,161 @@ def recent_step_avg(user, session, *, now=None) -> float | None:
         return None
 
 
-__all__ = ["recovery_read", "recent_step_avg", "Recovery", "SOURCE"]
+# ─── Measured sleep/wake window (typical bed + wake hour) ─────────────────────
+# Derived from RECENT wearable sleep_start/sleep_end so the coach can prefer the user's
+# ACTUAL rhythm over the static onboarding sleep_time/wake_time (irregular sleepers drift
+# a lot from what they typed months ago). Kept LOCAL to this reader, like the constants
+# above — never touches the sync pipeline.
+MEASURED_WINDOW_DAYS = 10   # trailing local days considered for the window
+MEASURED_MIN_NIGHTS = 3     # need at least this many nights WITH real sleep to trust it
+
+
+def _median(vals):
+    """Plain median of a non-empty numeric list (float for an even count)."""
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    if n % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2
+
+
+@dataclass
+class SleepWindow:
+    bed_hm: tuple[int, int]            # typical bedtime (local hour, minute) — MEDIAN
+    wake_hm: tuple[int, int]           # typical wake (local hour, minute) — MEDIAN
+    last_wake_local: datetime | None   # most recent measured wake (aware local)
+    nights: int                        # nights with real sleep that informed the median
+
+
+def measured_sleep_window(user, session, *, now=None) -> SleepWindow | None:
+    """The user's TYPICAL bed hour + wake hour from RECENT wearable sleep, or None when
+    there aren't enough fresh nights to trust a measured rhythm (caller then falls back to
+    the static profile times — EXACTLY today's behaviour).
+
+    Robust central value = MEDIAN over the last MEASURED_WINDOW_DAYS local days, ignoring
+    nights with no sleep_start/sleep_end. Bedtimes are placed on a continuous evening→dawn
+    axis (an after-midnight bedtime like 01:00 is shifted past the evening cluster) so the
+    median of a 23:30/00:30 pair doesn't collapse to noon. Requires >= MEASURED_MIN_NIGHTS
+    real nights.
+
+    Read-only: one SELECT over WearableDay. Never writes, never calls the sync module.
+    Fail-open: flag off / not connected / too few nights / any error → None."""
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return None
+    try:
+        from integrations.base import get_integration
+        integ = get_integration(session, user.id, SOURCE)
+        if integ is None or integ.status not in ("connected", "error"):
+            return None
+
+        tz = _tz(user)
+        today = _local_today(user, now=now)
+        since = (today - timedelta(days=MEASURED_WINDOW_DAYS)).isoformat()
+        rows = (session.query(WearableDay)
+                .filter(WearableDay.user_id == user.id, WearableDay.provider == SOURCE,
+                        WearableDay.day >= since)
+                .order_by(WearableDay.day.asc()).all())
+
+        beds: list[int] = []   # minutes-of-day, after-midnight shifted by +1440
+        wakes: list[int] = []  # minutes-of-day (wake is morning-ish; no wrap needed)
+        last_wake: datetime | None = None
+        for r in rows:
+            bs = _to_local(r.sleep_start, tz)
+            we = _to_local(r.sleep_end, tz)
+            if bs is None or we is None:
+                continue
+            bm = bs.hour * 60 + bs.minute
+            if bs.hour < 12:          # an after-midnight bedtime sits AFTER the evening cluster
+                bm += 1440
+            beds.append(bm)
+            wakes.append(we.hour * 60 + we.minute)
+            if last_wake is None or we > last_wake:
+                last_wake = we
+
+        if len(beds) < MEASURED_MIN_NIGHTS:
+            return None
+
+        bed_med = int(round(_median(beds))) % 1440
+        wake_med = int(round(_median(wakes))) % 1440
+        return SleepWindow(
+            bed_hm=(bed_med // 60, bed_med % 60),
+            wake_hm=(wake_med // 60, wake_med % 60),
+            last_wake_local=last_wake,
+            nights=len(beds),
+        )
+    except Exception:
+        # Fail-open: a reader error must never crash a caller's sleep/quiet logic.
+        return None
+
+
+# ─── Recent-activity awareness (today's movement) ─────────────────────────────
+@dataclass
+class Activity:
+    steps: int | None
+    active_minutes: int | None
+    notably_active: bool     # steps or active minutes past a "clearly moving" threshold
+
+
+def recent_activity(user, session, *, now=None) -> Activity | None:
+    """Today's measured movement (steps + active minutes) with a coarse "notably active"
+    flag, or None when there is nothing trustworthy to use.
+
+    Read-only: one SELECT for today's WearableDay row. Never writes, never calls the sync
+    module. Fail-open: flag off / not connected / no today row / no data / error → None."""
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return None
+    try:
+        from integrations.base import get_integration
+        integ = get_integration(session, user.id, SOURCE)
+        if integ is None or integ.status not in ("connected", "error"):
+            return None
+
+        today = _local_today(user, now=now).isoformat()
+        row = (session.query(WearableDay)
+               .filter(WearableDay.user_id == user.id, WearableDay.provider == SOURCE,
+                       WearableDay.day == today)
+               .one_or_none())
+        if row is None:
+            return None
+        steps = row.steps
+        active = row.active_minutes
+        if not steps and not active:
+            return None
+        notably = bool((steps and steps >= config.WEARABLE_ACTIVE_STEPS_THRESHOLD) or
+                       (active and active >= config.WEARABLE_ACTIVE_MINUTES_THRESHOLD))
+        return Activity(steps=steps, active_minutes=active, notably_active=notably)
+    except Exception:
+        return None
+
+
+def activity_context(user, session, *, now=None) -> str | None:
+    """A compact advisory ACTIVITY TODAY block for build_loop_context (and, since the
+    heartbeat wraps that builder, its ticks too) — or None when inert. Flag-gated by
+    WEARABLE_ACTIVITY_CONTEXT_ENABLED; fail-open to None otherwise."""
+    if not config.WEARABLE_ACTIVITY_CONTEXT_ENABLED:
+        return None
+    try:
+        act = recent_activity(user, session, now=now)
+    except Exception:
+        return None
+    if act is None:
+        return None
+    bits: list[str] = []
+    if act.steps:
+        bits.append(f"~{act.steps:,} steps")
+    if act.active_minutes:
+        bits.append(f"{act.active_minutes} active min")
+    if not bits:
+        return None
+    if act.notably_active:
+        tail = (" — they've been moving today (e.g. walked to class). Acknowledge the "
+                "movement; do NOT imply they've been sedentary or hard-push more exercise.")
+    else:
+        tail = (" so far today. Advisory context only — factor it in, don't lecture and "
+                "don't assume they've been sedentary.")
+    return "## ACTIVITY TODAY\n" + ", ".join(bits) + tail
+
+
+__all__ = ["recovery_read", "recent_step_avg", "measured_sleep_window", "recent_activity",
+           "activity_context", "Recovery", "SleepWindow", "Activity", "SOURCE"]

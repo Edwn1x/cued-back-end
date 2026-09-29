@@ -152,13 +152,35 @@ def _parse_hour(s) -> int | None:
     return h if 0 <= h <= 23 else None
 
 
-def _quiet_window(user) -> tuple[int, int]:
+def _measured_sw_hours(user, session, *, now=None):
+    """(bed_hm, wake_hm) local from the MEASURED sleep window (typical bed + wake from
+    recent wearable sleep), or None → the caller uses the static profile times exactly as
+    today. Flag-gated by MEASURED_SLEEP_WINDOW_ENABLED; fail-open on any error."""
+    if not config.MEASURED_SLEEP_WINDOW_ENABLED or session is None:
+        return None
+    try:
+        from wearable_read import measured_sleep_window
+        w = measured_sleep_window(user, session, now=now)
+        if not w:
+            return None
+        return w.bed_hm, w.wake_hm
+    except Exception:
+        return None
+
+
+def _quiet_window(user, measured=None) -> tuple[int, int]:
     """The overnight quiet window (start_evening_hour, end_morning_hour), local. The
     default 9pm–8am is a FLOOR: a parseable sleep_time earlier than 9pm or a wake_time
-    later than 8am (up to 2pm) only EXTENDS it (more protective), never shrinks it."""
+    later than 8am (up to 2pm) only EXTENDS it (more protective), never shrinks it. When a
+    MEASURED window is supplied (typical bed/wake from the watch), its hours REPLACE the
+    static profile hours here — routed through the exact same FLOOR extension, never a
+    weakening."""
     start, end = config.HEARTBEAT_QUIET_START_HOUR, config.HEARTBEAT_QUIET_END_HOUR
-    hs = _parse_hour(getattr(user, "sleep_time", None))
-    hw = _parse_hour(getattr(user, "wake_time", None))
+    if measured is not None:
+        hs, hw = measured[0][0], measured[1][0]
+    else:
+        hs = _parse_hour(getattr(user, "sleep_time", None))
+        hw = _parse_hour(getattr(user, "wake_time", None))
     if hs is not None and 12 <= hs <= 23 and hs < start:   # sleeps earlier than 9pm
         start = hs
     # Up to 2pm: a 1pm waker (live 2026-09-22, user 42: sleeps 4am, up 1pm) was
@@ -219,11 +241,16 @@ QUIET_BEFORE_SLEEP_MIN = 30
 QUIET_AFTER_WAKE_MIN = 15
 
 
-def _profile_quiet_window(user, local) -> tuple[int, int] | None:
+def _profile_quiet_window(user, local, measured=None) -> tuple[int, int] | None:
     """(start, end) minutes-of-day: sleep−30min .. wake+15min (alt wake honoured for the
-    local date's weekday). None unless BOTH profile times are strict 'HH:MM'."""
-    wake = _wake_hhmm_for(user, local.date())
-    sleep = _sleep_hhmm(user)
+    local date's weekday). None unless BOTH profile times are strict 'HH:MM'. A supplied
+    MEASURED window (typical bed/wake from the watch) REPLACES the profile times — same
+    −30/+15 buffers, same gate."""
+    if measured is not None:
+        sleep, wake = measured[0], measured[1]
+    else:
+        wake = _wake_hhmm_for(user, local.date())
+        sleep = _sleep_hhmm(user)
     if not wake or not sleep:
         return None
     start = (sleep[0] * 60 + sleep[1] - QUIET_BEFORE_SLEEP_MIN) % 1440
@@ -264,14 +291,17 @@ def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
     window is THEIRS (sleep−30 .. wake+15) whenever both profile times parse; otherwise
     the global floor window (extended, never shrunk, by a parseable profile time). When a
     `session` is given and HEARTBEAT_WEARABLE_AWARE_ENABLED, a measured wake the watch
-    shows LATER than their stated wake extends the morning floor too (never shrinks it)."""
+    shows LATER than their stated wake extends the morning floor too (never shrinks it).
+    With MEASURED_SLEEP_WINDOW_ENABLED and enough fresh nights, the user's MEASURED typical
+    bed/wake hours REPLACE the static profile hours fed into the window (same gate)."""
     if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
         return False
     local = _ref(now).astimezone(_user_tz(user))
     m = local.hour * 60 + local.minute
+    measured = _measured_sw_hours(user, session, now=now)   # None → static profile times
     wake_min = _measured_wake_min(user, session, now=now)   # None unless the watch says slept-in
     if config.QUIET_HOURS_FROM_PROFILE_ENABLED:
-        win = _profile_quiet_window(user, local)
+        win = _profile_quiet_window(user, local, measured=measured)
         if win:
             start, end = win
             if wake_min is not None:
@@ -281,7 +311,7 @@ def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
             if start > end:                     # spans midnight (the normal case)
                 return m >= start or m < end
             return start <= m < end             # e.g. sleeps 01:00, wakes 09:00
-    start, end = _quiet_window(user)
+    start, end = _quiet_window(user, measured=measured)
     start_min, end_min = start * 60, end * 60
     if wake_min is not None:
         end_min = max(end_min, wake_min)        # measured slept-in only EXTENDS the morning floor
