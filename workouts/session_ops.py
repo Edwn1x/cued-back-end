@@ -340,3 +340,173 @@ def abandon_stale(now: datetime | None = None) -> int:
         return n
     finally:
         session.close()
+
+
+# --- reconstruct a routine from logged history (READ-ONLY) --------------------
+# Coach affordance for the false-negative-affordance family (live incident user 31:
+# 8 completed push sessions on record, no saved `push` custom_template, and the coach
+# repeatedly told him it "didn't have the exercises off the old card" — a lie, the
+# sets are right here in SetLog). These helpers rebuild what a user ACTUALLY did on a
+# given day from their logged sets so the coach can reflect it back and offer to save
+# it (save_routine). They only SELECT — they never write, never mutate a session.
+
+# db/bb/ohp are how sets get logged tersely; expanded so "incline db press" and
+# "incline dumbbell bench press" collapse to one lift.
+_RECON_ABBREV = {"db": "dumbbell", "bb": "barbell", "ohp": "overhead press",
+                 "sldl": "stiff leg deadlift", "rdl": "romanian deadlift"}
+# Known garble seen in real logs ("single_are_tricep_pushdown" = "single arm …").
+_RECON_GARBLE = {"are": "arm", "aer": "arm", "arn": "arm"}
+# Pure noise words — dropped from a lift's signature. Kept deliberately SMALL: real
+# movement words ("bench", "machine", "seated") distinguish lifts, so they stay.
+_RECON_FILLER = {"the", "a", "an", "of", "x"}
+
+
+def _recon_tokens(name: str) -> list[str]:
+    import re
+    out: list[str] = []
+    for t in re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split():
+        t = _RECON_GARBLE.get(t, t)
+        out.extend(_RECON_ABBREV.get(t, t).split())  # abbrev may expand to 2 words
+    return out
+
+
+def _recon_sig(name: str) -> frozenset:
+    return frozenset(t for t in _recon_tokens(name) if t not in _RECON_FILLER)
+
+
+def _recon_head(name: str) -> str:
+    """The positional lead token ('incline', 'overhead', 'single', 'bench') — used so a
+    subset merge only fires between variants of the SAME movement family."""
+    toks = [t for t in _recon_tokens(name) if t not in _RECON_FILLER]
+    return toks[0] if toks else ""
+
+
+def _recon_same_lift(sig_a: frozenset, head_a: str, sig_b: frozenset, head_b: str) -> bool:
+    """Two logged names are the same lift when their signatures are equal, or one is a
+    subset of the other differing by exactly ONE token, they share a lead token, and the
+    smaller has >=2 tokens. That collapses 'incline dumbbell bench press' / 'incline db
+    press' without swallowing 'bench press' into an incline slot."""
+    if sig_a == sig_b:
+        return True
+    small, big = (sig_a, sig_b) if len(sig_a) <= len(sig_b) else (sig_b, sig_a)
+    return (small < big and len(big) - len(small) == 1 and len(small) >= 2
+            and head_a == head_b)
+
+
+def _recon_garble_score(name: str) -> int:
+    import re
+    return sum(1 for t in re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split()
+               if t in _RECON_GARBLE)
+
+
+def _recon_clean_label(label: str, slug: str) -> str:
+    """Display form: fix whole-word garble, unify separators, lowercase — never leave
+    'single_are_tricep_pushdown' in front of the user."""
+    import re
+    base = re.sub(r"[_]+", " ", (label or slug or "").strip().lower())
+    words = [_RECON_GARBLE.get(w, w) for w in base.split()]
+    return re.sub(r"\s+", " ", " ".join(words)).strip() or "exercise"
+
+
+def completed_template_keys(user_id: int) -> list[str]:
+    """Distinct template_keys the user has a DONE session for, newest activity first.
+    Cheap DISTINCT — feeds the PRIOR SESSIONS context note. Read-only, fail-open."""
+    session = get_session()
+    try:
+        rows = (session.query(WorkoutSession.template_key)
+                .filter(WorkoutSession.user_id == user_id,
+                        WorkoutSession.status == "done",
+                        WorkoutSession.template_key.isnot(None))
+                .order_by(WorkoutSession.id.desc()).all())
+        seen: list[str] = []
+        for (k,) in rows:
+            if k and k not in seen:
+                seen.append(k)
+        return seen
+    except Exception as e:  # noqa: BLE001 — a context note must never break the turn
+        logger.warning("COMPLETED_TEMPLATE_KEYS_FAILED user=%s err=%s", user_id, e)
+        return []
+    finally:
+        session.close()
+
+
+def reconstruct_from_history(user_id: int, template_key: str | None = None) -> dict:
+    """Rebuild what the user actually did on their most recent DONE session for
+    `template_key` (or, if none matches / none given, their most recent done session
+    of any key). READ-ONLY: only SELECTs run.
+
+    Returns one of:
+      {"status": "none", "requested_key": <norm key or None>}
+      {"status": "ok"|"fallback", "template_key", "requested_key", "date_label",
+       "exercises": [{"label": str, "sets": int}, ...]}
+    'fallback' means the requested day had no session so a different day was used.
+    """
+    from sqlalchemy import func
+    from workouts.templates import normalize_template_key, day_key_from_phrase
+
+    raw = (template_key or "").strip()
+    key = None
+    if raw:
+        key = normalize_template_key(raw) or day_key_from_phrase(raw)
+
+    session = get_session()
+    try:
+        base = (session.query(WorkoutSession)
+                .filter(WorkoutSession.user_id == user_id,
+                        WorkoutSession.status == "done"))
+        # Newest by when it was finished, falling back to the session date.
+        recency = func.coalesce(WorkoutSession.finished_at, WorkoutSession.date).desc()
+
+        ws = None
+        used_fallback = False
+        if key:
+            ws = (base.filter(WorkoutSession.template_key == key)
+                  .order_by(recency, WorkoutSession.id.desc()).first())
+        if ws is None:
+            ws = base.order_by(recency, WorkoutSession.id.desc()).first()
+            used_fallback = ws is not None and bool(key)
+        if ws is None:
+            return {"status": "none", "requested_key": key}
+
+        sets = (session.query(SetLog)
+                .filter(SetLog.session_id == ws.id)
+                .order_by(SetLog.set_index, SetLog.id).all())
+
+        # Distinct exercises in first-appearance order, collapsing noisy variants:
+        # two names merge when either signature is a subset of the other (after
+        # abbrev-expansion + garble-fix + filler-drop). Representative label = the
+        # cleanest (fewest garble tokens, then shortest).
+        groups: list[dict] = []
+        for s in sets:
+            src = s.exercise_label or s.exercise
+            sig = _recon_sig(src)
+            if not sig:
+                continue
+            head = _recon_head(src)
+            match = None
+            for g in groups:
+                if _recon_same_lift(sig, head, g["sig"], g["head"]):
+                    match = g
+                    break
+            label = _recon_clean_label(s.exercise_label, s.exercise)
+            score = (_recon_garble_score(s.exercise_label or s.exercise), len(label))
+            if match is None:
+                groups.append({"sig": sig, "head": head, "sets": 1, "label": label, "score": score})
+            else:
+                match["sig"] = match["sig"] | sig  # widen so later variants still catch
+                match["sets"] += 1
+                if score < match["score"]:
+                    match["label"] = label
+                    match["score"] = score
+
+        when = ws.finished_at or ws.date
+        date_label = when.strftime("%a %m-%d") if when else None
+        return {
+            "status": "fallback" if used_fallback else "ok",
+            "template_key": ws.template_key,
+            "requested_key": key,
+            "date_label": date_label,
+            "exercises": [{"label": g["label"], "sets": g["sets"]} for g in groups],
+        }
+    finally:
+        session.close()
