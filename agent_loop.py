@@ -355,6 +355,28 @@ def build_loop_context(user, session) -> str:
                      "exercises for each day. When they ask for a card / start a session, tell them it's "
                      "starting defaults and offer to save what they actually run (save_routine with "
                      "routine_text). Don't pass a default day off as their real routine.")
+    # 4a-i. Even with NO saved routine, their PAST sessions and every set ARE logged and
+    # can be reconstructed — so the coach never confabulates "I don't have your old card's
+    # exercises" (live incident user 31: 8 completed push sessions on record, coach said
+    # the data was gone). Cheap DISTINCT of the day keys they've actually finished; fail-open.
+    if config.START_WORKOUT_TOOL_ENABLED:
+        try:
+            from workouts.session_ops import completed_template_keys
+            from workouts.templates import day_label as _day_label
+            _done_keys = completed_template_keys(user.id)
+        except Exception:  # noqa: BLE001 — a context note must never break the turn
+            _done_keys = []
+        if _done_keys:
+            _labels = ", ".join(_day_label(k) for k in _done_keys[:8])
+            parts.append(
+                "## PRIOR SESSIONS (their real logged workouts — reconstructable)\n"
+                f"they have completed sessions logged for: {_labels}. Every set is on record. "
+                "If they ask what they did on a past day, or you need their REAL exercises for a "
+                "day with no saved routine, call reconstruct_routine_from_history (template_key = "
+                "the day) — it reads the actual movements back. NEVER say you don't have their "
+                "previous workout's exercises; you do. After showing them, offer to save it "
+                "(save_routine)."
+            )
     # What they've told us they lift — the first card's numbers come from this. When
     # nothing is on file the card is estimated from their stats; a stated weight in
     # conversation ("i bench 135") belongs in set_lift_anchors, not remember.
@@ -884,8 +906,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL
         tools.extend([GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL])
     if config.START_WORKOUT_TOOL_ENABLED:
-        from agent_tools import START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL
-        tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL])
+        from agent_tools import (START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL,
+                                  RECONSTRUCT_ROUTINE_TOOL)
+        tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL,
+                      RECONSTRUCT_ROUTINE_TOOL])
         if config.RESET_SESSION_TOOL_ENABLED:
             from agent_tools import RESET_WORKOUT_SESSION_TOOL
             tools.append(RESET_WORKOUT_SESSION_TOOL)

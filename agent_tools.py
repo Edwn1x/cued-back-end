@@ -1276,6 +1276,27 @@ SAVE_ROUTINE_TOOL = {
         "required": []},
 }
 
+RECONSTRUCT_ROUTINE_TOOL = {
+    "name": "reconstruct_routine_from_history",
+    "description": (
+        "Rebuild what they ACTUALLY did on a day from their LOGGED sets — use it the "
+        "moment they ask about a previous workout (\"look at my last push day\", \"what "
+        "were the exercises on my old card\", \"pull up what i did legs\") or when you need "
+        "their real movements and no custom routine is on file for that day. Their sessions "
+        "and every set are logged; this reads them back. Pass template_key ONLY when they "
+        "named a day (push/pull/legs/upper/lower/full_body or a body-part day like "
+        "chest_biceps); omit it to use their most recent completed session. Returns their real "
+        "exercises with set counts (\"last push (Fri 09-25): incline db press 3 sets, overhead "
+        "press 3 …\"). Read-only: it does NOT save anything. Show the list back to them, then "
+        "offer to save it as their routine with save_routine (confirm first — don't auto-save). "
+        "NEVER tell them you can't see a previous workout's exercises — call this instead."
+    ),
+    "input_schema": {"type": "object", "properties": {
+        "template_key": {"type": "string",
+                         "description": "only if they named the day (push/pull/legs/… or a day phrase); omit for their most recent session"}},
+        "required": []},
+}
+
 CANCEL_REMINDER_TOOL = {
     "name": "cancel_reminder",
     "description": "Cancel a reminder they no longer want (ids are in the REMINDERS block of your context).",
@@ -1327,6 +1348,40 @@ def handle_save_routine(user_id: int, tool_input: dict, *, message_id=None) -> s
     return (f"ok: routine saved to their cards — {days}; split={r['split']}.{reflect} Weights are "
             f"placeholders until they log real sets — tell them that. Don't claim it's right without "
             f"reflecting the real list back.")
+
+
+def handle_reconstruct_routine_from_history(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.session_ops import reconstruct_from_history
+    from workouts.templates import day_label
+    try:
+        r = reconstruct_from_history(user_id, (tool_input.get("template_key") or "").strip() or None)
+    except Exception as e:  # noqa: BLE001 — a read failure must not crash the turn
+        logger.error("RECONSTRUCT_ROUTINE_FAILED user=%s err=%s", user_id, e, exc_info=True)
+        return f"error: couldn't read their history ({e})"
+    if r["status"] == "none":
+        req = r.get("requested_key")
+        if req:
+            return (f"no completed {day_label(req)} sessions on record yet — they genuinely have "
+                    f"nothing logged for that day. Ask them what they run on {day_label(req)} "
+                    f"(don't guess), then offer to save it with save_routine.")
+        return ("no completed workout sessions on record yet — nothing logged to reconstruct. "
+                "Ask them what they train, then offer to save it with save_routine.")
+    exs = r.get("exercises") or []
+    if not exs:
+        return ("that session has no legible logged sets to reconstruct — ask them what they ran "
+                "that day and offer to save it with save_routine.")
+    listing = ", ".join(f"{e['label']} {e['sets']} set" + ("s" if e["sets"] != 1 else "") for e in exs)
+    day = day_label(r["template_key"])
+    when = r.get("date_label")
+    head = f"their last {day}" + (f" ({when})" if when else "")
+    lead = ""
+    if r["status"] == "fallback":
+        lead = (f"they have NO completed {day_label(r['requested_key'])} session on record, so this is "
+                f"their most recent done session instead — it was {day} day. ")
+    return (f"{lead}{head}: {listing}. These are their REAL logged exercises (pulled from their set "
+            f"history) — show this list back to them so they can confirm or correct it, then offer to "
+            f"save it as their {day} routine with save_routine (confirm first, don't auto-save). "
+            f"Do NOT tell them you can't see their previous workout — you just did.")
 
 
 def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
@@ -2203,7 +2258,7 @@ _NARRATION_RE = re.compile(
     r"\blet me address (it|that|this)\b|"   # live 2026-09-24: "…that's the tap. Let me address it." then the real answer
     r"\bshould (react|explain)\b|\breact/explain\b|\bexplain that (tapping|the card|they)\b|"   # live 2026-09-24: "Should react/explain. … Explain that tapping offers…"
     r"\b(set_reminder|cancel_reminder|log_meal|manage_log|log_workout|log_event|react_to_message|"
-    r"reply_in_thread|send_text|save_routine|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup|"
+    r"reply_in_thread|send_text|save_routine|reconstruct_routine_from_history|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup|"
     r"set_card_delivery)\b)",
     re.IGNORECASE)
 
@@ -2934,6 +2989,7 @@ _HANDLERS = {
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,
     "save_routine": handle_save_routine,
+    "reconstruct_routine_from_history": handle_reconstruct_routine_from_history,
     "set_lift_anchors": handle_set_lift_anchors,
     "cancel_reminder": handle_cancel_reminder,
     "get_dining_menu": handle_get_dining_menu,
