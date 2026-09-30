@@ -217,6 +217,111 @@ def test_free_window_signal_inert_without_events(db, cal_on):
     assert _free_window_signal(user, s, now=NOW) is None
 
 
+# ─── Bug A: recent-training guard on the free-window signal ────────────────────
+
+def _add_done_session(s, user_id, template_key, finished_aware):
+    from models import WorkoutSession
+    s.add(WorkoutSession(user_id=user_id, template_key=template_key, status="done",
+                         date=_naive(finished_aware), finished_at=_naive(finished_aware)))
+    s.commit()
+
+
+def test_free_window_no_training_suggestion_right_after_legs(db, cal_on):
+    """Live 2026-09-30: morning briefing suggested 'hit legs' the morning after a full legs
+    session ~14h earlier. With a completed legs session 2h ago the SCHEDULE block must NOT
+    invite training — it carries the do-not-suggest-training guidance and never says 'hit legs'."""
+    from heartbeat import _free_window_signal
+    s, user = _session_user(db)
+    _add_done_session(s, user.id, "legs", NOW - timedelta(hours=2))
+    _mk_timed(user.id, "lecture", _local(10), _local(11), ext="lec")
+    _mk_timed(user.id, "seminar", _local(14), _local(15), ext="sem")
+    blk = _free_window_signal(user, s, now=NOW)
+    assert blk and "SCHEDULE" in blk
+    assert "do NOT suggest training" in blk
+    assert "already trained (legs)" in blk
+    assert "hit legs" not in blk.lower()
+    assert "wanna train" not in blk.lower()
+    # the windows themselves are still surfaced (useful for study/rest/eating)
+    assert "Open windows" in blk
+
+
+def test_free_window_allows_training_when_last_workout_is_old(db, cal_on):
+    """With the last completed workout well beyond CALENDAR_RECENT_TRAIN_HOURS the
+    opportunistic training suggestion is allowed again (generic 'wanna train then?')."""
+    from heartbeat import _free_window_signal
+    import config
+    s, user = _session_user(db)
+    _add_done_session(s, user.id, "legs",
+                      NOW - timedelta(hours=config.CALENDAR_RECENT_TRAIN_HOURS + 10))
+    _mk_timed(user.id, "lecture", _local(10), _local(11), ext="lec")
+    _mk_timed(user.id, "seminar", _local(14), _local(15), ext="sem")
+    blk = _free_window_signal(user, s, now=NOW)
+    assert blk and "SCHEDULE" in blk
+    assert "do NOT suggest training" not in blk
+    assert "wanna train then?" in blk
+    # generic training example only — never parrots a specific day
+    assert "hit legs" not in blk.lower()
+
+
+def test_free_window_recent_train_hours_default():
+    import config
+    assert config.CALENDAR_RECENT_TRAIN_HOURS == 20
+
+
+# ─── Bug B: _is_deadline parenthetical strip + class-type guard ────────────────
+
+class _Ev:
+    def __init__(self, title):
+        self.title = title
+
+
+def test_is_deadline_discussion_with_quiz_note_is_not_a_deadline():
+    """Live 2026-09-30: 'cs70 Discussion (friday = quiz)' (a recurring discussion whose title
+    carries a human note) was promoted to a deadline + exam TODAY. It must NOT be a deadline."""
+    from schedule import _is_deadline
+    is_dl, is_exam = _is_deadline(_Ev("cs70 Discussion (friday = quiz)"))
+    assert is_dl is False and is_exam is False
+
+
+def test_is_deadline_real_quiz_title_is_a_deadline_and_exam():
+    from schedule import _is_deadline
+    is_dl, is_exam = _is_deadline(_Ev("cs70 quiz"))
+    assert is_dl is True and is_exam is True
+
+
+def test_is_deadline_hw_due_still_a_deadline():
+    from schedule import _is_deadline
+    is_dl, _ = _is_deadline(_Ev("CS 70 HW Due"))
+    assert is_dl is True
+
+
+def test_is_deadline_due_prefix_on_discussion_title_still_counts():
+    """The authoritative bcourses/canvas 'due: ' prefix is an explicit due date — it counts
+    even for a class-typed title."""
+    from schedule import _is_deadline
+    is_dl, _ = _is_deadline(_Ev("due: cs70 Discussion worksheet"))
+    assert is_dl is True
+
+
+def test_is_deadline_class_type_with_incidental_paren_keyword_not_a_deadline():
+    from schedule import _is_deadline
+    assert _is_deadline(_Ev("CS61C Lecture (quiz review)"))[0] is False
+    assert _is_deadline(_Ev("Math54 Section (test prep)"))[0] is False
+
+
+def test_is_deadline_propagates_to_deadline_items(db):
+    """The one fix in _is_deadline flows through deadline_items: the discussion-with-note is
+    dropped, the real HW-due assignment survives."""
+    from schedule import deadline_items
+    user = make_user(db)
+    _mk_deadline(user.id, "cs70 Discussion (friday = quiz)", NOW + timedelta(days=1),
+                 source="gcal", ext="disc")
+    _mk_deadline(user.id, "CS 70 HW Due", NOW + timedelta(days=1), source="gcal", ext="hw")
+    titles = [d.title for d in deadline_items(user.id, days=14, now=NOW)]
+    assert "CS 70 HW Due" in titles
+    assert "cs70 Discussion (friday = quiz)" not in titles
+
+
 # ─── signal: high-load softens / holds a demanding training nudge ─────────────
 
 def test_high_load_signal_softens_tone(db, cal_on):

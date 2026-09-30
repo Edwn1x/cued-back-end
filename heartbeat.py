@@ -989,11 +989,49 @@ def _deadline_radar_signal(user, session, *, now=None) -> str | None:
             "in the specific item, not a to-do dump." + offer)
 
 
+def _recent_completed_workout(user, session, *, now=None):
+    """(hours_ago, template_key) for the user's MOST RECENT completed workout, or None if
+    they have none / it's stale beyond the caller's interest. Mirrors _training_gap_signal's
+    lookup: the latest done WorkoutSession (by finished_at/date) and the latest completed
+    legacy Workout, taking the max timestamp. Fail-open: any error → None (never crashes a
+    tick — the free-window signal just behaves as before)."""
+    try:
+        now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+        last_w = (active(session, Workout, user_id=user.id)
+                  .filter(Workout.completed.is_(True)).order_by(Workout.date.desc()).first())
+        last_s = (session.query(WorkoutSession)
+                  .filter(WorkoutSession.user_id == user.id, WorkoutSession.status == "done")
+                  .order_by(WorkoutSession.finished_at.desc().nullslast(),
+                            WorkoutSession.date.desc()).first())
+        s_stamp = (last_s.finished_at or last_s.date) if last_s else None
+        w_stamp = last_w.date if last_w else None
+        stamps = [d for d in (s_stamp, w_stamp) if d]
+        if not stamps:
+            return None
+        since = max(stamps)
+        # Prefer the session's template_key when the session is the (or tied) most recent.
+        key = None
+        if last_s and s_stamp == since:
+            key = last_s.template_key
+        if not key and last_w:
+            key = last_w.workout_type
+        hours_ago = (now_utc - since).total_seconds() / 3600
+        return hours_ago, (key or "a session").replace("_", " ")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RECENT_WORKOUT_LOOKUP_FAILED user=%s err=%s", user.id, e)
+        return None
+
+
 def _free_window_signal(user, session, *, now=None) -> str | None:
     """Feature 2 (gym windows) + Feature 5 (meal timing). Surfaces today's/tomorrow's
     open windows as candidate gym/study time, and flags a long back-to-back run of
     blocks that leaves no eating gap. Inert (None) when the user has no timed calendar
-    events — an empty calendar is not a schedule to plan around."""
+    events — an empty calendar is not a schedule to plan around.
+
+    Recent-training guard (live 2026-09-30): if the user completed a workout within
+    config.CALENDAR_RECENT_TRAIN_HOURS, the open windows are surfaced as study/rest/eating
+    time only and the block carries an explicit do-NOT-suggest-training line — a friend
+    doesn't push another same-day session the morning after they trained."""
     if not (config.CALENDAR_ASSISTANT_ENABLED and
             (config.CALENDAR_SCHEDULE_TRAINING_ENABLED or config.CALENDAR_MEAL_TIMING_ENABLED)):
         return None
@@ -1001,13 +1039,19 @@ def _free_window_signal(user, session, *, now=None) -> str | None:
     if not timed_schedule(user.id, session, now=now):
         return None
     now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
+
+    recent = _recent_completed_workout(user, session, now=now)
+    trained_recently = bool(recent and 0 <= recent[0] <= config.CALENDAR_RECENT_TRAIN_HOURS)
+
     parts = []
     if config.CALENDAR_SCHEDULE_TRAINING_ENABLED:
         blocks = [b for b in free_blocks(user.id, session, now=now) if b.minutes >= 45][:3]
         if blocks:
             wins = "; ".join(f"{_cal_local_clock(b.start, user)}–{_cal_local_clock(b.end, user)} "
                              f"(~{b.minutes // 60}h{b.minutes % 60:02d}m)" for b in blocks)
-            parts.append(f"Open windows (candidate gym/study time): {wins}.")
+            label = ("Open windows (candidate study/rest/eating time)"
+                     if trained_recently else "Open windows (candidate gym/study time)")
+            parts.append(f"{label}: {wins}.")
     if config.CALENDAR_MEAL_TIMING_ENABLED:
         thresh = timedelta(hours=config.CALENDAR_MEAL_TIMING_BLOCK_HOURS)
         long_runs = [(s, e) for (s, e) in busy_runs(user.id, session, now=now)
@@ -1018,11 +1062,21 @@ def _free_window_signal(user, session, *, now=None) -> str | None:
                          "leave no real eating gap — worth a heads-up to eat before it.")
     if not parts:
         return None
-    return ("## SCHEDULE (today/tomorrow — code-computed, read-only)\n"
-            + " ".join(parts) + "\n"
+
+    if trained_recently:
+        guidance = (
+            f"They already trained ({recent[1]}) {recent[0]:.0f}h ago — do NOT suggest training "
+            "again today; frame any gap as study/rest/eating time (e.g. 'open stretch 2–4, good "
+            "block to knock out that pset' or a heads-up to eat before a long run). Use these to "
+            "make studying/eating fit their real day. One short line, only if genuinely useful; "
+            "never a schedule readout.")
+    else:
+        guidance = (
             "Use these to make training/eating fit their real day — suggest a specific window a "
-            "friend would ('good gap 2–4, wanna hit legs then?'), or a heads-up to eat before a long "
+            "friend would ('good gap 2–4, wanna train then?'), or a heads-up to eat before a long "
             "stretch. One short line, only if it's genuinely useful; never a schedule readout.")
+    return ("## SCHEDULE (today/tomorrow — code-computed, read-only)\n"
+            + " ".join(parts) + "\n" + guidance)
 
 
 def _high_load_signal(user, session, *, now=None) -> str | None:
