@@ -122,6 +122,93 @@ def test_edit_marks_actual_values_and_edited_flag(client, planned):
     assert r.status_code == 400
 
 
+def test_edit_only_no_done_key_preserves_undone_and_keeps_numbers(client, planned):
+    """A numbers-only edit (no `done`) pre-enters the set's weight/reps WITHOUT
+    completing it — the set stays undone, carries the numbers (not nulled), and a
+    planned session does NOT flip to active."""
+    from models import get_session, SetLog, WorkoutSession
+    user, ws, tok = planned
+    state = client.get("/card/api/session", headers=_auth(tok)).get_json()
+    b0 = _bench_ids(state)[0]
+    d = client.post(f"/card/api/set/{b0}", headers=_auth(tok),
+                    data=json.dumps({"actual_weight": "150", "actual_reps": "6"})).get_json()
+    st = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"][0]
+    assert st["done"] is False and st["actual_weight"] == 150 and st["actual_reps"] == 6
+    assert d["done_count"] == 0
+    s = get_session()
+    try:
+        row = s.get(SetLog, b0)
+        assert row.done is False and row.actual_weight == 150 and row.actual_reps == 6
+        assert row.done_at is None and row.source is None
+        assert s.get(WorkoutSession, ws.id).status == "planned"   # numbers-only edit doesn't activate
+    finally:
+        s.close()
+
+
+def test_edit_only_no_done_key_preserves_done_and_updates_numbers(client, planned):
+    """Editing the numbers on an already-done set (no `done`) keeps it done, updates
+    the numbers, and preserves done_at/source — it does not un-complete or clear."""
+    from models import get_session, SetLog
+    user, ws, tok = planned
+    state = client.get("/card/api/session", headers=_auth(tok)).get_json()
+    b1 = _bench_ids(state)[1]
+    client.post(f"/card/api/set/{b1}", headers=_auth(tok), data=json.dumps({"done": True}))
+    s = get_session()
+    try:
+        done_at0 = s.get(SetLog, b1).done_at
+        assert done_at0 is not None
+    finally:
+        s.close()
+    d = client.post(f"/card/api/set/{b1}", headers=_auth(tok),
+                    data=json.dumps({"actual_weight": "145", "actual_reps": "3"})).get_json()
+    st = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"][1]
+    assert st["done"] is True and st["actual_weight"] == 145 and st["actual_reps"] == 3
+    s = get_session()
+    try:
+        row = s.get(SetLog, b1)
+        assert row.done and row.actual_weight == 145 and row.actual_reps == 3
+        assert row.done_at == done_at0 and row.source == "card"   # done_at preserved, not re-stamped/cleared
+    finally:
+        s.close()
+
+
+def test_explicit_done_true_activates_but_numbers_only_does_not(client, planned):
+    """Explicit done:true completes and activates a planned session; a numbers-only
+    edit beforehand leaves the session planned."""
+    from models import get_session, WorkoutSession
+    user, ws, tok = planned
+    ids = _bench_ids(client.get("/card/api/session", headers=_auth(tok)).get_json())
+    client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok),
+                data=json.dumps({"actual_weight": 135, "actual_reps": 5}))
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, ws.id).status == "planned"
+    finally:
+        s.close()
+    d = client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": True})).get_json()
+    assert next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"][0]["done"] is True
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, ws.id).status == "active"
+    finally:
+        s.close()
+    # explicit done:false still clears the actuals
+    d = client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": False})).get_json()
+    st = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"][0]
+    assert st["done"] is False and st["actual_weight"] is None and st["actual_reps"] is None
+
+
+def test_remove_exercise_deletes_done_sets_too(client, planned):
+    """Removing an exercise deletes ALL its sets, including a completed one."""
+    user, ws, tok = planned
+    ids = _bench_ids(client.get("/card/api/session", headers=_auth(tok)).get_json())
+    n = len(ids)
+    client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": True}))  # one done, rest undone
+    d = client.delete("/card/api/exercise/bench_press", headers=_auth(tok)).get_json()
+    assert d["ok"] and d["removed"] == n
+    assert not any(e["slug"] == "bench_press" for e in d["exercises"])
+
+
 def test_pr_badge_on_190x4_over_last_times_185x3(client, db):
     from workouts.plan import build_session
     from card_page import card_token
@@ -267,10 +354,10 @@ def test_add_and_remove_exercises(client, planned):
     assert db_bench["label"] == "dumbbell bench" and len(db_bench["sets"]) == 3
     assert client.post("/card/api/exercise", headers=_auth(tok), data=json.dumps({"name": "dumbbell bench", "weight": 60, "reps": 10})).status_code == 409
     client.post(f"/card/api/set/{ohp['sets'][0]['id']}", headers=_auth(tok), data=json.dumps({"done": True}))
+    # removing an exercise deletes ALL its sets, done ones too — the whole lift is gone
     d = client.delete("/card/api/exercise/overhead_press", headers=_auth(tok)).get_json()
-    assert d["removed"] == 2
-    ohp = next(e for e in d["exercises"] if e["slug"] == "overhead_press")
-    assert len(ohp["sets"]) == 1 and ohp["sets"][0]["done"]
+    assert d["removed"] == 3
+    assert not any(e["slug"] == "overhead_press" for e in d["exercises"])
     assert client.delete("/card/api/exercise/nothing_here", headers=_auth(tok)).status_code == 404
 
 
