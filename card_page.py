@@ -129,7 +129,10 @@ def build_state(session, ws: WorkoutSession) -> dict:
     best_so_far: dict = {}
     volume, done_count = 0, 0
     for s in sets:
-        edited = bool(s.done and s.actual_weight is not None and s.actual_reps is not None
+        # Edited whenever the actuals differ from planned — regardless of done state, so
+        # a number pre-entered on an UNDONE set shows through (edited dot) instead of the
+        # row still reading the planned number and looking like the edit didn't take.
+        edited = bool(s.actual_weight is not None and s.actual_reps is not None
                       and (float(s.actual_weight) != float(s.planned_weight or 0) or int(s.actual_reps) != int(s.planned_reps or 0)))
         pr = None
         if s.done and s.actual_reps:
@@ -222,22 +225,25 @@ def apply_set_update(session, ws: WorkoutSession, set_row: SetLog, *, done: bool
         set_row.actual_weight = float(actual_weight)
     if actual_reps is not None:
         set_row.actual_reps = int(actual_reps)
-    if done is None:
-        done = True
-    set_row.done = bool(done)
-    if set_row.done:
-        if set_row.actual_weight is None:
-            set_row.actual_weight = set_row.planned_weight
-        if set_row.actual_reps is None:
-            set_row.actual_reps = set_row.planned_reps
-        set_row.done_at, set_row.source = now, source
-        if ws.status in ("planned", None):
-            ws.status = "active"
-        if not ws.started_at:
-            ws.started_at = now
-    else:
-        set_row.done_at, set_row.source = None, None
-        set_row.actual_weight, set_row.actual_reps = None, None
+    # done omitted (edit-only) = pre-enter/adjust numbers WITHOUT completing: preserve
+    # the current done state, don't touch done_at/source, don't null the actuals. A set
+    # only completes (or un-completes) when done is explicitly true (or false). This is
+    # what lets the card edit a weight without auto-checking the set.
+    if done is not None:
+        set_row.done = bool(done)
+        if set_row.done:
+            if set_row.actual_weight is None:
+                set_row.actual_weight = set_row.planned_weight
+            if set_row.actual_reps is None:
+                set_row.actual_reps = set_row.planned_reps
+            set_row.done_at, set_row.source = now, source
+            if ws.status in ("planned", None):
+                ws.status = "active"
+            if not ws.started_at:
+                ws.started_at = now
+        else:
+            set_row.done_at, set_row.source = None, None
+            set_row.actual_weight, set_row.actual_reps = None, None
     session.commit()
     if set_row.done and set_row.actual_weight and set_row.actual_reps:
         w, r = float(set_row.actual_weight), int(set_row.actual_reps)
@@ -474,7 +480,9 @@ def card_api_swap_exercise(slug):
 
 @card_bp.route("/card/api/exercise/<slug>", methods=["DELETE"])
 def card_api_remove_exercise(slug):
-    """Remove an exercise's UNDONE sets from this session (done sets stay — they happened)."""
+    """Remove an exercise from this session entirely — ALL its sets, done ones too.
+    (Swap keeps done sets; remove means the user wants the whole lift gone. The
+    frontend's two-tap 'remove → sure?' confirm is the guard.)"""
     ids = _auth()
     if not ids:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -488,10 +496,9 @@ def card_api_remove_exercise(slug):
         rows = session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).all()
         if not rows:
             return jsonify({"ok": False, "error": "not found"}), 404
-        removed = 0
+        removed = len(rows)
         for r in rows:
-            if not r.done:
-                session.delete(r); removed += 1
+            session.delete(r)
         session.commit()
         logger.info("CARD_REMOVE_EXERCISE user=%s session=%s exercise=%s removed=%s", ws.user_id, ws.id, slug, removed)
         return jsonify({"ok": True, "removed": removed, **build_state(session, ws)})
