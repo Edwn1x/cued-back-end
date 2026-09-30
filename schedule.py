@@ -51,6 +51,28 @@ _DEADLINE_RE = re.compile(
 # and softens the tone even when it's the ONLY deadline (no cluster needed).
 _EXAM_RE = re.compile(r"\b(exam|midterm|finals?|quiz|\btest\b)\b", re.IGNORECASE)
 
+# A parenthetical annotation is a human note, not the event's own name — a keyword that
+# appears ONLY inside "(...)" must not promote the event to a deadline. Live 2026-09-30:
+# "cs70 Discussion (friday = quiz)" (a recurring discussion whose title carries a note
+# that the quiz is on Friday) matched the "quiz" floor and was surfaced as a deadline +
+# exam TODAY. Strip parentheticals before applying the keyword floor.
+_PAREN_RE = re.compile(r"\s*[\(\[\{][^\(\)\[\]\{\}]*[\)\]\}]")
+# Recurring class/meeting TYPES — a bare title of this kind is a standing session, not an
+# assignment due date, so the keyword floor alone (e.g. an incidental "quiz"/"test" in the
+# title) must NOT promote it to a deadline/exam. The authoritative bcourses/canvas "due: "
+# prefix still counts as a deadline even for such titles (it's an explicit due date).
+_CLASS_TYPE_RE = re.compile(
+    r"\b(discussion|lecture|section|lab|seminar|office\s+hours|class|recitation)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_annotations(text: str) -> str:
+    """Remove parenthetical/bracketed annotation spans so the keyword floor only sees the
+    event's PRIMARY title. '(friday = quiz)' → '' ; 'cs70 Discussion (friday = quiz)' →
+    'cs70 Discussion'."""
+    return _PAREN_RE.sub("", text).strip()
+
 
 # ─── dataclasses ──────────────────────────────────────────────────────────────
 
@@ -280,9 +302,18 @@ def _is_deadline(ev) -> tuple[bool, bool]:
     text = (getattr(ev, "title", None) or getattr(ev, "raw_text", None) or "").strip()
     if not text:
         return False, False
-    low = text.lower()
-    is_dl = low.startswith("due:") or bool(_DEADLINE_RE.search(text))
-    return is_dl, bool(_EXAM_RE.search(text))
+    # The authoritative bcourses/canvas "due: " prefix is an explicit assignment due date —
+    # it counts even for a class-typed title, and even if the keyword sits in a parenthetical.
+    if text.lower().startswith("due:"):
+        return True, bool(_EXAM_RE.search(text))
+    # Otherwise apply the keyword floor to the PRIMARY title only: strip parenthetical notes
+    # (a "(friday = quiz)" annotation must not fire) and refuse to promote a recurring
+    # class/meeting type on the keyword floor alone.
+    primary = _strip_annotations(text)
+    if not primary or _CLASS_TYPE_RE.search(primary):
+        return False, False
+    is_dl = bool(_DEADLINE_RE.search(primary))
+    return is_dl, (is_dl and bool(_EXAM_RE.search(primary)))
 
 
 def deadline_items(user_id: int, session=None, *, days: int = None, now=None) -> list[Deadline]:

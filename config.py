@@ -708,6 +708,11 @@ CALENDAR_HIGH_LOAD_CLUSTER = int(os.getenv("CALENDAR_HIGH_LOAD_CLUSTER", "3"))  
 # Eating-gap threshold for meal-timing: a run of back-to-back blocks longer than this
 # with no free gap ≥ the free-block minimum means "eat before it".
 CALENDAR_MEAL_TIMING_BLOCK_HOURS = float(os.getenv("CALENDAR_MEAL_TIMING_BLOCK_HOURS", "3.5"))
+# Recent-training guard for the free-window signal: if the user completed a workout within
+# this many hours, the open windows are surfaced as study/rest/eating time only — the coach
+# must NOT invite another training session the same day (live 2026-09-30: morning briefing
+# suggested "hit legs" the morning after a full legs session ~14h earlier).
+CALENDAR_RECENT_TRAIN_HOURS = int(os.getenv("CALENDAR_RECENT_TRAIN_HOURS", "20"))
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent
