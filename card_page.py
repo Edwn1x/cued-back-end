@@ -129,7 +129,10 @@ def build_state(session, ws: WorkoutSession) -> dict:
     best_so_far: dict = {}
     volume, done_count = 0, 0
     for s in sets:
-        edited = bool(s.done and s.actual_weight is not None and s.actual_reps is not None
+        # Edited whenever the actuals differ from planned — regardless of done state, so
+        # a number pre-entered on an UNDONE set shows through (edited dot) instead of the
+        # row still reading the planned number and looking like the edit didn't take.
+        edited = bool(s.actual_weight is not None and s.actual_reps is not None
                       and (float(s.actual_weight) != float(s.planned_weight or 0) or int(s.actual_reps) != int(s.planned_reps or 0)))
         pr = None
         if s.done and s.actual_reps:

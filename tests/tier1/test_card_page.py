@@ -134,6 +134,9 @@ def test_edit_only_no_done_key_preserves_undone_and_keeps_numbers(client, planne
                     data=json.dumps({"actual_weight": "150", "actual_reps": "6"})).get_json()
     st = next(e for e in d["exercises"] if e["slug"] == "bench_press")["sets"][0]
     assert st["done"] is False and st["actual_weight"] == 150 and st["actual_reps"] == 6
+    # the entered numbers must show through on an UNDONE set: edited flag set even
+    # though the set isn't done (build_state no longer gates `edited` on done)
+    assert st["edited"] is True
     assert d["done_count"] == 0
     s = get_session()
     try:
