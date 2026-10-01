@@ -316,7 +316,8 @@ def _activate(client, monkeypatch, user_id):
     import app as appmod
     from onboarding_agent import send_onboarding_hook
     # start_onboarding is a real daemon thread; run its body inline for determinism
-    monkeypatch.setattr(appmod, "start_onboarding", lambda user: send_onboarding_hook(user.id))
+    monkeypatch.setattr(appmod, "start_onboarding",
+                        lambda user, reason="start_onboarding": send_onboarding_hook(user.id, reason=reason))
     return client.post(f"/admin/user/{user_id}/activate-waitlist")
 
 
@@ -331,6 +332,7 @@ def test_activation_after_opt_in_goes_blue_first_try(db, client, imessage_on, si
     assert u.waitlist_status is None and u.activated_at is not None and u.onboarding_step == 1
     rows = _outbound(db, u.id)
     assert [(m.channel, m.message_type, m.delivery_status) for m in rows] == [("imessage", "onboarding", "sent")]
+    assert rows[0].body.startswith("hey Nate, it's cued. ur spot's open. gonna get to know u a bit")
     assert sms_capture == [] and "redirect" not in rows[0].body, "no link needed — they already texted the line"
 
 

@@ -2,8 +2,8 @@
 Bounded user override of calorie/protein targets (founder, 2026-09-14): the user
 can set either target within ±15% of the COMPUTED value; the row records it as
 their pick (targets_source='user') with the computed pair beside it. Runs in code
-during the onboarding adjust turn (the extractor reads the number they asked for)
-and as the set_targets tool on the coach loop. Out-of-band asks are rejected with
+at onboarding completion (a target they stated during setup is bounded) and as the
+set_targets tool on the coach loop — the onboarding adjust turn is gone. Out-of-band asks are rejected with
 the nearest allowed values; the model never invents a number.
 """
 
@@ -102,10 +102,6 @@ def _is_field_extract(kwargs):
     return "Extract any fitness coaching profile data" in str(kwargs["messages"][0]["content"])
 
 
-def _is_target_extract(kwargs):
-    return "reacting to proposed daily targets" in str(kwargs["messages"][0]["content"])
-
-
 def _step2_user(db):
     from models import get_session, Message
     user = make_user(db, onboarding_step=2, **FOUNDER)
@@ -117,76 +113,6 @@ def _step2_user(db):
     finally:
         s.close()
     return user
-
-
-def test_pushback_with_numbers_applies_the_override_in_code(db, anthropic_stub, sms_capture):
-    import onboarding_agent
-    user = _step2_user(db)
-    seen = {}
-
-    def _handler(kw):
-        if _is_field_extract(kw):
-            return "{}"
-        if _is_target_extract(kw):
-            return '{"calories": 2200, "protein": 150}'
-        seen["instruction"] = kw["messages"][0]["content"]
-        return "alr 2200 and 150 it is, your pick — i'd have gone 2450. lock it in?"
-    anthropic_stub.reply_with(_handler)
-
-    done = onboarding_agent.handle_onboarding_reply(
-        user, "Hmm, 2450 lwk sounds too high, how about 2200 and we up the protein to like 150g?")
-    assert done is False
-    assert _targets(db, user.id) == (2200, 150, 2450, 139, "user")
-    ins = seen["instruction"]
-    assert "TARGET REQUEST HANDLED IN CODE" in ins
-    assert "calories: they asked for 2200 → ACCEPTED" in ins and "protein: they asked for 150 → ACCEPTED" in ins
-    assert "You picked 2200 cal and 150g protein" in ins      # the summary now shows their pick
-    assert "Do NOT repeat the whole summary" in ins
-    assert sms_capture[-1][1].startswith("alr 2200 and 150")
-
-
-def test_pushback_out_of_band_tells_the_model_the_nearest_allowed(db, anthropic_stub, sms_capture):
-    import onboarding_agent
-    user = _step2_user(db)
-    seen = {}
-
-    def _handler(kw):
-        if _is_field_extract(kw):
-            return "{}"
-        if _is_target_extract(kw):
-            return '{"calories": 1800, "protein": null}'
-        seen["instruction"] = kw["messages"][0]["content"]
-        return "1800's too low for you — lowest i can do is 2080. want that?"
-    anthropic_stub.reply_with(_handler)
-
-    onboarding_agent.handle_onboarding_reply(user, "can we do like 1800")
-    assert _targets(db, user.id)[4] is None and _targets(db, user.id)[0] is None
-    ins = seen["instruction"]
-    assert "calories: they asked for 1800 → NOT allowed (band is 2080–2820" in ins
-    assert "do not state any other number" in ins
-
-
-def test_pushback_without_a_number_skips_the_extractor_and_invites_one(db, anthropic_stub, sms_capture):
-    import onboarding_agent
-    user = _step2_user(db)
-    calls = {"target_extract": 0}
-    seen = {}
-
-    def _handler(kw):
-        if _is_field_extract(kw):
-            return "{}"
-        if _is_target_extract(kw):
-            calls["target_extract"] += 1
-            return "{}"
-        seen["instruction"] = kw["messages"][0]["content"]
-        return "fair — what feels doable?"
-    anthropic_stub.reply_with(_handler)
-
-    onboarding_agent.handle_onboarding_reply(user, "Idk, I just don't think I could eat that much food ngl")
-    assert calls["target_extract"] == 0, "no digit in the message → no extractor call"
-    assert "TARGET REQUEST HANDLED" not in seen["instruction"]
-    assert "invite one" in seen["instruction"]
-    assert _targets(db, user.id)[4] is None
 
 
 def test_completion_keeps_their_pick_and_records_the_computed_pair(db, anthropic_stub, sms_capture):

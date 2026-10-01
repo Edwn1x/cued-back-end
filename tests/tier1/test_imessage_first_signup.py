@@ -94,7 +94,8 @@ def test_signup_without_a_link_sends_the_hook_immediately(db, client, photon_on,
         raise photon.PhotonError("402 user cap")
     monkeypatch.setattr(photon, "add_user", _cap)
     # start_onboarding is a real daemon thread; run its body inline for determinism
-    monkeypatch.setattr(appmod, "start_onboarding", lambda user: send_onboarding_hook(user.id))
+    monkeypatch.setattr(appmod, "start_onboarding",
+                        lambda user, reason="start_onboarding": send_onboarding_hook(user.id, reason=reason))
     data = _signup(client, "5105550202")
     assert data["hook_deferred"] is False and data["imessage_link"] is None
     u = db.query(User).filter(User.phone == "+15105550202").one()

@@ -29,7 +29,8 @@ pytestmark = pytest.mark.tier2
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                    "rewrite", "evals", "berkeley-friend-first-replies.md")
 
-HOOK = "hey I'm your cued coach, how's your day going?"
+from onboarding_agent import HOOK_TEMPLATES
+HOOK = HOOK_TEMPLATES[0]["text"].format(name="Nau")
 
 # (label, inbound, keywords any-of which should appear in the reply, expect_search)
 CASES = [
@@ -189,6 +190,38 @@ def test_asking_for_the_list_gets_the_big_ask_in_the_friend_voice(db, driver, mo
     low = reply.lower()
     asks_intake = any(k in low for k in ("height", "weight", "sleep", "food", "gym", "train", "eat", "day", "what do u", "who i'm"))
     print(f"[big ask] asks-intake (advisory): {asks_intake} · {reply!r}")
+
+
+def test_asking_for_a_card_before_the_basics_gets_an_honest_ask(db, driver, monkeypatch, caplog):
+    """User 47 (2026-09-30): 'can I get a workout card?' ×5 → 'the card should pop up',
+    'might be glitching on my end'. Now: the friend says it's coming once the basics are
+    in and asks for exactly those (mode=card_ask) — never a fake card, never a text workout."""
+    import config, onboarding_agent
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "WEB_SEARCH_TOOL_ENABLED", True)
+    monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
+    monkeypatch.setattr(onboarding_agent, "_now_local",
+                        lambda tz: datetime(2026, 9, 30, 13, 20, tzinfo=ZoneInfo("America/Los_Angeles")))
+    user = _fresh_signup(db)
+    inbound = "can I get a workout card? im at rsf rn"
+    with caplog.at_level(logging.INFO):
+        replies = driver.send(user, inbound)
+    reply = "\n".join(replies)
+    modes = [r.getMessage() for r in caplog.records if "ONBOARDING_REPLY mode=" in r.getMessage()]
+    print(f"\n[card ask] user: {inbound}\n[card ask] coach: {reply}\n[card ask] {modes}")
+
+    with open(OUT, "a", encoding="utf-8") as f:
+        f.write("\n---\n\n## they ask for the card before the basics are in\n\n")
+        f.write(f"**user:** {inbound}\n\n**coach:** {reply}\n\n")
+        f.write("hand review: _pending_\n")
+
+    assert 1 <= len(replies) <= 3, replies
+    assert any("mode=card_ask" in m for m in modes), modes
+    low = reply.lower()
+    for banned in ("glitch", "pop up", "loading", "should show", "sent it", "here it is", "3x", "x10", "sets"):
+        assert banned not in low, (banned, reply)
+    assert any(k in low for k in ("height", "weight", "tall", "weigh")), reply
+    assert "?" in reply or any(k in low for k in ("send me", "drop", "need", "gimme", "give me", "once i have", "shoot me")), reply
 
 
 def test_extractor_does_not_turn_an_anecdote_into_a_fact(db, monkeypatch):
