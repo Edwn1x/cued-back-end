@@ -1975,6 +1975,15 @@ def waitlist_signup():
         if profile[col] and len(profile[col]) > cap:
             return jsonify({"status": "error",
                             "message": f"That {col.replace('_', ' ')} doesn't look right."}), 400
+    # Optional objective stats from the form (signup_stats.py: height, weight, days,
+    # time, injuries, diet, restrictions, apps, steps). Every column filled here is
+    # one the coach never has to ask for — user 47 texted "168 cm" to an extractor
+    # that only knew feet and sat in onboarding for 27 turns.
+    from signup_stats import stats_from_form
+    stats, stats_err = stats_from_form(data)
+    if stats_err:
+        return jsonify({"status": "error", "message": stats_err}), 400
+    profile.update(stats)
 
     session = get_session()
     try:
@@ -2018,8 +2027,9 @@ def waitlist_signup():
         session.commit()
         uid = user.id
         logger.info(
-            "WAITLIST_NEW phone=%s name=%r source=%r email=%r goal=%r experience=%r",
+            "WAITLIST_NEW phone=%s name=%r source=%r email=%r goal=%r experience=%r form_stats=%s",
             phone, name, source or "—", raw_email or "—", profile["goal"], profile["experience"],
+            sorted(stats) or "none",
         )
         # Provision the Photon line now (flag-gated, never raises) so the success
         # screen can offer "Text me on iMessage". No hook — that waits for the admin;
