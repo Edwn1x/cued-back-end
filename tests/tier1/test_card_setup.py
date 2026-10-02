@@ -100,7 +100,7 @@ def test_completion_sends_framing_first_card_and_tour_and_defers_water(db, setup
     oa._complete_onboarding(_u(u.id), "yes")
 
     bodies = sidecar_ok
-    assert bodies[0] == "locked in. lets go"
+    assert bodies[0].startswith("ok so ") and bodies[0].endswith("say if anything's off"), bodies[0]   # the code summary
     assert bodies[1:3] == list(EXTENSION_INTRO)
     intro = bodies[3]
     assert intro.startswith("here's ur first card") and "tap it now so ur set for 6pm" in intro, intro
@@ -122,7 +122,7 @@ def test_no_lifts_asks_first_and_the_answer_sends_the_setup_card(db, setup_on, s
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db, experience="beginner", lift_anchors=None)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok == ["locked in", ASK_NEW]
+    assert sidecar_ok[0].startswith("ok so ") and sidecar_ok[1:] == [ASK_NEW], sidecar_ok
     assert card_ok["sent"] == []
     assert peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
 
@@ -214,7 +214,7 @@ def test_sms_user_gets_no_setup_and_water_waits_for_the_sweep(db, setup_on, sms_
     u = _imsg_user(db, preferred_channel="sms")
     oa._complete_onboarding(_u(u.id), "yes")
     bodies = [b for _p, b in sms_capture]
-    assert bodies == ["locked in"], bodies
+    assert len(bodies) == 1 and bodies[0].startswith("ok so "), bodies
     assert OFFER_TEXT not in bodies and card_ok["sent"] == []
     assert _u(u.id).card_setup_at is None
 
@@ -227,7 +227,7 @@ def test_flag_off_keeps_the_kickoff_water_offer(db, setup_on, sidecar_ok, card_o
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok == ["locked in", OFFER_TEXT]
+    assert sidecar_ok[0].startswith("ok so ") and sidecar_ok[1:] == [OFFER_TEXT], sidecar_ok
     assert card_ok["sent"] == []
 
 

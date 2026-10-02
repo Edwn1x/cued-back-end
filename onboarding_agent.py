@@ -1,33 +1,35 @@
 """
 Onboarding Agent — Cued
 ========================
-Dynamic data collection through conversation. Adapts tone based on
-experience level and biggest obstacle from signup.
+Getting to know a new friend over text (founder, 2026-09-11) — with the fixes from
+user 47 (2026-09-30: 27 coach turns, no workout; "168 cm" never parsed; "i got
+everything i need" ×3; a card asked for ×5 and called "glitching"; the activation
+text read as "you're set up").
 
-Tracks which data points have been collected, not step numbers. Each exchange:
-1. Parse user's message for any data points (Haiku extractor, given the coach's
-   previous message for context)
-2. Store what was found
+The objective facts come from the signup form (signup_stats.py: height, weight, days,
+time, diet, apps, steps) — the coach never asks for a number the form holds. Each
+exchange here:
+1. Parse the stats in CODE first — metric or imperial (168cm / 50kg / 5'6 / 120 lbs)
+   — then the extractor for everything else, given the coach's previous message.
+2. Store what was found.
 3. Reply as the friend (prompts/identity.md): engage the specific thing they said;
-   if — and only if — what they said gives a natural reason, weave in ONE
-   question that would teach us one of the still-unknown fields. Never a list
-   BY DEFAULT — the intake isn't a form, it's stuff you learn by caring about
-   their actual day (founder, 2026-09-11). The big ask ("drop me the basics in
-   one text") and the two-field bundle are KEPT for when they're appropriate
-   (founder, same day): the user asks for the list, or the conversation has run
-   long with most fields still unknown, or one/two fields are left to close out.
-   See _intake_mode().
-4. If all collected → calculate targets, present summary, confirm
-
-The coach knows experience, goal, and obstacle from signup, which shapes HOW it
-talks (tone, depth of explanation). It can search the web mid-reply (a class, a
-campus place, a restaurant) — capped per reply, every query logged.
+   if — and only if — what they said gives a natural reason, weave in ONE question
+   that would teach us one of the still-unknown fields. Never a list BY DEFAULT.
+   The big ask and the two-field bundle are kept for when they're appropriate
+   (they ask for the list, the conversation has run long, one or two left) — see
+   _intake_mode(). The model can never send a card and never claims one is coming.
+4. Nothing still unknown → ONE code summary (real numbers) and completion in the
+   SAME message — no "sound right?" round trip; corrections go to the coach's tools.
+   Then the first card (workouts/card_setup.py).
+5. They ask for a workout and the card-critical fields (height/weight, days,
+   injuries) are in → complete right then; the rest is learned during coaching.
+The hook says what's happening ("ur in … gonna get to know u a bit first, then ur
+first workout") so nobody mistakes it for being set up already.
 """
 
 import os
 import json
 import logging
-import random
 import re
 import threading
 from datetime import datetime, timezone, timedelta
@@ -82,33 +84,23 @@ REQUIRED_FIELDS = [
 # Training-specific fields — skipped for nutrition-only users
 TRAINING_FIELDS = {"workout_days", "workout_time", "current_split", "injuries"}
 
-# Hook templates for A/B testing — one is randomly assigned per new user
-# Template variables: {name}, {goal_label}
-# Rules: zero data collection, every template ends with a low-effort question
-HOOK_TEMPLATES = [
-    {
-        "id": "hook_a_name",
-        "text": "yo wsp, I'm your cued coach. before anything — you want to give me a name? I go by whatever you want",
-    },
-    {
-        "id": "hook_b_casual",
-        "text": "hey I'm your cued coach, how's your day going?",
-    },
-    {
-        "id": "hook_c_fact",
-        "text": "hey it's your cued coach. did you know the average person sets the same fitness goal 3 years in a row without hitting it? yeah that's not gonna be you. what's the main thing you're trying to change?",
-    },
-    {
-        "id": "hook_d_direct",
-        "text": "hey I'm your cued coach. you signed up so I know you're serious — that's already more than most people do. what made you decide to go for it?",
-    },
-    {
-        "id": "hook_e_personalized",
-        "text": "yo {name}, I'm your cued coach. just saw you signed up — what made you pull the trigger?",
-    },
-]
+# Fields the first card and the targets cannot do without. When they ask for a
+# workout and these are in, onboarding completes right then (the rest is learned
+# during coaching); when they're not, the reply asks for exactly these.
+CARD_CRITICAL = {"height_weight", "workout_days", "injuries", "split_days"}
 
-# Goal label map for use in hook templates and summaries
+# The hook. One template now: who this is, that they're in, what happens next, and
+# a low-effort question. The old A/B openers ("did you know the average person sets
+# the same goal 3 years in a row…") read as a finished setup — user 47 thought she
+# was live and texted "can I get a workout card?" five times.
+HOOK_TEMPLATES = [
+    {"id": "hook_setup",
+     "text": "hey {name}, it's cued. ur in. gonna get to know u a bit over the next few texts, "
+             "then ur first workout. how's ur day going"},
+]
+HOOK_ACTIVATED_TEXT = ("hey {name}, it's cued. ur spot's open. gonna get to know u a bit over the next "
+                       "few texts, then ur first workout. how's ur day going")
+
 GOAL_LABELS = {
     "fat_loss": "losing fat",
     "muscle_building": "building muscle",
@@ -414,11 +406,40 @@ the time of day; read it here.
 - If they hand you several things at once, react to them like a person would — don't
   read a checklist back.
 - Never mention fields, profiles, forms, plans you're "building," or what you "need."
+- You cannot send a workout, a card, a plan, numbers, or a link — code sends the first
+  card the moment the basics are in (their stats, training days, anything that hurts).
+  If they ask for a workout / card / plan, say it's coming once those are in,
+  in your own words, as the friend. Never say a card is loading, glitching, should pop
+  up, or already went — none of that is true. Never write a workout out as text.
 - 1–3 short sentences. No `---` separators. No greeting — you already said hey.
 - Decide on your ONE question (or none) BEFORE you start writing, then write the reply
   once, as a single paragraph. Never draft-then-revise inside the message, never show an
   edit, never add a second paragraph.
 """
+
+
+def coach_turn_text(user_id: int, after_message_id: int) -> str:
+    """Every outbound body sent after `after_message_id`, joined — the coach's whole
+    turn (a reaction bubble + the summary, say) for the memory extractor."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        rows = (session.query(Message.body)
+                .filter(Message.user_id == user_id, Message.direction == "out", Message.id > after_message_id)
+                .order_by(Message.id).all())
+    finally:
+        session.close()
+    return "\n".join((r[0] or "").strip() for r in rows if r[0])
+
+
+def latest_message_id(user_id: int) -> int:
+    from models import get_session, Message
+    from sqlalchemy import func
+    session = get_session()
+    try:
+        return session.query(func.max(Message.id)).filter(Message.user_id == user_id).scalar() or 0
+    finally:
+        session.close()
 
 
 def _last_coach_message(user_id: int) -> str | None:
@@ -487,6 +508,8 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "height_ft": number or null (e.g. 5 from "5'7"),
   "height_in": number or null (e.g. 7 from "5'7"),
   "weight_lbs": number or null,
+  "height_cm": number or null (ONLY when they gave height in cm or metres — "168 cm" → 168, "1.68m" → 168; never convert to feet yourself),
+  "weight_kg": number or null (ONLY when they gave weight in kg — "50 kg" → 50; never convert to lbs yourself),
   "occupation": "student, desk job, retail, construction, etc." or null,
   "activity_level": "short phrase describing their activity, e.g. 'sedentary', 'lightly active', 'active — walks 8-10k steps, mix of sitting and moving', 'very active — physical job'" or null,
   "workout_days": "comma separated days like mon,tue,wed,thu,fri" or number like "4" or null,
@@ -557,6 +580,8 @@ split_days rules (the days themselves — code builds their workout cards from t
 
 Examples:
 "I'm 5'7 and 145 lbs" → {{"height_ft": 5, "height_in": 7, "weight_lbs": 145, ...rest null}}
+"I weight 50 kg and 168 cm for height" → {{"height_cm": 168, "weight_kg": 50, ...rest null}}  (metric stays metric; code converts)
+"168 and 50" (after being asked height and weight) → {{"height_cm": 168, "weight_kg": 50, ...rest null}}  (a 3-digit height is cm)
 "I can do 4 days a week, usually around 5pm" → {{"workout_days": "4", "workout_time": "17:00", ...rest null}}
 "I cook most of the time but eat out on weekends" → {{"cooking_situation": "mix", ...rest null}}
 "I mostly buy my own groceries and cook but sometimes grab something on the way" → {{"cooking_situation": "mix", ...rest null}}
@@ -658,6 +683,19 @@ def _store_extracted_data(user_id: int, data: dict):
                 setattr(user, attr, value)
                 changed = True
 
+        # Metric → the imperial columns (live 2026-09-30, user 47: "50 kg and 168 cm"
+        # twice; the extractor had no cm field, height stayed null, onboarding never
+        # closed). Code converts; the model never does.
+        from signup_stats import cm_to_ft_in, kg_to_lbs
+        if data.get("height_cm") and not data.get("height_ft"):
+            ft, inch = cm_to_ft_in(data["height_cm"])
+            if ft:
+                data["height_ft"], data["height_in"] = ft, inch
+        if data.get("weight_kg") and not data.get("weight_lbs"):
+            lbs = kg_to_lbs(data["weight_kg"])
+            if lbs:
+                data["weight_lbs"] = lbs
+
         _EXPERIENCE = {"none", "beginner", "intermediate", "advanced"}
         _GOALS = {"fat_loss", "muscle_building", "fat_loss,muscle_building", "muscle_building,fat_loss",
                   "strength", "endurance", "general_fitness"}
@@ -752,7 +790,8 @@ def _send_capability_rundown(user_row, system_prompt: str) -> bool:
         "something like 'oh and quick rundown of how i work'. Use ONLY what's below; do not "
         "mention anything else you can do. No bullet points, no numbered list, no headers, "
         "no bold — plain sentences, 4 to 6 short lines total, their words. Do not repeat "
-        "the targets or the profile link (they just got both). No question at the end.\n\n"
+        "the targets (they just got them). End with their profile link on its own short line, "
+        f"exactly this URL and nothing else about it: {profile_url(user_row)} . No question at the end.\n\n"
         f"{ctx}"
     )
     if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
@@ -764,46 +803,6 @@ def _send_capability_rundown(user_row, system_prompt: str) -> bool:
     send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
     logger.info("ONBOARDING_RUNDOWN_SENT user=%s chars=%d", user_row.id, len(text))
     return True
-
-
-def _extract_target_request(message: str, user) -> dict:
-    """{"calories": int|None, "protein": int|None} — the numbers the user ASKED FOR as
-    targets in this message, or {} if they didn't name any. Extractor model, JSON
-    only. A number that is a fact (weight, age, days) is NOT a target."""
-    prompt = (
-        "The user is reacting to proposed daily targets during onboarding. Return ONLY JSON: "
-        '{"calories": <int or null>, "protein": <int or null>, "maintenance": <int or null>} with '
-        "the values they are ASKING FOR as their targets, and `maintenance` ONLY when they cite a "
-        "maintenance/TDEE number from their own app or prior tracking. null when they didn't name "
-        "one. Examples:\n"
-        '"how about 2200 and we up the protein to like 150g?" → {"calories": 2200, "protein": 150, "maintenance": null}\n'
-        '"can we do 2k" → {"calories": 2000, "protein": null, "maintenance": null}\n'
-        '"150 protein sounds better" → {"calories": null, "protein": 150, "maintenance": null}\n'
-        '"my app says i maintain at like 2200 so 1700 makes more sense" → {"calories": 1700, "protein": null, "maintenance": 2200}\n'
-        '"mynetdiary has my tdee at 2150" → {"calories": null, "protein": null, "maintenance": 2150}\n'
-        '"thats too much food" → {"calories": null, "protein": null, "maintenance": null}\n'
-        '"actually im 145 lbs not 139" → {"calories": null, "protein": null, "maintenance": null}\n\n'
-        f'Message: "{message}"'
-    )
-    try:
-        response = client.messages.create(model=config.ONBOARDING_EXTRACTOR_MODEL, max_tokens=200,
-                                          messages=[{"role": "user", "content": prompt}])
-        track_usage(getattr(user, "id", None), "onboarding.extract_target_request",
-                    config.ONBOARDING_EXTRACTOR_MODEL, response)
-        from agent_loop import _join_text
-        text = _join_text(response.content).replace("```json", "").replace("```", "").strip()
-        if "{" in text and "}" in text:
-            text = text[text.index("{"):text.rindex("}") + 1]
-        data = json.loads(text)
-        out = {}
-        for k in ("calories", "protein", "maintenance"):
-            v = data.get(k) if isinstance(data, dict) else None
-            if isinstance(v, (int, float)) and v > 0:
-                out[k] = int(v)
-        return out
-    except Exception as e:  # noqa: BLE001 — a failed parse just means "no request"
-        logger.warning("TARGET_REQUEST_EXTRACT_FAILED user=%s err=%s", getattr(user, "id", None), e)
-        return {}
 
 
 _STATIC_PROMPT_END = "## RIGHT NOW"
@@ -910,8 +909,8 @@ def _reconcile_user_targets(user_id: int) -> str | None:
             else:
                 u.protein_target = nearest
             unit = " cal" if field == "calories" else "g protein"
-            notes.append(f"you said {asked}{unit}; {nearest}{unit} is as {'low' if asked < lo else 'high'} as I'll go "
-                         f"for your stats (I'd have set {rj['computed']}{unit})")
+            notes.append(f"u said {asked}{unit}; {nearest}{unit} is as {'low' if asked < lo else 'high'} as i'll go "
+                         f"for ur stats (i'd have said {rj['computed']}{unit})")
         u.calorie_target_computed = r["computed"]["calories"]
         u.protein_target_computed = r["computed"]["protein"]
         u.targets_source = "user"
@@ -923,63 +922,82 @@ def _reconcile_user_targets(user_id: int) -> str | None:
     return "; ".join(notes) or None
 
 
+GOAL_PHRASES = {
+    "fat_loss": "cutting",
+    "muscle_building": "building muscle",
+    "fat_loss,muscle_building": "recomp",
+    "muscle_building,fat_loss": "recomp",
+    "general_fitness": "general fitness",
+    "endurance": "endurance",
+    "strength": "getting stronger",
+}
+
+
+def _clock(hhmm: str | None) -> str:
+    """'09:30' → '9:30', '00:00' → '12', '14:00' → '2'. A description stays as-is."""
+    t = (hhmm or "").strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
+    if not m:
+        return t
+    h, mm = int(m.group(1)) % 12 or 12, m.group(2)
+    return f"{h}" if mm == "00" else f"{h}:{mm}"
+
+
 def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
-    """Build the confirmation message with calculated targets."""
+    """The one bubble that closes onboarding, in the friend's voice — identity.md's own
+    example: "ok so 5'0 137, training evenings, up at 8:30 down by 11:30 … 1450 cal,
+    137g protein". Code-authored: every number here is real (live, user 27: the model
+    wrote "2300 cal and 150g protein" — numbers it cannot set). States only what they
+    gave — a fact they didn't give is a trust break ("20 years old" recited when age
+    was never asked). Wake/sleep stay in on purpose: a swapped 2am bedtime (user 27)
+    is only catchable here. Ends "say if anything's off" — corrections go to the coach."""
     targets = calculate_targets(user)
+    nutrition_only = _is_nutrition_only(user)
 
-    height_str = f"{user.height_ft}'{user.height_in or 0}\""
-    goal_map = {
-        "fat_loss": "cutting",
-        "muscle_building": "building muscle",
-        "fat_loss,muscle_building": "recomp",
-        "muscle_building,fat_loss": "recomp",
-        "general_fitness": "general fitness",
-        "endurance": "running / endurance",
-        "strength": "getting stronger",
-    }
-    goal_label = goal_map.get(user.goal, user.goal.replace("_", " "))
-
-    # wake/sleep are in the summary on purpose: they drive when the coach is allowed
-    # to text. Live (user 27): a 2am bedtime was stored as the WAKE time and the old
-    # summary didn't show it, so the one place the user could catch it was blind.
-    sleep_bit = ""
+    who = []
+    if user.height_ft:
+        who.append(f"{user.height_ft}'{user.height_in or 0}")
+    if user.weight_lbs:
+        who.append(f"{int(user.weight_lbs)}")
+    parts = [" ".join(who)] if who else []
+    if not nutrition_only and user.workout_days:
+        days = str(user.workout_days).strip()
+        when = ""
+        wt = (user.workout_time or "").strip().lower()
+        if wt:
+            when = {"08:00": " mornings", "14:00": " afternoons", "18:00": " evenings",
+                    "morning": " mornings", "afternoon": " afternoons", "evening": " evenings"}.get(wt, f" at {_clock(wt)}")
+        if days.replace("-", "").replace("+", "").isdigit():
+            parts.append(f"training {days} days a week{when}")
+        else:
+            parts.append(f"training {days.replace(',', '/')}{when}")
     if user.wake_time or user.sleep_time:
-        sleep_bit = (f" Up around {user.wake_time or '?'}, asleep around {user.sleep_time or '?'}"
-                     f" — that's when I'll know to leave you alone.")
+        bits = []
+        if user.wake_time:
+            bits.append(f"up at {_clock(user.wake_time)}")
+        if user.sleep_time:
+            bits.append(f"down by {_clock(user.sleep_time)}")
+        parts.append(" ".join(bits))
+    parts.append(GOAL_PHRASES.get(user.goal, (user.goal or "general fitness").replace("_", " ")))
+    if not nutrition_only:
+        try:
+            from workouts.routine import describe_routine
+            if describe_routine(getattr(user, "custom_templates", None)):
+                parts.append("ur own routine's on ur cards")
+            elif getattr(user, "split_days", None):
+                parts.append("split is " + " / ".join(_day_label(d) for d in user.split_days))
+        except Exception:  # noqa: BLE001
+            pass
+    first = "ok so " + ", ".join(p for p in parts if p)
+
     if clamp_note:
-        targets_bit = (f"On targets: {clamp_note}. So {user.calorie_target} cal and "
-                       f"{user.protein_target}g protein daily. ")
+        targets_bit = f"{clamp_note}. so {user.calorie_target} cal, {user.protein_target}g protein a day"
     elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
-        targets_bit = (f"You picked {user.calorie_target} cal and {user.protein_target}g protein daily "
-                       f"(I'd have set {targets['calories']}/{targets['protein']}g). ")
+        targets_bit = (f"{user.calorie_target} cal, {user.protein_target}g protein a day, ur pick "
+                       f"(i'd have said {targets['calories']}/{targets['protein']}g)")
     else:
-        targets_bit = f"I'm setting you at {targets['calories']} cal and {targets['protein']}g protein daily. "
-    # Only state fields the user actually gave — a fact they didn't give is a trust
-    # break (live: "20 years old" recited when age was never asked). Weight as an int,
-    # never 137.0.
-    who = f"{height_str}, {int(user.weight_lbs)} lbs" if user.weight_lbs else height_str
-    if user.age:
-        who += f", {user.age}"
-    exp_map = {"none": "just starting out", "beginner": "under 6 months of training",
-               "intermediate": "6 months to 2 years of training", "advanced": "2+ years of training"}
-    exp_bit = f", {exp_map[user.experience]}" if getattr(user, "experience", None) in exp_map else ""
-    routine_bit = ""
-    try:
-        from workouts.routine import describe_routine
-        if describe_routine(getattr(user, "custom_templates", None)):
-            routine_bit = " Your own routine is on your workout cards. "
-        elif getattr(user, "split_days", None):
-            routine_bit = " Split is " + " / ".join(_day_label(d) for d in user.split_days) + ". "
-    except Exception:  # noqa: BLE001
-        routine_bit = ""
-    return (
-        f"Here's what I'm working with: {who}. "
-        f"Goal is {goal_label}{exp_bit}. Training {user.workout_days} days/week around {user.workout_time}."
-        f"{routine_bit}"
-        f"{sleep_bit} "
-        f"{targets_bit}"
-        f"Sound right?"
-    )
+        targets_bit = f"{targets['calories']} cal, {targets['protein']}g protein a day"
+    return f"{first}. {targets_bit}. say if anything's off"
 
 
 # Live 2026-09-22 (user 42): with `diet` still unknown the bundle reply ended "i think
@@ -1121,6 +1139,144 @@ def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, sys
     return _generate(system_prompt, instruction, user_id=user.id)
 
 
+# ─── Stats in code: metric or imperial, before the model sees the message ─────
+_HEIGHT_CM_RE = re.compile(r"\b(1\d\d|2[0-4]\d)\s*(?:cm|cms|centimet(?:er|re)s?)\b", re.I)
+_HEIGHT_M_RE = re.compile(r"\b([12])[.,](\d{1,2})\s*(?:m|meters?|metres?)\b", re.I)
+_HEIGHT_FTIN_RE = re.compile(
+    r"\b([4-7])\s*(?:'|’|′|ft\.?|feet|foot)\s*(\d{1,2})?\s*(?:\"|”|″|''|in\.?|inches)?(?![\w'])", re.I)
+_WEIGHT_KG_RE = re.compile(r"\b(\d{2,3}(?:[.,]\d)?)\s*(?:kg|kgs|kilos?|kilograms?)\b", re.I)
+_WEIGHT_LB_RE = re.compile(r"\b(\d{2,3}(?:\.\d)?)\s*(?:lbs?|pounds?)\b", re.I)
+_DAYS_N_RE = re.compile(r"\b([1-7])\s*(?:days?|x|times)\b(?:\s*(?:a|per|/|every)\s*(?:week|wk))?", re.I)
+_DAY_NAMES = (("mon", r"\bmon(?:day)?s?\b"), ("tue", r"\btue(?:s|sday)?s?\b"), ("wed", r"\bwed(?:nesday)?s?\b"),
+              ("thu", r"\bthu(?:r|rs|rsday)?s?\b"), ("fri", r"\bfri(?:day)?s?\b"), ("sat", r"\bsat(?:urday)?s?\b"),
+              ("sun", r"\bsun(?:day)?s?\b"))
+_NO_INJURY_RE = re.compile(
+    r"\bno injur\w*\b|\bnothing hurts?\b|\bnothing(?:'s| is)? (?:hurt|injured|wrong)\b|"
+    r"\b(?:no|none|nothing|nah|nope)\b[^.!?\n]{0,20}\b(?:hurt\w*|injur\w*|pain)\b|"
+    r"\b(?:injur\w*|pain)[^.!?\n]{0,12}\b(?:none|no|nothing)\b", re.I)
+
+
+def parse_stats(message: str) -> dict:
+    """Deterministic read of the basics: height (cm / m / ft-in), weight (kg / lbs, or
+    a bare number next to a height), training days ("3 days", "3x a week", "mon tue
+    thu"), and an explicit no-injury statement. Code beats the model on anything
+    here; what it doesn't find is left to the extractor (which now knows cm/kg too).
+    Live 2026-09-30 (user 47): "50 kg and 168 cm" twice, height never stored."""
+    from signup_stats import cm_to_ft_in, kg_to_lbs
+    text = (message or "").strip()
+    out: dict = {}
+    if not text:
+        return out
+    metric_height = False
+    m = _HEIGHT_CM_RE.search(text)
+    if m:
+        ft, inch = cm_to_ft_in(int(m.group(1)))
+        if ft:
+            out["height_ft"], out["height_in"], metric_height = ft, inch, True
+    else:
+        m = _HEIGHT_M_RE.search(text)
+        if m:
+            ft, inch = cm_to_ft_in(int(m.group(1)) * 100 + int(m.group(2).ljust(2, "0")))
+            if ft:
+                out["height_ft"], out["height_in"], metric_height = ft, inch, True
+        else:
+            m = _HEIGHT_FTIN_RE.search(text)
+            if m and not re.match(r"\s*(?:days?|x|times|hrs?|hours?|a week)", text[m.end():], re.I):
+                out["height_ft"], out["height_in"] = int(m.group(1)), int(m.group(2) or 0)
+    height_span = m.span() if (m and "height_ft" in out) else None
+
+    w = _WEIGHT_KG_RE.search(text)
+    if w:
+        lbs = kg_to_lbs(w.group(1))
+        if lbs:
+            out["weight_lbs"] = lbs
+    else:
+        w = _WEIGHT_LB_RE.search(text)
+        if w:
+            try:
+                lbs = float(w.group(1))
+                if 60 <= lbs <= 600:
+                    out["weight_lbs"] = lbs
+            except ValueError:
+                pass
+        elif height_span:
+            # "5'6 and 120" / "168cm 50" — a bare number beside a height is the weight,
+            # in the same system as the height.
+            rest = text[:height_span[0]] + " " + text[height_span[1]:]
+            for n in re.findall(r"\b(\d{2,3}(?:\.\d)?)\b", rest):
+                v = float(n)
+                if metric_height and 35 <= v <= 200:
+                    out["weight_lbs"] = kg_to_lbs(v)
+                    break
+                if not metric_height and 80 <= v <= 400:
+                    out["weight_lbs"] = v
+                    break
+
+    days = [key for key, pat in _DAY_NAMES if re.search(pat, text, re.I)]
+    if len(days) >= 2:
+        out["workout_days"] = ",".join(days)
+    else:
+        d = _DAYS_N_RE.search(text)
+        if d:
+            out["workout_days"] = d.group(1)
+
+    if _NO_INJURY_RE.search(text):
+        out["injuries"] = "none"
+    return {k: v for k, v in out.items() if v is not None}
+
+
+# They want the workout. With the card-critical fields in, that completes onboarding
+# right then (the rest is learned during coaching); without them, the reply asks for
+# exactly those — the friend's one list, and never a fake card.
+_WANTS_WORKOUT = re.compile(
+    r"\b(work ?out|card|plan|routine|program|exercises?|leg day|push day|pull day|arm day|chest day|"
+    r"back day|lift(?:ing)?|train(?:ing)? (?:now|today|rn)|what should i do|at (?:the )?(?:rsf|gym))\b",
+    re.IGNORECASE)
+
+
+def _wants_workout(message: str) -> bool:
+    return bool(_WANTS_WORKOUT.search(message or ""))
+
+
+def _is_bare_answer(message: str, code_found: dict) -> bool:
+    """A short stats-only reply ("168cm and 50kg", "no injuries") at the moment onboarding
+    closes needs no reaction bubble — the summary is the reply. Only CODE-parsed stats
+    count: a sentence the extractor read ("I don't eat mushrooms…") still gets the friend."""
+    m = (message or "").strip()
+    return bool(code_found) and "?" not in m and len(m) <= 48
+
+
+def _build_card_ask(user, incoming_message: str, system_prompt: str, card_missing: list) -> str:
+    """They asked for a workout before the card-critical basics are in: react, be honest
+    that the card comes once they're in, and ask for exactly those in one breath.
+    The ONE time a list is right that isn't _intake_mode's call."""
+    items = ", ".join(f[1].split(" — ")[0] for f in card_missing)
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"They want their workout. You can't send it yet — code sends their first card the "
+        f"moment these are in: {items}. Reply as the friend in one message: react to what they "
+        f"said, say the card's coming once u have those (your words), and ask for them in one "
+        f"breath — only these, nothing already known. Never say a card is loading, glitching, "
+        f"should pop up, or already went. Never write a workout out as text. 2-3 sentences, "
+        f"no greeting. {_NOT_DONE_LINE}"
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
+def _build_completion_reaction(user, incoming_message: str, system_prompt: str, *, early: bool) -> str:
+    """The friend's bubble right before the code summary closes onboarding: react to /
+    answer what they said, no question, no numbers (the summary has the numbers)."""
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"Reply as the friend in ONE short bubble, 1-2 sentences: react to the specific thing "
+        f"they said, or answer their question, fully. Code is about to send their numbers and "
+        f"then their first workout card right after your bubble"
+        + (" (they asked for it — say it's coming, one clause)" if early else "")
+        + ". So: no question, no numbers, no summary, no 'locked in'. No greeting."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
 def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
     """Send the hook (first coaching text) NOW, synchronously, and move the user to
     step 1. Idempotent: a user already past step 0 gets nothing. Registers them
@@ -1145,8 +1301,9 @@ def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
     except Exception as e:  # never block onboarding on Photon
         logger.warning(f"PHOTON_PROVISION_SKIPPED user={user_id} err={e}")
 
-    hook = random.choice(HOOK_TEMPLATES)
-    text = hook["text"].format(name=name, goal_label=_goal_label(goal))
+    hook = HOOK_TEMPLATES[0]
+    text = (HOOK_ACTIVATED_TEXT if reason == "waitlist_activate" else hook["text"]).format(
+        name=name, goal_label=_goal_label(goal))
     send_sms(phone, text, user_id=user_id, message_type="onboarding")
 
     session = get_session()
@@ -1162,14 +1319,14 @@ def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
     return True
 
 
-def start_onboarding(user):
+def start_onboarding(user, reason: str = "start_onboarding"):
     """
     Entry point — called from app.py after signup, /activate-sms, admin activation.
     Sends the hook in a background thread (send_onboarding_hook does the work).
     """
     def _run():
         try:
-            send_onboarding_hook(user.id, reason="start_onboarding")
+            send_onboarding_hook(user.id, reason=reason)
         except Exception as e:
             logger.error(f"Onboarding start failed for {user.name}: {e}")
 
@@ -1282,14 +1439,14 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     Flow:
       step 1 — hook sent. First reply: record first_reply_at, extract data, reply as
                the friend (one woven question at most), advance to step 2.
-      step 2 — getting to know them. Extract from every message; reply as the friend;
-               when nothing is still unknown, present the summary; on "sound right?"
-               confirmation, complete.
+      step 2 — getting to know them. Stats parsed in code, then the extractor; reply
+               as the friend. Nothing still unknown — or they ask for a workout with
+               the card-critical basics in — → the summary + completion in the same
+               message, then the first card.
       step 3 — complete (set by _complete_onboarding).
 
     Returns True if onboarding is now complete.
     """
-    import re as _re
     from models import get_session, User as UserModel
 
     session = get_session()
@@ -1326,13 +1483,31 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         finally:
             session.close()
 
-    # Always try to extract data from whatever they sent. The coach's previous
-    # message (not a "last asked field" — the question is woven, not scheduled)
-    # tells the extractor what a bare number or yes/no is answering.
+    # Stats in code first — metric or imperial, deterministic (live 2026-09-30,
+    # user 47: "50 kg and 168 cm" twice, height never stored). Then the extractor
+    # for anything else, given the coach's previous message (not a "last asked
+    # field" — the question is woven, not scheduled) so a bare number or yes/no
+    # maps to what was asked.
+    code_found = parse_stats(incoming_message)
+    if code_found:
+        _store_extracted_data(user_row.id, code_found)
+        logger.info("ONBOARDING_STATS_IN_CODE user=%s found=%s", user_row.id, sorted(code_found))
+        session = get_session()
+        try:
+            user_row = session.get(UserModel, user.id)
+        finally:
+            session.close()
     prev_coach = _last_coach_message(user_row.id)
     extracted = _extract_data_from_message(incoming_message, user_row,
                                            last_coach_message=prev_coach)
+    for k in code_found:                      # code beats the model on what it parsed
+        extracted.pop(k, None)
+    if code_found.get("height_ft"):
+        extracted.pop("height_cm", None)
+    if code_found.get("weight_lbs"):
+        extracted.pop("weight_kg", None)
     non_null = {k: v for k, v in extracted.items() if v is not None}
+    found_any = dict(code_found, **non_null)
     if non_null:
         _store_extracted_data(user_row.id, extracted)
         session = get_session()
@@ -1406,125 +1581,32 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
         finally:
             session.close()
 
-    # ── Nothing still unknown — summary / confirmation flow ─────────────────
-    # Whether the summary has been shown is read off the conversation (the coach's
-    # previous message ends in "sound right?"), not a flag: the first time the
-    # last field lands we PRESENT the summary; only a reply TO the summary can
-    # confirm it. (Previously "ok so i'm 5'10" could complete onboarding unseen.)
-    if not missing_after:
-        summary_shown = bool(prev_coach) and "sound right" in prev_coach.lower()
-        if not summary_shown:
-            clamp_note = _reconcile_user_targets(user_row.id)
-            session = get_session()
+    # ── Done — or they want the workout and the card-critical basics are in ──
+    # The summary and completion happen in the SAME message (founder, 2026-10-01):
+    # no "sound right?" round trip. Corrections go to the coach's tools.
+    wants_workout = _wants_workout(incoming_message)
+    card_missing = [f for f in missing_after if f[0] in CARD_CRITICAL]
+    early = bool(missing_after) and wants_workout and not card_missing
+    if not missing_after or early:
+        if not _is_bare_answer(incoming_message, code_found) or wants_workout:
             try:
-                user_row = session.get(UserModel, user.id)
-            finally:
-                session.close()
-            summary = _build_confirmation_summary(user_row, clamp_note=clamp_note)
-            instruction = (
-                f"You've got everything you need. {user_row.name} just said: \"{incoming_message}\"\n\n"
-                f"STEP 1: React to what they said like a friend would (answer any question fully).\n"
-                f"STEP 2: Present this summary and ask if it sounds right:\n\n{summary}\n\n"
-                f"Keep it tight. One message. End with 'sound right?'"
-            )
-            text = _generate(system_prompt, instruction, user_id=user_row.id)
-            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-            logger.info(f"Onboarding confirmation presented to {user_row.name}")
-            return False
+                text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early)
+            except Exception as e:  # noqa: BLE001 — the summary still goes out
+                logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
+                text = ""
+            if text and text.strip():
+                send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        if early:
+            logger.info("ONBOARDING_EARLY_EXIT user=%s wants_workout=True learned_later=%s",
+                        user_row.id, [f[0] for f in missing_after])
+        return _complete_onboarding(user_row, incoming_message)
 
-        confirmation_keywords = [
-            "yeah", "yes", "yep", "sounds good", "looks good", "correct",
-            "that's right", "perfect", "ok", "sure", "let's go", "lets go",
-            "good", "right", "yea", "ya", "bet", "fs",
-        ]
-        msg_lower = incoming_message.lower().strip()
-        is_confirmed = any(kw in msg_lower for kw in confirmation_keywords)
-
-        # A question inside the confirmation must be ANSWERED, not skipped by the
-        # completion branch. Live (user 27): "Ok bet ... Why didn't you just go with
-        # that in the first place" had no '?' and no matching wh-phrase → completed
-        # silently. Any wh-word opener counts.
-        has_question = (
-            "?" in incoming_message
-            or bool(_re.search(r'\b(should i|can i|do i|will i|is it|what (should|do|can|is|are|about)'
-                               r'|how (do|can|should|long|much|many|come)|when (should|do|can|will)'
-                               r'|why (do|did|didn\'?t|don\'?t|should|is|are|not|would|wouldn\'?t)|wait[, ])\b', msg_lower))
-        )
-
-        if is_confirmed and has_question:
-            summary = _build_confirmation_summary(user_row)
-            instruction = (
-                f"Do NOT greet the user — you already said hello earlier.\n\n"
-                f"The user confirmed their plan but also asked a question: \"{incoming_message}\"\n\n"
-                f"STEP 1: Answer their question directly and completely.\n"
-                f"STEP 2: Briefly acknowledge the plan is confirmed.\n"
-                f"STEP 3: Present this summary:\n\n{summary}\n\n"
-                f"Keep it tight. One message. End with 'sound right?' or similar."
-            )
-            text = _generate(system_prompt, instruction, user_id=user_row.id)
-            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-            return _complete_onboarding(user_row, incoming_message)
-
-        if is_confirmed:
-            return _complete_onboarding(user_row, incoming_message)
-
-        # Not confirmed — user wants to adjust. If they named a number, the bounded
-        # override runs HERE in code (±15% of computed; macro_calculator.apply_
-        # target_override) and the model is told the outcome — it never invents one.
-        summary = _build_confirmation_summary(user_row)
-        override_note = ""
-        asked = _extract_target_request(incoming_message, user_row) if _re.search(r"\d", incoming_message) else {}
-        if asked:
-            from macro_calculator import apply_target_override
-            r = apply_target_override(user_row.id, calories=asked.get("calories"),
-                                      protein=asked.get("protein"), note=incoming_message[:120],
-                                      maintenance=asked.get("maintenance"))
-            session = get_session()
-            try:
-                user_row = session.get(UserModel, user.id)
-            finally:
-                session.close()
-            summary = _build_confirmation_summary(user_row)
-            lines = []
-            m = r.get("maintenance")
-            if m and m.get("accepted"):
-                lines.append(f"- maintenance: they reported {m['reported']} from their own tracking → "
-                             f"NOTED (computed estimate was {m['computed_tdee']}); the calorie band now "
-                             f"centres on {m['basis_calories']}. Say their number is what we'll go on.")
-            elif m and "min" in m:
-                lines.append(f"- maintenance: they reported {m['reported']} → too far from the computed "
-                             f"{m['computed_tdee']} to use (would accept {m['min']}–{m['max']}); say "
-                             f"you're going on the estimate for now and the biweekly weigh-in cycle "
-                             f"will correct it from real data.")
-            for field, val in r.get("accepted", {}).items():
-                lines.append(f"- {field}: they asked for {val} → ACCEPTED and now set (computed was "
-                             f"{r['computed'][field]}). It's their pick; say so, and that you'd have "
-                             f"gone {r['computed'][field]}.")
-            for field, rj in r.get("rejected", {}).items():
-                if "min" in rj:
-                    lines.append(f"- {field}: they asked for {rj['asked']} → NOT allowed (band is "
-                                 f"{rj['min']}–{rj['max']} around the computed {rj['computed']}). Offer "
-                                 f"the nearest end of the band and say why; do not state any other number.")
-            if lines:
-                override_note = ("TARGET REQUEST HANDLED IN CODE:\n" + "\n".join(lines) +
-                                 "\nCurrent targets: " + f"{r['current']['calories']} cal / "
-                                 f"{r['current']['protein']}g.\n\n")
-        instruction = (
-            f"Do NOT greet the user — you already said hello earlier.\n\n"
-            f"You showed them this summary:\n\n{summary}\n\nThey replied: \"{incoming_message}\"\n\n"
-            f"{override_note}"
-            f"Address their concern like a friend. The calorie and protein numbers are COMPUTED "
-            f"from their stats and goal — you can explain them (recomp = maintenance; their steps "
-            f"and training; protein holds muscle). They CAN pick a number within 15% of the "
-            f"computed one — if they want it different but didn't name a number, invite one "
-            f"(\"what feels doable?\"). Never invent or announce a number yourself; only code sets "
-            f"them. If they corrected a FACT (height, weight, days, times), acknowledge it; it'll be "
-            f"fixed. Do NOT repeat the whole summary again — they just read it. End with the "
-            f"current numbers in one short line and a short close like 'lock it in?'. "
-            f"One message, brief."
-        )
-        text = _generate(system_prompt, instruction, user_id=user_row.id)
+    # ── They want the workout but the card can't be built yet → ask for exactly that ──
+    if wants_workout and card_missing:
+        text = _build_card_ask(user_row, incoming_message, system_prompt, card_missing)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        logger.info("ONBOARDING_REPLY mode=card_ask user=%s still_unknown=%s card_missing=%s",
+                    user_row.id, [f[0] for f in missing_after], [f[0] for f in card_missing])
         return False
 
     # ── Still getting to know them ──────────────────────────────────────────
@@ -1591,9 +1673,18 @@ def _finalize_onboarding_profile(user_row):
 
 
 def _complete_onboarding(user, incoming_message: str) -> bool:
-    """Finalize onboarding — calculate targets, store confirmed decisions, schedule, send kickoff message."""
-    from models import get_session, User as UserModel
+    """Finalize onboarding: bound any self-stated targets, compute the rest, store
+    confirmed decisions, send the ONE summary bubble (code-authored, every number
+    real), then the first card (card setup) and the rundown."""
+    from models import get_session, User as UserModel, Message
 
+    clamp_note = _reconcile_user_targets(user.id)   # "staying under 2000 cals" said mid-chat → bounded
+    session = get_session()
+    try:
+        user = session.get(UserModel, user.id)
+        session.expunge(user)
+    finally:
+        session.close()
     targets = calculate_targets(user)
 
     session = get_session()
@@ -1601,7 +1692,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         user_row = session.get(UserModel, user.id)
 
         if getattr(user_row, "targets_source", None) == "user" and user_row.calorie_target and user_row.protein_target:
-            # They picked (within the band) during the adjust turn — keep their numbers.
+            # They named numbers during the conversation (bounded above) — keep their pick.
             targets = dict(targets, calories=user_row.calorie_target, protein=user_row.protein_target)
         else:
             user_row.calorie_target = targets["calories"]
@@ -1617,37 +1708,30 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         _finalize_onboarding_profile(user_row)
 
         session.commit()
-        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, source={user_row.targets_source}, branch={user_row.coaching_branch}")
+        first_out = (session.query(Message.created_at)
+                     .filter(Message.user_id == user_row.id, Message.direction == "out",
+                             Message.message_type.in_(("onboarding", BIG_ASK_MESSAGE_TYPE)))
+                     .order_by(Message.id).first())
+        minutes = (round((datetime.now(timezone.utc).replace(tzinfo=None) - first_out[0]).total_seconds() / 60, 1)
+                   if first_out and first_out[0] else None)
+        still = [f[0] for f in _get_missing_fields(user_row)]
+        logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, "
+                    f"bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, "
+                    f"goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, "
+                    f"source={user_row.targets_source}, branch={user_row.coaching_branch}, "
+                    f"turns={_coach_turns(user_row.id)}, minutes={minutes}, learned_later={still}")
 
-        profile_link = profile_url(user_row)
-        system_prompt = _build_system_prompt(user_row)
-        instruction = (
-            f"The user just confirmed their plan. Onboarding is complete.\n"
-            f"Targets: {targets['calories']} cal, {targets['protein']}g protein daily.\n"
-            f"Profile link: {profile_link}\n\n"
-            f"Send ONE brief message that:\n"
-            f"1. Confirms everything is locked in\n"
-            f"2. Tells them when they'll hear from you next (based on their wake_time: {user_row.wake_time})\n"
-            f"3. Gives them their profile link naturally — e.g. 'you can check your profile at {profile_link}'\n"
-            f"4. Feels like the starting gun — they now have a coach\n"
-            f"No explanations. No feature previews. Just confidence. Don't open with their name."
-        )
-        text = _generate(system_prompt, instruction, user_id=user_row.id)
+        text = _build_confirmation_summary(user_row, clamp_note=clamp_note)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        system_prompt = _build_system_prompt(user_row)
         rundown_user = user_row
 
     finally:
         session.close()
 
-    # Second bubble, a beat later: how to use me — from capabilities.py for THIS
-    # user. Best-effort; the kickoff already went out and completion is committed.
-    try:
-        _send_capability_rundown(rundown_user, system_prompt)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
-
-    # Third: the card setup step (workouts/card_setup.py) — extension framing, their
-    # first card, the tour — for iMessage users. The water offer then comes by its sweep
+    # Second: the card setup step (workouts/card_setup.py) — extension framing, their
+    # first card, the tour — for iMessage users. Before the rundown: the card is the
+    # point, the rundown can wait its beat. The water offer then comes by its sweep
     # (~HEARTBEAT_ACTIVE_CONVO_MINUTES after the conversation goes quiet): one
     # code-answered question on the floor at a time. Flag off → the water offer at
     # kickoff as before (water_offer.py, one line, once, answered in code).
@@ -1663,6 +1747,13 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
             _water_offer(user.id, source="kickoff")
         except Exception as e:  # noqa: BLE001
             logger.warning("WATER_OFFER_KICKOFF_FAILED user=%s err=%s", user.id, e)
+
+    # Then, a beat later: how to use me — from capabilities.py for THIS user, with
+    # the profile link. Best-effort; the summary and the card already went out.
+    try:
+        _send_capability_rundown(rundown_user, system_prompt)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
 
     # The onboarding conversation is the richest life-context the coach will ever
     # get about this person (their classes, where they eat, who they went to SF

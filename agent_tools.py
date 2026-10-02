@@ -280,8 +280,11 @@ def handle_log_weight(user_id: int, tool_input: dict, *, message_id=None) -> str
 START_WORKOUT_SESSION_TOOL = {
     "name": "start_workout_session",
     "description": (
-        "Start today's session for the user: 'starting push', 'about to lift', 'gym time', "
-        "'send me today's workout'. Code builds the plan from their history and sends it — "
+        "Start today's session for the user. Any plain ask for a workout counts — they never "
+        "have to say 'card': 'starting push', 'about to lift', 'gym time', 'send me today's "
+        "workout', 'give me a workout', 'what should i do today', 'leg day', 'can i get a "
+        "workout for my back', 'send me my card', 'im at the rsf'. Code builds the plan from "
+        "their history and sends it — "
         "on iMessage one short text plus a card they tap as they go; on SMS one message per "
         "exercise they 👍. Pass template_key only when THEY named the day — one of the day keys "
         "listed under SPLIT in your context (push/pull/legs/upper/lower/full_body, or a body-part "

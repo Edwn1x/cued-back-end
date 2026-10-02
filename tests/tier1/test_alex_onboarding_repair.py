@@ -105,7 +105,7 @@ def test_summary_bounds_self_stated_targets_in_band_stand_out_of_band_clamp(db):
     assert (u.calorie_target, u.protein_target, u.targets_source) == (2000, 155, "user")
     assert u.calorie_target_computed == computed["calories"]
     s = onboarding_agent._build_confirmation_summary(u)
-    assert "You picked 2000 cal and 155g protein" in s and f"I'd have set {computed['calories']}" in s
+    assert "2000 cal, 155g protein a day, ur pick" in s and f"(i'd have said {computed['calories']}/" in s
 
     # Way out of band → nearest end of the band is written and the summary says so.
     v = make_user(db, **ALEX, phone="+15550000004", onboarding_step=2, diet="omnivore",
@@ -113,32 +113,32 @@ def test_summary_bounds_self_stated_targets_in_band_stand_out_of_band_clamp(db):
     note = onboarding_agent._reconcile_user_targets(v.id)
     db.expire_all(); v = db.get(User, v.id)
     assert v.calorie_target == lo and v.protein_target == 155 and v.targets_source == "user"
-    assert note and "you said 1000 cal" in note and f"{lo} cal is as low as I'll go" in note
+    assert note and "u said 1000 cal" in note and f"{lo} cal is as low as i'll go" in note
     s2 = onboarding_agent._build_confirmation_summary(v, clamp_note=note)
-    assert "On targets: you said 1000 cal" in s2 and f"So {lo} cal and 155g protein" in s2 and s2.endswith("Sound right?")
+    assert "u said 1000 cal" in s2 and f"so {lo} cal, 155g protein a day" in s2 and s2.endswith("say if anything's off")
 
 
-def test_last_field_landing_reconciles_targets_before_the_summary(db, anthropic_stub, sms_capture):
+def test_last_field_landing_reconciles_targets_before_the_summary(db, anthropic_stub, sms_capture, monkeypatch):
     """The live shape: everything known but `diet`, self-stated targets on the row, the
-    dislikes text lands → summary goes out with THEIR numbers, not the computed pair."""
-    import onboarding_agent
+    dislikes text lands → the friend reacts, then the summary goes out with THEIR
+    numbers, not the computed pair — and onboarding completes in the same message."""
+    import config, onboarding_agent
     from models import User
+    monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
     user = make_user(db, **ALEX, onboarding_step=2, diet=None, restrictions=None,
                      calorie_target=2000, protein_target=155, targets_source="user")
-    seen = {}
 
     def _handler(kw):
         if _is_extract(kw):
             return json.dumps({"diet": "omnivore", "food_dislikes": "mushrooms, tofu, raw fish"})
-        seen["instruction"] = kw["messages"][0]["content"]
-        return "ok here's what i got ... sound right?"
+        return "noted, no mushrooms tofu or raw fish anywhere near ur plan"
     anthropic_stub.reply_with(_handler)
-    onboarding_agent.handle_onboarding_reply(user, "I don't eat mushrooms tofu and raw fish")
-    assert len(sms_capture) == 1
-    assert "You picked 2000 cal and 155g protein" in seen["instruction"]
+    assert onboarding_agent.handle_onboarding_reply(user, "I don't eat mushrooms tofu and raw fish") is True
+    bodies = [b for _p, b in sms_capture]
+    assert bodies[0].startswith("noted, no mushrooms") and "2000 cal, 155g protein a day, ur pick" in bodies[1], bodies
     db.expire_all(); u = db.get(User, user.id)
     assert u.restrictions == "won't eat mushrooms; won't eat tofu; won't eat raw fish"
-    assert u.calorie_target_computed and u.targets_source == "user"
+    assert u.calorie_target_computed and u.targets_source == "user" and u.onboarding_step == 3
 
 
 # ─── 3a. the classifier keeps its hands off onboarding users ─────────────────

@@ -752,13 +752,15 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
 
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
+            from onboarding_agent import coach_turn_text, latest_message_id
+            before_id = latest_message_id(user.id)
             handle_onboarding_reply(user, combined_body)
             # Onboarding turns are FULL of durable life facts (their classes, where
             # they eat, gear, year) and until 2026-09-11 none of it reached memory —
             # this branch returned before the post-reply extraction below. Run the
-            # same memory extraction normal turns get (background, best-effort).
-            from onboarding_agent import _last_coach_message
-            reply_text = _last_coach_message(user.id) or ""
+            # same memory extraction normal turns get (background, best-effort). The
+            # coach's turn can be several bubbles (reaction + summary) — hand it all.
+            reply_text = coach_turn_text(user.id, before_id)
             threading.Thread(
                 target=extract_and_store_memory,
                 args=(user.id, combined_body, reply_text),
@@ -2582,8 +2584,8 @@ def admin_activate_waitlist(user_id):
         # Refresh from a new session so start_onboarding sees the committed state.
         fresh = session.get(User, user_id)
         # start_onboarding ONLY — the heartbeat is the proactive path now; there
-        # is no per-user templated cron to register.
-        start_onboarding(fresh)
+        # is no per-user templated cron to register. The hook says "ur spot's open".
+        start_onboarding(fresh, reason="waitlist_activate")
         logger.info("WAITLIST_ACTIVATE user_id=%s phone=%s name=%r",
                     fresh.id, fresh.phone, fresh.name)
         return jsonify({"status": "ok",
@@ -3439,7 +3441,7 @@ async function handleSubmit(e) {
                     <div style="font-size:52px;margin-bottom:24px;">✓</div>
                     <h1 style="font-size:26px;margin-bottom:12px;letter-spacing:-.4px;">You're in, ${data.name || 'friend'}.</h1>
                     <p style="color:#A1A1AA;font-size:15px;line-height:1.7;max-width:340px;margin:0 auto 20px;">
-                        Your coach is putting together your plan. You'll get a text shortly with a few quick questions to get things dialed in.
+                        You'll get a text in a sec. Your coach gets to know you over a few texts, then sends your first workout.
                     </p>
                     <p style="color:#6E6E73;font-size:13px;">Keep your phone nearby.</p>
                 </div>`;

@@ -107,3 +107,35 @@ wyd rn
 mechanical: ✓ ≤3 bubbles · ✓ big_ask mode · ✓ not a numbered list
 
 hand review: _pending_
+
+---
+
+## they ask for the card before the basics are in
+
+**user:** can I get a workout card? im at rsf rn
+
+**coach:** nice, rsf's the move. i can get ur first card going once i have a couple things - how tall u are and ur weight, how many days a week u wanna train, and anything that's hurting or i should work around. gimme those and it's coming.
+
+hand review: _pending_
+
+---
+
+## the kept exception: they ask for the list → big ask
+
+**user:** lol ok just tell me what you need from me and i'll send it
+
+**coach:** ha ok i like that energy. lemme get the quick dump then: height/weight, what u do all day and how much ur moving outside the gym (steps if u know em), how many days a week u can train and what time, any routine u already run, food setup and anything u don't/can't eat, any injuries, and ur usual sleep/wake. whatever u track it on too if u use anything.
+
+mechanical: ✓ ≤3 bubbles · ✓ big_ask mode · ✓ not a numbered list
+
+hand review: _pending_
+
+---
+
+## they ask for the card before the basics are in
+
+**user:** can I get a workout card? im at rsf rn
+
+**coach:** rsf at 1 on a wednesday, not bad. give me ur height, weight, and how many days a week u can train, plus anything that hurts or i should work around, and the first card's yours.
+
+hand review: _pending_

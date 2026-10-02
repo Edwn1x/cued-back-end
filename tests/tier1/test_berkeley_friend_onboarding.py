@@ -13,8 +13,10 @@ Berkeley-friend identity + conversational intake + web search on every surface
    query is logged with the user id (WEB_SEARCH_QUERY).
 4. The extractor is handed the coach's previous message (there is no "last asked
    field" anymore) so a bare "5" maps to what was actually asked.
-5. The summary is presented the first time nothing is unknown; a stray "ok" in
-   the message that filled the last field can no longer complete onboarding.
+5. The first time nothing is unknown, ONE code summary (real numbers) goes out and
+   onboarding completes in the same message — no "sound right?" round trip
+   (founder, 2026-10-01). They ask for a workout with the card-critical basics in →
+   same thing, early; the rest is learned during coaching.
 6. The big ask and the two-field bundle are KEPT for when a list is appropriate
    (founder): they ask for it, the conversation has run long with most fields
    unknown, or one/two fields are left to close out. Code-decided (_intake_mode).
@@ -259,44 +261,85 @@ def test_extractor_is_given_the_previous_coach_message(db, anthropic_stub, sms_c
 
 # ── 5. summary gating ────────────────────────────────────────────────────────
 
-def test_last_field_landing_presents_summary_even_if_message_says_ok(db, anthropic_stub, sms_capture):
-    """Old bug: 'ok so no injuries' filled the last field AND matched the confirmation
-    keyword 'ok' → onboarding completed without the summary ever being shown."""
-    import onboarding_agent
+def test_last_field_landing_completes_with_the_summary_in_the_same_message(db, anthropic_stub, sms_capture, monkeypatch):
+    """Old flow: the last field → 'sound right?' → a 'yeah' round trip. Now the last
+    field landing sends ONE code summary and completes (founder, 2026-10-01). A bare
+    data reply gets no model bubble before it."""
+    import config, onboarding_agent
     from models import User
+    monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
     user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=10, weight_lbs=170,
                        occupation="student", activity_level="active — walks campus", avg_steps=8000,
                        workout_days="4", workout_time="17:00", current_split="none",
                        cooking_situation="dining_hall", diet="omnivore", wake_time="08:00",
                        sleep_time="00:00", existing_tools="none")  # injuries still unknown
-    gen_instructions = []
-
-    def _handler(kwargs):
-        if _is_extract(kwargs):
-            return '{"injuries": "none"}'
-        gen_instructions.append(kwargs["messages"][0]["content"])
-        return "alr here's what i'm working with ... sound right?"
-    anthropic_stub.reply_with(_handler)
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else (_ for _ in ()).throw(AssertionError("bare answer → no model bubble")))
 
     done = onboarding_agent.handle_onboarding_reply(user, "ok so no injuries")
 
-    assert done is False, "must NOT complete — the summary was never shown"
-    assert len(sms_capture) == 1 and "sound right" in sms_capture[0][1]
-    assert "Present this summary" in gen_instructions[0]
+    assert done is True
+    bodies = [b for _p, b in sms_capture]
+    assert len(bodies) >= 1, bodies
+    assert bodies[0].startswith("ok so 5'10 170, training 4 days a week at 5, up at 8 down by 12, building muscle. "), bodies[0]
+    assert bodies[0].endswith("say if anything's off") and "sound right" not in bodies[0].lower()
     db.expire_all()
-    assert db.get(User, user.id).onboarding_step == 2
+    u = db.get(User, user.id)
+    assert u.onboarding_step == 3 and u.injuries == "none" and u.calorie_target
 
-    # now a confirmation TO the summary completes
-    sms_capture.clear()
-    def _handler2(kwargs):
-        if _is_extract(kwargs):
+
+def test_asking_for_a_workout_with_the_basics_in_completes_early(db, anthropic_stub, sms_capture, monkeypatch):
+    """The founder's one early exit: they want the workout, the card can be built →
+    react, summary, done. Cooking / wake / tools are learned during coaching."""
+    import config, onboarding_agent
+    from models import User
+    monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=110, workout_days="mon,tue,thu",
+                       injuries="back", gender="female", age=23)   # cooking/wake/tools/… unknown
+    seen = {}
+
+    def _handler(kw):
+        if _is_extract(kw):
             return "{}"
-        return "locked in. you'll hear from me at 8"
-    anthropic_stub.reply_with(_handler2)
-    db.expire_all()
-    assert onboarding_agent.handle_onboarding_reply(db.get(User, user.id), "yeah sounds good") is True
+        seen["instruction"] = kw["messages"][0]["content"]
+        return "ok ur already there, love that. numbers then ur card"
+    anthropic_stub.reply_with(_handler)
+
+    done = onboarding_agent.handle_onboarding_reply(user, "No I want to start now. I'm at rsf. Send me the workout card")
+    assert done is True
+    bodies = [b for _p, b in sms_capture]
+    assert bodies[0] == "ok ur already there, love that. numbers then ur card"
+    assert bodies[1].startswith("ok so 5'6 110, training mon/tue/thu, building muscle. ")
+    assert "they asked for it" in seen["instruction"] and "no numbers" in seen["instruction"]
     db.expire_all()
     assert db.get(User, user.id).onboarding_step == 3
+
+
+def test_asking_for_a_workout_without_the_basics_asks_for_exactly_those(db, anthropic_stub, sms_capture, caplog):
+    """Live (user 47): 'can I get a workout card?' ×5 → 'the card should pop up',
+    'might be glitching on my end'. Now: one honest ask for the card-critical items."""
+    import logging
+    import onboarding_agent
+    user = _new_signup(db, onboarding_step=2, injuries="back")   # height/weight + days still unknown
+    seen = {}
+
+    def _handler(kw):
+        if _is_extract(kw):
+            return "{}"
+        seen["instruction"] = kw["messages"][0]["content"]
+        return "back day's coming, just need ur height and weight and how many days u can train"
+    anthropic_stub.reply_with(_handler)
+
+    with caplog.at_level(logging.INFO):
+        done = onboarding_agent.handle_onboarding_reply(user, "Okay so send me a workout card for leg day")
+    assert done is False and len(sms_capture) == 1
+    ins = seen["instruction"]
+    assert "You can't send it yet" in ins and "height and weight" in ins and "how many days per week" in ins
+    assert "any injuries" not in ins                       # already known — never re-asked
+    assert "Never say a card is loading, glitching" in ins and "never say you're done" in ins
+    assert any("mode=card_ask" in r.getMessage() for r in caplog.records)
+    # and the system prompt carries the rule on every turn
+    sp = onboarding_agent._build_system_prompt(user)
+    assert "You cannot send a workout, a card" in sp and "Never write a workout out as text" in sp
 
 
 # ── 6. the list is kept for when it's appropriate ────────────────────────────
@@ -472,8 +515,8 @@ def test_summary_shows_wake_and_sleep_so_a_swap_can_be_caught(db):
                        workout_days="4", workout_time="afternoon", wake_time="12:00", sleep_time="03:00",
                        goal="fat_loss,muscle_building")
     summary = onboarding_agent._build_confirmation_summary(user)
-    assert "Up around 12:00" in summary and "asleep around 03:00" in summary
-    assert summary.rstrip().endswith("Sound right?")
+    assert "up at 12 down by 3" in summary
+    assert summary.rstrip().endswith("say if anything's off")
 
 
 def test_extractor_prompt_states_the_late_schedule_rule(db, anthropic_stub):
@@ -496,70 +539,39 @@ def test_extractor_survives_a_thinking_block_first(db, anthropic_stub):
     assert out == {"sleep_time": "03:00", "wake_time": "12:00"}
 
 
-def test_adjust_branch_may_not_invent_new_targets(db, anthropic_stub, sms_capture):
-    """Live (user 27): 'sounds kinda high?' → the coach wrote '2300 cal and 150g protein.
-    sound right?' — numbers it cannot set; completion stores the computed 2450/139."""
-    import onboarding_agent
-    from models import get_session, Message
-    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
+def test_everything_known_completes_with_code_numbers_and_answers_their_question(db, anthropic_stub, sms_capture, monkeypatch):
+    """Live (user 27): the model wrote '2300 cal and 150g protein. sound right?' —
+    numbers it cannot set — and skipped a wh-question with no '?'. The summary is
+    code's now (2450/139 for these stats); the friend's bubble answers the question."""
+    import config, onboarding_agent
+    from models import User
+    monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male",
                        occupation="student", activity_level="active", avg_steps=10000,
                        workout_days="4", workout_time="afternoon", current_split="ppl",
                        cooking_situation="mix", diet="omnivore", injuries="none",
                        wake_time="12:00", sleep_time="03:00", existing_tools="strava",
                        goal="fat_loss,muscle_building")
-    s = get_session()
-    try:
-        s.add(Message(user_id=user.id, direction="out", body="here's what i'm working with ... sound right?", message_type="onboarding"))
-        s.commit()
-    finally:
-        s.close()
     seen = {}
-    def _handler(kwargs):
-        if _is_extract(kwargs):
+
+    def _handler(kw):
+        if _is_extract(kw):
             return "{}"
-        seen["instruction"] = kwargs["messages"][0]["content"]
-        return "fair pushback ... same numbers. sound right?"
-    anthropic_stub.reply_with(_handler)
-
-    assert onboarding_agent.handle_onboarding_reply(user, "2450 sounds kinda high for losing fat no?") is False
-    ins = seen["instruction"]
-    assert "Never invent or announce a number yourself" in ins
-    assert "TARGET REQUEST HANDLED" not in ins   # no number asked → no override ran
-    assert "Do NOT repeat the whole summary" in ins
-
-
-def test_confirmation_with_a_wh_question_answers_it_before_completing(db, anthropic_stub, sms_capture):
-    """Live (user 27): "Ok bet, that sounds like a better number / Why didn't you just go
-    with that in the first place" had no '?' → the completion branch skipped the question."""
-    import onboarding_agent
-    from models import get_session, Message, User
-    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139,
-                       occupation="student", activity_level="active", avg_steps=10000,
-                       workout_days="4", workout_time="afternoon", current_split="ppl",
-                       cooking_situation="mix", diet="omnivore", injuries="none",
-                       wake_time="12:00", sleep_time="03:00", existing_tools="strava",
-                       goal="fat_loss,muscle_building")
-    s = get_session()
-    try:
-        s.add(Message(user_id=user.id, direction="out", body="... sound right?", message_type="onboarding"))
-        s.commit()
-    finally:
-        s.close()
-    instructions = []
-    def _handler(kwargs):
-        if _is_extract(kwargs):
-            return "{}"
-        instructions.append(kwargs["messages"][0]["content"])
-        return "because recomp math. locked in."
+        seen["instruction"] = kw["messages"][0]["content"]
+        return "because recomp math, u hold weight and swap it"
     anthropic_stub.reply_with(_handler)
 
     done = onboarding_agent.handle_onboarding_reply(
         user, "Ok bet, that sounds like a better number\nWhy didn't you just go with that in the first place")
-
     assert done is True
-    assert any("Answer their question directly" in i for i in instructions), instructions
+    bodies = [b for _p, b in sms_capture]
+    assert bodies[0] == "because recomp math, u hold weight and swap it"
+    assert bodies[1] == ("ok so 5'6 139, training 4 days a week afternoons, up at 12 down by 3, recomp. "
+                         "2450 cal, 139g protein a day. say if anything's off"), bodies[1]
+    assert "answer their question, fully" in seen["instruction"] and "no numbers" in seen["instruction"]
     db.expire_all()
-    assert db.get(User, user.id).onboarding_step == 3
+    u = db.get(User, user.id)
+    assert (u.calorie_target, u.protein_target, u.targets_source, u.onboarding_step) == (2450, 139, "computed", 3)
 
 
 # ── 8. the onboarding model remembers the conversation; it survives into coaching ──
@@ -761,15 +773,12 @@ def test_extractor_prompt_states_aspiration_is_not_pattern(db, anthropic_stub):
 
 
 def test_recap_uses_int_weight_and_omits_age_when_absent(db):
-    """Voice rewrite: never '137.0 lbs', never a field the user didn't give."""
+    """Voice rewrite: never '137.0', never a field the user didn't give, identity.md's
+    own shape: "ok so 5'0 137, training evenings … 1450 cal, 137g protein"."""
     from onboarding_agent import _build_confirmation_summary
     u = _new_signup(db, onboarding_step=2, height_ft=5, height_in=0, weight_lbs=137.0, age=None,
-                    goal="fat_loss", workout_days="5", workout_time="evening",
-                    calorie_target=1450, protein_target=137)
+                    goal="fat_loss", workout_days="5", workout_time="evening")
     recap = _build_confirmation_summary(u)
-    assert "137 lbs" in recap and "137.0" not in recap
+    assert recap.startswith("ok so 5'0 137, training 5 days a week evenings, cutting. ") and "137.0" not in recap
     assert "years old" not in recap and "None" not in recap
-    u2 = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139, age=20,
-                     goal="fat_loss", workout_days="5", workout_time="14:00",
-                     calorie_target=2450, protein_target=139)
-    assert "139 lbs, 20." in _build_confirmation_summary(u2)
+    assert recap.endswith("say if anything's off")

@@ -100,8 +100,8 @@ def test_profile_endpoint_rejects_bad_tokens(db, client):
 
 
 def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch):
-    """_complete_onboarding hands the model the profile link — it must be the
-    token link, never the phone-keyed one."""
+    """_complete_onboarding hands the model the profile link (in the rundown bubble —
+    the summary is code's) — it must be the token link, never the phone-keyed one."""
     import onboarding_agent
     from profile_page import profile_token
     user = make_user(db, name="Nau", phone="+12094205037", onboarding_step=2,
@@ -110,15 +110,15 @@ def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch
     seen = {}
 
     def fake_generate(system_prompt, instruction, **kw):
-        # Two calls at completion now: the kickoff, then the capability rundown.
-        # The link lives in the kickoff (the rundown is told NOT to repeat it).
-        if "Onboarding is complete" in instruction:
+        # One model call at completion now: the capability rundown, which carries the link.
+        if "quick rundown" in instruction:
             seen["instruction"] = instruction
-        return "locked in."
+        return "oh and quick rundown."
 
     monkeypatch.setattr(onboarding_agent, "_generate", fake_generate)
     monkeypatch.setattr(onboarding_agent, "send_sms", lambda *a, **k: None)
     monkeypatch.setattr(onboarding_agent.config, "ONBOARDING_RUNDOWN_DELAY_S", 0)
+    monkeypatch.setattr(onboarding_agent.config, "ONBOARDING_RUNDOWN_ENABLED", True)
     onboarding_agent._complete_onboarding(user, "yes")
     assert f"?t={profile_token(user.id)}" in seen["instruction"]
     assert "?phone=" not in seen["instruction"]

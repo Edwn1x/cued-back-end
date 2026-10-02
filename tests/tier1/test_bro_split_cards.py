@@ -292,7 +292,7 @@ def test_summary_states_their_split(db):
                 goal="fat_loss", workout_days="5,6", workout_time="17:00-18:00",
                 wake_time="08:00", sleep_time="00:00", activity_level="moderately active", avg_steps=9000)
     s = onboarding_agent._build_confirmation_summary(make_user(db, **base, current_split="bro_split", split_days=ANGEL_DAYS))
-    assert "Split is chest + biceps / back + triceps / legs + shoulders." in s
+    assert "split is chest + biceps / back + triceps / legs + shoulders" in s
 
 
 # ─── the loop sees the split ────────────────────────────────────────────────
