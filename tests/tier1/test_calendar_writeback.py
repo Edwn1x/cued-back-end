@@ -55,7 +55,8 @@ def test_authorize_url_adds_write_scope_only_when_flag_on(monkeypatch):
     # flag ON: write scope appended, readonly still present (read keeps working)
     monkeypatch.setattr(config, "CALENDAR_WRITE_ENABLED", True)
     on = get_provider("gcal").authorize_url(state="TOK", redirect_uri="https://app/oauth/gcal/callback")
-    assert "calendar.events.readonly" in on           # read not removed
+    assert "calendar.events.readonly" not in on       # superset of the write scope — not requested twice (verification review)
+    assert "calendar.calendarlist.readonly" in on     # listing calendars still needs its own scope
     assert "calendar.calendarlist.readonly" in on
     from integrations.gcal import WRITE_SCOPE
     from urllib.parse import quote

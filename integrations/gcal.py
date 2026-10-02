@@ -68,7 +68,11 @@ class GCalProvider(Provider):
         events scope is appended only when CALENDAR_WRITE_ENABLED so a NEW/re-consented
         grant can create events. Flag off → exactly the readonly scopes (unchanged)."""
         if getattr(config, "CALENDAR_WRITE_ENABLED", False):
-            return f"{self.scopes} {WRITE_SCOPE}"
+            # calendar.events is a strict superset of calendar.events.readonly — asking for
+            # both lists a redundant scope on the consent screen and in the verification
+            # review ("request only the narrowest scopes needed"). Write mode = exactly
+            # {events, calendarlist.readonly}. Existing readonly grants keep syncing.
+            return f"{WRITE_SCOPE} https://www.googleapis.com/auth/calendar.calendarlist.readonly"
         return self.scopes
 
     def authorize_url(self, *, state: str, redirect_uri: str) -> str:
