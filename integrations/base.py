@@ -83,9 +83,19 @@ def get_provider(name: str) -> Provider | None:
 # ─── row lifecycle ────────────────────────────────────────────────────────────
 
 def get_integration(session, user_id: int, provider: str) -> Integration | None:
+    """The PRIMARY row for (user, provider) — account="". Secondary accounts (a second
+    Google login for the same provider) live in their own rows; see rows_for()."""
+    return (session.query(Integration)
+            .filter(Integration.user_id == user_id, Integration.provider == provider,
+                    Integration.account == "")
+            .one_or_none())
+
+
+def rows_for(session, user_id: int, provider: str) -> list:
+    """Every row for (user, provider), primary first."""
     return (session.query(Integration)
             .filter(Integration.user_id == user_id, Integration.provider == provider)
-            .one_or_none())
+            .order_by(Integration.account, Integration.id).all())
 
 
 def _get_or_create(session, user_id: int, provider: str) -> Integration:
@@ -125,11 +135,40 @@ def pending_nonce(user_id: int, provider: str) -> str | None:
         session.close()
 
 
+def _row_for_bundle(session, user_id: int, provider: str, bundle: TokenBundle) -> Integration:
+    """Which row a successful OAuth callback lands on (multi-account, 2026-10-02):
+      - a row already holding this account (external_id) → that row (a reconnect);
+      - else the primary row if it isn't a live connection to a DIFFERENT account
+        (first connect / reconnect after revoke / unknown account);
+      - else a NEW row keyed by this account — they added a second Google login."""
+    primary = _get_or_create(session, user_id, provider)
+    ext = (bundle.external_id or "").strip()
+    if ext:
+        for r in rows_for(session, user_id, provider):
+            if (r.external_id or "") == ext:
+                return r
+    if primary.status != "connected" or not primary.external_id or not ext or primary.external_id == ext:
+        return primary
+    extra = Integration(user_id=user_id, provider=provider, account=ext[:64], status="pending", meta={})
+    session.add(extra)
+    session.flush()
+    logger.info("INTEGRATION_SECOND_ACCOUNT user=%s provider=%s", user_id, provider)
+    return extra
+
+
 def complete_connection(user_id: int, provider: str, bundle: TokenBundle) -> None:
-    """Success callback: store encrypted tokens, mark connected, burn the nonce."""
+    """Success callback: store encrypted tokens, mark connected, burn the nonce. A second
+    Google account for the same provider gets its own row (see _row_for_bundle)."""
     session = get_session()
     try:
-        integ = _get_or_create(session, user_id, provider)
+        integ = _row_for_bundle(session, user_id, provider, bundle)
+        primary = get_integration(session, user_id, provider)
+        if primary is not None and primary is not integ:
+            # the handshake nonce always lives on the primary row — burn it there
+            pm = dict(primary.meta or {})
+            pm.pop("connect_nonce", None)
+            pm.pop("connect_exp", None)
+            primary.meta = pm
         integ.status = "connected"
         if bundle.access_token is not None:
             integ.access_token = crypto.encrypt(bundle.access_token)
@@ -165,12 +204,14 @@ def mark_error(user_id: int, provider: str, reason: str) -> None:
     logger.warning("INTEGRATION_ERROR user=%s provider=%s reason=%s", user_id, provider, str(reason)[:120])
 
 
-def mark_revoked(user_id: int, provider: str) -> None:
+def mark_revoked(user_id: int, provider: str, *, integration_id: int | None = None) -> None:
     """Deauth / 401-after-refresh: clear tokens, keep the row so the coach can see
-    the disconnected state once if relevant."""
+    the disconnected state once if relevant. `integration_id` targets a specific
+    (secondary-account) row; default = the primary."""
     session = get_session()
     try:
-        integ = get_integration(session, user_id, provider)
+        integ = (session.get(Integration, integration_id) if integration_id
+                 else get_integration(session, user_id, provider))
         if integ is None:
             return
         integ.status = "revoked"
@@ -257,16 +298,19 @@ def redact_inbound(user_id: int, secret: str, placeholder: str) -> int:
         session.close()
 
 
-def get_valid_access_token(user_id: int, provider: str) -> str | None:
+def get_valid_access_token(user_id: int, provider: str, *, integration_id: int | None = None) -> str | None:
     """Return a usable access token, refreshing first if it's within REFRESH_SKEW_S
     of expiry. On refresh failure, mark the row revoked and return None (the coach
-    then sees `provider: disconnected`). None also for not-connected providers."""
+    then sees `provider: disconnected`). None also for not-connected providers.
+    `integration_id` = a specific row (a secondary Google account); default primary."""
     prov = get_provider(provider)
     session = get_session()
     try:
-        integ = get_integration(session, user_id, provider)
+        integ = (session.get(Integration, integration_id) if integration_id
+                 else get_integration(session, user_id, provider))
         if integ is None or integ.status != "connected":
             return None
+        integration_id = integ.id
         access = crypto.decrypt(integ.access_token)
         refresh = crypto.decrypt(integ.refresh_token)
         expires_at = integ.expires_at
@@ -283,13 +327,13 @@ def get_valid_access_token(user_id: int, provider: str) -> str | None:
         bundle = prov.refresh(refresh)
     except Exception as e:
         logger.warning("INTEGRATION_REFRESH_FAILED user=%s provider=%s err=%s", user_id, provider, e)
-        mark_revoked(user_id, provider)
+        mark_revoked(user_id, provider, integration_id=integration_id)
         return None
 
     # persist the rotated tokens
     session = get_session()
     try:
-        integ = get_integration(session, user_id, provider)
+        integ = session.get(Integration, integration_id)
         if integ is not None:
             if bundle.access_token is not None:
                 integ.access_token = crypto.encrypt(bundle.access_token)
@@ -328,20 +372,22 @@ def status_line(user_id: int) -> str | None:
     try:
         rows = (session.query(Integration)
                 .filter(Integration.user_id == user_id)
-                .order_by(Integration.provider).all())
+                .order_by(Integration.provider, Integration.account, Integration.id).all())
         parts = []
+        multi = {p for p in (r.provider for r in rows) if sum(1 for x in rows if x.provider == p) > 1}
         for r in rows:
+            who = f" [{r.external_id}]" if r.provider in multi and r.external_id else ""
             if r.status == "connected":
                 extra = _strava_scope_suffix(r.scopes) if r.provider == "strava" else ""
                 if r.provider == "canvas":
                     codes = [c for c in ((r.meta or {}).get("course_codes") or []) if c][:6]
                     if codes:
                         extra = " (" + " · ".join(codes) + ")"
-                parts.append(f"{r.provider} connected{extra}")
+                parts.append(f"{r.provider}{who} connected{extra}")
             elif r.status == "revoked":
-                parts.append(f"{r.provider} disconnected")
+                parts.append(f"{r.provider}{who} disconnected")
             elif r.status == "error":
-                parts.append(f"{r.provider} error")
+                parts.append(f"{r.provider}{who} error")
             # pending rows are in-flight — don't advertise them to the coach
     finally:
         session.close()
@@ -350,7 +396,7 @@ def status_line(user_id: int) -> str | None:
 
 __all__ = [
     "Provider", "TokenBundle", "PROVIDERS", "register", "get_provider",
-    "get_integration", "set_pending", "pending_nonce", "complete_connection",
+    "get_integration", "rows_for", "set_pending", "pending_nonce", "complete_connection",
     "mark_error", "mark_revoked", "get_valid_access_token", "status_line",
     "RefreshFailed", "REFRESH_SKEW_S",
     "note_sync_failure", "note_sync_success", "redact_inbound",

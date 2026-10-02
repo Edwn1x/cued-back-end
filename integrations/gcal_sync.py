@@ -54,10 +54,33 @@ def _external_id(calendar_id: str, gevent: dict) -> str:
 
 
 def sync_user(user_id: int) -> dict:
-    """Sync one connected user's calendars into the event store. Returns a summary."""
+    """Sync one user's calendars into the event store — every connected Google account
+    (primary + any second login), each with its own token and sync state. Returns a
+    summary; {"skipped": "not connected"} when no row is connected."""
     if not config.GCAL_ENABLED:
         return {"skipped": "flag off"}
-    token = base.get_valid_access_token(user_id, SOURCE)
+    session = get_session()
+    try:
+        row_ids = [r.id for r in base.rows_for(session, user_id, SOURCE) if r.status == "connected"]
+    finally:
+        session.close()
+    if not row_ids:
+        return {"skipped": "not connected"}
+    total = {"upserted": 0, "deleted": 0, "accounts": 0}
+    for rid in row_ids:
+        r = _sync_row(user_id, rid)
+        if "upserted" in r:
+            total["upserted"] += r["upserted"]
+            total["deleted"] += r["deleted"]
+            total["accounts"] += 1
+    if not total["accounts"]:
+        return {"skipped": "not connected"}
+    return total
+
+
+def _sync_row(user_id: int, integration_id: int) -> dict:
+    """One connected row's calendars → the event store."""
+    token = base.get_valid_access_token(user_id, SOURCE, integration_id=integration_id)
     if not token:
         return {"skipped": "not connected"}
 
@@ -65,7 +88,7 @@ def sync_user(user_id: int) -> dict:
     try:
         user = session.get(User, user_id)
         tz = ZoneInfo((user.user_timezone if user else None) or "America/Los_Angeles")
-        integ = base.get_integration(session, user_id, SOURCE)
+        integ = session.get(Integration, integration_id)
         sync_state = dict((integ.meta or {}).get("gcal_sync", {})) if integ else {}
     finally:
         session.close()
@@ -124,7 +147,7 @@ def sync_user(user_id: int) -> dict:
 
     session = get_session()
     try:
-        integ = base.get_integration(session, user_id, SOURCE)
+        integ = session.get(Integration, integration_id)
         if integ:
             m = dict(integ.meta or {})
             m["gcal_sync"] = sync_state
@@ -133,7 +156,7 @@ def sync_user(user_id: int) -> dict:
             session.commit()
     finally:
         session.close()
-    logger.info("GCAL_SYNC user=%s upserted=%s deleted=%s", user_id, upserted, deleted)
+    logger.info("GCAL_SYNC user=%s row=%s upserted=%s deleted=%s", user_id, integration_id, upserted, deleted)
     return {"upserted": upserted, "deleted": deleted}
 
 
@@ -143,8 +166,8 @@ def sync_all() -> int:
         return 0
     session = get_session()
     try:
-        ids = [i.user_id for i in session.query(Integration)
-               .filter(Integration.provider == SOURCE, Integration.status == "connected").all()]
+        ids = sorted({i.user_id for i in session.query(Integration)
+                      .filter(Integration.provider == SOURCE, Integration.status == "connected").all()})
     finally:
         session.close()
     n = 0

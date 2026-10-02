@@ -635,11 +635,16 @@ class Integration(Base):
     nonce during an in-flight OAuth handshake. Timestamps are naive UTC (matching
     events / session_state)."""
     __tablename__ = "integrations"
-    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_integrations_user_provider"),)
+    # One row per (user, provider, account). `account` is "" for the primary connection
+    # (every existing row; every caller that doesn't care). A SECOND Google account for the
+    # same provider (school calendar on a different login, 2026-10-02) gets its own row with
+    # account=<that account's external_id>; gcal_sync syncs every connected row.
+    __table_args__ = (UniqueConstraint("user_id", "provider", "account", name="uq_integrations_user_provider_account"),)
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     provider = Column(String(16), nullable=False)   # gcal | bcourses | strava | fitbit | whoop | oura
+    account = Column(String(64), nullable=False, default="", server_default="")   # "" = primary
     status = Column(String(16), nullable=False, default="pending")  # pending | connected | revoked | error
     access_token = Column(Text)                      # Fernet ciphertext (nullable — bcourses has none)
     refresh_token = Column(Text)                     # Fernet ciphertext

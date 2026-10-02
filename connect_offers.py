@@ -111,6 +111,10 @@ def allowlist_state(user, session=None) -> str:
         return "ok"
     if getattr(user, "google_allowlisted_at", None):
         return "ok"
+    if getattr(user, "google_email", None):
+        # a saved-but-unlisted account outranks "they connected before": a SECOND Google
+        # login (school calendar) needs its own test-users entry
+        return "needs_allowlist"
     own = session is None
     if own:
         from models import get_session
@@ -121,9 +125,7 @@ def allowlist_state(user, session=None) -> str:
     finally:
         if own:
             session.close()
-    if not getattr(user, "google_email", None):
-        return "needs_account"
-    return "needs_allowlist"
+    return "needs_account"
 
 
 def context_line(user) -> str | None:
@@ -262,17 +264,21 @@ def _eligible(user) -> bool:
 def _action_for(session, user, now: datetime) -> tuple[str, str, str | None] | None:
     """→ (kind, provider, text) for the ONE thing to send this user now, or None.
     kind: 'reconnect' | 'allowlisted' | 'offer_link' | 'offer_ask' | 'offer_text'."""
-    # 1. a Google connection died → one nudge per revoke
+    # 1. a Google connection died → one nudge per revoke (every account's row)
     if config.RECONNECT_NUDGE_ENABLED:
+        from integrations.base import rows_for
         for provider in GOOGLE_PROVIDERS:
-            r = _row(session, user.id, provider)
-            if r is None or r.status != "revoked":
-                continue
-            meta = r.meta or {}
-            revoked_at = _parse_iso(meta.get("revoked_at")) or r.updated_at
-            nudged_at = _parse_iso(meta.get("reconnect_nudged_at"))
-            if revoked_at and (nudged_at is None or nudged_at < revoked_at):
-                return ("reconnect", provider, RECONNECT_LINE[provider].format(device=device_label(user)))
+            for r in rows_for(session, user.id, provider):
+                if r.status != "revoked":
+                    continue
+                meta = r.meta or {}
+                revoked_at = _parse_iso(meta.get("revoked_at")) or r.updated_at
+                nudged_at = _parse_iso(meta.get("reconnect_nudged_at"))
+                if revoked_at and (nudged_at is None or nudged_at < revoked_at):
+                    line = RECONNECT_LINE[provider].format(device=device_label(user))
+                    if r.account and r.external_id:
+                        line = line.replace("ur google calendar", f"ur google calendar ({r.external_id})")
+                    return ("reconnect", provider, line)
 
     offers = _offers(user)
     state = allowlist_state(user, session)
@@ -345,10 +351,17 @@ def sweep(now: datetime | None = None) -> int:
             kind, provider, text = action
             # mark BEFORE sending so a send-side retry can't double-send
             if kind == "reconnect":
-                r = _row(session, u.id, provider)
-                meta = dict(r.meta or {})
-                meta["reconnect_nudged_at"] = now.isoformat()
-                r.meta = meta
+                from integrations.base import rows_for
+                for r in rows_for(session, u.id, provider):
+                    if r.status != "revoked":
+                        continue
+                    meta = dict(r.meta or {})
+                    if _parse_iso(meta.get("reconnect_nudged_at")) and \
+                            _parse_iso(meta.get("reconnect_nudged_at")) >= (_parse_iso(meta.get("revoked_at")) or r.updated_at):
+                        continue
+                    meta["reconnect_nudged_at"] = now.isoformat()
+                    r.meta = meta
+                    break
                 _mark(session, u, f"{provider}_reconnect", now)   # counts toward the one-a-day gap
             elif kind == "allowlisted":
                 _mark(session, u, f"{provider}_link", now)
