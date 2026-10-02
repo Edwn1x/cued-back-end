@@ -850,16 +850,54 @@ def _with_from_app_note(notes, app: str) -> str:
     return f"{notes}; {tag}" if notes else tag
 
 
-def _day_total_suffix(user_id: int) -> str:
+def _nutrition_day_of(user, eaten_at) -> date:
+    """The LOCAL nutrition day a naive-UTC `eaten_at` falls in, labeled the way
+    recompute_daily_totals labels totals_date (the local date the window STARTED, so a
+    shifted day_reset_hour keeps a 12:20am meal on the prior day). Never the UTC date."""
+    from timefmt import local_day_bounds, resolve_tz
+    start, _end = local_day_bounds(user, now=eaten_at)
+    return start.replace(tzinfo=timezone.utc).astimezone(resolve_tz(user)).date()
+
+
+def _day_total_suffix(user_id: int, day: date | None = None) -> str:
     """The FRESH authoritative day total, read after a recompute, as a tool-result
     suffix. The context's TODAY'S TOTALS block was built BEFORE this turn's log/edit,
     so the coach must quote THIS number for the updated running total instead of adding
-    the new meal to a stale block by hand (the live 2026-09-19 protein-drift bug)."""
+    the new meal to a stale block by hand (the live 2026-09-19 protein-drift bug).
+
+    `day` (a LOCAL calendar date) targets a day other than today: the total is summed
+    straight from that local nutrition day's active meals and labeled by day
+    ("YESTERDAY (2026-10-01) TOTAL NOW: …" / "2026-09-28 TOTAL NOW: …"), with no
+    protein-left figure (targets are today's). Live 2026-10-02: after-midnight eating
+    "put on yesterday's tab" — every write handed the coach today's total (0) but no
+    yesterday total, so it ran the arithmetic itself and drifted (said 2490/2565 when the
+    day was 2745/2820). `day` None or == local today → the unchanged today suffix.
+    Fail-open: any error on the past-day path returns "" rather than breaking the result."""
     session = get_session()
     try:
         u = session.get(User, user_id)
         if not u:
             return ""
+        if day is not None:
+            try:
+                from timefmt import local_day_bounds
+                today_local = _nutrition_day_of(u, _naive_utcnow())
+                if day != today_local:
+                    tz = _user_tz(session, user_id)
+                    noon = datetime(day.year, day.month, day.day, 12, 0, tzinfo=tz)
+                    start, end = local_day_bounds(u, now=noon)
+                    meals = (active(session, Meal, user_id=user_id)
+                             .filter(Meal.eaten_at >= start, Meal.eaten_at < end).all())
+                    cal = sum(m.calories or 0 for m in meals)
+                    pro = sum(m.protein_g or 0 for m in meals)
+                    if day == today_local - timedelta(days=1):
+                        return (f" | YESTERDAY ({day.isoformat()}) TOTAL NOW: {cal} cal, {pro}g protein"
+                                " — use this exact number for yesterday")
+                    return (f" | {day.isoformat()} TOTAL NOW: {cal} cal, {pro}g protein"
+                            f" — use this exact number for {day.isoformat()}")
+            except Exception:
+                logger.exception("DAY_TOTAL_SUFFIX_PAST_DAY_FAILED user=%s day=%s", user_id, day)
+                return ""
         cal = u.calories_today or 0
         pro = u.protein_today or 0
         tgt = f", {u.protein_target - pro}g protein left of {u.protein_target}" if u.protein_target else ""
@@ -868,6 +906,19 @@ def _day_total_suffix(user_id: int) -> str:
                    "meal, or when planning what to eat — not a line after every log)" if tgt else ""))
     finally:
         session.close()
+
+
+def _affected_days_suffix(user_id: int, days) -> str:
+    """One labeled total per DISTINCT affected local day, in the order given (callers put
+    the day the user asked about first — the move target — then the source day). Today
+    renders as the existing DAY TOTAL NOW text; other days as their dated total."""
+    out, seen = "", set()
+    for d in days:
+        if d is None or d in seen:
+            continue
+        seen.add(d)
+        out += _day_total_suffix(user_id, d)
+    return out
 
 
 def _dining_hall_from_turn(user_id: int):
@@ -975,7 +1026,7 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     # 2026-09-12: Friday's SF pizza logged as Saturday → "why is it 1450 cal, i just
     # woke up" → deleted instead of re-dated. Bad date → today (never lose a meal).
     date_str = (tool_input.get("date") or "").strip() or None
-    when, is_today = _naive_utcnow(), True
+    when, is_today, target_day = _naive_utcnow(), True, None
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -991,10 +1042,11 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
             local_day = _resolve_local_date(tz, date_str, strict=True)
             is_today = local_day == datetime.now(tz).date()
             if not is_today:
+                target_day = local_day
                 when = (datetime(local_day.year, local_day.month, local_day.day, 12, 0, tzinfo=tz)
                         .astimezone(timezone.utc).replace(tzinfo=None))
         except Exception:
-            when, is_today = _naive_utcnow(), True
+            when, is_today, target_day = _naive_utcnow(), True, None
 
     if from_app:
         # §3 slot check: the screenshot's meal slot must not already hold a row this
@@ -1093,6 +1145,10 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     if is_today:
         recompute_daily_totals(user_id)  # once, after all inserts — a past-day meal leaves today alone
         day = _day_total_suffix(user_id)  # the FRESH post-log total, so the coach quotes it (not head math)
+    elif target_day is not None:
+        # A past-day log still needs an authoritative total to quote — THAT day's, labeled,
+        # or the coach adds the batch to a number it said earlier and drifts (2026-10-02).
+        day = _day_total_suffix(user_id, target_day)
     for mid, desc, _cal, _pro, saw in logged:
         if saw:
             logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
@@ -1650,6 +1706,12 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         scope = (tool_input.get("scope") or "item").lower()
         group_scope = scope == "meal" and entity == "meal" and config.MEAL_GROUP_ENABLED
         targets = _meal_group_rows(session, user_id, row) if group_scope else [row]
+        # The local nutrition day(s) these meal rows live on BEFORE the change, so the
+        # result can quote the right day's total (a yesterday meal → yesterday's total).
+        source_days = []
+        if entity == "meal":
+            u_for_day = session.get(User, user_id)
+            source_days = [_nutrition_day_of(u_for_day, r.eaten_at) for r in targets if r.eaten_at]
 
         if action == "delete":
             # Photo-reread guard: a new photo can ADD a meal but must not silently DELETE
@@ -1671,7 +1733,8 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                 recompute_daily_totals(user_id)
                 for r in targets:
                     _clear_pending_writeback(user_id, r.id)
-                day = _day_total_suffix(user_id)  # fresh total so the coach quotes it, not head math
+                # the deleted rows' own day(s) — yesterday's meal → yesterday's total
+                day = _affected_days_suffix(user_id, source_days) if source_days else _day_total_suffix(user_id)
             note = _rollback_pointer_for_deleted_workout(user_id, row) if entity == "workout" else None
             logger.info("MANAGE_LOG user=%s delete %s id=%s scope=%s n=%s",
                         user_id, entity, entry_id, scope, len(targets))
@@ -1701,7 +1764,9 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             recompute_daily_totals(user_id)
             for r in targets:
                 _clear_pending_writeback(user_id, r.id)
-            day = _day_total_suffix(user_id)
+            # Target day FIRST (that's the number they asked about), then the source day(s) —
+            # moving today's items to yesterday returns yesterday's total AND today's.
+            day = _affected_days_suffix(user_id, [new_day] + source_days)
             ids = [int(r.id) for r in targets]
             logger.info("MANAGE_LOG user=%s move meal group ids=%s -> %s",
                         user_id, ids, new_day.isoformat())
@@ -1839,7 +1904,11 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         if entity == "meal":
             recompute_daily_totals(user_id)
             _clear_pending_writeback(user_id, entry_id)
-            day = _day_total_suffix(user_id)  # fresh total after the edit, so the coach quotes it
+            # The row's day AFTER the edit first (a date move lands it there), then where it
+            # came from — a yesterday meal's edit quotes yesterday's total, not today's.
+            u_after = session.get(User, user_id)
+            now_day = _nutrition_day_of(u_after, row.eaten_at) if row.eaten_at else None
+            day = _affected_days_suffix(user_id, [now_day] + source_days)
         logger.info("MANAGE_LOG user=%s edit %s id=%s fields=%s", user_id, entity, entry_id, applied)
         if from_app and config.FOOD_LOGGER_BRIDGE_ENABLED:
             from food_logger import app_write_side_effects
