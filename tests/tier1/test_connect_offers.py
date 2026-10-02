@@ -133,7 +133,7 @@ def test_coach_prompt_shows_the_integrations_block_for_a_fresh_user(db):
     sp = agent_loop.build_context(u) if hasattr(agent_loop, "build_context") else None
     if sp is None:
         pytest.skip("no public context builder")
-    assert "## INTEGRATIONS" in sp and "nothing connected" in sp and "google account: unknown" in sp
+    assert "## INTEGRATIONS" in sp and "gcal: NOT connected" in sp and "google account: unknown" in sp
 
 
 def test_voice_and_tool_registry(db):
@@ -290,3 +290,27 @@ def test_columns_are_migrated():
     src = open(migrate.__file__).read()
     for col in ("google_email", "google_allowlisted_at", "connect_offers"):
         assert f"ADD COLUMN IF NOT EXISTS {col}" in src
+
+
+def test_integrations_block_states_absence_and_outranks_memory(monkeypatch):
+    """Live 2026-10-02 (founder, mid demo): the coaching summary said 'Connected feeds:
+    Google Calendar…' while the row had been removed; the block listed only what WAS
+    connected, so the model said 'yeah i can see it' and argued when corrected."""
+    import config
+    from connect_offers import integrations_block
+    monkeypatch.setattr(config, "GOOGLE_OAUTH_TESTING_MODE", False)
+    b = integrations_block(None, "bcourses connected · google_health connected", None)
+    assert b.startswith("## INTEGRATIONS (code's list — the ONLY truth")
+    assert "bcourses connected · google_health connected" in b
+    assert "gcal: NOT connected (google calendar)" in b
+    assert "canvas" not in b.lower().split("bcourses connected")[1].split("gcal")[0]   # no separate canvas line
+    assert "say no, you can't, and send the connect link in that same turn" in b
+    # nothing at all → every enabled provider is NOT connected
+    b2 = integrations_block(None, None, None)
+    assert "gcal: NOT connected" in b2 and "bcourses: NOT connected" in b2 and "google_health: NOT connected" in b2
+    # connected rows (incl. multi-account) never get a NOT line
+    b3 = integrations_block(None, "gcal [a@gmail.com] connected · gcal [b@gmail.com] connected", None)
+    assert "gcal: NOT" not in b3
+    # the google-account line rides along
+    b4 = integrations_block(None, None, "google account: unknown — ask")
+    assert b4.rstrip().endswith("don't ask \"want the link?\" first.") and "google account: unknown" in b4

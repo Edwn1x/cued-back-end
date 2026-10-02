@@ -2522,8 +2522,11 @@ SEND_CONNECT_LINK_TOOL = {
     "name": "send_connect_link",
     "description": (
         "Text the user a one-tap link to connect a third-party account. Use it "
-        "ONLY when they ask to connect something or clearly accept the offer "
-        "(\"can u see my calendar\" / \"yeah connect it\" / \"i use strava\"). "
+        "when they ask to connect something, clearly accept the offer, or ask whether "
+        "you can see something that INTEGRATIONS lists as NOT connected "
+        "(\"can u see my calendar\" with gcal NOT connected = send it in that same turn with "
+        "your one-line no; \"yeah connect it\" / \"i use strava\" likewise). Don't answer a "
+        "can-u-see with \"want me to send the link?\" — that's a wasted round trip. "
         "\"can i connect my fitbit?\" IS the ask — fire it in that same turn; never "
         "answer a can-i with \"want me to send it?\" (that's a wasted round trip). "
         "Fire it once — the link goes out as its own bubble; your reply is the "

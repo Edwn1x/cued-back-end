@@ -529,6 +529,8 @@ def maybe_update_coaching_summary(user_id: int):
 
 The user's permanent personal details (preferences, stats, life events) are stored separately in a memory system — do NOT duplicate those here. Focus only on the COACHING ARC: what topics were discussed, what decisions were made, what workouts happened, what adjustments were tried, what the user struggled with or succeeded at.
 
+NEVER record which accounts or integrations are connected (google calendar, bcourses, fitbit / google health, strava, menus). Code tracks connections and shows the coach the live state every turn; a summary line like "Connected feeds: …" goes stale the moment something disconnects and has misled the coach into claiming it could see a calendar it couldn't. If the existing summary has such a line, drop it.
+
 Existing summary:
 {existing_summary}
 
