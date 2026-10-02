@@ -196,6 +196,9 @@ class User(Base):
     google_email = Column(String(200), default=None)
     google_allowlisted_at = Column(DateTime, default=None)
     connect_offers = Column(JSON, default=None)             # {provider|provider_link: iso-ts} — once-only ledger
+    # The calendar event the coach reflected back and is waiting on a "yes" for
+    # (agent_tools.handle_create_calendar_event): confirm-before-write enforced in CODE.
+    pending_calendar_event = Column(JSON, default=None)
     signup_source = Column(String(40), default=None)       # "hero"|"nav"|... — accept any string ≤40 chars; don't validate
     waitlist_status = Column(String(20), default=None)     # None = not on waitlist (legacy + activated). "pending" = currently on waitlist.
     activated_at = Column(DateTime, default=None)          # stamped when admin promotes from waitlist; source of truth for "ever activated"
