@@ -713,6 +713,20 @@ CALENDAR_MEAL_TIMING_BLOCK_HOURS = float(os.getenv("CALENDAR_MEAL_TIMING_BLOCK_H
 # must NOT invite another training session the same day (live 2026-09-30: morning briefing
 # suggested "hit legs" the morning after a full legs session ~14h earlier).
 CALENDAR_RECENT_TRAIN_HOURS = int(os.getenv("CALENDAR_RECENT_TRAIN_HOURS", "20"))
+# Heartbeat HARD gate for a connected-calendar block: "class is about to start" — only a
+# block ongoing or starting within this many minutes blocks a proactive tick. Longer
+# horizons are the free-window planner's job (schedule.free_blocks), not a block: with
+# the old 90-min default every free gap on a college day (classes every ~90 min) was
+# "within 90 min of a class" and the whole day was starved (live 2026-10-01, user 31:
+# every tick 12:04→18:04 guardrail:calendar_block, no morning briefing). The function's
+# own default is unchanged — reminders.py keeps its wider horizon.
+CALENDAR_HARD_BLOCK_MINUTES = int(os.getenv("CALENDAR_HARD_BLOCK_MINUTES", "20"))
+# Morning-briefing guarantee: while a MORNING OPEN is still owed today (inside the
+# after-wake window, nobody has texted since they woke), the "class SOON" calendar gate
+# does not block the tick — a 2-line brief before class is exactly what the user wants.
+# Never bypasses in_class (provably mid-class) or any earlier gate (quiet hours, daily
+# cap, active conversation, anti-stack).
+CALENDAR_BRIEFING_GUARANTEE_ENABLED = os.getenv("CALENDAR_BRIEFING_GUARANTEE_ENABLED", "true").lower() == "true"
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent
