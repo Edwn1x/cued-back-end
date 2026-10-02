@@ -507,6 +507,10 @@ MIGRATIONS = [
     # a second calendar login gets its own row. Unique key widens to include it.
     "ALTER TABLE integrations ADD COLUMN IF NOT EXISTS account VARCHAR(64) NOT NULL DEFAULT ''",
     "ALTER TABLE integrations DROP CONSTRAINT IF EXISTS uq_integrations_user_provider",
+    # Prod's original key was created by the raw CREATE TABLE's UNIQUE(user_id, provider) and
+    # Postgres named it integrations_user_id_provider_key — not the model's name above. Live
+    # 2026-10-02: the first drop was a no-op there and the old key still blocked a second row.
+    "ALTER TABLE integrations DROP CONSTRAINT IF EXISTS integrations_user_id_provider_key",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_integrations_user_provider_account ON integrations (user_id, provider, account)",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
 ]
