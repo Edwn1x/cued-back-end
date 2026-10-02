@@ -143,6 +143,40 @@ def context_line(user) -> str | None:
             f"if it comes up say u'll text the link once it's ready (usually within a day)")
 
 
+def integrations_block(user, status: str | None, google_line: str | None) -> str:
+    """The coach's ## INTEGRATIONS block: one line per ENABLED provider, connected or
+    not, plus the rule that this block outranks memory. `status` is base.status_line
+    (connected / disconnected / error rows, None when no rows)."""
+    enabled = []
+    if config.GCAL_ENABLED:
+        enabled.append(("gcal", "google calendar"))
+    if config.BCOURSES_ENABLED or config.CANVAS_ENABLED:
+        enabled.append(("bcourses", "bcourses / canvas calendar feed"))
+    if config.GOOGLE_HEALTH_ENABLED:
+        enabled.append(("google_health", "fitbit / pixel watch (google health)"))
+    if config.STRAVA_READ_ENABLED or config.STRAVA_POST_ENABLED:
+        enabled.append(("strava", "strava"))
+    seen = status or ""
+    lines = []
+    for key, label in enabled:
+        if f"{key} connected" in seen or f"{key} [" in seen and "connected" in seen:
+            # the status line already carries the connected (and per-account) detail
+            continue
+        if f"{key} disconnected" in seen or f"{key} error" in seen:
+            continue
+        lines.append(f"{key}: NOT connected ({label})")
+    out = "## INTEGRATIONS (code's list — the ONLY truth about what's connected; a memory or " \
+          "summary line claiming something is connected is stale if it isn't connected here)\n"
+    out += (seen + "\n") if seen else ""
+    out += "\n".join(lines)
+    if google_line:
+        out += f"\n{google_line}"
+    out += ("\nIf they ask whether you can see something listed NOT connected: say no, you can't, "
+            "and send the connect link in that same turn (send_connect_link) — never claim to see it, "
+            "and don't ask \"want the link?\" first.")
+    return out
+
+
 def set_google_account(user_id: int, email: str) -> dict:
     """Store the Google account the coach was told. → {ok, email, state}."""
     from models import get_session, User

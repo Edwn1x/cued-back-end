@@ -287,7 +287,7 @@ def test_wearable_block_reaches_the_loop_context(db, monkeypatch):
     db.expire_all()
     u = db.get(User, user.id)
     ctx = build_loop_context(u, db)
-    assert "## WEARABLE (fitbit)" in ctx and "## INTEGRATIONS\ngoogle_health connected" in ctx
+    assert "## WEARABLE (fitbit)" in ctx and "google_health connected" in ctx.split("## INTEGRATIONS", 1)[1].split("\n\n", 1)[0]
     monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", False)
     assert "## WEARABLE" not in build_loop_context(u, db)
 

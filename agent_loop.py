@@ -467,10 +467,13 @@ def build_loop_context(user, session) -> str:
             or config.CANVAS_ENABLED or config.GOOGLE_HEALTH_ENABLED):
         try:
             from integrations.base import status_line
-            from connect_offers import context_line as _google_account_line
-            sl = status_line(user.id) or "nothing connected"
-            gl = _google_account_line(user)
-            parts.append("## INTEGRATIONS\n" + sl + (f"\n{gl}" if gl else ""))
+            from connect_offers import context_line as _google_account_line, integrations_block
+            # Every enabled provider, connected OR NOT — and the block is the only truth.
+            # Live 2026-10-02 (founder, mid demo): the coaching summary said "Connected
+            # feeds: Google Calendar…" while the row had been removed; the block listed
+            # only what WAS connected, so the model trusted the summary, said "yeah i can
+            # see it", and argued when corrected. Absence has to be stated, not implied.
+            parts.append(integrations_block(user, status_line(user.id), _google_account_line(user)))
         except Exception:
             logger.exception("INTEGRATIONS_STATUS_FAILED user=%s", user.id)
 
