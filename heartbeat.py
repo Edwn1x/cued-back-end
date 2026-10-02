@@ -258,12 +258,10 @@ def _profile_quiet_window(user, local, measured=None) -> tuple[int, int] | None:
     return start, end
 
 
-def _measured_wake_min(user, session, *, now=None) -> int | None:
-    """Minutes-of-day (local) the morning quiet floor should extend to when the WATCH shows
-    the user woke LATER than their stated wake this morning — so we don't ping someone the
-    watch says is still asleep. Conservative + fail-open + flag-gated; None means 'no
-    extension, use today's window exactly'. Reads wearable_days via the read-only helper;
-    the sync pipeline is never touched."""
+def _measured_today_wake_hm(user, session, *, now=None) -> tuple[int, int] | None:
+    """(h, m) local the WATCH says the user woke THIS morning (a sleep that ended on
+    today's local date), else None. Conservative + fail-open + flag-gated. Reads
+    wearable_days via the read-only helper; the sync pipeline is never touched."""
     if not config.HEARTBEAT_WEARABLE_AWARE_ENABLED or session is None:
         return None
     try:
@@ -277,12 +275,22 @@ def _measured_wake_min(user, session, *, now=None) -> int | None:
         # ended this morning). A stale/older sleep_end tells us nothing about right now.
         if se.date() != local.date():
             return None
-        # Same small after-wake buffer the profile window uses, capped at 2pm — matching
-        # the existing _quiet_window late-wake cap so we never over-extend from a bad read.
-        return min(se.hour * 60 + se.minute + QUIET_AFTER_WAKE_MIN, 14 * 60)
+        return se.hour, se.minute
     except Exception:
-        # Fail-open: a wearable read must never crash the quiet-hours gate.
+        # Fail-open: a wearable read must never crash a caller's gate.
         return None
+
+
+def _measured_wake_min(user, session, *, now=None) -> int | None:
+    """Minutes-of-day (local) the morning quiet floor should extend to when the WATCH shows
+    the user woke LATER than their stated wake this morning — so we don't ping someone the
+    watch says is still asleep. None means 'no extension, use today's window exactly'."""
+    hm = _measured_today_wake_hm(user, session, now=now)
+    if hm is None:
+        return None
+    # Same small after-wake buffer the profile window uses, capped at 2pm — matching
+    # the existing _quiet_window late-wake cap so we never over-extend from a bad read.
+    return min(hm[0] * 60 + hm[1] + QUIET_AFTER_WAKE_MIN, 14 * 60)
 
 
 def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
@@ -402,10 +410,30 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     from events import in_class_now
     if in_class_now(user.id):
         return "in_class"
-    # Connected-calendar block (class/exam/work) ongoing or starting within 90 min —
-    # don't fire a proactive nudge into it, same as the sleep window (spec §1.3).
+    # Connected-calendar block (class/exam/work) ongoing or starting within
+    # CALENDAR_HARD_BLOCK_MINUTES ("class is about to start") — don't fire a proactive
+    # nudge into it, same as the sleep window (spec §1.3). Deliberately NOT the function's
+    # 90-min default: on a college day with classes every ~90 min that made every free gap
+    # "within 90 min of a class" and starved the whole day (live 2026-10-01, user 31).
+    # Longer horizons are the free-window planner's job, not a block.
     from events import calendar_block_soon
-    if calendar_block_soon(user.id):
+    if calendar_block_soon(user.id, minutes=config.CALENDAR_HARD_BLOCK_MINUTES, now=now):
+        # Morning-briefing guarantee: a MORNING OPEN still owed today (inside the after-wake
+        # window and nobody has texted since they woke — _morning_open_signal is the
+        # once-per-day mechanism: the moment anything is sent it goes None) must not be
+        # starved by "class SOON". A 2-line brief before class is exactly what the user
+        # wants. This bypasses ONLY this last gate — in_class (provably mid-class) and
+        # every earlier gate above have already had their say. Fail-open to the plain
+        # block: evaluating the signal must never crash the tick.
+        if config.CALENDAR_BRIEFING_GUARANTEE_ENABLED:
+            try:
+                pending = _morning_open_signal(user, session, now=now) is not None
+            except Exception as e:  # noqa: BLE001
+                logger.warning("HEARTBEAT_BRIEFING_BYPASS_CHECK_FAILED user=%s err=%s", user.id, e)
+                pending = False
+            if pending:
+                logger.info("HEARTBEAT_BRIEFING_BYPASS_CALENDAR_BLOCK user=%s", user.id)
+                return None
         return "calendar_block"
     return None
 
@@ -764,22 +792,52 @@ def _training_days(user) -> set:
     return {t[:3] for t in re.split(r"[\s,/&+]+", raw) if t} & set(_DAY_ABBR)
 
 
+def _morning_anchor_hhmm(user, session, local, *, now=None) -> tuple[int, int] | None:
+    """The wake the MORNING OPEN window is anchored to. The profile wake (alt honoured) is
+    the base; what the watch knows only pushes it LATER, never earlier: the measured typical
+    wake (the same window quiet hours use, #146) and today's measured sleep_end when the
+    user slept in. Without this the window was profile-only and could END before measured
+    quiet hours lifted on a sleep-in day — the briefing was simply lost. None without a
+    parseable profile wake (unchanged); fail-open to the profile wake on any error."""
+    wake = _wake_hhmm_for(user, local.date())
+    if not wake:
+        return None
+    try:
+        cands = [wake]
+        sw = _measured_sw_hours(user, session, now=now)
+        if sw:
+            cands.append(sw[1])
+        today = _measured_today_wake_hm(user, session, now=now)
+        if today:
+            cands.append(today)
+        return max(cands, key=lambda hm: hm[0] * 60 + hm[1])
+    except Exception:
+        return wake
+
+
 def _morning_open_signal(user, session, *, now=None) -> str | None:
-    """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after a parseable wake (alt honoured)
-    and no non-reaction message either way since they woke. One line of material: the
-    weekday, workout/rest day per their split, today's logged events."""
+    """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after their wake (profile, alt
+    honoured, pushed later by a measured wake — see _morning_anchor_hhmm) and no
+    non-reaction message either way since they woke. One line of material: the weekday,
+    workout/rest day per their split, today's logged events."""
     if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
         return None
     local = _ref(now).astimezone(_user_tz(user))
-    wake = _wake_hhmm_for(user, local.date())
+    wake = _morning_anchor_hhmm(user, session, local, now=now)
     if not wake:
         return None
     wake_dt = local.replace(hour=wake[0], minute=wake[1], second=0, microsecond=0)
     if not (wake_dt <= local < wake_dt + timedelta(minutes=RHYTHM_MORNING_MINUTES)):
         return None
+    # "Talked since they woke" counts from the EARLIER of profile/measured wake: if they
+    # texted before the watch's later wake they were plainly up, and a second morning
+    # text would be a repeat.
+    profile_wake = _wake_hhmm_for(user, local.date()) or wake
+    since_dt = min(wake_dt, local.replace(hour=profile_wake[0], minute=profile_wake[1],
+                                          second=0, microsecond=0))
     from engagement_tracker import _not_reaction
     talked = (session.query(Message.id)
-              .filter(Message.user_id == user.id, Message.created_at >= _naive(wake_dt), _not_reaction())
+              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction())
               .first())
     if talked:
         return None
