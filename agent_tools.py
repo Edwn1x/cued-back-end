@@ -2976,10 +2976,13 @@ CREATE_CALENDAR_EVENT_TOOL = {
         "a study block, a meal-prep slot ('block a lift at 4pm', 'add a study block 2-4pm "
         "before the exam'). CREATE-ONLY: you can add net-new events, you CANNOT move or "
         "delete anything already on their calendar. ALWAYS confirm first: reflect back "
-        "exactly what you'll add (title + day + time) and get a yes BEFORE writing — call "
-        "this with confirmed=false (or omitted) to stage it, then call again with "
-        "confirmed=true once they've agreed. Never write silently. Times are the user's "
-        "LOCAL time, 24-hour 'HH:MM'. If the user only connected read access, this returns "
+        "exactly what you'll add (title + day + time, WITH am/pm) and get a yes BEFORE "
+        "writing — call this with confirmed=false (or omitted) to stage it, then call again "
+        "with confirmed=true in the NEXT turn once they've said yes. Code enforces this: a "
+        "confirmed=true call with nothing staged, or in the same turn as the staging, is "
+        "refused. A bare hour ('at 8') is ambiguous — stage your best guess and ASK am or pm "
+        "in the reflect-back; never assume. Times are the user's LOCAL time, 24-hour 'HH:MM'. "
+        "If the user only connected read access, this returns "
         "a 'reconnect to let me add to it' message — relay that honestly, do NOT claim you "
         "added it. This writes to their real Google Calendar AND mirrors into your own "
         "context so it shows up right away."
@@ -3048,13 +3051,43 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     when = (s_loc.strftime("%a %b %-d %-I:%M%p").replace("AM", "am").replace("PM", "pm")
             + "–" + e_loc.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm"))
 
-    # Confirm-before-write: no write happens until confirmed is explicitly true.
-    if not bool(ti.get("confirmed")):
-        return (f"not created yet — confirm with the user first: adding '{summary}' {when} "
-                f"to their calendar. reflect that back, and once they say yes call "
-                f"create_calendar_event again with confirmed=true.")
-
+    # Confirm-before-write, enforced in CODE (live 2026-10-02: the model called this with
+    # confirmed=true on the first go and wrote an 8am block for a bare "8" said at 4am; the
+    # user meant 8pm). The staged proposal is persisted on the user; confirmed=true is
+    # honoured only when it matches that proposal AND arrives in a later turn (a different
+    # inbound message id) — i.e. the user has actually seen the reflect-back and replied.
     desc = (ti.get("description") or "").strip() or None
+    proposal = {"summary": summary, "start_utc": start_utc.isoformat(), "end_utc": end_utc.isoformat(),
+                "description": desc, "when": when, "turn": str(message_id) if message_id is not None else None,
+                "staged_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
+    hour_hint = ""
+    if 1 <= s_loc.hour % 12 <= 11 and s_loc.minute == 0:
+        hour_hint = (" If they only said a bare hour (no am/pm), ask which — "
+                     f"\"{s_loc.strftime('%-I')}am or {s_loc.strftime('%-I')}pm?\" — don't assume.")
+    if not bool(ti.get("confirmed")):
+        _set_pending_calendar_event(user_id, proposal)
+        return (f"not created yet — confirm with the user first: adding '{summary}' {when} "
+                f"to their calendar. reflect that back (with am/pm), and once they say yes call "
+                f"create_calendar_event again with confirmed=true in that next turn.{hour_hint}")
+
+    pending = _get_pending_calendar_event(user_id)
+    if not pending:
+        _set_pending_calendar_event(user_id, proposal)
+        return (f"not created — nothing was staged. reflect it back first: adding '{summary}' {when}. "
+                f"once they say yes, call again with confirmed=true.{hour_hint}")
+    same = (pending.get("summary") == summary and pending.get("start_utc") == start_utc.isoformat()
+            and pending.get("end_utc") == end_utc.isoformat())
+    staged_at = _parse_iso(pending.get("staged_at"))
+    stale = staged_at is None or (datetime.now(timezone.utc).replace(tzinfo=None) - staged_at) > timedelta(hours=3)
+    if not same or stale:
+        _set_pending_calendar_event(user_id, proposal)
+        why = "the proposal changed" if not same else "the earlier one is stale"
+        return (f"not created — {why}. reflect the new one back: adding '{summary}' {when}. "
+                f"once they say yes, call again with confirmed=true.{hour_hint}")
+    if message_id is not None and pending.get("turn") == str(message_id):
+        return (f"not created — you staged this in the SAME turn; the user hasn't seen it yet. "
+                f"reflect it back ('{summary}' {when}) and wait for their yes; confirm in the next turn.")
+
     try:
         ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc)
     except gcal.NotConnected:
@@ -3079,8 +3112,39 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
                               title=summary, occurred_at=start_utc, ends_at=end_utc, all_day=False)
     except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
         logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
+    _set_pending_calendar_event(user_id, None)
     logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s summary=%r when=%s", user_id, eid, summary[:40], when)
     return f"ok: added '{summary}' {when} to their google calendar"
+
+
+def _parse_iso(s):
+    try:
+        return datetime.fromisoformat(s) if s else None
+    except ValueError:
+        return None
+
+
+def _get_pending_calendar_event(user_id: int) -> dict | None:
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        return dict(u.pending_calendar_event) if u and u.pending_calendar_event else None
+    finally:
+        session.close()
+
+
+def _set_pending_calendar_event(user_id: int, proposal: dict | None) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if u is None:
+            return
+        u.pending_calendar_event = proposal
+        flag_modified(u, "pending_calendar_event")
+        session.commit()
+    finally:
+        session.close()
 
 
 _HANDLERS = {

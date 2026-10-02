@@ -503,6 +503,10 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email VARCHAR(200)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_allowlisted_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_offers JSON",
+    # Calendar write-back confirm step held in code (2026-10-02): the model wrote an 8am
+    # block for a bare "8" said at 4am without reflecting it back. The staged proposal
+    # lives here; confirmed=true is honoured only against it, in a later turn.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_calendar_event JSON",
     # Multiple Google accounts per provider (2026-10-02): the primary row keeps account='';
     # a second calendar login gets its own row. Unique key widens to include it.
     "ALTER TABLE integrations ADD COLUMN IF NOT EXISTS account VARCHAR(64) NOT NULL DEFAULT ''",

@@ -144,10 +144,14 @@ def test_confirmed_create_writes_and_mirrors_to_event_store(db, monkeypatch):
     monkeypatch.setattr(gcal.requests, "post",
                         lambda *a, **k: _Resp(200, {"id": "evtABC"}))
 
+    staged = handle_create_calendar_event(user.id, {
+        "summary": "gym — push", "starts_at": "16:00", "ends_at": "17:00", "date": "today",
+    }, message_id="m1")
+    assert "not created yet" in staged and "4:00pm" in staged
     out = handle_create_calendar_event(user.id, {
         "summary": "gym — push", "starts_at": "16:00", "ends_at": "17:00",
         "date": "today", "confirmed": True,
-    })
+    }, message_id="m2")
     assert out.startswith("ok") and "gym — push" in out
 
     s = get_session()
@@ -174,10 +178,11 @@ def test_tool_default_duration_when_no_end(db, monkeypatch):
     monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
     monkeypatch.setattr(gcal.requests, "post", lambda *a, **k: _Resp(200, {"id": "e1"}))
 
+    handle_create_calendar_event(user.id, {"summary": "lift", "starts_at": "09:00", "duration_minutes": 45, "date": "today"}, message_id="m1")
     out = handle_create_calendar_event(user.id, {
         "summary": "lift", "starts_at": "09:00", "duration_minutes": 45,
         "date": "today", "confirmed": True,
-    })
+    }, message_id="m2")
     assert out.startswith("ok")
     s = get_session()
     try:
@@ -197,9 +202,10 @@ def test_tool_readonly_grant_returns_reconnect_message(db, monkeypatch):
     monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
     monkeypatch.setattr(gcal.requests, "post", lambda *a, **k: _Resp(403, {}))
 
+    handle_create_calendar_event(user.id, {"summary": "study", "starts_at": "10:00", "date": "today"}, message_id="m1")
     out = handle_create_calendar_event(user.id, {
         "summary": "study", "starts_at": "10:00", "date": "today", "confirmed": True,
-    })
+    }, message_id="m2")
     low = out.lower()
     assert "read" in low and "can't add" in low and "reconnect" in low
     assert not low.startswith("ok")            # never a fake success
@@ -217,9 +223,10 @@ def test_tool_not_connected_is_honest(db, monkeypatch):
 
     user = make_user(db, user_timezone="America/Los_Angeles")
     monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: None)
+    handle_create_calendar_event(user.id, {"summary": "study", "starts_at": "10:00", "date": "today"}, message_id="m1")
     out = handle_create_calendar_event(user.id, {
         "summary": "study", "starts_at": "10:00", "date": "today", "confirmed": True,
-    })
+    }, message_id="m2")
     low = out.lower()
     assert "no google calendar connected" in low and not low.startswith("ok")
 
@@ -249,3 +256,72 @@ def test_tool_present_when_flag_on(db, monkeypatch, anthropic_stub):
     user = make_user(db, onboarding_step=3)
     names = _tool_names_offered(user, monkeypatch, anthropic_stub)
     assert "create_calendar_event" in names
+
+
+# ── confirm-before-write is enforced in CODE (2026-10-02, founder's demo: 8am for "8" at 4am) ──
+
+def _no_write(monkeypatch):
+    from integrations import gcal, base
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov, **kw: "AT")
+    monkeypatch.setattr(gcal.requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("wrote without a real confirm")))
+
+
+def test_confirmed_true_with_nothing_staged_is_refused(db, monkeypatch):
+    from tests.factories import make_user
+    from agent_tools import handle_create_calendar_event
+    _no_write(monkeypatch)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    out = handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today", "confirmed": True}, message_id="m1")
+    assert out.startswith("not created — nothing was staged") and "8:00am" in out
+    assert "8am or 8pm?" in out                      # the bare-hour ask rides on every stage
+
+
+def test_confirm_in_the_same_turn_is_refused(db, monkeypatch):
+    from tests.factories import make_user
+    from agent_tools import handle_create_calendar_event
+    _no_write(monkeypatch)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today"}, message_id="m7")
+    out = handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today", "confirmed": True}, message_id="m7")
+    assert "SAME turn" in out and "wait for their yes" in out
+
+
+def test_changed_proposal_restages_instead_of_writing(db, monkeypatch):
+    """They said 8, coach staged 8am, they said 'i mean 8pm' — the confirm carries a new
+    time, so it must be reflected back again, not written."""
+    from tests.factories import make_user
+    from agent_tools import handle_create_calendar_event
+    from integrations import gcal
+    _no_write(monkeypatch)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today"}, message_id="m1")
+    out = handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "20:00", "date": "today", "confirmed": True}, message_id="m2")
+    assert out.startswith("not created — the proposal changed") and "8:00pm" in out
+    # now a matching confirm in the next turn writes
+    monkeypatch.setattr(gcal.requests, "post", lambda *a, **k: _Resp(200, {"id": "evt8pm"}))
+    out = handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "20:00", "date": "today", "confirmed": True}, message_id="m3")
+    assert out.startswith("ok") and "8:00pm" in out
+    from models import get_session, User
+    s = get_session()
+    try:
+        assert s.get(User, user.id).pending_calendar_event is None   # cleared after the write
+    finally:
+        s.close()
+
+
+def test_stale_staging_restages(db, monkeypatch):
+    from tests.factories import make_user
+    from agent_tools import handle_create_calendar_event, _set_pending_calendar_event, _get_pending_calendar_event
+    _no_write(monkeypatch)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today"}, message_id="m1")
+    p = _get_pending_calendar_event(user.id); p["staged_at"] = "2026-01-01T00:00:00"; _set_pending_calendar_event(user.id, p)
+    out = handle_create_calendar_event(user.id, {"summary": "gym", "starts_at": "08:00", "date": "today", "confirmed": True}, message_id="m2")
+    assert "stale" in out and not out.startswith("ok")
+
+
+def test_pending_column_is_migrated():
+    from models import User
+    assert hasattr(User, "pending_calendar_event")
+    import migrate
+    assert "ADD COLUMN IF NOT EXISTS pending_calendar_event JSON" in open(migrate.__file__).read()
