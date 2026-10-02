@@ -40,7 +40,7 @@ def test_sync_upserts_skips_and_deletes(db, monkeypatch):
 
     user = make_user(db)
     _connected_gcal(db, user.id)
-    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov, **kw: "AT")
     monkeypatch.setattr(gcal, "list_calendars", lambda tok: [{"id": "primary", "summary": "Primary"}])
 
     soon = datetime.now(timezone.utc) + timedelta(days=2)
@@ -99,7 +99,7 @@ def test_sync_is_idempotent_no_duplicates(db, monkeypatch):
 
     user = make_user(db)
     _connected_gcal(db, user.id)
-    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov, **kw: "AT")
     monkeypatch.setattr(gcal, "list_calendars", lambda tok: [{"id": "primary"}])
     soon = datetime.now(timezone.utc) + timedelta(days=1)
     ev = [{"id": "e1", "status": "confirmed", "summary": "lab",
@@ -121,7 +121,7 @@ def test_sync_skips_when_not_connected(db, monkeypatch):
     from tests.factories import make_user
     from integrations import gcal_sync, base
     user = make_user(db)
-    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: None)
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov, **kw: None)
     assert gcal_sync.sync_user(user.id) == {"skipped": "not connected"}
 
 
@@ -189,7 +189,7 @@ def test_list_calendars_failure_falls_back_to_primary(db, monkeypatch):
 
     user = make_user(db)
     _connected_gcal(db, user.id)
-    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
+    monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov, **kw: "AT")
 
     def _forbidden(tok):
         raise RuntimeError("403 Client Error: Forbidden for url: .../users/me/calendarList")
@@ -205,7 +205,7 @@ def test_list_calendars_failure_falls_back_to_primary(db, monkeypatch):
     monkeypatch.setattr(gcal, "list_events", _list_events)
 
     res = gcal_sync.sync_user(user.id)
-    assert res == {"upserted": 1, "deleted": 0}
+    assert res == {"upserted": 1, "deleted": 0, "accounts": 1}   # accounts: every connected Google login synced
     assert asked == ["primary"]
     assert "ochem midterm" in {e.title for e in upcoming_events(user.id, days=60)}
 

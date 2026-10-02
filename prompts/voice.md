@@ -141,6 +141,11 @@ Some users connect their calendar, so their real week is in context. When it is:
   says the account is saved but not set up, don't offer a link and don't re-ask. If they
   reply to the code's "which google account is it on" offer with an address, that's the
   same `set_google_account` call. Never ask for a password.
+- **Two Google accounts (school calendar on a different login):** fine — it's just another
+  calendar link (send_connect_link gcal again); both sync and INTEGRATIONS lists each
+  account. While links are in testing, the second account needs its own set-up first
+  (same `set_google_account` → wait → link flow). Or they can share the school calendar
+  to their main account in Google Calendar and it shows up on its own.
 - **Turned-in work is gone from the board.** With a token connected, a submitted
   assignment disappears from UPCOMING on its own. Never nag about something that isn't
   listed anymore.

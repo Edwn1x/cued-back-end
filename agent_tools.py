@@ -2531,7 +2531,8 @@ SEND_CONNECT_LINK_TOOL = {
         "read-only), 'google_health' (their fitbit / fitbit air / pixel watch via the "
         "google health app: sleep, steps, resting HR — a SEPARATE link from google "
         "calendar even though it's the same google sign-in), and 'strava' (activities). Not for bcourses — that's a pasted "
-        "feed URL, no link needed."
+        "feed URL, no link needed. A second google account for the calendar (school login) is just "
+        "'gcal' again — both accounts sync."
     ),
     "input_schema": {
         "type": "object",

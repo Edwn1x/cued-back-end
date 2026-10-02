@@ -503,6 +503,11 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email VARCHAR(200)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_allowlisted_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_offers JSON",
+    # Multiple Google accounts per provider (2026-10-02): the primary row keeps account='';
+    # a second calendar login gets its own row. Unique key widens to include it.
+    "ALTER TABLE integrations ADD COLUMN IF NOT EXISTS account VARCHAR(64) NOT NULL DEFAULT ''",
+    "ALTER TABLE integrations DROP CONSTRAINT IF EXISTS uq_integrations_user_provider",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_integrations_user_provider_account ON integrations (user_id, provider, account)",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
 ]
 
@@ -543,6 +548,11 @@ _ALTER_TYPE = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ALTER\s+COLUMN\s+(\w+)\s+TYPE
 _ADD_CONSTRAINT = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+CONSTRAINT\s+(\w+)\s+", re.I)
 
 
+# DROP CONSTRAINT IF EXISTS <name> (non-FK, e.g. a unique key being widened): pre-check
+# pg_constraint and skip without a lock once it's gone.
+_DROP_CONSTRAINT = re.compile(r"ALTER\s+TABLE\s+(\w+)\s+DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+(\w+)\s*$", re.I)
+
+
 _FK_CONSTRAINT = re.compile(
     r"ALTER\s+TABLE\s+(\w+)\s+(?:DROP\s+CONSTRAINT\s+IF\s+EXISTS|ADD\s+CONSTRAINT)\s+(\w+_fkey)\b"
     r"(?:.*?ON\s+DELETE\s+(SET\s+NULL|CASCADE|RESTRICT|NO\s+ACTION))?", re.I | re.S)
@@ -578,6 +588,10 @@ def already_applied(conn, sql: str):
         if row and fk_rule and row[0].upper() == fk_rule:
             return f"constraint {fk_name} already ON DELETE {fk_rule}"
         return None
+    m = _DROP_CONSTRAINT.search(sql.strip())
+    if m and not m.group(2).lower().endswith("_fkey"):
+        row = conn.execute(text("SELECT 1 FROM pg_constraint WHERE conname=:n"), {"n": m.group(2).lower()}).first()
+        return None if row else f"constraint {m.group(2)} already dropped"
     m = _ADD_COLUMN.search(sql)
     if m:
         table, col = m.group(1), m.group(2)
