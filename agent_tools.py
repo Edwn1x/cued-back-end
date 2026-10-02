@@ -2622,10 +2622,41 @@ def handle_set_weather_location(user_id: int, tool_input: dict, *, message_id=No
     return f"ok: weather location set to {label} — the brief + get_weather now use it"
 
 
+SET_GOOGLE_ACCOUNT_TOOL = {
+    "name": "set_google_account",
+    "description": (
+        "Save the Google account their google calendar / fitbit lives on, when they tell you "
+        "it (\"it's on jane.doe@gmail.com\", or an address on its own after you asked). While "
+        "google links are in testing on our side, this is step one — a link only works for an "
+        "account we've set up. The result tells you what to say: if it's already set up, send "
+        "the link in the same turn (send_connect_link); if not, tell them you'll text the link "
+        "once it's ready (usually within a day) and move on. Never ask for it twice; never ask "
+        "for a password or anything but the address."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"email": {"type": "string", "description": "the Google account email, exactly as they gave it"}},
+        "required": ["email"],
+    },
+}
+
+
+def handle_set_google_account(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from connect_offers import set_google_account
+    r = set_google_account(user_id, str((tool_input or {}).get("email") or ""))
+    if not r.get("ok"):
+        return f"error: {r.get('error')}"
+    if r["state"] == "ok":
+        return f"ok: {r['email']} saved and it's set up — send the link now (send_connect_link)"
+    return (f"ok: {r['email']} saved. not set up on our side yet — tell them u'll text the link once "
+            f"it's ready (usually within a day). do NOT call send_connect_link for a google provider now")
+
+
 def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Mint a single-use connect token, record it on the pending Integration row,
     and text the user the /c/<provider> link as its own bubble. Returns a status
-    string for the model (the model's own reply is the sentence around the link)."""
+    string for the model (the model's own reply is the sentence around the link).
+    Google providers are gated while the OAuth app is in Testing (connect_offers)."""
     provider = (tool_input or {}).get("provider", "").strip().lower()
     if provider not in ("gcal", "google_health", "strava"):
         return f"error: unknown provider {provider!r}"
@@ -2643,8 +2674,21 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
     try:
         user = session.get(User, user_id)
         phone = user.phone if user else None
+        gate = None
+        if user and provider in ("gcal", "google_health"):
+            from connect_offers import allowlist_state
+            state = allowlist_state(user, session)
+            if state == "needs_account":
+                gate = ("error: google links are in testing on our side — a link only works for an account "
+                        "we've set up. Ask which google account their calendar / fitbit is on, then "
+                        "set_google_account. Don't send a link yet")
+            elif state == "needs_allowlist":
+                gate = (f"error: {user.google_email} isn't set up on our side yet — say u'll text the link "
+                        f"once it's ready (usually within a day). Don't promise it now")
     finally:
         session.close()
+    if gate:
+        return gate
     if not phone:
         return "error: no phone on file"
 
@@ -2978,6 +3022,7 @@ _HANDLERS = {
     "lookup_events": handle_lookup_events,
     "schedule_rundown": handle_schedule_rundown,
     "send_connect_link": handle_send_connect_link,
+    "set_google_account": handle_set_google_account,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,
     "log_workout": handle_log_workout,

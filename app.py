@@ -2618,6 +2618,18 @@ def _purge_user_rows(session, user_id: int) -> None:
         session.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
 
 
+@app.route("/admin/user/<int:user_id>/google-allowlisted", methods=["POST"])
+def admin_google_allowlisted(user_id):
+    """Founder added this user's Google account to the OAuth test-users list. Stamps
+    google_allowlisted_at; connect_offers.sweep then texts the promised link. Accepts an
+    optional `email` to set/correct the account at the same time."""
+    from connect_offers import mark_allowlisted
+    email = (request.form.get("email") or (request.get_json(silent=True) or {}).get("email") or "").strip() or None
+    if not mark_allowlisted(user_id, email):
+        return jsonify({"status": "error", "message": "No Google account on file for this user."}), 400
+    return jsonify({"status": "ok"}), 200
+
+
 @app.route("/admin/user/<int:user_id>/delete", methods=["POST"])
 def admin_delete_user(user_id):
     """Permanently delete a user and all their data."""
@@ -2787,6 +2799,10 @@ def admin_user(user_id):
         step_labels = {0: "Not started", 1: "Hook sent", 2: "Collecting", 3: "Complete"}
         onboarding_label = step_labels.get(user.onboarding_step or 0, f"Step {user.onboarding_step}")
 
+        # Google account / OAuth test-users allowlist state (connect_offers.py)
+        from connect_offers import allowlist_state
+        google_state = allowlist_state(user, session) if config.GOOGLE_OAUTH_TESTING_MODE else "published"
+
         return render_template_string(USER_DETAIL_HTML,
             user=user,
             messages=msgs_data,
@@ -2809,6 +2825,7 @@ def admin_user(user_id):
             signed_up=fmt_date(user.created_at),
             profile_link=profile_url(user),
             coach_memory=build_memory_block(user, "admin"),
+            google_state=google_state,
         )
     finally:
         session.close()
@@ -2928,6 +2945,27 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <h1>{{ user.name }}</h1>
       <div class="meta">{{ user.phone }} &nbsp;·&nbsp; ID {{ user.id }} &nbsp;·&nbsp; Signed up {{ signed_up }}</div>
       <div class="meta">Profile link: <a href="{{ profile_link }}" target="_blank" rel="noopener">{{ profile_link }}</a></div>
+      {% if google_state != 'published' %}
+      <div class="meta" id="googleAcct">Google account:
+        {% if user.google_email %}<b>{{ user.google_email }}</b>{% else %}<i>unknown</i>{% endif %}
+        {% if google_state == 'needs_allowlist' %}
+          &nbsp;<span style="color:var(--yellow);font-weight:600">needs allowlisting</span>
+          &nbsp;<button onclick="markAllowlisted({{ user.id }})" style="font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">mark allowlisted</button>
+        {% elif google_state == 'ok' %}
+          &nbsp;<span style="color:var(--green);font-weight:600">allowlisted</span>
+        {% else %}
+          &nbsp;<input id="googleEmailInput" placeholder="add gmail…" style="font-size:11px;padding:2px 6px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+          <button onclick="markAllowlisted({{ user.id }}, document.getElementById('googleEmailInput').value)" style="font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">save + allowlisted</button>
+        {% endif %}
+      </div>
+      <script>
+      async function markAllowlisted(uid, email){
+        const r = await fetch('/admin/user/' + uid + '/google-allowlisted', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email: email || null})});
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) location.reload(); else alert(d.message || 'failed');
+      }
+      </script>
+      {% endif %}
     </div>
     <div style="display:flex;align-items:center;gap:12px">
       <a href="/admin/user/{{ user.id }}/debug" style="font-size:12px">Debug view →</a>

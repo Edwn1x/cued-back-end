@@ -373,7 +373,7 @@ CAPABILITIES: list[Capability] = [
         id="connect_accounts",
         what="i can read your google calendar, your bcourses due dates, your fitbit or pixel watch (sleep, steps, heart rate), and strava so i plan around your week and how you're actually recovering",
         how="say the word and i text you a one-tap link — no app, no login. for bcourses just paste me your calendar feed link (or an access token if you want me to see what you've turned in)",
-        tools=("send_connect_link",),
+        tools=("send_connect_link", "set_google_account"),
         enabled=lambda u: (config.GCAL_ENABLED or config.STRAVA_READ_ENABLED
                            or config.BCOURSES_ENABLED or config.CANVAS_ENABLED
                            or config.GOOGLE_HEALTH_ENABLED),

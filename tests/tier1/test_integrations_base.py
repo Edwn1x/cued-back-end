@@ -301,6 +301,7 @@ def test_tool_sends_link_bubble_and_sets_pending(db, monkeypatch, sms_capture):
     from agent_tools import handle_send_connect_link
     from integrations import base
     monkeypatch.setattr(config, "GCAL_ENABLED", True)
+    monkeypatch.setattr(config, "GOOGLE_OAUTH_TESTING_MODE", False)   # the Testing-mode account gate is its own test (test_connect_offers)
     user = make_user(db, phone="+15105559999")
     out = handle_send_connect_link(user.id, {"provider": "gcal"})
     assert out.startswith("ok")

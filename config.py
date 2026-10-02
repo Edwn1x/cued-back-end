@@ -477,6 +477,15 @@ GOOGLE_HEALTH_BACKFILL_DAYS = int(os.getenv("GOOGLE_HEALTH_BACKFILL_DAYS", "14")
 GOOGLE_HEALTH_SYNC_DAYS = int(os.getenv("GOOGLE_HEALTH_SYNC_DAYS", "2"))            # steady-state window
 # The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).
 SEND_CONNECT_LINK_TOOL_ENABLED = os.getenv("SEND_CONNECT_LINK_TOOL_ENABLED", "false").lower() == "true"
+# Google OAuth consent screen still in "Testing" (2026-10): a Google link only works for an
+# account on the Cloud Console test-users list, and refresh tokens die after 7 days. While
+# true, the coach asks for the Google account first (set_google_account), the admin marks it
+# allowlisted, and only then does a gcal / google_health link go out (connect_offers.py).
+# Flip to false once the app is verified — every gate here disappears.
+GOOGLE_OAUTH_TESTING_MODE = os.getenv("GOOGLE_OAUTH_TESTING_MODE", "true").lower() == "true"
+# Proactive connect offers + the reconnect nudge (connect_offers.sweep, every 10 min).
+CONNECT_OFFER_ENABLED = os.getenv("CONNECT_OFFER_ENABLED", "false").lower() == "true"
+RECONNECT_NUDGE_ENABLED = os.getenv("RECONNECT_NUDGE_ENABLED", "false").lower() == "true"
 # OAuth client credentials (set in prod once the provider apps exist; never logged).
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")

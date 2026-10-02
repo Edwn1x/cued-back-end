@@ -1,0 +1,372 @@
+"""
+Connecting integrations, proactively (founder, 2026-10-01/02).
+
+Until now the coach only ever OFFERED a connection when the user happened to bring up
+their calendar, their watch, or what's due (voice.md "Getting it connected"), and the
+only person who has ever connected anything is the founder. Three gaps closed here:
+
+1. THE GOOGLE ACCOUNT, FIRST. The OAuth consent screen is in Testing mode: a Google
+   link only works for an account on the Cloud Console test-users list, so before any
+   Google link goes out we need to know WHICH account — and the founder has to add it.
+   `set_google_account` (coach tool) stores it; the admin console shows "needs
+   allowlisting" and a one-click "mark allowlisted"; `send_connect_link` refuses to
+   send a Google link until that's done (GOOGLE_OAUTH_TESTING_MODE=false lifts all of
+   this once the app is verified).
+
+2. THE RECONNECT NUDGE. In Testing mode every refresh token dies after 7 days (the
+   founder's Google Health went `revoked` exactly 7d after connecting). When a row goes
+   revoked, one line + a fresh link, once per revoke, inside the heartbeat's guardrails.
+
+3. THE FIRST OFFER. Once onboarded for a day, one proactive offer per provider, a day
+   apart, each at most once ever: google calendar (link, or the account question while
+   in Testing), then bcourses (students; the paste instructions), then the wearable
+   (only if they named one at signup). Declines are learned by the coach normally; the
+   offer itself never repeats.
+
+Everything here is code-sent and runs from a scheduler sweep like water_offer.sweep:
+only when heartbeat.guardrail_reason would let a proactive text through, one action
+per user per sweep. users.connect_offers (JSON {key: iso-ts}) is the once-only ledger;
+integrations.meta.revoked_at / reconnect_nudged_at key the nudge.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime, timezone, timedelta
+
+import config
+
+logger = logging.getLogger("cued.connect_offers")
+
+MESSAGE_TYPE = "connect_offer"
+LINK_MESSAGE_TYPE = "connect_link"
+GOOGLE_PROVIDERS = ("gcal", "google_health")
+OFFER_GAP_HOURS = 24
+MIN_DAYS_ONBOARDED = 1
+
+OFFER_GCAL_LINK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
+                   "tap to connect, or ignore this and i won't bring it up again")
+OFFER_GCAL_ASK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
+                  "if yes, which google account is it on")
+OFFER_HEALTH_LINK = ("u mentioned ur {device}. want me reading it? sleep, steps and heart rate, so i go "
+                     "easier on a 5h night. tap to connect")
+OFFER_HEALTH_ASK = ("u mentioned ur {device}. want me reading it? sleep, steps and heart rate, so i go "
+                    "easier on a 5h night. if yes, which google account is it on")
+OFFER_BCOURSES = ("if u want ur bcourses due dates on my radar: in bcourses go to calendar, then 'calendar feed' "
+                  "(bottom right), and paste me that link. i'll track them from there")
+RECONNECT_LINE = {"gcal": "ur google calendar disconnected on google's end. tap to reconnect",
+                  "google_health": "ur {device} disconnected on google's end. tap to reconnect"}
+ALLOWLISTED_LINE = {"gcal": "ur set on my end. tap to connect ur calendar",
+                    "google_health": "ur set on my end. tap to connect ur {device}"}
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
+
+
+def _naive_utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def device_label(user) -> str:
+    tools = (getattr(user, "existing_tools", None) or "").lower()
+    if "pixel" in tools:
+        return "pixel watch"
+    if "fitbit" in tools:
+        return "fitbit"
+    return "watch"
+
+
+def has_wearable(user) -> bool:
+    tools = (getattr(user, "existing_tools", None) or "").lower()
+    return any(k in tools for k in ("fitbit", "pixel", "google_health", "google health"))
+
+
+def is_student(user) -> bool:
+    return "student" in (getattr(user, "occupation", None) or "").lower() or bool(getattr(user, "year", None))
+
+
+# ─── allowlist state (Testing mode) ──────────────────────────────────────────
+
+def _has_google_row(session, user_id: int) -> bool:
+    """Ever connected a Google provider → that account is on the test list already."""
+    from models import Integration
+    return (session.query(Integration.id)
+            .filter(Integration.user_id == user_id, Integration.provider.in_(GOOGLE_PROVIDERS),
+                    Integration.status.in_(("connected", "revoked", "pending"))).first()) is not None
+
+
+def allowlist_state(user, session=None) -> str:
+    """'ok' | 'needs_account' | 'needs_allowlist'. Always 'ok' once the consent screen is
+    published (GOOGLE_OAUTH_TESTING_MODE=false) or if they've connected Google before."""
+    if not config.GOOGLE_OAUTH_TESTING_MODE:
+        return "ok"
+    if getattr(user, "google_allowlisted_at", None):
+        return "ok"
+    own = session is None
+    if own:
+        from models import get_session
+        session = get_session()
+    try:
+        if _has_google_row(session, user.id):
+            return "ok"
+    finally:
+        if own:
+            session.close()
+    if not getattr(user, "google_email", None):
+        return "needs_account"
+    return "needs_allowlist"
+
+
+def context_line(user) -> str | None:
+    """One line for the coach's INTEGRATIONS block while in Testing mode."""
+    if not config.GOOGLE_OAUTH_TESTING_MODE:
+        return None
+    state = allowlist_state(user)
+    email = getattr(user, "google_email", None)
+    if state == "ok":
+        return f"google account: {email} — google links work" if email else None
+    if state == "needs_account":
+        return ("google account: unknown — before any google calendar / fitbit link, ask which google "
+                "account it's on and save it with set_google_account")
+    return (f"google account: {email} — saved, not set up on our side yet. Do NOT send a google link; "
+            f"if it comes up say u'll text the link once it's ready (usually within a day)")
+
+
+def set_google_account(user_id: int, email: str) -> dict:
+    """Store the Google account the coach was told. → {ok, email, state}."""
+    from models import get_session, User
+    e = (email or "").strip().lower()
+    if not _EMAIL_RE.match(e):
+        return {"ok": False, "error": "that doesn't look like an email — ask them to send the address itself"}
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u:
+            return {"ok": False, "error": "user not found"}
+        if u.google_email != e:
+            u.google_email = e
+            u.google_allowlisted_at = None       # a new account needs its own allowlist entry
+            session.commit()
+        state = allowlist_state(u, session)
+    finally:
+        session.close()
+    logger.info("GOOGLE_ACCOUNT_SET user=%s state=%s", user_id, state)
+    return {"ok": True, "email": e, "state": state}
+
+
+def mark_allowlisted(user_id: int, email: str | None = None) -> bool:
+    """Admin: the founder added this account to the Cloud Console test users."""
+    from models import get_session, User
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u:
+            return False
+        if email and _EMAIL_RE.match(email.strip().lower()):
+            u.google_email = email.strip().lower()
+        if not u.google_email:
+            return False
+        u.google_allowlisted_at = _naive_utcnow()
+        session.commit()
+    finally:
+        session.close()
+    logger.info("GOOGLE_ACCOUNT_ALLOWLISTED user=%s", user_id)
+    return True
+
+
+def needs_allowlisting(session) -> list:
+    """Users whose Google account is saved but not yet on the test list (admin list)."""
+    from models import User
+    if not config.GOOGLE_OAUTH_TESTING_MODE:
+        return []
+    return (session.query(User)
+            .filter(User.google_email.isnot(None), User.google_allowlisted_at.is_(None))
+            .order_by(User.id).all())
+
+
+# ─── links ───────────────────────────────────────────────────────────────────
+
+def mint_link(user_id: int, provider: str) -> str:
+    """A fresh single-use connect link (same plumbing as the coach's send_connect_link)."""
+    import time as _time
+    from integrations import base
+    from integrations.tokens import connect_token
+    token, nonce = connect_token(user_id, provider)
+    base.set_pending(user_id, provider, nonce, int(_time.time()) + 30 * 60)
+    return f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/c/{provider}?t={token}"
+
+
+def send_link(user_id: int, provider: str, line: str | None, *, source: str) -> None:
+    from models import get_session, User
+    from sms import send_sms
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        phone = u.phone if u else None
+    finally:
+        session.close()
+    if not phone:
+        return
+    link = mint_link(user_id, provider)
+    if line:
+        send_sms(phone, line, user_id=user_id, message_type=MESSAGE_TYPE)
+    send_sms(phone, link, user_id=user_id, message_type=LINK_MESSAGE_TYPE)
+    logger.info("CONNECT_LINK_SENT user=%s provider=%s source=%s", user_id, provider, source)
+
+
+# ─── the sweep ───────────────────────────────────────────────────────────────
+
+def _offers(user) -> dict:
+    return dict(getattr(user, "connect_offers", None) or {})
+
+
+def _mark(session, user, key: str, now: datetime) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+    offers = _offers(user)
+    offers[key] = now.isoformat()
+    user.connect_offers = offers
+    flag_modified(user, "connect_offers")
+
+
+def _last_offer_at(user) -> datetime | None:
+    stamps = [_parse_iso(v) for k, v in _offers(user).items() if not k.endswith("_link")]
+    stamps = [s for s in stamps if s]
+    return max(stamps) if stamps else None
+
+
+def _row(session, user_id: int, provider: str):
+    from models import Integration
+    return (session.query(Integration)
+            .filter(Integration.user_id == user_id, Integration.provider == provider).first())
+
+
+def _eligible(user) -> bool:
+    if not user.active or (user.onboarding_step or 0) < 3:
+        return False
+    if (getattr(user, "waitlist_status", None) or "") == "pending":
+        return False
+    if config.STOP_OPTOUT_ENABLED and getattr(user, "opted_out", False):
+        return False
+    return True
+
+
+def _action_for(session, user, now: datetime) -> tuple[str, str, str | None] | None:
+    """→ (kind, provider, text) for the ONE thing to send this user now, or None.
+    kind: 'reconnect' | 'allowlisted' | 'offer_link' | 'offer_ask' | 'offer_text'."""
+    # 1. a Google connection died → one nudge per revoke
+    if config.RECONNECT_NUDGE_ENABLED:
+        for provider in GOOGLE_PROVIDERS:
+            r = _row(session, user.id, provider)
+            if r is None or r.status != "revoked":
+                continue
+            meta = r.meta or {}
+            revoked_at = _parse_iso(meta.get("revoked_at")) or r.updated_at
+            nudged_at = _parse_iso(meta.get("reconnect_nudged_at"))
+            if revoked_at and (nudged_at is None or nudged_at < revoked_at):
+                return ("reconnect", provider, RECONNECT_LINE[provider].format(device=device_label(user)))
+
+    offers = _offers(user)
+    state = allowlist_state(user, session)
+
+    # 2. they gave an account, the founder allowlisted it → the link they were promised
+    if state == "ok" and getattr(user, "google_allowlisted_at", None):
+        for provider in GOOGLE_PROVIDERS:
+            if provider in offers and f"{provider}_link" not in offers:
+                r = _row(session, user.id, provider)
+                if r is None or r.status not in ("connected", "pending"):
+                    return ("allowlisted", provider, ALLOWLISTED_LINE[provider].format(device=device_label(user)))
+
+    # 3. the first offers — one per provider, a day apart, once ever
+    if not config.CONNECT_OFFER_ENABLED:
+        return None
+    since = getattr(user, "activated_at", None) or user.created_at
+    if since and now - since < timedelta(days=MIN_DAYS_ONBOARDED):
+        return None
+    last = _last_offer_at(user)
+    if last and now - last < timedelta(hours=OFFER_GAP_HOURS):
+        return None
+
+    def google_offer(provider, link_text, ask_text):
+        if provider in offers or _row(session, user.id, provider) is not None:
+            return None
+        if state == "ok":
+            return ("offer_link", provider, link_text)
+        if state == "needs_account":
+            return ("offer_ask", provider, ask_text)
+        return None   # needs_allowlist: the founder's move; the follow-through sends the link
+
+    if config.GCAL_ENABLED:
+        a = google_offer("gcal", OFFER_GCAL_LINK, OFFER_GCAL_ASK)
+        if a:
+            return a
+    if config.BCOURSES_ENABLED and is_student(user) and "bcourses" not in offers \
+            and _row(session, user.id, "bcourses") is None:
+        return ("offer_text", "bcourses", OFFER_BCOURSES)
+    if config.GOOGLE_HEALTH_ENABLED and has_wearable(user):
+        d = device_label(user)
+        a = google_offer("google_health", OFFER_HEALTH_LINK.format(device=d), OFFER_HEALTH_ASK.format(device=d))
+        if a:
+            return a
+    return None
+
+
+def sweep(now: datetime | None = None) -> int:
+    """One action per eligible user per run, only when the heartbeat's guardrails allow a
+    proactive text (quiet hours, active conversation, budget…). Scheduler: every 10 min."""
+    if not (config.CONNECT_OFFER_ENABLED or config.RECONNECT_NUDGE_ENABLED):
+        return 0
+    if not (config.GCAL_ENABLED or config.GOOGLE_HEALTH_ENABLED or config.BCOURSES_ENABLED):
+        return 0
+    now = (now or _naive_utcnow())
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+    from models import get_session, User, Integration
+    from heartbeat import guardrail_reason
+    from sms import send_sms
+    session = get_session()
+    todo: list[tuple[int, str, str, str | None, str | None]] = []
+    try:
+        users = session.query(User).filter(User.active.is_(True), User.onboarding_step >= 3).all()
+        for u in users:
+            if not _eligible(u) or guardrail_reason(u, session, now=now):
+                continue
+            action = _action_for(session, u, now)
+            if not action:
+                continue
+            kind, provider, text = action
+            # mark BEFORE sending so a send-side retry can't double-send
+            if kind == "reconnect":
+                r = _row(session, u.id, provider)
+                meta = dict(r.meta or {})
+                meta["reconnect_nudged_at"] = now.isoformat()
+                r.meta = meta
+                _mark(session, u, f"{provider}_reconnect", now)   # counts toward the one-a-day gap
+            elif kind == "allowlisted":
+                _mark(session, u, f"{provider}_link", now)
+            else:
+                _mark(session, u, provider, now)
+            session.commit()
+            todo.append((u.id, kind, provider, text, u.phone))
+    finally:
+        session.close()
+    sent = 0
+    for uid, kind, provider, text, phone in todo:
+        try:
+            if kind in ("reconnect", "allowlisted", "offer_link"):
+                send_link(uid, provider, text, source=kind)
+            else:
+                send_sms(phone, text, user_id=uid, message_type=MESSAGE_TYPE)
+                logger.info("CONNECT_OFFER_SENT user=%s provider=%s kind=%s", uid, provider, kind)
+            sent += 1
+        except Exception as e:  # noqa: BLE001 — one bad user must not stop the sweep
+            logger.warning("CONNECT_OFFER_FAILED user=%s provider=%s kind=%s err=%s", uid, provider, kind, e)
+    return sent
