@@ -34,6 +34,7 @@ def test_migrations_are_idempotent_and_create_new_tables(db):
     assert "imessage_opted_in_at" in user_cols  # waitlist opt-in (2026-09-19)
     assert "full_name" in user_cols  # sign-up chat full name (2026-09-20)
     assert "split_days" in user_cols  # the user's own split days (2026-09-22)
+    assert "last_active_at" in user_cols  # layered wake model per-event stamp (2026-10-02)
 
     cr_cols = {c["name"] for c in insp.get_columns("consolidation_runs")}
     assert {"user_id", "aborted", "summary", "diff", "prev_profile", "removed_count"} <= cr_cols

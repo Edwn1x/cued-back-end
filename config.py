@@ -607,6 +607,28 @@ TDEE_WEARABLE_STEPS_ENABLED = os.getenv("TDEE_WEARABLE_STEPS_ENABLED", "false").
 # profile times EXACTLY as today. See wearable_read.measured_sleep_window.
 MEASURED_SLEEP_WINDOW_ENABLED = os.getenv("MEASURED_SLEEP_WINDOW_ENABLED", "true").lower() == "true"
 
+# Layered wake model (wake_model.py) — "when did they actually wake up TODAY?" with a
+# precedence: observed ACTIVITY (an inbound text / tapback / a workout-card open, the
+# phone-pickup signal — we have no app, so this is the closest thing to Apple Fitness's
+# "you're up") → today's MEASURED wake from the watch (fresh + a real night, used in BOTH
+# directions: earlier OR later than the profile) → the measured TYPICAL wake (#146) →
+# the profile wake_time (fallback only, never nulled). Two consumers: the standing
+# quiet-hours morning END (activity / measured_today REPLACE the end instead of only
+# extending it) and the MORNING OPEN anchor (#156 — likewise both directions). Fail-open:
+# flag off / no data / any error → every caller behaves byte-for-byte as today.
+WAKE_MODEL_ENABLED = os.getenv("WAKE_MODEL_ENABLED", "true").lower() == "true"
+# "Still up at 3am" is NOT a wake. Activity only counts as waking when its local hour is
+# at/after this AND it is at least MIN_HOURS_AFTER_SLEEP after their sleep start (profile
+# sleep_time, or the measured typical bedtime when the watch has one).
+WAKE_DETECT_EARLIEST_LOCAL_HOUR = int(os.getenv("WAKE_DETECT_EARLIEST_LOCAL_HOUR", "5"))      # local hour floor
+WAKE_DETECT_MIN_HOURS_AFTER_SLEEP = float(os.getenv("WAKE_DETECT_MIN_HOURS_AFTER_SLEEP", "3"))  # hours after bed
+# Today's measured wake is a REAL-TIME signal only when the row was synced within this many
+# hours of sleep_end (the sync re-stamps synced_at every ~30 min, so in practice the signal
+# lives ~this long after the wake; after that the preserved #146/#156 fallbacks govern) and
+# the sleep was a real night (>= MIN_SLEEP_MINUTES — naps never count as a wake).
+WEARABLE_WAKE_FRESH_HOURS = float(os.getenv("WEARABLE_WAKE_FRESH_HOURS", "3"))                 # synced_at − sleep_end
+WEARABLE_WAKE_MIN_SLEEP_MINUTES = int(os.getenv("WEARABLE_WAKE_MIN_SLEEP_MINUTES", "180"))     # exclude naps
+
 # Surface a compact, advisory "ACTIVITY TODAY" block (today's steps + active minutes, and a
 # coarse "notably active" flag) in build_loop_context so the coach acknowledges real
 # movement and doesn't imply someone's been sedentary or over-nudge exercise when the watch

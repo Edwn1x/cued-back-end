@@ -132,6 +132,11 @@ class User(Base):
     card_setup_at = Column(DateTime, default=None)
     card_opened_at = Column(DateTime, default=None)
     card_explained_at = Column(DateTime, default=None)
+    # Layered wake model (wake_model.py): stamped (naive UTC) on EVERY inbound text or
+    # tapback and EVERY workout-card open — the latest moment we saw them on their phone.
+    # Unlike card_opened_at (first-ever, a setup marker) this is per-event. Read-only for
+    # the heartbeat: the earliest activity today is the "they're up" wake signal.
+    last_active_at = Column(DateTime, default=None)
 
     weigh_in_day = Column(String(10), default=None)  # "monday", "tuesday", etc. — user-picked weekly weigh-in day
     existing_tools = Column(Text, default=None)  # comma-separated apps/devices: "strava,whoop,apple_watch"

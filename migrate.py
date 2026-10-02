@@ -504,6 +504,9 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_allowlisted_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_offers JSON",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
+    # Layered wake model (wake_model.py): per-event "last seen on their phone" stamp
+    # (inbound text / tapback / workout-card open). Nullable; no backfill.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP",
 ]
 
 def wait_for_db(retries=10, delay=3):
