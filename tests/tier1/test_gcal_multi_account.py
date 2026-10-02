@@ -200,4 +200,5 @@ def test_model_and_migration():
     src = open(migrate.__file__).read()
     assert "ADD COLUMN IF NOT EXISTS account VARCHAR(64) NOT NULL DEFAULT ''" in src
     assert "DROP CONSTRAINT IF EXISTS uq_integrations_user_provider" in src
+    assert "DROP CONSTRAINT IF EXISTS integrations_user_id_provider_key" in src   # prod's actual key name
     assert "uq_integrations_user_provider_account" in src
