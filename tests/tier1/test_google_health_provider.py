@@ -175,6 +175,7 @@ def test_connect_tool_accepts_google_health_and_gates_on_flag(db, monkeypatch, s
     assert "google_health" in SEND_CONNECT_LINK_TOOL["input_schema"]["properties"]["provider"]["enum"]
     assert "fitbit" not in SEND_CONNECT_LINK_TOOL["input_schema"]["properties"]["provider"]["enum"]
     user = make_user(db, phone="+15105558888")
+    monkeypatch.setattr(config, "GOOGLE_OAUTH_TESTING_MODE", False)   # the Testing-mode account gate is its own test (test_connect_offers)
     monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", False)
     assert handle_send_connect_link(user.id, {"provider": "google_health"}).startswith("error")
     assert handle_send_connect_link(user.id, {"provider": "fitbit"}).startswith("error")

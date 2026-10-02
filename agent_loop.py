@@ -467,9 +467,10 @@ def build_loop_context(user, session) -> str:
             or config.CANVAS_ENABLED or config.GOOGLE_HEALTH_ENABLED):
         try:
             from integrations.base import status_line
-            sl = status_line(user.id)
-            if sl:
-                parts.append(f"## INTEGRATIONS\n{sl}")
+            from connect_offers import context_line as _google_account_line
+            sl = status_line(user.id) or "nothing connected"
+            gl = _google_account_line(user)
+            parts.append("## INTEGRATIONS\n" + sl + (f"\n{gl}" if gl else ""))
         except Exception:
             logger.exception("INTEGRATIONS_STATUS_FAILED user=%s", user.id)
 
@@ -972,8 +973,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SEND_CONNECT_LINK_TOOL_ENABLED:
         # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
         # identity/voice.md; the link bubble is an allowed URL exception.
-        from agent_tools import SEND_CONNECT_LINK_TOOL
+        from agent_tools import SEND_CONNECT_LINK_TOOL, SET_GOOGLE_ACCOUNT_TOOL
         tools.append(SEND_CONNECT_LINK_TOOL)
+        tools.append(SET_GOOGLE_ACCOUNT_TOOL)   # the Google account first, while OAuth is in Testing
     if config.SEND_GYM_LINE_LINK_TOOL_ENABLED:
         # On-demand RSF virtual-line JOIN link (the same Waitwell link the automatic
         # heading-out flow sends) so the coach never fakes 'here's the line link'.

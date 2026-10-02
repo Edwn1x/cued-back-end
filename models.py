@@ -191,6 +191,11 @@ class User(Base):
     # See plans/cued-memory-architecture-joyful-ullman.md — Waitlist Endpoint section.
     # User.active stays True for waitlist users; waitlist_status is the sole waitlist marker.
     email = Column(String(200), default=None)              # optional, validated only if present
+    # The Google account their calendar / fitbit lives on (connect_offers.py). While the
+    # OAuth app is in Testing, the founder must allowlist it before a link can work.
+    google_email = Column(String(200), default=None)
+    google_allowlisted_at = Column(DateTime, default=None)
+    connect_offers = Column(JSON, default=None)             # {provider|provider_link: iso-ts} — once-only ledger
     signup_source = Column(String(40), default=None)       # "hero"|"nav"|... — accept any string ≤40 chars; don't validate
     waitlist_status = Column(String(20), default=None)     # None = not on waitlist (legacy + activated). "pending" = currently on waitlist.
     activated_at = Column(DateTime, default=None)          # stamped when admin promotes from waitlist; source of truth for "ever activated"

@@ -498,6 +498,11 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_user_id ON held_outbound (user_id)",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_status ON held_outbound (status)",
+    # Connecting integrations proactively (2026-10-02, connect_offers.py): the Google
+    # account the coach was told, when the founder allowlisted it, the once-only offer ledger.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email VARCHAR(200)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_allowlisted_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS connect_offers JSON",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
 ]
 

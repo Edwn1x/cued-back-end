@@ -97,6 +97,20 @@ def start_scheduler():
             max_instances=1,
         )
 
+    # Connecting integrations proactively (connect_offers.sweep): the first offers a day
+    # into coaching, the allowlist follow-through, and the reconnect nudge when a Google
+    # token dies — every 10 min, inside the heartbeat's guardrails, one action per user.
+    if config.CONNECT_OFFER_ENABLED or config.RECONNECT_NUDGE_ENABLED:
+        from connect_offers import sweep as connect_offers_sweep
+        scheduler.add_job(
+            connect_offers_sweep,
+            trigger=_IT(minutes=10),
+            id="connect_offers_sweep",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
     # Google Calendar sync (Part 1): incremental pull per connected user every 30 min
     # (pure API + DB, no model). Flag-gated OFF; no-op when no gcal users are connected.
     if config.GCAL_ENABLED:

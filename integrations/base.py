@@ -177,6 +177,9 @@ def mark_revoked(user_id: int, provider: str) -> None:
         integ.access_token = None
         integ.refresh_token = None
         integ.expires_at = None
+        meta = dict(integ.meta or {})
+        meta["revoked_at"] = _utcnow().isoformat()     # connect_offers: one reconnect nudge per revoke
+        integ.meta = meta
         integ.updated_at = _utcnow()
         session.commit()
     finally:
