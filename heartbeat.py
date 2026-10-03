@@ -815,11 +815,15 @@ def _morning_anchor_hhmm(user, session, local, *, now=None) -> tuple[int, int] |
         return wake
 
 
-def _morning_open_signal(user, session, *, now=None) -> str | None:
+def _morning_open_signal(user, session, *, now=None, state: dict | None = None) -> str | None:
     """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after their wake (profile, alt
     honoured, pushed later by a measured wake — see _morning_anchor_hhmm) and no
     non-reaction message either way since they woke. One line of material: the weekday,
-    workout/rest day per their split, today's logged events."""
+    workout/rest day per their split, today's logged events.
+
+    `state` (optional, decide() passes one): when the daily-briefing branch fires, the
+    structured material it rendered is stored under state["briefing"] so the send path
+    can verify the sent text against it (_enforce_briefing) without recomputing."""
     if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
         return None
     local = _ref(now).astimezone(_user_tz(user))
@@ -863,12 +867,11 @@ def _morning_open_signal(user, session, *, now=None) -> str | None:
     # due dates + a suggested gym window + nutrition status) in ONE short message. Only
     # when the feature is on; otherwise the friend's-morning-line behaviour is unchanged.
     if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DAILY_BRIEFING_ENABLED:
-        brief = _daily_briefing_extras(user, session, now=now)
-        return (base + brief +
-                "A daily briefing: ONE short, warm rundown — the day's shape in a couple lines "
-                "(what's on, what's due, a good gym window, where nutrition stands), not a dashboard "
-                "and not a question stack. Once — if TICK HISTORY / RECENT PROACTIVE MESSAGES show a "
-                "morning text already today, this is not a reason to speak.")
+        parts = _daily_briefing_parts(user, session, now=now)
+        if state is not None:
+            state["briefing"] = parts
+        brief = _render_briefing_extras(parts)
+        return (base + brief + _BRIEFING_INSTRUCTION)
 
     return (base +
             "One short line — a friend's morning text, not a briefing: no plan dump, no totals, no "
@@ -876,27 +879,54 @@ def _morning_open_signal(user, session, *, now=None) -> str | None:
             "already today, this is not a reason to speak.")
 
 
-def _daily_briefing_extras(user, session, *, now=None) -> str:
-    """The extra briefing material MORNING OPEN adds under the daily-briefing feature:
-    due dates, a suggested gym window, and nutrition status — all code-computed, read-only,
-    fail-open (a failing piece is simply omitted)."""
-    lines = []
+_BRIEFING_INSTRUCTION = (
+    "A daily briefing: ONE short, warm rundown in a couple lines, not a dashboard and not a "
+    "question stack. REQUIRED, in this order — these are not optional colour: (1) lead with the "
+    "weather in a few words (the temperature and the condition, e.g. '69° and overcast'); "
+    "(2) ALWAYS name anything due TODAY by name (with the time if it has one) — a due-today item "
+    "is the single most important line of the morning and may never be dropped or folded into "
+    "'a few things due'; (3) then the day's shape: what's on, a good gym window, where nutrition "
+    "stands. Anything due in the next few days gets a word if there's room. Once — if TICK "
+    "HISTORY / RECENT PROACTIVE MESSAGES show a morning text already today, this is not a reason "
+    "to speak.")
+
+
+def _daily_briefing_parts(user, session, *, now=None) -> dict:
+    """The daily-briefing material as STRUCTURED parts (code-computed, read-only, fail-open —
+    a failing piece is simply None/empty). Rendered into the MORNING OPEN block by
+    _render_briefing_extras and checked against the sent text by _enforce_briefing:
+        weather     the weather_line string or None
+        due_today   [display titles due on the user's local today]  (all-day or timed)
+        due_today_times {display title: 'h:mmam' for TIMED due-today items}
+        due_soon    [(display title, days_until) for the rest of the next 7 days]  (≤3)
+        gym_window  (start_clock, end_clock) or None
+        nutrition   {cal, pro, meals, tgt} or None
+    """
+    parts: dict = {"weather": None, "due_today": [], "due_today_times": {}, "due_soon": [],
+                   "gym_window": None, "nutrition": None}
     if config.WEATHER_ENABLED:
         try:
             from weather import weather_line
             wl = weather_line(user)
             if wl:
-                lines.append(f"Weather: {wl}.")
+                parts["weather"] = wl
         except Exception as e:  # noqa: BLE001
             logger.warning("BRIEFING_WEATHER_FAILED user=%s err=%s", user.id, e)
     try:
-        from schedule import deadline_items
+        from schedule import deadline_items, due_today, display_title
+        from timefmt import to_local
         items = deadline_items(user.id, session, days=7, now=now)
         if items:
             now_utc = _ref(now).astimezone(timezone.utc).replace(tzinfo=None)
-            due = "; ".join(f"{d.title} ({'today' if d.days_until(now_utc) < 1 else f'{d.days_until(now_utc):.0f}d'})"
-                            for d in items[:3])
-            lines.append(f"Due soon: {due}.")
+            today = due_today(items, user, now=now)
+            today_ids = {d.id for d in today}
+            for d in today:
+                t = display_title(d.title)
+                parts["due_today"].append(t)
+                if not d.all_day:
+                    parts["due_today_times"][t] = _clock(to_local(d.when, user))
+            parts["due_soon"] = [(display_title(d.title), d.days_until(now_utc))
+                                 for d in items if d.id not in today_ids][:3]
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_DEADLINES_FAILED user=%s err=%s", user.id, e)
     try:
@@ -905,8 +935,7 @@ def _daily_briefing_extras(user, session, *, now=None) -> str:
             blocks = [b for b in free_blocks(user.id, session, now=now) if b.minutes >= 60]
             if blocks:
                 b = blocks[0]
-                lines.append(f"Suggested gym window: {_cal_local_clock(b.start, user)}–"
-                             f"{_cal_local_clock(b.end, user)}.")
+                parts["gym_window"] = (_cal_local_clock(b.start, user), _cal_local_clock(b.end, user))
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_GYM_FAILED user=%s err=%s", user.id, e)
     try:
@@ -919,10 +948,159 @@ def _daily_briefing_extras(user, session, *, now=None) -> str:
         tgt = ""
         if user.calorie_target or user.protein_target:
             tgt = f" (target {user.calorie_target or '?'} cal / {user.protein_target or '?'}g)"
-        lines.append(f"Nutrition so far: {cal} cal / {pro}g protein across {len(meals)} meal(s){tgt}.")
+        parts["nutrition"] = {"cal": cal, "pro": pro, "meals": len(meals), "tgt": tgt}
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_NUTRITION_FAILED user=%s err=%s", user.id, e)
+    return parts
+
+
+def _render_briefing_extras(parts: dict) -> str:
+    """Structured briefing parts → the 'Briefing material: …' line MORNING OPEN carries.
+    Due-TODAY items get their own line (before 'Due soon') so the model can't fold them."""
+    lines = []
+    if parts.get("weather"):
+        lines.append(f"Weather: {parts['weather']}.")
+    if parts.get("due_today"):
+        times = parts.get("due_today_times") or {}
+        shown = [f"{t} (by {times[t]})" if t in times else t for t in parts["due_today"]]
+        lines.append(f"Due TODAY: {'; '.join(shown)}.")
+    if parts.get("due_soon"):
+        due = "; ".join(f"{t} ({'today' if days < 1 else f'{days:.0f}d'})" for t, days in parts["due_soon"])
+        lines.append(f"Due soon: {due}.")
+    if parts.get("gym_window"):
+        a, b = parts["gym_window"]
+        lines.append(f"Suggested gym window: {a}–{b}.")
+    n = parts.get("nutrition")
+    if n:
+        lines.append(f"Nutrition so far: {n['cal']} cal / {n['pro']}g protein across {n['meals']} meal(s){n['tgt']}.")
     return ("Briefing material: " + " ".join(lines) + "\n") if lines else ""
+
+
+def _daily_briefing_extras(user, session, *, now=None) -> str:
+    """The rendered briefing material (kept as the single entry point older callers and
+    tests use): _render_briefing_extras(_daily_briefing_parts(...))."""
+    return _render_briefing_extras(_daily_briefing_parts(user, session, now=now))
+
+
+# ─── briefing completeness: verify the SENT text against the material ────────────
+#
+# Live 2026-10-02 (founder): the material said "Weather: 69° & overcast in Berkeley" and
+# "Due TODAY: Homework 4: RISC-V" and the sent briefing had neither — 0 of 8 morning
+# briefings in a week carried the weather. Completeness was left to model summarization
+# and it failed silently. So the briefing tick now (a) logs every material item whose key
+# signal is absent from the sent text (BRIEFING_DROPPED_ITEM — observability, no change to
+# the text) and (b) under BRIEFING_WEATHER_GUARANTEE_ENABLED prepends a compact weather
+# clause when neither the temperature number nor the condition word made it in. Only the
+# morning-open briefing tick (state["briefing"] is set by _morning_open_signal); fail-open.
+
+_WEATHER_TEMP_RE = re.compile(r"(-?\d{1,3})°")
+_WEATHER_COND_RE = re.compile(r"&\s*([a-z][a-z ]*?)(?:\s+in\s|\s+—|\.|$)", re.IGNORECASE)
+_CLOCK_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\bnoon\b", re.IGNORECASE)
+_TITLE_STOP = {"due", "the", "and", "for", "with", "from", "this", "that", "hw", "homework",
+               "assignment", "problem", "set", "pset", "quiz", "exam", "midterm", "project"}
+
+
+def _weather_signals(wl: str) -> tuple[str | None, str | None]:
+    """('69', 'overcast') from a weather_line; either None if the shape isn't recognised."""
+    m = _WEATHER_TEMP_RE.search(wl or "")
+    temp = m.group(1) if m else None
+    m = _WEATHER_COND_RE.search(wl or "")
+    cond = m.group(1).strip().lower() if m else None
+    return temp, cond
+
+
+def _mentions_weather(text: str, wl: str) -> bool:
+    temp, cond = _weather_signals(wl)
+    low = (text or "").lower()
+    if temp and re.search(rf"(?<!\d){re.escape(temp)}(?!\d)", low):
+        return True
+    if cond:
+        for w in {cond} | {w for w in cond.split() if len(w) >= 4}:
+            if re.search(rf"\b{re.escape(w)}\b", low):
+                return True
+    return False
+
+
+def _title_candidates(title: str) -> set[str]:
+    """The distinctive tokens of a deadline title: alnum words ≥3 chars minus generic ones
+    ('due', 'homework'…), plus adjacent short tokens FUSED ('CS 70' → 'cs70' — people write
+    a course either way). Falls back to the raw tokens if nothing distinctive is left."""
+    toks = [t for t in re.findall(r"[a-z0-9]+", (title or "").lower()) if t not in _TITLE_STOP]
+    cands = {t for t in toks if len(t) >= 3}
+    for a, b in zip(toks, toks[1:]):
+        if len(a) < 3 or len(b) < 3:
+            cands.add(a + b)
+    return cands or set(toks)
+
+
+def _mentions_title(text: str, title: str) -> bool:
+    """Any distinctive token of the deadline title appears in the text — 'HW4 (RISC-V)'
+    matches 'Homework 4: RISC-V [CS61C]' via 'risc'; 'CS61C homework tonight' via 'cs61c';
+    'CS70 hw' or 'CS 70 hw' matches 'CS 70 HW Due' via the fused 'cs70'. A generic paraphrase
+    with no title token ('hw due tonight') counts as a drop — a log line, never a text change."""
+    low = (text or "").lower()
+    # fuse letter/digit pairs split by whitespace so "CS 70" in the text also reads "cs70"
+    fused = re.sub(r"(?<=[a-z])\s+(?=\d)|(?<=\d)\s+(?=[a-z])", "", low)
+    cands = _title_candidates(title)
+    if not cands:
+        return bool(low)
+    for c in cands:
+        pat = rf"(?<![a-z0-9]){re.escape(c)}(?![a-z0-9])" if len(c) >= 3 else rf"(?<![a-z0-9]){re.escape(c)}"
+        if re.search(pat, low) or re.search(pat, fused):
+            return True
+    return False
+
+
+def _mentions_nutrition(text: str, n: dict) -> bool:
+    low = (text or "").lower()
+    cal = int(n.get("cal") or 0)
+    if cal > 0:
+        return bool(re.search(rf"(?<!\d){cal}(?!\d)", low))
+    # nothing logged yet: the signal is any honest "nothing yet" phrasing
+    return bool(re.search(r"\b(nothing|no (?:food|meals?)|haven'?t|not logged|zero|0 cal|yet to|"
+                          r"log (?:some|your) (?:breakfast|food)|breakfast)\b", low))
+
+
+def _briefing_drops(text: str, parts: dict) -> list[tuple[str, str]]:
+    """[(item, detail)] for each material item whose key signal is absent from `text`."""
+    drops: list[tuple[str, str]] = []
+    wl = parts.get("weather")
+    if wl and not _mentions_weather(text, wl):
+        drops.append(("weather", wl))
+    for t in parts.get("due_today") or []:
+        if not _mentions_title(text, t):
+            drops.append(("due_today", t))
+    for t, _days in parts.get("due_soon") or []:
+        if not _mentions_title(text, t):
+            drops.append(("due_soon", t))
+    if parts.get("gym_window") and not _CLOCK_RE.search(text or ""):
+        drops.append(("gym_window", "–".join(parts["gym_window"])))
+    n = parts.get("nutrition")
+    if n and not _mentions_nutrition(text, n):
+        drops.append(("nutrition", f"{n['cal']} cal"))
+    return drops
+
+
+def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
+    """The briefing tick's send-time check. Logs BRIEFING_DROPPED_ITEM for every material
+    item missing from `msg`; under BRIEFING_WEATHER_GUARANTEE_ENABLED prepends the weather
+    clause when the weather is one of them. No-op when `parts` is None (any non-briefing
+    heartbeat). Fail-open: any error → `msg` unchanged."""
+    if not parts or not msg:
+        return msg
+    try:
+        drops = _briefing_drops(msg, parts)
+        for item, detail in drops:
+            logger.info("BRIEFING_DROPPED_ITEM user=%s item=%s detail=%r", user_id, item, detail)
+        if config.BRIEFING_WEATHER_GUARANTEE_ENABLED and any(i == "weather" for i, _ in drops):
+            wl = parts["weather"].strip().rstrip(".")
+            sep = ". " if "—" in wl else " — "
+            logger.info("BRIEFING_WEATHER_PREPENDED user=%s weather=%r", user_id, wl)
+            return f"{wl}{sep}{msg}"
+        return msg
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BRIEFING_ENFORCE_FAILED user=%s err=%s", user_id, e)
+        return msg
 
 
 def _evening_close_signal(user, session, *, now=None) -> str | None:
@@ -1165,7 +1343,10 @@ def _high_load_signal(user, session, *, now=None) -> str | None:
             "this) still speaks. Combine with the RECOVERY block if present.")
 
 
-def _proactive_context(user, session) -> str:
+def _proactive_context(user, session, *, state: dict | None = None) -> str:
+    """The proactive-context string decide() hands the model. `state` (optional dict) is
+    filled with side-channel material the SEND path verifies against — today only
+    state["briefing"] (set by _morning_open_signal on a daily-briefing tick)."""
     parts = [build_loop_context(user, session)]
 
     win = _recent_win_signal(user, session)
@@ -1188,7 +1369,8 @@ def _proactive_context(user, session) -> str:
     # Daily rhythm standing conditions (each flag-gated inside; a failure never kills the tick).
     for fn in (_meal_gap_signal, _morning_open_signal, _evening_close_signal):
         try:
-            blk = fn(user, session)
+            blk = (fn(user, session, state=state) if fn is _morning_open_signal
+                   else fn(user, session))
         except Exception as e:  # noqa: BLE001
             logger.warning("RHYTHM_SIGNAL_FAILED fn=%s user=%s err=%s", fn.__name__, user.id, e)
             blk = None
@@ -1298,10 +1480,14 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
     session = get_session()
     try:
         user = session.get(User, user_id)
-        context = _proactive_context(user, session)
+        state: dict = {}
+        context = _proactive_context(user, session, state=state)
         search = {"available": _search_available(user, session), "used": False, "query": None}
     finally:
         session.close()
+    # Set only on the morning-open daily-briefing tick: the material the sent text is
+    # verified against (weather guarantee + BRIEFING_DROPPED_ITEM). None on every other tick.
+    briefing = state.get("briefing")
 
     prompt = HEARTBEAT_PROMPT
     if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
@@ -1358,7 +1544,9 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
                 # send_text is terminal either way — an empty message can't be sent, so
                 # log it as silence rather than continuing (which would leave this
                 # tool_use unanswered and malform the next request).
-                return (True, msg, search) if msg else (False, "send_text empty message", search)
+                if msg:
+                    return (True, _enforce_briefing(msg, briefing, user_id), search)
+                return (False, "send_text empty message", search)
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
             if silent is not None:
@@ -1395,7 +1583,7 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
         # search result, the substance after). Same seam as agent_loop's _join_text.
         text = _join_text(resp.content)
         if text:
-            return (True, text, search)
+            return (True, _enforce_briefing(text, briefing, user_id), search)
         # A clean terminal stop with neither a decision tool nor text is an anomaly
         # — log the response shape by name (the signal whose absence let the
         # truncation bug hide) before recording the silent tick.
