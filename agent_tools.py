@@ -2335,11 +2335,97 @@ _NARRATION_RE = re.compile(
     re.IGNORECASE)
 
 
+# Planning-marker CLUSTER. Live 2026-10-02 (founder, msg 5656, angry after a bad quiz):
+# "They're angry and venting. Not a question needing an answer. Best move: brief, don't
+# escalate, give them space.\n\nNo tapback (they're upset). Keep it short and real.\n\n
+# Bad day. I'll back off." — stop=end_turn, 68 output tokens, texted verbatim. NONE of the
+# _NARRATION_RE phrases appeared; the plan used a different idiom family. Each marker
+# below is something a coach *might* text a friend once ("they're upset" about a
+# roommate; "i'll back off" as a closing line), so ONE never flags — TWO DISTINCT markers
+# in one reply does. Detection costs a one-time nudge retry (never a first-hit drop), so
+# the rare legit two-marker reply is cheap; the leak was not.
+_PLANNING_MARKERS = tuple(re.compile(p, re.IGNORECASE | re.MULTILINE) for p in (
+    r"\bbest move\b",
+    r"\bno tapback\b",
+    r"\bthey['’]?re (angry|upset|venting|frustrated|mad|pissed)\b",
+    r"\bnot a question( needing| that needs| to answer)?\b",
+    r"\bkeep it (short|brief)( and real)?\b",
+    r"\bdon['’]?t escalate\b",
+    r"\bgive them space\b",
+    r"\bthey need space\b",
+    r"^\W*(ok|okay|alright)[,.]? (they|the user|so they)\b",
+    r"\b(brief|short) (reply|response|ack)\b",
+    r"\blet them vent\b",
+    r"\bno need to (respond|reply|answer)\b",
+    # Cluster-only AND allowed inside a salvaged tail: "Bad day. I'll back off." is a
+    # line the coach legitimately texts; it only counts when other markers ride with it.
+    r"\bi['’]?ll (just )?(back off|leave (it|them))\b",
+))
+_BACK_OFF_MARKER = _PLANNING_MARKERS[-1]
+# A paragraph that opens by talking ABOUT the user is a note to self, never the text.
+_THIRD_PERSON_OPEN = re.compile(r"^\W*(they|them|the user|the human)\b", re.IGNORECASE)
+# The salvaged tail is a short closing line, not a second essay.
+_SALVAGE_MAX_CHARS = 200
+
+
+def _planning_marker_hits(text: str, *, allow_back_off: bool = False) -> int:
+    """Count of DISTINCT planning markers present (a repeated phrase counts once)."""
+    t = text or ""
+    return sum(1 for rx in _PLANNING_MARKERS
+               if not (allow_back_off and rx is _BACK_OFF_MARKER) and rx.search(t))
+
+
 def looks_like_narration(text: str) -> bool:
     """True when the visible text reads as the model's own plan, not a message to the
-    user. The loop nudges once (act with tools, then send the real words) and drops a
-    repeat — never texts it."""
-    return bool(_NARRATION_RE.search(text or ""))
+    user: any single _NARRATION_RE phrase, OR two or more distinct planning markers.
+    The loop salvages a trailing direct line when one exists, else nudges once (act
+    with tools, then send the real words) and drops a repeat — never texts it."""
+    t = text or ""
+    if _NARRATION_RE.search(t):
+        return True
+    return _planning_marker_hits(t) >= 2
+
+
+def _is_narration_paragraphs(paras) -> bool:
+    joined = "\n\n".join(paras)
+    return bool(_NARRATION_RE.search(joined)) or _planning_marker_hits(joined) >= 2
+
+
+def _is_direct_paragraph(p: str) -> bool:
+    """A paragraph a friend could have texted: no narration phrase, no planning marker
+    (the closing "i'll back off" excepted), not opening in the third person."""
+    if _NARRATION_RE.search(p) or _THIRD_PERSON_OPEN.match(p):
+        return False
+    return _planning_marker_hits(p, allow_back_off=True) == 0
+
+
+def salvage_direct_reply(text: str):
+    """When narration-flagged text is planning paragraph(s) FOLLOWED by the actual
+    message — msg 5656: two paragraphs of plan, then "Bad day. I'll back off." — return
+    just that trailing message so the user gets the real words instead of a retry.
+
+    Heuristic, deliberately conservative (None → the loop falls back to nudge/drop):
+    - split on blank lines; need ≥2 paragraphs;
+    - the tail is the last paragraph, or the last two when both qualify (greedy);
+    - every tail paragraph must be direct: no _NARRATION_RE hit, zero planning markers
+      except the closing "i'll back off", and not opening with they/them/the user;
+    - the tail is ≤ 200 chars;
+    - the head (everything before the tail) must itself read as narration — the
+      markers that flagged the text have to live there, not be spread into the tail.
+    """
+    paras = [p.strip() for p in re.split(r"\n[ \t]*\n", (text or "").strip()) if p.strip()]
+    if len(paras) < 2:
+        return None
+    for k in (2, 1):
+        if len(paras) - k < 1:
+            continue
+        head, tail = paras[:-k], paras[-k:]
+        kept = "\n\n".join(tail)
+        if len(kept) > _SALVAGE_MAX_CHARS or not all(_is_direct_paragraph(p) for p in tail):
+            continue
+        if _is_narration_paragraphs(head):
+            return kept
+    return None
 
 
 _EMOJI_ONLY = re.compile(r"^[\s\u200d\ufe0f\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\u2B55\u203C\u2049\u2764]+$")
