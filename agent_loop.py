@@ -1086,12 +1086,21 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             return ""
         # Narration guard: the model wrote its PLAN as the reply (live 2026-09-23, Alex:
         # "react to this — it's a simple decline, just acknowledge. ... Let me set the
-        # standing Tue/Thu reminder." — end_turn, no tool call, texted verbatim). ONE
-        # forced follow-up with a path for both branches: act with the tools, then send
-        # the real words (or the silent sentinel). A repeat is dropped, never sent.
-        from agent_tools import looks_like_narration, REACTION_ONLY_SENTINEL
+        # standing Tue/Thu reminder." — end_turn, no tool call, texted verbatim). Order:
+        # (1) SALVAGE — when the plan is followed by the real line in its own paragraph
+        # (live 2026-10-02, founder msg 5656: two paragraphs of plan, then "Bad day.
+        # I'll back off."), keep just that line and send it as a normal reply; else
+        # (2) ONE forced follow-up with a path for both branches: act with the tools,
+        # then send the real words (or the silent sentinel); (3) a repeat is dropped,
+        # never sent.
+        from agent_tools import looks_like_narration, salvage_direct_reply, REACTION_ONLY_SENTINEL
         if text and looks_like_narration(text):
-            if not state.get("narration_nudged"):
+            kept = salvage_direct_reply(text) if config.NARRATION_SALVAGE_ENABLED else None
+            if kept:
+                logger.warning("AGENT_LOOP_NARRATION_SALVAGED user=%s iter=%d kept=%r dropped_chars=%d",
+                               user.id, i, kept, len(text) - len(kept))
+                text = kept
+            elif not state.get("narration_nudged"):
                 state["narration_nudged"] = True
                 logger.warning("AGENT_LOOP_NARRATION_NUDGE user=%s iter=%d text=%r", user.id, i, text[:80])
                 messages.append({"role": "assistant", "content": resp.content})
@@ -1103,8 +1112,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                     f"the words you'd actually text {user.name}; if a reaction was the whole reply, "
                     f"reply with exactly {REACTION_ONLY_SENTINEL}.]")})
                 continue
-            logger.warning("AGENT_LOOP_NARRATION_DROPPED user=%s iter=%d text=%r", user.id, i, text[:80])
-            return ""
+            else:
+                logger.warning("AGENT_LOOP_NARRATION_DROPPED user=%s iter=%d text=%r", user.id, i, text[:80])
+                return ""
         # Write-back guard (honesty invariant, code side). usda_food_lookup named rows
         # that are ALREADY LOGGED (turn state: pending_writeback); if the reply quotes a
         # macro number and none of those rows was edited, the correction exists only

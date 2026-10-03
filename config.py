@@ -205,6 +205,13 @@ PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
 # dots up for a minute, so those get dots at flush (existing behaviour).
 TYPING_ON_ARRIVAL_MAX_S = int(os.getenv("TYPING_ON_ARRIVAL_MAX_S", "20"))
 AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
+# NARRATION_SALVAGE_ENABLED (2026-10-02, live incident founder msg 5656): the model sent
+# two paragraphs of planning notes ("They're angry and venting… Best move: brief…") and
+# then the real line ("Bad day. I'll back off.") as ONE text. Detection widened to a
+# planning-marker cluster (agent_tools._PLANNING_MARKERS, >=2 distinct); when the flagged
+# text ends in a short direct paragraph, send just that instead of a retry. Off → the
+# pre-existing nudge-once-then-drop path, byte-identical.
+NARRATION_SALVAGE_ENABLED = os.getenv("NARRATION_SALVAGE_ENABLED", "true").lower() == "true"
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"

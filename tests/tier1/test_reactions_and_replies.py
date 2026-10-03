@@ -497,3 +497,139 @@ def test_narration_twice_is_dropped_never_sent(db, imessage_on, sidecar, anthrop
         app.process_buffered_message(user.id, "Nahh I drink a lot of water", "freeform")
     assert not [j for r, j in sidecar if r == "send"] and sms_capture == []
     assert "AGENT_LOOP_NARRATION_DROPPED" in caplog.text
+
+
+# ── planning-marker cluster + paragraph salvage (live 2026-10-02, founder msg 5656) ──
+
+FOUNDER_5656 = ("They're angry and venting. Not a question needing an answer. Best move: brief, "
+                "don't escalate, give them space.\n\n"
+                "No tapback (they're upset). Keep it short and real.\n\n"
+                "Bad day. I'll back off.")
+FOUNDER_5656_REPLY = "Bad day. I'll back off."
+
+
+def test_planning_marker_cluster_catches_the_5656_leak_and_keeps_the_old_cases():
+    from agent_tools import looks_like_narration, salvage_direct_reply, _NARRATION_RE
+    assert len(FOUNDER_5656) == 189
+    assert not _NARRATION_RE.search(FOUNDER_5656)       # the phrase list alone missed it live
+    assert looks_like_narration(FOUNDER_5656)           # >=2 distinct planning markers
+    assert salvage_direct_reply(FOUNDER_5656) == FOUNDER_5656_REPLY
+    # the live 2026-09-24 phrase-list cases still hit on their own (regression guard)
+    assert looks_like_narration("ok that's the tap. Let me address it.")
+    assert looks_like_narration("Should react/explain. Explain that tapping offers a swap.")
+    assert looks_like_narration(ALEX_NARRATION)
+
+
+def test_single_planning_marker_is_coach_speech_two_is_a_plan():
+    from agent_tools import looks_like_narration
+    for ok in ("they're upset about the grade — i'd text them tomorrow",
+               "bad day. i'll back off.",
+               "best move is sleep, not a 10pm session",
+               "keep it short today, 3 sets and out",
+               "no need to answer rn, go eat"):
+        assert not looks_like_narration(ok), ok
+    assert looks_like_narration("they're upset about the grade, i'd give them space tonight")
+    assert looks_like_narration("Not a question. Keep it short.")
+    assert looks_like_narration("Ok, they bombed it. Brief reply.")
+
+
+def test_salvage_declines_when_there_is_no_clean_trailing_line():
+    from agent_tools import salvage_direct_reply
+    plan = "Best move: brief, don't escalate."
+    assert salvage_direct_reply("they're upset, i'd give them space tonight") is None   # one paragraph
+    assert salvage_direct_reply(plan + "\n\n" + "x " * 110) is None                     # tail > 200 chars
+    assert salvage_direct_reply(plan + "\n\nThey need space tonight.") is None           # third-person tail
+    assert salvage_direct_reply(plan + "\n\nThe user had a bad day.") is None            # third-person tail
+    assert salvage_direct_reply(plan + "\n\nNo tapback. Keep it short.") is None         # tail is still the plan
+    assert salvage_direct_reply(ALEX_NARRATION) is None                                  # tail deliberates a reminder
+    # head must be where the plan lives — one marker up top + the closing line is not a plan
+    assert salvage_direct_reply("they're upset fr\n\ni'll back off") is None
+    # the real line may span two short paragraphs; "i'll back off" is allowed in the tail
+    assert salvage_direct_reply(plan + "\n\nbad day.\n\ni'll back off.") == "bad day.\n\ni'll back off."
+
+
+def test_5656_text_sends_only_the_real_line(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    """Live 2026-10-02 (founder, msg 5656): two paragraphs of plan AND the reply went out
+    as one text. Now: code keeps the trailing direct line and sends exactly that — no
+    retry round-trip, no nudge, no drop."""
+    import app
+    body = "bombed the quiz. whatever man this whole week sucks"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-quiz")
+    anthropic_stub.push(FOUNDER_5656)
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == FOUNDER_5656_REPLY
+    assert "AGENT_LOOP_NARRATION_SALVAGED" in caplog.text
+    assert f"dropped_chars={len(FOUNDER_5656) - len(FOUNDER_5656_REPLY)}" in caplog.text
+    assert "AGENT_LOOP_NARRATION_NUDGE" not in caplog.text
+    assert "AGENT_LOOP_NARRATION_DROPPED" not in caplog.text
+    assert not any("planning notes" in str(m.get("content")) for c in anthropic_stub.calls for m in c["messages"])
+    out = _rows(db, user)
+    assert [m.body for m in out if m.message_type != "reaction"] == [FOUNDER_5656_REPLY]
+
+
+def test_single_marker_reply_goes_out_untouched(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    import app
+    body = "my roommate failed too and is being weird about it"
+    reply = "they're upset about the grade — i'd text them tomorrow"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-rm1")
+    anthropic_stub.push(reply)
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == reply
+    assert "AGENT_LOOP_NARRATION" not in caplog.text
+
+
+def test_two_markers_in_one_paragraph_nudge_once_never_drop_on_first_hit(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    """A legit-looking line can trip two markers; the cost is ONE code follow-up — never
+    a silent drop on the first hit, and nothing is salvaged from a single paragraph."""
+    import app
+    body = "my roommate failed too and is being weird about it"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-rm2")
+    anthropic_stub.push("they're upset about the grade, i'd give them space tonight",
+                        "give him the night, text tmrw")
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == "give him the night, text tmrw"
+    assert caplog.text.count("AGENT_LOOP_NARRATION_NUDGE") == 1
+    assert "AGENT_LOOP_NARRATION_DROPPED" not in caplog.text
+    assert "AGENT_LOOP_NARRATION_SALVAGED" not in caplog.text
+
+
+def test_third_person_tail_falls_back_to_the_nudge(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    import app
+    body = "bombed the quiz. whatever"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-quiz2")
+    anthropic_stub.push("Best move: brief, don't escalate.\n\nThey need space tonight.",
+                        "rough one. i'm around if u want to talk")
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == "rough one. i'm around if u want to talk"
+    assert caplog.text.count("AGENT_LOOP_NARRATION_NUDGE") == 1
+    assert "AGENT_LOOP_NARRATION_SALVAGED" not in caplog.text
+    assert "AGENT_LOOP_NARRATION_DROPPED" not in caplog.text
+
+
+def test_salvage_flag_off_is_the_old_nudge_then_drop_path(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog, monkeypatch):
+    """NARRATION_SALVAGE_ENABLED=false → today's path exactly: the 5656 text is nudged
+    once, a repeat is dropped, nothing is sent."""
+    import app, config
+    monkeypatch.setattr(config, "NARRATION_SALVAGE_ENABLED", False)
+    body = "bombed the quiz. whatever man this whole week sucks"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-quiz3")
+    anthropic_stub.push(FOUNDER_5656, FOUNDER_5656)
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    assert not [j for r, j in sidecar if r == "send"] and sms_capture == []
+    assert caplog.text.count("AGENT_LOOP_NARRATION_NUDGE") == 1
+    assert "AGENT_LOOP_NARRATION_DROPPED" in caplog.text
+    assert "AGENT_LOOP_NARRATION_SALVAGED" not in caplog.text
