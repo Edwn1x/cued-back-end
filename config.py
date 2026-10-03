@@ -765,6 +765,15 @@ CALENDAR_HARD_BLOCK_MINUTES = int(os.getenv("CALENDAR_HARD_BLOCK_MINUTES", "20")
 # Never bypasses in_class (provably mid-class) or any earlier gate (quiet hours, daily
 # cap, active conversation, anti-stack).
 CALENDAR_BRIEFING_GUARANTEE_ENABLED = os.getenv("CALENDAR_BRIEFING_GUARANTEE_ENABLED", "true").lower() == "true"
+# Briefing completeness (live 2026-10-02): the morning material carried "Weather: 69° &
+# overcast…" every day for a week and the model dropped it 100% of the time (0 of 8
+# briefings) — it read the line as background colour. With this on, the briefing tick
+# checks the SENT text: if neither the temperature number nor the condition word made it
+# in, a compact weather clause is prepended to the first message. Only the morning-open
+# briefing tick, never any other heartbeat; fail-open (any error → the model's text as-is).
+# Every dropped material item (weather / due_today / due_soon / gym_window / nutrition) is
+# also logged as BRIEFING_DROPPED_ITEM so a drop can't go unnoticed for a week again.
+BRIEFING_WEATHER_GUARANTEE_ENABLED = os.getenv("BRIEFING_WEATHER_GUARANTEE_ENABLED", "true").lower() == "true"
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent

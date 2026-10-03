@@ -89,7 +89,12 @@ class FreeBlock:
 
 @dataclass
 class Deadline:
-    """An upcoming deadline event, naive-UTC `when` (its start/due instant)."""
+    """An upcoming deadline event, naive-UTC `when` (its due instant). For an ALL-DAY row
+    (bcourses/canvas "due:" assignments are stored at 00:00 LOCAL of the due day) `when`
+    is the END of that local day (23:59:59 local → naive UTC), so a thing due today stays
+    "upcoming" all day instead of expiring the moment the day starts (live 2026-10-02:
+    HW4 due today vanished from the briefing while a 5-days-out item was named). Timed
+    rows keep their stored instant."""
     id: int
     title: str
     when: datetime
@@ -316,20 +321,41 @@ def _is_deadline(ev) -> tuple[bool, bool]:
     return is_dl, (is_dl and bool(_EXAM_RE.search(primary)))
 
 
+def _all_day_due_instant(occurred_at: datetime, tz: ZoneInfo) -> datetime:
+    """An all-day row's stored instant (00:00 local of its day, naive UTC) → the END of that
+    LOCAL day (23:59:59) as naive UTC. The local DATE is taken in the user's zone so a
+    Tokyo user's all-day item windows on Tokyo's day, not UTC's."""
+    local_date = occurred_at.replace(tzinfo=timezone.utc).astimezone(tz).date()
+    end_local = datetime(local_date.year, local_date.month, local_date.day, 23, 59, 59, tzinfo=tz)
+    return _to_naive_utc(end_local)
+
+
 def deadline_items(user_id: int, session=None, *, days: int = None, now=None) -> list[Deadline]:
     """Upcoming deadlines (assignments/exams) within `days` (default
-    config.CALENDAR_DEADLINE_DAYS), sorted soonest-first. Read-only; fail-open to []."""
+    config.CALENDAR_DEADLINE_DAYS), sorted soonest-first by `when`. Read-only; fail-open
+    to [].
+
+    All-day handling: all-day rows are stored at 00:00 LOCAL of their day, so the query
+    starts at the START of the user's local today (not `now`) and an all-day row's `when`
+    is the END of its local day — a due-TODAY assignment is included all day with
+    hours_until ≈ hours left in the day. Timed rows are unchanged: `when` is the stored
+    instant and anything already past is dropped."""
     days = days or config.CALENDAR_DEADLINE_DAYS
     own = session is None
     try:
-        from models import get_session, active, Event
+        from models import get_session, active, Event, User
         session = session or get_session()
         now_utc = _now_naive_utc(now)
         hi = now_utc + timedelta(days=days)
+        user = session.get(User, user_id)
+        tz = _tz(user)
+        local_now = _ref_local(user, now)
+        day_start_utc = _to_naive_utc(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
+        lo = min(now_utc, day_start_utc)
         rows = (active(session, Event, user_id=user_id)
                 .filter(Event.source.in_(CALENDAR_SOURCES),
                         Event.occurred_at.isnot(None),
-                        Event.occurred_at >= now_utc,
+                        Event.occurred_at >= lo,
                         Event.occurred_at < hi)
                 .order_by(Event.occurred_at).limit(200).all())
         out: list[Deadline] = []
@@ -337,9 +363,13 @@ def deadline_items(user_id: int, session=None, *, days: int = None, now=None) ->
             is_dl, is_exam = _is_deadline(e)
             if not is_dl:
                 continue
+            all_day = bool(getattr(e, "all_day", False))
+            when = _all_day_due_instant(e.occurred_at, tz) if all_day else e.occurred_at
+            if when < now_utc:
+                continue                      # a timed row fetched from day-start that already passed
             title = (getattr(e, "title", None) or getattr(e, "raw_text", None) or "deadline").strip()
-            out.append(Deadline(id=e.id, title=title[:120], when=e.occurred_at,
-                                all_day=bool(getattr(e, "all_day", False)), is_exam=is_exam))
+            out.append(Deadline(id=e.id, title=title[:120], when=when, all_day=all_day, is_exam=is_exam))
+        out.sort(key=lambda d: d.when)
         return out
     except Exception as e:  # noqa: BLE001
         logger.warning("DEADLINE_ITEMS_FAILED user=%s err=%s", user_id, e)
@@ -354,6 +384,22 @@ def deadlines_within(items: list[Deadline], hours: float, *, now=None) -> list[D
     now_utc = _now_naive_utc(now)
     horizon = now_utc + timedelta(hours=hours)
     return [d for d in items if d.when <= horizon]
+
+
+def due_today(items: list[Deadline], user, *, now=None) -> list[Deadline]:
+    """The subset of `items` whose due instant falls on the user's LOCAL today (an all-day
+    item due today, or a timed one later today)."""
+    today = _ref_local(user, now).date()
+    tz = _tz(user)
+    return [d for d in items
+            if d.when.replace(tzinfo=timezone.utc).astimezone(tz).date() == today]
+
+
+def display_title(title: str) -> str:
+    """A deadline title for the user's eyes: the bcourses/canvas 'due: ' routing prefix
+    stripped ('due: Homework 4: RISC-V [CS61C]' → 'Homework 4: RISC-V [CS61C]')."""
+    t = (title or "").strip()
+    return re.sub(r"^due:\s*", "", t, flags=re.IGNORECASE).strip() or t
 
 
 def cluster_count(items: list[Deadline], *, hours: float = None, now=None) -> int:
