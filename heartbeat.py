@@ -867,7 +867,9 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     # due dates + a suggested gym window + nutrition status) in ONE short message. Only
     # when the feature is on; otherwise the friend's-morning-line behaviour is unchanged.
     if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DAILY_BRIEFING_ENABLED:
-        parts = _daily_briefing_parts(user, session, now=now)
+        # one reference instant for the whole briefing: the schedule primitives otherwise
+        # read their own clock when now=None (a test seam; in prod both are "now")
+        parts = _daily_briefing_parts(user, session, now=_ref(now))
         if state is not None:
             state["briefing"] = parts
         brief = _render_briefing_extras(parts)
@@ -882,7 +884,8 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
 _BRIEFING_INSTRUCTION = (
     "A daily briefing: ONE short, warm rundown in a couple lines, not a dashboard and not a "
     "question stack. REQUIRED, in this order — these are not optional colour: (1) lead with the "
-    "weather in a few words (the temperature and the condition, e.g. '69° and overcast'); "
+    "weather in a few words: the temperature WITH the degree sign (write 88°, never a bare 88 — "
+    "a bare number reads as noise) and the condition, e.g. '88° and clear'; "
     "(2) ALWAYS name anything due TODAY by name (with the time if it has one) — a due-today item "
     "is the single most important line of the morning and may never be dropped or folded into "
     "'a few things due'; (3) then the day's shape: what's on, a good gym window, where nutrition "
@@ -995,7 +998,9 @@ def _daily_briefing_extras(user, session, *, now=None) -> str:
 
 _WEATHER_TEMP_RE = re.compile(r"(-?\d{1,3})°")
 _WEATHER_COND_RE = re.compile(r"&\s*([a-z][a-z ]*?)(?:\s+in\s|\s+—|\.|$)", re.IGNORECASE)
-_CLOCK_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\bnoon\b", re.IGNORECASE)
+# a clock as people text it: "3pm", "3:00", "noon", or a casual "at 3"
+_CLOCK_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\bnoon\b|\bat\s+\d{1,2}\b",
+                       re.IGNORECASE)
 _TITLE_STOP = {"due", "the", "and", "for", "with", "from", "this", "that", "hw", "homework",
                "assignment", "problem", "set", "pset", "quiz", "exam", "midterm", "project"}
 
@@ -1081,22 +1086,45 @@ def _briefing_drops(text: str, parts: dict) -> list[tuple[str, str]]:
     return drops
 
 
+def _insert_degree_sign(msg: str, temp: str) -> str | None:
+    """Live 2026-10-03: the model wrote "88 and clear out" — the temperature without its
+    degree sign, which the founder read as a random number ("Wym 88"). If `temp` appears in
+    `msg` as a BARE number (digit-boundaried; not already followed by °/º/degrees/deg/F),
+    return `msg` with "°" inserted right after the FIRST such occurrence; else None. The
+    degree sign is kept as-is downstream (UCS-2 for SMS — wanted; never converted to "F")."""
+    pat = re.compile(rf"(?<![\d°º]){re.escape(temp)}(?![\d°º])(?!\s*(?:°|º|degrees|deg\b|f\b))",
+                     re.IGNORECASE)
+    m = pat.search(msg or "")
+    if not m:
+        return None
+    return msg[:m.end()] + "°" + msg[m.end():]
+
+
 def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
     """The briefing tick's send-time check. Logs BRIEFING_DROPPED_ITEM for every material
-    item missing from `msg`; under BRIEFING_WEATHER_GUARANTEE_ENABLED prepends the weather
-    clause when the weather is one of them. No-op when `parts` is None (any non-briefing
-    heartbeat). Fail-open: any error → `msg` unchanged."""
+    item missing from `msg`; under BRIEFING_WEATHER_GUARANTEE_ENABLED (a) prepends the
+    weather clause when the weather is one of them, else (b) inserts the degree sign after a
+    bare temperature number ("88 and clear" → "88° and clear"). No-op when `parts` is None
+    (any non-briefing heartbeat). Fail-open: any error → `msg` unchanged."""
     if not parts or not msg:
         return msg
     try:
         drops = _briefing_drops(msg, parts)
         for item, detail in drops:
             logger.info("BRIEFING_DROPPED_ITEM user=%s item=%s detail=%r", user_id, item, detail)
-        if config.BRIEFING_WEATHER_GUARANTEE_ENABLED and any(i == "weather" for i, _ in drops):
+        if not config.BRIEFING_WEATHER_GUARANTEE_ENABLED or not parts.get("weather"):
+            return msg
+        if any(i == "weather" for i, _ in drops):
             wl = parts["weather"].strip().rstrip(".")
             sep = ". " if "—" in wl else " — "
             logger.info("BRIEFING_WEATHER_PREPENDED user=%s weather=%r", user_id, wl)
             return f"{wl}{sep}{msg}"
+        temp, _cond = _weather_signals(parts["weather"])
+        if temp:
+            fixed = _insert_degree_sign(msg, temp)
+            if fixed is not None:
+                logger.info("BRIEFING_DEGREE_INSERTED user=%s temp=%s", user_id, temp)
+                return fixed
         return msg
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_ENFORCE_FAILED user=%s err=%s", user_id, e)

@@ -341,6 +341,88 @@ def test_enforce_weather_line_with_hint_uses_period_separator(brief_on):
     assert out == f"{wl}. discussion at 4"
 
 
+# ─── B2: the degree-sign guarantee (live 2026-10-03 "88 and clear out" → "Wym 88") ───
+
+WL88 = "88° & clear in Berkeley — hydrate & train early"
+
+
+def test_degree_inserted_after_bare_temperature(brief_on, caplog):
+    import heartbeat
+    with caplog.at_level(logging.INFO, logger="cued.heartbeat"):
+        out = heartbeat._enforce_briefing("morning. 88 and clear out, hydrate", _parts(weather=WL88), 3)
+    assert out == "morning. 88° and clear out, hydrate"
+    assert any("BRIEFING_DEGREE_INSERTED user=3 temp=88" in r.getMessage() for r in caplog.records)
+    assert not any("BRIEFING_WEATHER_PREPENDED" in r.getMessage() for r in caplog.records)
+
+
+def test_degree_already_present_unchanged(brief_on, caplog):
+    import heartbeat
+    msg = "morning. 88° and clear out"
+    with caplog.at_level(logging.INFO, logger="cued.heartbeat"):
+        assert heartbeat._enforce_briefing(msg, _parts(weather=WL88), 3) == msg
+    assert not any("BRIEFING_DEGREE_INSERTED" in r.getMessage() for r in caplog.records)
+
+
+def test_degree_unit_word_already_present_unchanged(brief_on):
+    import heartbeat
+    for msg in ("88 degrees and clear", "88 deg and clear", "88F and clear", "88 f and clear",
+                "88º and clear"):
+        assert heartbeat._enforce_briefing(msg, _parts(weather=WL88), 3) == msg, msg
+
+
+def test_degree_not_inserted_inside_another_number(brief_on):
+    """'1880 cal' contains '88' — the digit-boundary guard must leave it alone; with no bare
+    temp AND the condition word present, the text is untouched (no prepend either)."""
+    import heartbeat
+    msg = "clear skies. you're at 1880 cal, 288 to go"
+    assert heartbeat._enforce_briefing(msg, _parts(weather=WL88), 3) == msg
+
+
+def test_degree_inserted_first_occurrence_only(brief_on):
+    import heartbeat
+    out = heartbeat._enforce_briefing("88 now, maybe 88 again at 3", _parts(weather=WL88), 3)
+    assert out == "88° now, maybe 88 again at 3"
+
+
+def test_degree_case_no_temp_at_all_falls_to_prepend(brief_on, caplog):
+    import heartbeat
+    with caplog.at_level(logging.INFO, logger="cued.heartbeat"):
+        out = heartbeat._enforce_briefing("morning! discussion at 4", _parts(weather=WL88), 3)
+    assert out == "88° & clear in Berkeley — hydrate & train early. morning! discussion at 4"
+    assert any("BRIEFING_WEATHER_PREPENDED" in r.getMessage() for r in caplog.records)
+    assert not any("BRIEFING_DEGREE_INSERTED" in r.getMessage() for r in caplog.records)
+
+
+def test_degree_flag_off_bare_temp_unchanged(brief_on, monkeypatch):
+    import config, heartbeat
+    monkeypatch.setattr(config, "BRIEFING_WEATHER_GUARANTEE_ENABLED", False)
+    msg = "morning. 88 and clear out, hydrate"
+    assert heartbeat._enforce_briefing(msg, _parts(weather=WL88), 3) == msg
+
+
+def test_degree_sign_survives_to_the_sent_sms(db, brief_on, monkeypatch, sms_capture, anthropic_stub):
+    """Through the real tick: the inserted ° is NOT stripped or converted downstream."""
+    import heartbeat
+    _patch_weather(monkeypatch, temp=88, code=0)
+    user = make_user(db, wake_time="11:30", sleep_time="02:00")
+    _pin_clock(monkeypatch, _utc(12, 38))
+    _tick_speaking(monkeypatch, anthropic_stub, "morning. 88 and clear out, hydrate")
+    heartbeat.heartbeat_tick(user.id)
+    assert sms_capture and sms_capture[0][1] == "morning. 88° and clear out, hydrate"
+
+
+def test_instruction_mandates_the_degree_sign(db, brief_on, monkeypatch):
+    import heartbeat
+    _patch_weather(monkeypatch)
+    user = make_user(db, wake_time="11:30", sleep_time="02:00")
+    s, u = _fresh(db, user)
+    try:
+        sig = heartbeat._morning_open_signal(u, s, now=_utc(12, 0))
+    finally:
+        s.close()
+    assert "WITH the degree sign (write 88°, never a bare 88" in sig
+
+
 def test_enforce_flag_off_leaves_text_unchanged(brief_on, monkeypatch, caplog):
     import config, heartbeat
     monkeypatch.setattr(config, "BRIEFING_WEATHER_GUARANTEE_ENABLED", False)
