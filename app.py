@@ -1577,6 +1577,13 @@ def internal_inbound():
             hit = apply_tapback(user.id, str(reaction.get("target_id") or ""), str(reaction.get("emoji") or ""))
             logger.info("IMESSAGE_REACTION_IN user=%s emoji=%s target=%s workout_hit=%s",
                         user.id, reaction.get("emoji"), str(reaction.get("target_id") or "")[:24], hit)
+            # Layered wake model: a tapback is "they're on their phone" (it is not stored
+            # as a Message row, so this stamp is its only trace). Fail-open.
+            try:
+                from wake_model import touch_last_active
+                touch_last_active(user.id)
+            except Exception:  # noqa: BLE001
+                pass
             return jsonify({"ok": True, "known": True, "reaction": True, "workout_hit": hit}), 200
         if not body and not files:
             return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200

@@ -252,15 +252,19 @@ def test_measured_slept_in_extends_quiet(db, quiet_on):
 
 
 def test_measured_wake_only_extends_never_shrinks(db, quiet_on):
-    """A watch wake EARLIER than the floor's 8am end must not shrink the floor: 7:30am is
-    still quiet even though the watch says they woke at 6:15."""
+    """A STALE watch wake EARLIER than the floor's 8am end must not shrink the floor: 7:30am
+    is still quiet even though the watch says they woke at 6:15 — the row was synced 20h
+    after sleep_end, so the layered wake model (wake_model.py) does not treat it as a
+    real-time wake and this pre-existing extend-only path governs. (A FRESH early measured
+    wake DOES lift quiet early now — test_wake_model.py.) synced_at is pinned so the test
+    never depends on the wall clock."""
     from models import get_session, User
     from heartbeat import guardrail_reason
     user = make_user(db, wake_time="07:00", sleep_time="23:00")
     _connect(db, user.id)
     _baseline_week(db, user.id)
     _day(db, user.id, _d(0), sleep_minutes=480, sleep_start=_utc(f"{_d(-1)}T22:00:00"),
-         sleep_end=_utc(f"{_d(0)}T06:15:00"))
+         sleep_end=_utc(f"{_d(0)}T06:15:00"), synced_at=_utc(f"{_d(0)}T06:15:00") + timedelta(hours=20))
     s = get_session()
     try:
         assert guardrail_reason(s.get(User, user.id), s, now=_at_local(7, 30)) == "quiet_hours_standing"

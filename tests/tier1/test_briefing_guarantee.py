@@ -359,8 +359,11 @@ def _connect_health(db, user_id):
     db.commit()
 
 
-def _seed_nights(db, user_id, *, today_wake_local, bed_hm=(23, 30), days=4):
-    """Prior nights at a steady bed/wake; TODAY's sleep ended at `today_wake_local`."""
+def _seed_nights(db, user_id, *, today_wake_local, bed_hm=(23, 30), days=4, synced_after=timedelta(minutes=20)):
+    """Prior nights at a steady bed/wake; TODAY's sleep ended at `today_wake_local`.
+    synced_at is pinned relative to each sleep_end (default: 20 min after = a FRESH,
+    real-time read for the layered wake model) so these tests never depend on the wall
+    clock — the column default is the real now."""
     from models import WearableDay
     base = datetime(*DAY, tzinfo=PT).date()
     for i in range(1, days):
@@ -369,11 +372,13 @@ def _seed_nights(db, user_id, *, today_wake_local, bed_hm=(23, 30), days=4):
         wake = datetime(d.year, d.month, d.day, 7, 0, tzinfo=PT)
         db.add(WearableDay(user_id=user_id, provider="google_health", day=d.isoformat(),
                            sleep_minutes=450, resting_hr=55, hrv_rmssd=40.0, steps=9000,
-                           sleep_start=_naive(bed), sleep_end=_naive(wake)))
+                           sleep_start=_naive(bed), sleep_end=_naive(wake),
+                           synced_at=_naive(wake) + synced_after))
     bed = datetime(*DAY, *bed_hm, tzinfo=PT) - timedelta(days=1)
     db.add(WearableDay(user_id=user_id, provider="google_health", day=base.isoformat(),
                        sleep_minutes=600, resting_hr=55, hrv_rmssd=40.0, steps=100,
-                       sleep_start=_naive(bed), sleep_end=_naive(today_wake_local)))
+                       sleep_start=_naive(bed), sleep_end=_naive(today_wake_local),
+                       synced_at=_naive(today_wake_local) + synced_after))
     db.commit()
 
 
@@ -407,12 +412,15 @@ def test_a3_slept_in_moves_the_morning_window(db, fix_a, wearable_on):
 
 
 def test_a3_measured_earlier_never_shrinks_the_window(db, fix_a, wearable_on):
-    """Watch wake 06:00 EARLIER than the 07:00 profile wake: the anchor stays at the
-    profile wake (max), so the window is still 07:00–08:30."""
+    """Watch wake 06:00 EARLIER than the 07:00 profile wake, but the row is STALE (synced
+    20h after sleep_end — not a real-time read): the layered wake model ignores it and the
+    #156 fallback keeps the anchor at the profile wake (max), so the window is still
+    07:00–08:30. The FRESH early-wake case moves the anchor to 06:00 — see
+    test_wake_model.py (both directions is the point of the layered model)."""
     from heartbeat import _morning_open_signal
     user = make_user(db, wake_time="07:00", sleep_time="23:00")
     _connect_health(db, user.id)
-    _seed_nights(db, user.id, today_wake_local=_local(6, 0))
+    _seed_nights(db, user.id, today_wake_local=_local(6, 0), synced_after=timedelta(hours=20))
     s, u = _fresh(db, user)
     try:
         assert _morning_open_signal(u, s, now=_utc(6, 30)) is None

@@ -517,6 +517,9 @@ MIGRATIONS = [
     "ALTER TABLE integrations DROP CONSTRAINT IF EXISTS integrations_user_id_provider_key",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_integrations_user_provider_account ON integrations (user_id, provider, account)",
     "CREATE INDEX IF NOT EXISTS ix_held_outbound_next_attempt_at ON held_outbound (next_attempt_at)",
+    # Layered wake model (wake_model.py): per-event "last seen on their phone" stamp
+    # (inbound text / tapback / workout-card open). Nullable; no backfill.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP",
 ]
 
 def wait_for_db(retries=10, delay=3):

@@ -211,6 +211,13 @@ def card_api_session():
             u.card_opened_at = _utcnow()
             session.commit()
             logger.info("CARD_OPENED user=%s session=%s", u.id, ws.id)
+        # Layered wake model: EVERY card open is "they're on their phone" — the per-event
+        # stamp (card_opened_at above stays the one-time setup marker). Own session, fail-open.
+        try:
+            from wake_model import touch_last_active
+            touch_last_active(ws.user_id)
+        except Exception:  # noqa: BLE001
+            pass
         return jsonify({"ok": True, **build_state(session, ws)})
     finally:
         session.close()

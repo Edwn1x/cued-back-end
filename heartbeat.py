@@ -293,27 +293,69 @@ def _measured_wake_min(user, session, *, now=None) -> int | None:
     return min(hm[0] * 60 + hm[1] + QUIET_AFTER_WAKE_MIN, 14 * 60)
 
 
+def _resolved_wake(user, session, *, now=None):
+    """The layered wake model's answer for today (wake_model.resolve_wake), or None —
+    flag off / no session / nothing resolves / any error. Fail-open: the heartbeat never
+    changes behaviour because the model couldn't answer. Logged when it resolves to a
+    KNOWN today-wake (activity / measured_today) so the source is visible per tick."""
+    if session is None:
+        return None
+    try:
+        from wake_model import resolve_wake, TODAY_SOURCES
+        info = resolve_wake(user, session, now=now)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("HEARTBEAT_WAKE_RESOLVE_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+    if info is not None and info.source in TODAY_SOURCES:
+        logger.info("HEARTBEAT_WAKE_RESOLVED user=%s source=%s hm=%02d:%02d detail=%s",
+                    getattr(user, "id", "?"), info.source, info.local_hm[0], info.local_hm[1], info.detail)
+    return info
+
+
+def _apply_today_wake_end(end: int, info) -> int:
+    """The morning END (minutes-of-day) of the quiet window given a KNOWN today-wake from
+    the layered model. measured_today (the watch's wake this morning, fresh + a real
+    night) is a MEASUREMENT → it REPLACES the end in BOTH directions (earlier lifts quiet
+    early; later holds it, the #146 sleep-in case). activity (a text / tapback / card
+    open) is only an UPPER BOUND on the wake — they're up by then, we don't know they
+    were asleep until then — so it can only LIFT the end earlier, never push it later
+    (a 9am first text for a 7am waker must not re-quiet them till 9:15)."""
+    wake_end = (info.local_hm[0] * 60 + info.local_hm[1] + QUIET_AFTER_WAKE_MIN) % 1440
+    if info.source == "activity":
+        return min(end, wake_end)
+    return wake_end
+
+
 def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
     """True if it's currently the user's overnight quiet window (local). `now` is an
     optional aware/naive-UTC instant for tests. With QUIET_HOURS_FROM_PROFILE_ENABLED the
     window is THEIRS (sleep−30 .. wake+15) whenever both profile times parse; otherwise
-    the global floor window (extended, never shrunk, by a parseable profile time). When a
-    `session` is given and HEARTBEAT_WEARABLE_AWARE_ENABLED, a measured wake the watch
-    shows LATER than their stated wake extends the morning floor too (never shrinks it).
+    the global floor window (extended, never shrunk, by a parseable profile time).
     With MEASURED_SLEEP_WINDOW_ENABLED and enough fresh nights, the user's MEASURED typical
-    bed/wake hours REPLACE the static profile hours fed into the window (same gate)."""
+    bed/wake hours REPLACE the static profile hours fed into the window (same gate).
+
+    The morning END then follows the layered wake model (wake_model.resolve_wake, needs a
+    `session`): a KNOWN today-wake — observed ACTIVITY (text / tapback / card open, with
+    the still-up guard) or today's FRESH MEASURED wake — sets the end to wake+15 (see
+    _apply_today_wake_end for the directions). Otherwise the pre-existing path is kept
+    exactly: a measured wake the watch shows LATER than their stated wake extends the
+    morning floor (never shrinks it) — so nothing regresses when there is no fresh data."""
     if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
         return False
     local = _ref(now).astimezone(_user_tz(user))
     m = local.hour * 60 + local.minute
     measured = _measured_sw_hours(user, session, now=now)   # None → static profile times
     wake_min = _measured_wake_min(user, session, now=now)   # None unless the watch says slept-in
+    info = _resolved_wake(user, session, now=now)           # None unless the model answers
+    today_wake = info if (info is not None and info.source in ("activity", "measured_today")) else None
     if config.QUIET_HOURS_FROM_PROFILE_ENABLED:
         win = _profile_quiet_window(user, local, measured=measured)
         if win:
             start, end = win
-            if wake_min is not None:
-                end = max(end, wake_min)        # measured slept-in only EXTENDS the morning floor
+            if today_wake is not None:
+                end = _apply_today_wake_end(end, today_wake)   # a KNOWN today-wake sets the end
+            elif wake_min is not None:
+                end = max(end, wake_min)        # no fresh today-wake: slept-in only EXTENDS (preserved)
             if start == end:
                 return False
             if start > end:                     # spans midnight (the normal case)
@@ -321,8 +363,10 @@ def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
             return start <= m < end             # e.g. sleeps 01:00, wakes 09:00
     start, end = _quiet_window(user, measured=measured)
     start_min, end_min = start * 60, end * 60
-    if wake_min is not None:
-        end_min = max(end_min, wake_min)        # measured slept-in only EXTENDS the morning floor
+    if today_wake is not None:
+        end_min = _apply_today_wake_end(end_min, today_wake)   # a KNOWN today-wake sets the end
+    elif wake_min is not None:
+        end_min = max(end_min, wake_min)        # no fresh today-wake: slept-in only EXTENDS (preserved)
     # window always spans midnight (start is evening, end is morning)
     return m >= start_min or m < end_min
 
@@ -792,17 +836,25 @@ def _training_days(user) -> set:
     return {t[:3] for t in re.split(r"[\s,/&+]+", raw) if t} & set(_DAY_ABBR)
 
 
-def _morning_anchor_hhmm(user, session, local, *, now=None) -> tuple[int, int] | None:
-    """The wake the MORNING OPEN window is anchored to. The profile wake (alt honoured) is
-    the base; what the watch knows only pushes it LATER, never earlier: the measured typical
-    wake (the same window quiet hours use, #146) and today's measured sleep_end when the
-    user slept in. Without this the window was profile-only and could END before measured
-    quiet hours lifted on a sleep-in day — the briefing was simply lost. None without a
-    parseable profile wake (unchanged); fail-open to the profile wake on any error."""
+def _morning_anchor_hhmm(user, session, local, *, now=None, info=None) -> tuple[int, int] | None:
+    """The wake the MORNING OPEN window is anchored to. A KNOWN today-wake from the layered
+    model (wake_model: observed ACTIVITY — a text / tapback / card open past the still-up
+    guard — or today's FRESH MEASURED wake) anchors the window directly, in BOTH directions:
+    the briefing lands right after they pick up the phone (the Apple-Fitness feel), and an
+    early measured wake no longer loses the briefing to a profile-anchored window. `info`
+    is a pre-resolved WakeInfo (the caller already asked); resolved here when omitted.
+    Otherwise the #156 path is kept exactly: the profile wake (alt honoured) is the base
+    and what the watch knows only pushes it LATER, never earlier (measured typical wake,
+    today's measured sleep_end on a sleep-in). None without a parseable profile wake
+    (unchanged); fail-open to the profile wake on any error."""
     wake = _wake_hhmm_for(user, local.date())
     if not wake:
         return None
     try:
+        if info is None:
+            info = _resolved_wake(user, session, now=now)
+        if info is not None and info.source in ("activity", "measured_today"):
+            return info.local_hm
         cands = [wake]
         sw = _measured_sw_hours(user, session, now=now)
         if sw:
@@ -823,18 +875,28 @@ def _morning_open_signal(user, session, *, now=None) -> str | None:
     if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
         return None
     local = _ref(now).astimezone(_user_tz(user))
-    wake = _morning_anchor_hhmm(user, session, local, now=now)
+    info = _resolved_wake(user, session, now=now)
+    wake = _morning_anchor_hhmm(user, session, local, now=now, info=info)
     if not wake:
         return None
     wake_dt = local.replace(hour=wake[0], minute=wake[1], second=0, microsecond=0)
     if not (wake_dt <= local < wake_dt + timedelta(minutes=RHYTHM_MORNING_MINUTES)):
         return None
-    # "Talked since they woke" counts from the EARLIER of profile/measured wake: if they
-    # texted before the watch's later wake they were plainly up, and a second morning
-    # text would be a repeat.
+    # "Talked since they woke" counts from the EARLIEST known wake — the anchor, the
+    # profile wake, and today's measured wake when the watch has one: if they texted
+    # before the watch's later wake they were plainly up, and a morning text already
+    # sent after an early measured wake must not be repeated when the anchor moves
+    # (an activity wake later in the morning, or the fresh signal ageing out).
     profile_wake = _wake_hhmm_for(user, local.date()) or wake
-    since_dt = min(wake_dt, local.replace(hour=profile_wake[0], minute=profile_wake[1],
-                                          second=0, microsecond=0))
+    since_cands = [wake_dt, local.replace(hour=profile_wake[0], minute=profile_wake[1],
+                                          second=0, microsecond=0)]
+    try:
+        today_hm = _measured_today_wake_hm(user, session, now=now)
+        if today_hm:
+            since_cands.append(local.replace(hour=today_hm[0], minute=today_hm[1], second=0, microsecond=0))
+    except Exception:  # noqa: BLE001
+        pass
+    since_dt = min(since_cands)
     from engagement_tracker import _not_reaction
     talked = (session.query(Message.id)
               .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction())
@@ -855,8 +917,13 @@ def _morning_open_signal(user, session, *, now=None) -> str | None:
     ev_txt = ", ".join(f"{(e.raw_text or e.event_type or 'event').strip()[:40]} at "
                        f"{_clock(to_local(e.occurred_at, user))}" for e in evs) or "none logged"
     mins = int((local - wake_dt).total_seconds() // 60)
+    # Where the wake came from when it is a KNOWN today-wake (layered wake model) — one
+    # clause on the same line, so the block stays one line of material (diagnosable in
+    # heartbeat_ticks; HEARTBEAT_WAKE_RESOLVED carries it in the logs).
+    wake_src = (f" (wake source: {info.source} — {info.detail})"
+                if info is not None and info.source in ("activity", "measured_today") else "")
     base = ("## MORNING OPEN (standing condition — code-computed)\n"
-            f"It's {_clock(local)} {local.strftime('%A')}, ~{mins} min after their {_clock_hm(wake)} wake, and "
+            f"It's {_clock(local)} {local.strftime('%A')}, ~{mins} min after their {_clock_hm(wake)} wake{wake_src}, and "
             f"nobody has texted since they woke. Today: {plan}; events today: {ev_txt}.\n")
 
     # Feature 4 — daily briefing: extend MORNING OPEN into a concise rundown (classes +

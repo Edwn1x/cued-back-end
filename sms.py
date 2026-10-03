@@ -611,6 +611,12 @@ def log_incoming(user_id: int, body: str, message_type: str = "freeform",
         session.commit()
     finally:
         session.close()
+    # Layered wake model: an inbound is "they're on their phone". Fail-open, own session.
+    try:
+        from wake_model import touch_last_active
+        touch_last_active(user_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def get_twiml_response(body: str = None):

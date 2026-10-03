@@ -315,6 +315,46 @@ def measured_sleep_window(user, session, *, now=None) -> SleepWindow | None:
         return None
 
 
+# ─── Today's measured sleep row (for the layered wake model) ──────────────────
+@dataclass
+class TodaySleep:
+    sleep_end_local: datetime        # the WATCH's wake this morning (aware local)
+    sleep_end_utc: datetime          # same instant, naive UTC (row value)
+    sleep_minutes: int | None        # main sleep, minutes asleep (None = unknown)
+    synced_at: datetime | None       # when the sync last wrote the row (naive UTC)
+
+
+def today_sleep(user, session, *, now=None) -> TodaySleep | None:
+    """The sleep that ENDED on today's local date — sleep_end + sleep_minutes + synced_at
+    straight off the row, so wake_model can judge FRESHNESS (synced_at vs sleep_end) and
+    PLAUSIBILITY (a real night, not a nap) itself. None when there is no such row.
+
+    Read-only: one SELECT for today's WearableDay row. Never writes, never calls the sync
+    module. Fail-open: flag off / not connected / no row / no sleep_end / error → None."""
+    if not config.GOOGLE_HEALTH_ENABLED:
+        return None
+    try:
+        from integrations.base import get_integration
+        integ = get_integration(session, user.id, SOURCE)
+        if integ is None or integ.status not in ("connected", "error"):
+            return None
+        tz = _tz(user)
+        today = _local_today(user, now=now)
+        row = (session.query(WearableDay)
+               .filter(WearableDay.user_id == user.id, WearableDay.provider == SOURCE,
+                       WearableDay.day == today.isoformat())
+               .one_or_none())
+        if row is None or row.sleep_end is None:
+            return None
+        se_local = _to_local(row.sleep_end, tz)
+        if se_local.date() != today:   # keyed by the morning it ends; be strict anyway
+            return None
+        return TodaySleep(sleep_end_local=se_local, sleep_end_utc=row.sleep_end,
+                          sleep_minutes=row.sleep_minutes, synced_at=row.synced_at)
+    except Exception:
+        return None
+
+
 # ─── Recent-activity awareness (today's movement) ─────────────────────────────
 @dataclass
 class Activity:
@@ -384,4 +424,5 @@ def activity_context(user, session, *, now=None) -> str | None:
 
 
 __all__ = ["recovery_read", "recent_step_avg", "measured_sleep_window", "recent_activity",
-           "activity_context", "Recovery", "SleepWindow", "Activity", "SOURCE"]
+           "activity_context", "today_sleep", "Recovery", "SleepWindow", "Activity",
+           "TodaySleep", "SOURCE"]
