@@ -423,6 +423,14 @@ MEAL_DAY_MOVE_ENABLED = os.getenv("MEAL_DAY_MOVE_ENABLED", "true").lower() == "t
 # Meal grouping (2026-09-27): items logged in one log_meal batch share a meal_group_id so
 # "move the eggs meal to yesterday" moves ALL of them atomically, not item-by-item.
 MEAL_GROUP_ENABLED = os.getenv("MEAL_GROUP_ENABLED", "true").lower() == "true"
+# Meal eaten_at hints (2026-10-03): "ate a Rice Krispie before my run earlier" logged at
+# NOW with the timing baked into the description. The model now passes the user's time cue
+# verbatim as `eaten_at_hint`; meal_time.py resolves it in code (clock forms, 'before/after
+# my run' anchored to the most recent workout, 'an hour ago', 'this morning', 'last night').
+MEAL_EATEN_AT_HINT_ENABLED = os.getenv("MEAL_EATEN_AT_HINT_ENABLED", "true").lower() == "true"
+MEAL_PRE_WORKOUT_OFFSET_MIN = int(os.getenv("MEAL_PRE_WORKOUT_OFFSET_MIN", "30"))   # 'before my run' → start − 30
+MEAL_POST_WORKOUT_OFFSET_MIN = int(os.getenv("MEAL_POST_WORKOUT_OFFSET_MIN", "15"))  # 'after my run' → finish + 15
+MEAL_WORKOUT_ANCHOR_LOOKBACK_HOURS = int(os.getenv("MEAL_WORKOUT_ANCHOR_LOOKBACK_HOURS", "6"))
 PANTRY_MAX_STOCKED_DAYS = 7
 # RSF crowd meter + virtual line (integrations/rsf.py, occupancy.py, gym_beats.py,
 # integrations/waitwell/). All default off. The Density share token is the public
