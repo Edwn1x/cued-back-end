@@ -1981,14 +1981,21 @@ GET_DINING_MENU_TOOL = {
 # menu reads mains → sides → salad/deli → other → sweets/drinks whatever the hall calls
 # the line. Unknown stations fall in "other" (ahead of dessert, behind the food lines).
 _MENU_STATION_TIERS = (
-    ("mains", ("entree", "entrée", "main", "grill", "halal", "global", "kitchen", "pizza",
-               "action", "wok", "taqueria", "pasta", "carver", "bowl", "plate", "burger",
-               "chef", "special", "comfort", "homestyle", "rotisserie", "bbq", "noodle")),
+    # Checked in this order; first hit wins — so sides' "cereal"/"grain" claims the hot
+    # cereal lines before anything sweet could. Named lines from prod scrapes (2026-10):
+    # Lemongrass / Fire & Flour / Iron & Ember / Kosher Station / Made To Order are entrée
+    # lines; Cold Food Bar is the salad/deli line; Soft Serve is dessert; Bagel Bar is bread.
+    ("mains", ("entree", "entrée", "main", "grill", "griddle", "halal", "global", "kitchen",
+               "pizza", "action", "wok", "taqueria", "pasta", "carver", "bowl", "plate",
+               "burger", "chef", "special", "comfort", "homestyle", "rotisserie", "bbq",
+               "noodle", "lemongrass", "flour", "ember", "iron", "kosher", "made to order",
+               "order", "centerplate")),
     ("sides", ("side", "vegetable", "veg", "grain", "rice", "starch", "soup", "bread",
-               "potato", "legume", "bean")),
-    ("salad/deli", ("salad", "deli", "sandwich", "greens", "wrap")),
-    ("sweets/drinks", ("dessert", "bakery", "pastry", "sweet", "beverage", "drink", "cereal",
-                       "fruit", "condiment", "yogurt", "coffee", "juice", "ice cream")),
+               "bagel", "cereal", "potato", "legume", "bean")),
+    ("salad/deli", ("salad", "deli", "sandwich", "greens", "wrap", "cold food", "cold bar")),
+    ("sweets/drinks", ("dessert", "bakery", "pastry", "sweet", "beverage", "drink", "fruit",
+                       "condiment", "yogurt", "coffee", "juice", "ice cream", "soft serve",
+                       "serve")),
 )
 _MENU_OTHER_TIER = "other"
 _MENU_TIER_ORDER = ("mains", "sides", "salad/deli", _MENU_OTHER_TIER, "sweets/drinks")
@@ -1996,7 +2003,8 @@ _MENU_ITEM_CAP = 25
 
 
 def _menu_station_tier(station) -> str:
-    low = (station or "").strip().lower()
+    # Collapse runs of whitespace: the scrape ships "Iron &  Ember" (double space).
+    low = re.sub(r"\s+", " ", (station or "")).strip().lower()
     if not low:
         return _MENU_OTHER_TIER
     for tier, keys in _MENU_STATION_TIERS:

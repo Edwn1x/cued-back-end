@@ -158,6 +158,72 @@ def test_menu_dedupes_all_day_rows_and_unknown_macros(db):
     assert "OTHER:" in out  # no station → other tier, after the mains
 
 
+# ---------------------------------------------------------------- live station names
+
+# Every DISTINCT `dining_menu_items.station` seen in prod over 2026-10-01..04 (coordinator
+# sample), with the tier it must land in. A scrape wording change that would silently push
+# a line into OTHER (or a dessert line into mains) fails HERE, not on a user's screen.
+# "Iron &  Ember" keeps its real double space on purpose.
+_LIVE_STATIONS = [
+    # crossroads
+    ("Lemongrass", "mains"),
+    ("Center Plate", "mains"),
+    ("Centerplate", "mains"),
+    ("Pasta", "mains"),
+    ("Chef's Table", "mains"),
+    ("Pure Plates", "mains"),
+    ("Grill", "mains"),
+    ("Pizza", "mains"),
+    ("Midday Mains", "mains"),
+    ("Griddle/Grill", "mains"),
+    ("Breakfast Special", "mains"),
+    ("Bagel Bar", "sides"),
+    ("Bagels/Breads", "sides"),
+    ("Soup", "sides"),
+    ("Hot Cereal/Grains", "sides"),
+    ("Hot Cereals/Grains", "sides"),
+    ("Cereal/ Hot Grain", "sides"),
+    ("Deli Bar", "salad/deli"),
+    ("Dessert", "sweets/drinks"),
+    ("Pastry", "sweets/drinks"),
+    ("Yogurt Bar", "sweets/drinks"),
+    # foothill
+    ("Fire & Flour", "mains"),
+    ("Iron &  Ember", "mains"),
+    # cafe3
+    ("Kosher Station", "mains"),
+    ("Made To Order", "mains"),
+    ("Cold Food Bar", "salad/deli"),
+    ("Soft Serve", "sweets/drinks"),
+    # no station at all
+    (None, "other"),
+    ("", "other"),
+]
+
+
+def test_live_station_names_tier_as_expected():
+    from agent_tools import _menu_station_tier
+    wrong = [(st, _menu_station_tier(st), want)
+             for st, want in _LIVE_STATIONS if _menu_station_tier(st) != want]
+    assert not wrong, "station → got → wanted: " + "; ".join(
+        f"{st!r} → {got} (wanted {want})" for st, got, want in wrong)
+
+
+def test_live_station_label_is_kept_as_group_heading(db):
+    from tests.factories import make_user
+    from agent_tools import handle_get_dining_menu
+
+    _seed_rows([("Iron &  Ember", "grilled flank steak", 290, 34.0),
+                ("Cold Food Bar", "cucumber salad", 40, 1.0),
+                ("Soft Serve", "vanilla soft serve", 180, 4.0)], hall="foothill")
+    user = make_user(db)
+    out = handle_get_dining_menu(user.id, {"hall": "foothill", "meal_period": "dinner"})
+    assert "MAINS (Iron &  Ember):" in out, out
+    assert "SALAD/DELI (Cold Food Bar):" in out
+    assert "SWEETS/DRINKS (Soft Serve):" in out
+    assert out.index("MAINS") < out.index("SALAD/DELI") < out.index("SWEETS/DRINKS")
+
+
 # ---------------------------------------------------------------- default meal period
 
 
