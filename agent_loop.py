@@ -717,6 +717,17 @@ def build_loop_context(user, session) -> str:
     # had said it. Surfacing the already-raised topics lets it vary the angle or let a
     # gap rest instead of restating the same line. Flag-gated + fail-open inside; also
     # reaches the heartbeat, whose _proactive_context begins with build_loop_context.
+    # Deferred tasks in flight (agent_tasks.py) — so the coach doesn't re-promise or
+    # pre-empt what code is already doing. Flag-gated, fail-open.
+    if config.TASKS_ENABLED:
+        try:
+            from agent_tasks import context_block as _tasks_block
+            _tb = _tasks_block(user, session)
+            if _tb:
+                parts.append(_tb)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TASKS_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     if config.NUDGE_REPETITION_GUARD_ENABLED:
         try:
             from nudge_guard import nudge_guard_block
@@ -1140,6 +1151,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # every surface lives in agent_tools (cap = WEB_SEARCH_MAX_USES per reply).
         from agent_tools import WEB_SEARCH_TOOL
         tools.append(WEB_SEARCH_TOOL)
+    if config.TASKS_ENABLED:
+        # Deferred work ("find out and text me tonight") kept by code — agent_tasks.py.
+        from agent_tools import SCHEDULE_TASK_TOOL, CANCEL_TASK_TOOL
+        tools.extend([SCHEDULE_TASK_TOOL, CANCEL_TASK_TOOL])
     if config.FETCH_PAGE_TOOL_ENABLED:
         # Client-side page READ (web_search only finds). Course sites, syllabi, hours,
         # a link the user texted. Envelope in webfetch.py; per-turn cap on the turn state.

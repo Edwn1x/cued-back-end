@@ -1183,6 +1183,28 @@ class HeldOutbound(Base):
     sent_at = Column(DateTime, default=None)
 
 
+class AgentTask(Base):
+    """A deferred piece of work the coach promised ("i'll find the midterm room and text
+    you"): goal + kind (lookup | watch), run_at computed in code (naive UTC), a bounded
+    read-only tool run on a 60s sweep, one outbound on completion. See agent_tasks.py."""
+    __tablename__ = "agent_tasks"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    goal = Column(String(300), nullable=False)
+    kind = Column(String(10), default="lookup")          # lookup | watch
+    run_at = Column(DateTime, nullable=False, index=True)
+    every_minutes = Column(Integer, default=None)        # watch cadence
+    until = Column(DateTime, default=None)               # watch end (naive UTC)
+    status = Column(String(12), default="pending")       # pending | running | done | cancelled | failed
+    source = Column(String(20), default="model")
+    runs = Column(Integer, default=0)
+    last_run_at = Column(DateTime, default=None)
+    finished_at = Column(DateTime, default=None)
+    result = Column(Text)                                # the sent text / failure note
+    watch_last = Column(Text)                            # last observation (watch)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 def init_db():
     """Create all tables."""
     Base.metadata.create_all(engine)

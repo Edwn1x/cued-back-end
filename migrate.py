@@ -410,6 +410,25 @@ MIGRATIONS = [
         cancelled_at TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (active, fire_at)",
+    # Deferred tasks: "i'll find out and text you" kept by code on a 60s sweep (agent_tasks.py, 2026-10-05)
+    """CREATE TABLE IF NOT EXISTS agent_tasks (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        goal VARCHAR(300) NOT NULL,
+        kind VARCHAR(10) DEFAULT 'lookup',
+        run_at TIMESTAMP NOT NULL,
+        every_minutes INTEGER,
+        until TIMESTAMP,
+        status VARCHAR(12) DEFAULT 'pending',
+        source VARCHAR(20) DEFAULT 'model',
+        runs INTEGER DEFAULT 0,
+        last_run_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        result TEXT,
+        watch_last TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_agent_tasks_due ON agent_tasks (status, run_at)",
     "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id)",
     # Daily rhythm (2026-09-22): per-user check-in level + interval (water) reminders
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_level VARCHAR(10)",
