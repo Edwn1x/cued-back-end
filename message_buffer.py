@@ -16,7 +16,7 @@ import config
 
 logger = logging.getLogger("cued.buffer")
 
-# In-memory buffer: phone_number -> {"messages": [...], "timer": Timer, "user_id": int, "token": object}
+# In-memory buffer: phone_number -> {"messages": [...], "timer": Timer, "user_id": int, "token": object, "band": (lo, hi)}
 _buffers = {}
 _lock = threading.Lock()
 
@@ -45,19 +45,41 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
 
     delay_override: optional (min, max) tuple in seconds to override the default 90-150s delay.
     """
+    has_image = bool(images or image_url)
     with _lock:
         if phone in _buffers:
             # Cancel existing timer
             _buffers[phone]["timer"].cancel()
+            pending = _buffers[phone]["messages"]
+            pending_has_image = any(m.get("images") or m.get("image_url") for m in pending)
+            # FOLD (live 2026-10-02 13:16 ×3/24h): a photo landing while a text turn is
+            # still pending joins THAT turn and extends it to the photo band — the
+            # caption, or a trailing "also log this", usually follows the pic — so one
+            # model call sees the texts and the image and there is ONE reply, instead
+            # of the text turn flushing on its short band and the photo restating the
+            # outcome as a second turn. A text joining a pending photo already folds
+            # (the caption arrived; its own band applies). The per-timer token below
+            # is untouched: a flush that has already started keeps its turn.
+            fold = None
+            if has_image and not pending_has_image and config.INBOUND_FOLD_PHOTO_INTO_PENDING_TEXT:
+                base = delay_override or (MIN_DELAY, MAX_DELAY)
+                delay_override = (max(base[0], config.PHOTO_BUFFER_S[0]),
+                                  max(base[1], config.PHOTO_BUFFER_S[1]))
+                fold = "photo_into_text"
+            elif not has_image and pending_has_image:
+                fold = "text_into_photo"
             # Append new message
-            _buffers[phone]["messages"].append({
+            pending.append({
                 "body": body,
                 "message_type": message_type,
                 "image_url": image_url,
                 "images": images if images else ([image_url] if image_url else []),
                 "received_at": datetime.now(timezone.utc).isoformat(),
             })
-            logger.info(f"Appended to buffer for {phone} ({len(_buffers[phone]['messages'])} messages)")
+            if fold:
+                logger.info("BUFFER_FOLD phone=%s kind=%s messages=%d band=%s",
+                            phone, fold, len(pending), delay_override)
+            logger.info(f"Appended to buffer for {phone} ({len(pending)} messages)")
         else:
             # Create new buffer entry. If this phone was flushed a heartbeat ago,
             # this message raced the timer that just fired — the previous turn is
@@ -87,6 +109,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
         token = object()
         _buffers[phone]["token"] = token
         delay = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
+        _buffers[phone]["band"] = delay_override or (MIN_DELAY, MAX_DELAY)
         timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback, token])
         timer.daemon = True
         _buffers[phone]["timer"] = timer

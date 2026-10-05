@@ -3503,12 +3503,35 @@ _HANDLERS = {
 }
 
 
+# Tools that only READ (or only decorate the reply): a turn whose successful tool calls
+# are all in this set made no new writes, which is one of the two conditions for the
+# restatement guard (agent_loop._apply_restatement_guard) to replace a same-outcome
+# reply with an ack. Everything else — log/edit/delete/remember/reminders/menus/
+# routines/links — counts as a write, so a turn that changed anything is never muted.
+READ_ONLY_TOOLS = frozenset({
+    "get_weather", "lookup_events", "schedule_rundown", "get_dining_menu",
+    "match_meal_history", "match_dining_item", "usda_food_lookup",
+    "react_to_message", "reply_in_thread",
+})
+
+
+def turn_wrote(user_id: int) -> bool:
+    """True once any non-read-only tool succeeded in the current turn."""
+    return bool(_TURN_STATE.get(user_id, {}).get("wrote"))
+
+
 def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> str:
     handler = _HANDLERS.get(name)
     if handler is None:
         return f"error: unknown tool {name!r}"
     try:
-        return handler(user_id, tool_input, message_id=message_id)
+        out = handler(user_id, tool_input, message_id=message_id)
     except Exception as e:  # a tool failure must be reported, never claimed as success
         logger.exception("TOOL_FAILED name=%s user=%s", name, user_id)
         return f"error: {name} failed: {e}"
+    # Write tracking for the restatement guard: a successful non-read tool call is a
+    # write (the handlers all report failure as "error: …", so that prefix is the
+    # success signal here). Only the turn's own state is touched — never the result.
+    if name not in READ_ONLY_TOOLS and not str(out or "").lstrip().lower().startswith("error"):
+        _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})["wrote"] = True
+    return out
