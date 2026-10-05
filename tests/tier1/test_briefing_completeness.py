@@ -596,10 +596,12 @@ def test_live_1238_material_names_weather_and_hw4(db, brief_on, monkeypatch):
         s.close()
     assert sig and "MORNING OPEN" in sig
     assert "Weather: 69° & overcast in Berkeley." in sig
-    assert "Due TODAY: Homework 4: RISC-V [CS61C Fa26]." in sig
+    # 2026-10-02 is a FRIDAY: "cs70 Discussion (friday = quiz)" IS the quiz that day (the
+    # weekday-conditional note matches the event's local weekday), so it is due today
+    # alongside HW4 — soonest first, with its time.
+    assert "Due TODAY: cs70 Discussion (friday = quiz) (by 4:00pm); Homework 4: RISC-V [CS61C Fa26]." in sig
     assert "Due soon: CS 70 HW Due (5d)." in sig
     assert "Nutrition so far: 0 cal" in sig
-    assert "Discussion" not in sig.split("Briefing material:")[1].split("\n")[0]   # the quiz note is not a deadline
 
 
 def test_live_1238_sent_text_carries_weather_and_logs_hw4_drop(db, brief_on, monkeypatch, sms_capture,

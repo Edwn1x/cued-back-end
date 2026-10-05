@@ -322,6 +322,139 @@ def test_is_deadline_propagates_to_deadline_items(db):
     assert "cs70 Discussion (friday = quiz)" not in titles
 
 
+# ─── weekday-conditional annotations: "(friday = quiz)" IS the quiz on Friday ──────────
+#
+# #152's strip was right on the days the note does NOT apply, but "cs70 Discussion
+# (friday = quiz)" recurs Wed AND Fri and its Friday occurrence genuinely IS the quiz
+# (live 2026-10-02: every code gate stayed weekday-blind). The note is now judged against
+# the event's LOCAL weekday before being stripped.
+
+class _TzUser:
+    def __init__(self, tz="America/Los_Angeles"):
+        self.id = 1
+        self.user_timezone = tz
+
+
+class _EvAt:
+    def __init__(self, title, when_aware):
+        self.title = title
+        self.occurred_at = _naive(when_aware)
+
+
+WED_0930 = datetime(2026, 9, 30, 16, 0, tzinfo=PT)    # Wednesday
+THU_1001 = datetime(2026, 10, 1, 16, 0, tzinfo=PT)    # Thursday
+FRI_1002 = datetime(2026, 10, 2, 16, 0, tzinfo=PT)    # Friday
+
+
+def test_is_deadline_live_title_wed_is_not_the_quiz_fri_is():
+    from schedule import _is_deadline
+    u = _TzUser()
+    assert _is_deadline(_EvAt("cs70 Discussion (friday = quiz)", WED_0930), u) == (False, False)
+    assert _is_deadline(_EvAt("cs70 Discussion (friday = quiz)", FRI_1002), u) == (True, True)
+
+
+@pytest.mark.parametrize("title", [
+    "cs70 Discussion (Friday: quiz)",
+    "cs70 Discussion (fri = midterm)",
+    "cs70 Discussion (quiz fridays)",
+    "cs70 Discussion (\u201cfriday\u201d = quiz)",      # curly quotes tolerated
+    "cs70 Discussion [ fri  -  exam ]",                 # brackets, extra spaces, dash
+])
+def test_is_deadline_conditional_variants_match_only_on_the_named_day(title):
+    from schedule import _is_deadline
+    u = _TzUser()
+    assert _is_deadline(_EvAt(title, FRI_1002), u) == (True, True), title
+    assert _is_deadline(_EvAt(title, WED_0930), u) == (False, False), title
+
+
+def test_is_deadline_exam_on_weekday_order():
+    from schedule import _is_deadline
+    u = _TzUser()
+    assert _is_deadline(_EvAt("Math54 Section (exam on thursday)", THU_1001), u) == (True, True)
+    assert _is_deadline(_EvAt("Math54 Section (exam on thursday)", FRI_1002), u) == (False, False)
+
+
+def test_is_deadline_bare_quiz_day_note_is_unconditional():
+    from schedule import _is_deadline
+    u = _TzUser()
+    for when in (WED_0930, THU_1001, FRI_1002):
+        assert _is_deadline(_EvAt("cs70 Discussion (quiz day)", when), u) == (True, True)
+        assert _is_deadline(_EvAt("CS61C Lecture (exam day)", when), u) == (True, True)
+
+
+def test_is_deadline_conditional_note_uses_the_users_local_weekday_not_utc():
+    """2026-10-02 15:30 UTC is Friday in UTC and PT but already Saturday 00:30 in Tokyo —
+    a Tokyo user's '(friday = quiz)' must NOT fire on it."""
+    from schedule import _is_deadline
+    when = datetime(2026, 10, 2, 15, 30, tzinfo=timezone.utc)
+    assert _is_deadline(_EvAt("cs70 Discussion (friday = quiz)", when), _TzUser("Asia/Tokyo")) == (False, False)
+    assert _is_deadline(_EvAt("cs70 Discussion (friday = quiz)", when), _TzUser()) == (True, True)
+
+
+def test_is_deadline_conditional_note_without_an_instant_or_user_stays_a_note():
+    """The existing callers/tests that pass a bare title (no occurred_at, no user) keep
+    #152's behaviour: a conditional note can't be judged, so it's just stripped."""
+    from schedule import _is_deadline
+    assert _is_deadline(_Ev("cs70 Discussion (friday = quiz)")) == (False, False)
+    assert _is_deadline(_EvAt("cs70 Discussion (friday = quiz)", FRI_1002)) == (True, True)  # default tz = PT
+
+
+def test_is_deadline_negated_or_incidental_notes_do_not_promote():
+    from schedule import _is_deadline
+    u = _TzUser()
+    assert _is_deadline(_EvAt("cs70 Discussion (no quiz friday)", FRI_1002), u) == (False, False)
+    assert _is_deadline(_EvAt("CS61C Lecture (quiz review)", FRI_1002), u) == (False, False)
+    assert _is_deadline(_EvAt("Lecture (bring laptop)", FRI_1002), u) == (False, False)
+
+
+def test_is_deadline_regressions_unchanged_by_conditional_parsing():
+    from schedule import _is_deadline
+    u = _TzUser()
+    assert _is_deadline(_EvAt("CS 70 HW Due", FRI_1002), u) == (True, False)
+    assert _is_deadline(_EvAt("cs70 quiz", WED_0930), u) == (True, True)
+    assert _is_deadline(_EvAt("due: cs70 Discussion worksheet", WED_0930), u) == (True, False)
+
+
+def test_conditional_quiz_flows_through_deadline_items_and_high_load(db, monkeypatch):
+    """End-to-end over the Event store: the Wed occurrence of the live title is NOT a
+    deadline; the Fri occurrence is an exam, so deadline_items / deadlines_within /
+    high_load_soon all see it once Friday is inside the 48h window."""
+    import config
+    from schedule import deadline_items, deadlines_within, high_load_soon
+    monkeypatch.setattr(config, "CALENDAR_HIGH_LOAD_HOURS", 48)
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    wed = _local(16, day=7)                                  # Wed 2026-10-07 16:00 PT
+    fri = _local(16, day=9)                                  # Fri 2026-10-09 16:00 PT
+    _mk_timed(user.id, "cs70 Discussion (friday = quiz)", wed, wed + timedelta(hours=1), ext="disc-wed")
+    _mk_timed(user.id, "cs70 Discussion (friday = quiz)", fri, fri + timedelta(hours=1), ext="disc-fri")
+
+    items = deadline_items(user.id, db, days=14, now=NOW)       # NOW = Wed 09:00 PT
+    assert [(d.when, d.is_exam) for d in items] == [(_naive(fri), True)]
+    # Wednesday morning: the quiz is ~55h out → not within the 48h high-load window.
+    assert deadlines_within(items, 48, now=NOW) == []
+    assert high_load_soon(user.id, db, now=NOW, items=items) is False
+    # Friday morning: the quiz is this afternoon → exam within window → high load.
+    now_fri = _local(9, day=9).astimezone(timezone.utc)
+    items_fri = deadline_items(user.id, db, days=14, now=now_fri)
+    assert [d.is_exam for d in items_fri] == [True]
+    assert [d.when for d in deadlines_within(items_fri, 48, now=now_fri)] == [_naive(fri)]
+    assert high_load_soon(user.id, db, now=now_fri, items=items_fri) is True
+
+
+def test_conditional_quiz_marks_rundown_event_as_exam_only_on_friday(db):
+    from schedule import collect_rundown
+    user = make_user(db, user_timezone="America/Los_Angeles")
+    wed = _local(16, day=7)
+    fri = _local(16, day=9)
+    _mk_timed(user.id, "cs70 Discussion (friday = quiz)", wed, wed + timedelta(hours=1), ext="disc-wed")
+    _mk_timed(user.id, "cs70 Discussion (friday = quiz)", fri, fri + timedelta(hours=1), ext="disc-fri")
+    evs = collect_rundown(user.id, lo=_naive(_local(0, day=7)), hi=_naive(_local(0, day=12)),
+                          now=NOW, session=db)
+    flags = {e.start: (e.is_deadline, e.is_exam) for e in evs}
+    assert flags[_naive(wed)] == (False, False)
+    assert flags[_naive(fri)] == (True, True)
+
+
 # ─── signal: high-load softens / holds a demanding training nudge ─────────────
 
 def test_high_load_signal_softens_tone(db, cal_on):
