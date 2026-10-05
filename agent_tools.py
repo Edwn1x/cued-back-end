@@ -2995,6 +2995,72 @@ def handle_fetch_page(user_id: int, tool_input: dict, *, message_id=None) -> str
     return webfetch.render_for_model(res)
 
 
+# ─── schedule_task / cancel_task (deferred work — agent_tasks.py) ─────────────
+SCHEDULE_TASK_TOOL = {
+    "name": "schedule_task",
+    "description": (
+        "Promise to find something out LATER and text them the answer — and keep it: code "
+        "runs the task at the time (a read-only lookup with your search/page/calendar tools) "
+        "and sends the result. Use it when the answer isn't available now or they want it "
+        "later: 'find out where the midterm is and text me tonight', 'check if a seat opens "
+        "in 170', 'let me know when the 61c grades post', 'what's at crossroads for dinner, "
+        "tell me at 5'. `goal` = what to find out, in their words, including what to text "
+        "them. kind 'lookup' (one-off): give delay_minutes OR run_at_local ('YYYY-MM-DD HH:MM' "
+        "their local time). kind 'watch' (keep checking for a change): give every_minutes "
+        "(≥15) and for_hours. Never say 'i'll check and text you' without calling this — a "
+        "task that isn't scheduled won't happen. Don't use it for a fixed-time nudge about "
+        "THEM (set_reminder) or for something you can answer right now (just answer)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "goal": {"type": "string", "description": "what to find out and text them, e.g. 'find the CS61C midterm room and time and text me'"},
+            "kind": {"type": "string", "enum": ["lookup", "watch"], "description": "default lookup"},
+            "delay_minutes": {"type": "integer", "description": "lookup: run this many minutes from now"},
+            "run_at_local": {"type": "string", "description": "lookup: 'YYYY-MM-DD HH:MM' in their local time"},
+            "every_minutes": {"type": "integer", "description": "watch: check cadence, minimum 15"},
+            "for_hours": {"type": "number", "description": "watch: how long to keep checking"},
+        },
+        "required": ["goal"],
+    },
+}
+
+CANCEL_TASK_TOOL = {
+    "name": "cancel_task",
+    "description": ("Cancel a scheduled task when they call it off ('nvm don't bother', 'stop watching that'). "
+                    "`task_id` from TASKS YOU'RE WORKING ON."),
+    "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]},
+}
+
+
+def handle_schedule_task(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    if not config.TASKS_ENABLED:
+        return "error: scheduled tasks are not enabled — answer now or set a reminder instead"
+    from agent_tasks import create_task, _tz, _fmt_local
+    ti = tool_input or {}
+    r = create_task(user_id, ti.get("goal"), delay_minutes=ti.get("delay_minutes"),
+                    run_at_local=ti.get("run_at_local"), kind=ti.get("kind") or "lookup",
+                    every_minutes=ti.get("every_minutes"), for_hours=ti.get("for_hours"))
+    if "error" in r:
+        return f"error: {r['error']}"
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz = _tz(user)
+    finally:
+        session.close()
+    if r["kind"] == "watch":
+        return (f"ok: watching (id={r['id']}) every {ti.get('every_minutes')} min until "
+                f"{_fmt_local(r['until'], tz)} — code texts them when it changes")
+    return f"ok: task scheduled (id={r['id']}) — runs {_fmt_local(r['run_at'], tz)} and texts them the result"
+
+
+def handle_cancel_task(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from agent_tasks import cancel_task
+    ok = cancel_task(user_id, (tool_input or {}).get("task_id"))
+    return "ok: task cancelled" if ok else "error: no active task with that id"
+
+
 SET_DAY_RESET_TOOL = {
     "name": "set_day_reset",
     "description": (
@@ -3651,6 +3717,8 @@ _HANDLERS = {
     "save_menu": handle_save_menu,
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
+    "schedule_task": handle_schedule_task,
+    "cancel_task": handle_cancel_task,
     "set_weather_location": handle_set_weather_location,
     "set_card_delivery": handle_set_card_delivery,
     "lookup_events": handle_lookup_events,

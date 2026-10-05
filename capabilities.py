@@ -392,6 +392,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they ask about the weather, mention rain/cold/heat, travel, or say where they are",
     ),
     Capability(
+        id="tasks",
+        what="if i can't answer something right now, i'll go find out and text you — 'where's the midterm, tell me tonight' or 'let me know if a seat opens'",
+        how="ask me to find out and text you later, or to keep an eye on something; i'll do the looking and message you when i have it",
+        tools=("schedule_task", "cancel_task"),
+        enabled=lambda u: config.TASKS_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower().startswith("student") else 4,
+        used=None,
+        reveal_when="they ask about something you can't see yet (a room not posted, a seat, a grade) or say 'tell me later'",
+    ),
+    Capability(
         id="fetch_page",
         what="send me a link — a syllabus, a course site, a place's hours page — and i'll actually read it and pull out what matters",
         how="text me the link (or name the class and i'll find its site); i'll grab exam dates, due dates, grading, hours — and put the dated stuff on your calendar",

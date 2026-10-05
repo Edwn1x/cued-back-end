@@ -66,6 +66,13 @@ LESSONS_ENABLED = os.getenv("LESSONS_ENABLED", "false").lower() == "true"
 LESSONS_EXTRACT_ENABLED = os.getenv("LESSONS_EXTRACT_ENABLED", "false").lower() == "true"
 LESSONS_SOFT_CAP = int(os.getenv("LESSONS_SOFT_CAP", "700"))      # chars; own cap, not the 400 generic
 LESSONS_MAX_LEN = int(os.getenv("LESSONS_MAX_LEN", "160"))        # one lesson = one instruction
+# Deferred tasks (agent_tasks.py): "i'll find out and text you" — a schedule_task row run
+# later by a 60s sweep through a bounded READ-ONLY tool loop; code sends the result and
+# applies the heartbeat's opt-out/onboarding/quiet-hours gates (defer, never drop).
+TASKS_ENABLED = os.getenv("TASKS_ENABLED", "false").lower() == "true"
+TASKS_MAX_ACTIVE_PER_USER = int(os.getenv("TASKS_MAX_ACTIVE_PER_USER", "5"))
+TASKS_MAX_TOOL_ITERS = int(os.getenv("TASKS_MAX_TOOL_ITERS", "6"))
+TASKS_MAX_TOKENS = int(os.getenv("TASKS_MAX_TOKENS", "6000"))
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"

@@ -28,6 +28,15 @@ def _pin(monkeypatch, tz_str, hour, minute=0):
     now_utc = datetime(today.year, today.month, today.day, hour, minute, tzinfo=tz) \
         .astimezone(timezone.utc).replace(tzinfo=None)
     monkeypatch.setattr(agent_tools, "_naive_utcnow", lambda: now_utc)
+    # The day-total recompute (models.recompute_daily_totals) and the DAY TOTAL NOW
+    # render take their window from timefmt.local_day_bounds, which reads the REAL
+    # clock when `now` is omitted. Pin it too, or a test pinned at 02:30 with
+    # day_reset_hour=4 computes its total against whatever nutrition day the CI
+    # runner is actually in (failed 04:00–24:00 PT, 2026-10-05).
+    import timefmt
+    _orig_bounds = timefmt.local_day_bounds
+    monkeypatch.setattr(timefmt, "local_day_bounds",
+                        lambda user, *, now=None: _orig_bounds(user, now=now or now_utc))
     return now_utc, today
 
 
