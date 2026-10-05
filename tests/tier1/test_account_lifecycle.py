@@ -466,3 +466,34 @@ def test_migration_adds_the_archive_columns_idempotently(db):
 def migrate_engine():
     import models
     return models.engine
+
+
+def test_admin_inline_script_parses_and_no_string_literal_spans_a_line(db, client):
+    """Live 2026-10-05 (right after #173 deployed): ADMIN_HTML is a PLAIN triple-quoted Python
+    string, so the '\\n\\n' written inside the archiveUser confirm and the deleteForever prompt
+    rendered as REAL line breaks inside single-quoted JS strings → SyntaxError in the one inline
+    <script> → showPage never defined → every nav tab (Users, Waitlist, …) dead. Guard both
+    ways: the two literals must carry the two-char JS escape, no JS line may leave a
+    single-quoted string open, and when node is around the whole script must parse."""
+    import os, re, shutil, subprocess, tempfile
+    html = client.get("/admin").get_data(as_text=True)
+    scripts = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S)
+    assert scripts, "the admin page has an inline <script>"
+    assert "')?\\n\\nEvery row" in html and "undone.\\n\\nType DELETE" in html
+    assert "function showPage" in html
+    for s in scripts:
+        for ln in s.split("\n"):
+            core = re.sub(r"\\.", "", ln)                 # drop escapes: \' \\ \n …
+            core = re.sub(r'"(?:[^"\\]|\\.)*"', '', core)  # drop double-quoted strings
+            core = re.sub(r"`[^`]*`", "", core)            # drop single-line template literals
+            core = re.sub(r"//.*$", "", core)              # drop line comments
+            assert core.count("'") % 2 == 0, f"a single-quoted JS string spans a line break: {ln[:140]!r}"
+    node = shutil.which("node")
+    if node:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(scripts[0]); path = f.name
+        try:
+            r = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr[-500:]
+        finally:
+            os.unlink(path)
