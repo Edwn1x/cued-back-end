@@ -2054,10 +2054,14 @@ def handle_set_food_logger(user_id: int, tool_input: dict, *, message_id=None) -
 GET_DINING_MENU_TOOL = {
     "name": "get_dining_menu",
     "description": (
-        "Get today's UC Berkeley dining-hall menu with macros, on demand. Use it "
-        "when the user asks what to eat at a hall (crossroads / foothill / clark_kerr "
-        "/ cafe3). Optionally filter by meal period. Returns items with calories and "
-        "protein so you can recommend a specific pick."
+        "Get today's UC Berkeley dining-hall menu with macros, on demand. Call it the "
+        "moment they ask what's AT a hall or what a hall HAS (\"what's at crossroads\", "
+        "\"what do they have\", \"menu?\") AND when they ask what to eat there "
+        "(crossroads / foothill / clark_kerr / cafe3). Optionally filter by meal period; "
+        "omit it and code picks the period for the current local time. Returns the menu "
+        "GROUPED by station with mains first, each item with calories + protein. A "
+        "'what's at' question is answered with that list (mains at minimum) BEFORE any "
+        "pick; a 'what should i get' question gets the pick first."
     ),
     "input_schema": {
         "type": "object",
@@ -2070,31 +2074,162 @@ GET_DINING_MENU_TOOL = {
 }
 
 
+# Berkeley's recipe `category` (stored as DiningMenuItem.station) is free text that varies
+# by hall ("Entrees", "Grill", "Sides", "Salad Bar", "Desserts"...). Keyword-tier it so the
+# menu reads mains → sides → salad/deli → other → sweets/drinks whatever the hall calls
+# the line. Unknown stations fall in "other" (ahead of dessert, behind the food lines).
+_MENU_STATION_TIERS = (
+    # Checked in this order; first hit wins — so sides' "cereal"/"grain" claims the hot
+    # cereal lines before anything sweet could. Named lines from prod scrapes (2026-10):
+    # Lemongrass / Fire & Flour / Iron & Ember / Kosher Station / Made To Order are entrée
+    # lines; Cold Food Bar is the salad/deli line; Soft Serve is dessert; Bagel Bar is bread.
+    ("mains", ("entree", "entrée", "main", "grill", "griddle", "halal", "global", "kitchen",
+               "pizza", "action", "wok", "taqueria", "pasta", "carver", "bowl", "plate",
+               "burger", "chef", "special", "comfort", "homestyle", "rotisserie", "bbq",
+               "noodle", "lemongrass", "flour", "ember", "iron", "kosher", "made to order",
+               "order", "centerplate")),
+    ("sides", ("side", "vegetable", "veg", "grain", "rice", "starch", "soup", "bread",
+               "bagel", "cereal", "potato", "legume", "bean")),
+    ("salad/deli", ("salad", "deli", "sandwich", "greens", "wrap", "cold food", "cold bar")),
+    ("sweets/drinks", ("dessert", "bakery", "pastry", "sweet", "beverage", "drink", "fruit",
+                       "condiment", "yogurt", "coffee", "juice", "ice cream", "soft serve",
+                       "serve")),
+)
+_MENU_OTHER_TIER = "other"
+_MENU_TIER_ORDER = ("mains", "sides", "salad/deli", _MENU_OTHER_TIER, "sweets/drinks")
+_MENU_ITEM_CAP = 25
+
+
+def _menu_station_tier(station) -> str:
+    # Collapse runs of whitespace: the scrape ships "Iron &  Ember" (double space).
+    low = re.sub(r"\s+", " ", (station or "")).strip().lower()
+    if not low:
+        return _MENU_OTHER_TIER
+    for tier, keys in _MENU_STATION_TIERS:
+        if any(k in low for k in keys):
+            return tier
+    return _MENU_OTHER_TIER
+
+
+def _default_meal_period(now_local: datetime) -> str:
+    """The meal period someone asking 'what's at <hall>' right now most likely means."""
+    minutes = now_local.hour * 60 + now_local.minute
+    if minutes < 10 * 60 + 30:
+        return "brunch" if now_local.weekday() >= 5 else "breakfast"
+    if minutes < 16 * 60:
+        return "brunch" if now_local.weekday() >= 5 else "lunch"
+    return "dinner"
+
+
+def _menu_period_candidates(default: str) -> list[str]:
+    """`default` first, then the rest of the day's periods in served order, so a hall
+    that is between periods (or labels the weekend 'brunch') still yields a list."""
+    order = ["breakfast", "brunch", "lunch", "dinner"]
+    return [default] + [p for p in order if p != default]
+
+
+def _format_grouped_menu(items: list, cap: int = _MENU_ITEM_CAP) -> tuple[list[str], int, int]:
+    """Lines grouped by tier → station, mains first; (lines, n_listed, n_omitted) — items
+    past `cap` are counted, not listed.
+    Dedupes repeated dish names (all_day rows re-list under each period)."""
+    groups: dict[tuple, list] = {}
+    seen: set[str] = set()
+    for it in items:
+        name = (it.item_name or "").strip()
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        tier = _menu_station_tier(it.station)
+        groups.setdefault((tier, (it.station or "").strip()), []).append(it)
+
+    def _macro(it) -> str:
+        cal = f"{it.calories} cal" if it.calories is not None else "? cal"
+        pro = f"{round(it.protein_g)}g protein" if it.protein_g is not None else "? protein"
+        return f"{cal} / {pro}"
+
+    lines: list[str] = []
+    emitted = 0
+    omitted = 0
+    for tier in _MENU_TIER_ORDER:
+        for (t, station), rows in groups.items():
+            if t != tier:
+                continue
+            label = tier.upper()
+            if station and station.lower() != tier:
+                label += f" ({station})"
+            header_written = False
+            for it in rows:
+                if emitted >= cap:
+                    omitted += 1
+                    continue
+                if not header_written:
+                    lines.append(f"{label}:")
+                    header_written = True
+                lines.append(f"- {it.item_name.strip()} — {_macro(it)}")
+                emitted += 1
+    return lines, emitted, omitted
+
+
 def handle_get_dining_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Read today's scraped menu for a hall (on-demand, replaces context injection)."""
-    from zoneinfo import ZoneInfo
+    """Read today's scraped menu for a hall (on-demand, replaces context injection).
+
+    Result is a compact GROUPED menu — mains first, then sides, salad/deli, other,
+    sweets — each item "name — cal / protein", capped at _MENU_ITEM_CAP with a
+    "+N more" tail. The header names the hall + meal period actually used (the period
+    defaults from the user's local clock when the model omits it) and tells the model
+    how to relay it: list first, one pick line after. 2026-10-04: "what's at crossroads"
+    was answered with a filtered pick + a protein nag and the founder had to ask for
+    "the whole menu" — the menu is the answer to that question."""
     from dining_scraper import _canonical_hall
 
     hall = _canonical_hall(tool_input.get("hall") or "")
-    meal_period = (tool_input.get("meal_period") or "").strip().lower() or None
+    asked_period = (tool_input.get("meal_period") or "").strip().lower() or None
     today = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
 
     session = get_session()
     try:
-        q = (session.query(DiningMenuItem)
-             .filter(DiningMenuItem.scraped_date == today, DiningMenuItem.hall == hall))
-        if meal_period:
-            q = q.filter(DiningMenuItem.meal_period == meal_period)
-        items = q.limit(80).all()
+        tz = _user_tz(session, user_id)
+        now_local = datetime.now(tz)
+        rows = (session.query(DiningMenuItem)
+                .filter(DiningMenuItem.scraped_date == today, DiningMenuItem.hall == hall)
+                .order_by(DiningMenuItem.station, DiningMenuItem.item_name)
+                .all())
+        session.expunge_all()
     finally:
         session.close()
 
-    if not items:
+    if not rows:
         return (f"error: no menu for {hall} today ({today}) — it may be closed for "
                 f"summer or not scraped yet")
-    lines = [f"{i.item_name} ({i.meal_period}): {i.calories or '?'}cal, "
-             f"{round(i.protein_g) if i.protein_g else '?'}g protein" for i in items]
-    return f"ok: {hall} menu today:\n" + "\n".join(lines)
+
+    def _for(period: str) -> list:
+        return [r for r in rows if (r.meal_period or "").lower() in (period, "all_day")]
+
+    defaulted = asked_period is None
+    period = asked_period or _default_meal_period(now_local)
+    items = _for(period)
+    if not items and defaulted:
+        for cand in _menu_period_candidates(period):
+            items = _for(cand)
+            if items:
+                period = cand
+                break
+    if not items:
+        have = sorted({(r.meal_period or "").lower() for r in rows})
+        return (f"error: no {period} menu for {hall} today ({today}) — periods with a "
+                f"menu: {', '.join(have) or 'none'}")
+
+    lines, listed, omitted = _format_grouped_menu(items)
+    total = listed + omitted
+    how = ("defaulted from the time of day; say breakfast/lunch/dinner for another"
+           if defaulted else "as asked")
+    header = (f"ok: {hall} {period} menu today ({today}) — {total} items. "
+              f"note: hall={hall}, meal={period} ({how}). if they asked what's AT the hall / "
+              f"what it has, relay this list first (every main, sides briefly), then at most "
+              f"one pick line; if they asked what to GET, lead with the pick.")
+    tail = [f"+{omitted} more — want the rest?"] if omitted else []
+    return "\n".join([header, *lines, *tail])
 
 
 MATCH_MEAL_HISTORY_TOOL = {
