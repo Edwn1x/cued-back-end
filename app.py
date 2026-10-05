@@ -657,8 +657,9 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # in code — one line, no model turn. Flag-gated inside handle_pantry_text.
         if (user.onboarding_step or 0) >= 3 and not image_url:
             try:
-                from receipts import handle_pantry_text
-                pline = handle_pantry_text(user.id, combined_body)
+                from receipts import handle_pantry_text, handle_pending_receipt_reply
+                pline = (handle_pending_receipt_reply(user.id, combined_body)
+                         or handle_pantry_text(user.id, combined_body))
             except Exception as e:  # noqa: BLE001
                 logger.error("PANTRY_TEXT_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
                 pline = None

@@ -41,7 +41,7 @@ def receipts_on(monkeypatch):
     import config, receipts
     monkeypatch.setattr(config, "RECEIPTS_ENABLED", True)
     monkeypatch.setattr(config, "READ_IMAGE_ENABLED", True)
-    monkeypatch.setattr(receipts, "canonicalize", lambda name: USDA.get(name, (name, None)))
+    monkeypatch.setattr(receipts, "canonicalize", lambda name, merchant=None: USDA.get(name, (name, None)))
 
 
 def _user(db, **kw):
@@ -64,7 +64,7 @@ def test_receipt_photo_is_itemized_and_answered_in_code(db, receipts_on, monkeyp
     # 363 // 139 = 2 days → today + 2 (local)
     tz = ZoneInfo("America/Los_Angeles")
     through = (datetime.now(tz).date() + timedelta(days=2)).strftime("%A").lower()
-    assert reply == f"got your trader joe's receipt. logged chicken thighs boneless, greek yogurt plain 32oz, and eggs large dozen — you're stocked through {through}."
+    assert reply == f"got your trader joe's receipt. stocked chicken thighs boneless, greek yogurt plain 32oz, and eggs large dozen — you're set through {through}."
     s = get_session()
     try:
         rows = s.query(PantryItem).filter_by(user_id=user.id).order_by(PantryItem.id).all()
@@ -84,9 +84,9 @@ def test_stocked_through_is_capped_and_dropped_without_a_target(db, receipts_on,
     monkeypatch.setattr(receipts, "extract_receipt", lambda img, user_id=None: big)
     tz = ZoneInfo("America/Los_Angeles")
     cap = (datetime.now(tz).date() + timedelta(days=7)).strftime("%A").lower()
-    assert receipts.handle_receipt_image(_user(db).id, IMG).endswith(f"stocked through {cap}.")   # 1773 g / 139 → capped at 7
+    assert receipts.handle_receipt_image(_user(db).id, IMG).endswith(f"set through {cap}.")   # 1773 g / 139 → capped at 7
     reply = receipts.handle_receipt_image(_user(db, protein_target=None).id, IMG)
-    assert reply == "got your trader joe's receipt. logged chicken thighs boneless."         # no guess without a target
+    assert reply == "got your trader joe's receipt. stocked chicken thighs boneless."         # no guess without a target
 
 
 def test_meal_photo_never_hits_extraction(db, receipts_on, monkeypatch):
@@ -113,7 +113,7 @@ def test_loop_returns_the_receipt_reply_without_a_model_turn(db, receipts_on, mo
     anthropic_stub.reply_with(lambda kw: (_ for _ in ()).throw(AssertionError("the coach model must not run on a receipt")))
     user = _user(db)
     reply = run_agent_loop(user, "", "food_photo", image_data=IMG)
-    assert reply.startswith("got your trader joe's receipt. logged chicken thighs boneless")
+    assert reply.startswith("got your trader joe's receipt. stocked chicken thighs boneless")
 
 
 def test_classifier_and_extractor_parse_model_output(db, receipts_on, anthropic_stub):

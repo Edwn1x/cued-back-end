@@ -1,13 +1,22 @@
 """
-Receipts → pantry (series §1). A receipt photo is classified first (one cheap
-call), itemized (one JSON call), mapped to canonical foods via USDA, upserted
-into `pantry`, and answered in ONE code-built message:
+Receipts (series §1). A receipt photo is classified first (one cheap call), itemized
+(one JSON call), then routed by WHAT KIND of receipt it is:
 
-    got your trader joe's receipt. logged eggs, chicken thighs, and greek yogurt — you're stocked through thursday.
+  grocery    → canonical foods via USDA (similarity-floored), upserted into `pantry`:
+                 got your trader joe's receipt. stocked eggs, chicken thighs, and greek yogurt — you're set through thursday.
+  restaurant → ONE grouped meal eaten now (the extractor's own per-item macros), NOTHING
+               to the pantry:
+                 got the chick-fil-a receipt — logged it as dinner: strips 3ct, fries md, mac&chz sm (~1000 cal). fix any if off
+  unsure     → one question, no writes; the answer resolves in code (handle_pending_receipt_reply).
 
-'Stocked through' = today + floor(protein_on_hand_g / daily protein target), capped
-at PANTRY_MAX_STOCKED_DAYS; dropped when there's no target yet. The model
-estimates (store, items, grams); code does every sum and every date.
+Live 2026-10-03 (user 31): a Chick-fil-A dinner receipt was stocked as groceries, each
+line canonicalized to USDA garbage ('fries md' → 'calamari, fried', 'mac&chz sm' → 'big
+mac (mcdonalds)'), and the reply said "logged" while no meal existed. The reply is now
+built from the rows actually written, and says WHERE they went.
+
+'Set through' = today + floor(protein_on_hand_g / daily protein target), capped at
+PANTRY_MAX_STOCKED_DAYS; dropped when there's no target yet. The model estimates
+(merchant, items, grams, restaurant macros); code does every sum and every date.
 """
 
 from __future__ import annotations
@@ -68,13 +77,27 @@ def classify_image(image_data: dict, user_id=None) -> str:
 
 # ─── 1.3 extract ────────────────────────────────────────────────────────────
 
-EXTRACT_PROMPT = """This is a store receipt. Return ONLY JSON:
-{"store": "<store name exactly as printed, lowercase>",
- "items": [{"name": "<item as printed, lowercase>", "qty": <number>, "unit": "<each|lb|oz|dozen|pack|g|kg|null>",
-            "price": <number or null>, "is_food": <true|false>, "est_grams": <total edible grams for the line, your best estimate>}]}
-Rules: one entry per line item; is_food=false for bags, tax, paper towels, toiletries, deposits, discounts;
-est_grams is the TOTAL weight of food for that line (e.g. 'dozen eggs' → 600; '2 lb chicken thighs' → 907;
-'greek yogurt 32oz' → 907). Never invent items that aren't on the receipt."""
+EXTRACT_PROMPT = """This is a receipt. Return ONLY JSON:
+{"kind": "<grocery|restaurant|unsure>",
+ "merchant": "<store or restaurant name exactly as printed, lowercase>",
+ "items": [{"name": "<line item as printed, lowercase>", "food": "<plain-english name of the food, e.g. 'small mac & cheese', 'medium fries' — only when the printed name is abbreviated>",
+            "qty": <number>, "unit": "<each|lb|oz|dozen|pack|g|kg|null>",
+            "price": <number or null>, "is_food": <true|false>,
+            "est_grams": <total edible grams for the line, your best estimate>,
+            "calories": <restaurant only: kcal for the WHOLE line (qty × size printed); null for grocery>,
+            "protein_g": <restaurant only, int or null>, "carbs_g": <restaurant only, int or null>, "fat_g": <restaurant only, int or null>}]}
+Rules:
+- kind: "grocery" = a supermarket / grocery / convenience store — ingredients and packaged goods to take home
+  (trader joe's, safeway, costco, target...). "restaurant" = a restaurant, fast-food, café, or food-court ORDER —
+  prepared dishes, combos, sides, sauces, drinks (chick-fil-a, mcdonald's, chipotle, a sit-down bill with
+  table/server/tip lines). The merchant name and the item types decide it. "unsure" ONLY if you genuinely can't tell.
+- one entry per line item; is_food=false for bags, tax, tip, service fees, paper towels, toiletries, deposits, discounts;
+- est_grams is the TOTAL weight of food for that line (e.g. 'dozen eggs' → 600; '2 lb chicken thighs' → 907;
+  'greek yogurt 32oz' → 907).
+- restaurant: every food line ALSO gets calories/protein_g/carbs_g/fat_g — your best estimate for the WHOLE line
+  (qty × the size printed: 'mac&chz sm' is a small mac & cheese, 'fries md' a medium fries, 'cfa sauce' ×4 is four
+  sauce packets). Use the chain's published nutrition when you know it.
+- Never invent items that aren't on the receipt."""
 
 
 # Sentinel: the extractor's JSON was cut off at the token cap (a LONG receipt),
@@ -109,42 +132,239 @@ def extract_receipt(image_data: dict, user_id=None):
         return None
 
 
-def canonicalize(name: str) -> tuple[str, float | None]:
-    """(canonical item, protein per 100 g) via USDA; the printed name and None on a miss."""
+# ─── kind: grocery vs restaurant ────────────────────────────────────────────
+
+# Chains whose name on a receipt (or inside a USDA description) settles the question.
+# Normalized form: lowercase, no punctuation ("chick-fil-a" → "chick fil a").
+_RESTAURANT_BRANDS = (
+    "mcdonalds", "burger king", "wendys", "taco bell", "kfc", "kentucky fried", "popeyes",
+    "chick fil a", "chickfila", "cfa", "subway", "dominos", "pizza hut", "papa johns", "starbucks",
+    "dunkin", "chipotle", "panera", "sonic", "arbys", "jack in the box", "in n out", "five guys",
+    "little caesars", "dennys", "applebees", "olive garden", "cracker barrel", "dairy queen",
+    "carls jr", "hardees", "whataburger", "white castle", "panda express", "wingstop",
+    "raising canes", "culvers", "shake shack", "del taco", "el pollo loco", "jimmy johns",
+    "jersey mikes", "chilis", "outback", "ihop", "waffle house", "qdoba", "moes", "zaxbys",
+    "bojangles", "checkers", "nathans", "long john silvers", "red lobster", "buffalo wild wings",
+    "tgi fridays", "red robin", "sbarro", "cinnabon", "auntie annes", "krispy kreme", "tim hortons",
+    "peets", "jamba", "smoothie king", "sweetgreen", "cava", "noodles company",
+    "habit burger", "super duper", "ikes", "cheeseboard", "la burrita", "gypsys", "doordash",
+    "ubereats", "uber eats", "grubhub",
+)
+_RESTAURANT_WORDS = re.compile(r"\b(cafe|caf[eé]|grill|kitchen|restaurant|bistro|diner|pizzeria|taqueria|"
+                               r"sushi|ramen|bbq|burgers?|tacos?|boba|tea house|eatery)\b")
+_GROCERY_BRANDS = (
+    "trader joes", "safeway", "whole foods", "costco", "berkeley bowl", "target", "walmart", "sprouts",
+    "grocery outlet", "monterey market", "kroger", "ralphs", "vons", "albertsons", "lucky", "foodsco",
+    "food 4 less", "smart final", "99 ranch", "h mart", "aldi", "wegmans", "publix", "heb", "meijer",
+    "winco", "raleys", "nob hill", "andronicos", "mollie stones", "amazon fresh", "instacart", "cvs",
+    "walgreens", "rite aid", "sams club", "market", "grocery", "supermarket", "foods",
+)
+
+# Caption / follow-up words that settle it without a model call.
+MEAL_WORDS_RE = re.compile(r"\b(meal|ate|eat|eating|dinner|lunch|breakfast|snack|just had|ordered|"
+                           r"takeout|take out|restaurant)\b", re.I)
+GROCERY_WORDS_RE = re.compile(r"\b(grocer(?:y|ies)|groceries|stock(?:ed|ing)?|pantry|bought|shopping|"
+                              r"fridge|stocked up|picked up|haul)\b", re.I)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower().replace("'", ""))).strip()
+
+
+def _brand_in(text: str, brands) -> str | None:
+    t = f" {_norm(text)} "
+    for b in brands:
+        if f" {b} " in t:
+            return b
+    return None
+
+
+def receipt_kind(extraction: dict, caption: str | None = None) -> str:
+    """'restaurant' | 'grocery' | 'ask'. Precedence: an explicit caption ("just ate
+    this" / "groceries") → a known chain in the merchant name → the extractor's own
+    `kind` → (missing kind, legacy extraction) grocery; 'unsure' → ask."""
+    if caption:
+        if MEAL_WORDS_RE.search(caption) and not GROCERY_WORDS_RE.search(caption):
+            return "restaurant"
+        if GROCERY_WORDS_RE.search(caption) and not MEAL_WORDS_RE.search(caption):
+            return "grocery"
+    merchant = merchant_of(extraction)
+    if _brand_in(merchant, _RESTAURANT_BRANDS) or _RESTAURANT_WORDS.search(_norm(merchant)):
+        return "restaurant"
+    if _brand_in(merchant, _GROCERY_BRANDS):
+        return "grocery"
+    kind = str(extraction.get("kind") or "").strip().lower()
+    if kind in ("restaurant", "grocery"):
+        return kind
+    if kind == "unsure":
+        return "ask"
+    return "grocery"
+
+
+def merchant_of(extraction: dict) -> str:
+    return (str(extraction.get("merchant") or extraction.get("store") or "").strip().lower())
+
+
+# ─── canonicalize (USDA) with a similarity floor ────────────────────────────
+
+# Receipt shorthand → the word the USDA description would use.
+_ABBREV = {
+    "sm": "small", "md": "medium", "med": "medium", "lg": "large", "lrg": "large", "xl": "extra large",
+    "ct": "count", "pk": "pack", "pkg": "package", "ea": "each", "dz": "dozen",
+    "chz": "cheese", "chs": "cheese", "chse": "cheese", "chkn": "chicken", "chk": "chicken", "ckn": "chicken",
+    "bf": "beef", "grnd": "ground", "bnls": "boneless", "sknls": "skinless", "brst": "breast", "thgh": "thigh",
+    "org": "organic", "orgnc": "organic", "wht": "white", "whl": "whole", "grk": "greek", "yog": "yogurt",
+    "ygrt": "yogurt", "nug": "nuggets", "nugs": "nuggets", "sndwch": "sandwich", "sndw": "sandwich",
+    "veg": "vegetable", "frz": "frozen", "frzn": "frozen", "unswt": "unsweetened", "swt": "sweet",
+    "choc": "chocolate", "strw": "strawberry", "tmto": "tomato", "ptto": "potato", "pnut": "peanut",
+    "btr": "butter", "almnd": "almond", "mlk": "milk", "crm": "cream", "slcd": "sliced", "shrd": "shredded",
+    "bkd": "baked", "frd": "fried", "grld": "grilled", "bnna": "banana", "avo": "avocado", "cuc": "cucumber",
+}
+# Sizes, units, counts, and USDA boilerplate: carry no food identity, so they never score.
+_STOP = {
+    "small", "medium", "large", "extra", "count", "pack", "package", "each", "oz", "ounce", "lb", "lbs",
+    "pound", "g", "kg", "dozen", "x", "of", "the", "a", "an", "and", "or", "with", "without", "w", "per",
+    "pc", "pcs", "raw", "fresh", "nfs", "ns", "as", "to", "type", "added", "from", "in", "for", "on",
+    "regular", "commercial", "prepared", "cooked", "frozen", "fast", "food", "foods", "brand", "item",
+}
+
+
+def _stem(t: str) -> str:
+    if len(t) > 3 and t.endswith("ies"):
+        return t[:-3] + "y"
+    if len(t) > 4 and t.endswith("oes"):
+        return t[:-2]
+    if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+        return t[:-1]
+    return t
+
+
+def _tokens(text: str) -> list[str]:
+    """Content tokens of a receipt line or a USDA description: lowercased, '&' → and,
+    abbreviations expanded, anything with a digit (sizes, counts, SKU codes) dropped,
+    stop/boilerplate words dropped, light stemming."""
+    out = []
+    for raw in re.split(r"[^a-z0-9]+", (text or "").lower().replace("&", " and ")):
+        if not raw or any(ch.isdigit() for ch in raw):
+            continue
+        for w in _ABBREV.get(raw, raw).split():
+            if w in _STOP:
+                continue
+            out.append(_stem(w))
+    return out
+
+
+def _hit_brand(description: str) -> str | None:
+    """A chain named in a USDA description — '(mcdonalds)' or 'burger king, ...'."""
+    paren = re.findall(r"\(([^)]+)\)", description or "")
+    for p in paren:
+        b = _brand_in(p, _RESTAURANT_BRANDS)
+        if b:
+            return b
+    return _brand_in(description, _RESTAURANT_BRANDS)
+
+
+def score_hit(name: str, description: str) -> float:
+    """How well a USDA description matches a receipt line, in [0, 1].
+
+    Token CONTAINMENT: the share of the receipt line's content tokens (sizes/counts/
+    codes stripped, abbreviations expanded) that appear in the hit's description — AND
+    the hit's head segment (the text before its first comma, which USDA uses for the
+    primary food) must share at least one token with the line, else 0. Containment
+    rather than Jaccard because USDA names carry modifiers the receipt never prints
+    ('egg, whole, raw, fresh' for 'eggs large dozen'); the head-segment check (and, for a
+    one-word line, a first-token match) stops a modifier-only overlap ('bacon strip,
+    meatless' for 'strips', 'calamari, fried' for 'fries') from passing."""
+    r = set(_tokens(name))
+    if not r:
+        return 0.0
+    desc = re.sub(r"\([^)]*\)", " ", description or "")
+    h = set(_tokens(desc))
+    head_tokens = _tokens(desc.split(",")[0])
+    if not (r & set(head_tokens)):
+        return 0.0
+    if len(r) == 1 and head_tokens and head_tokens[0] not in r:
+        # A one-word line names the food itself ('strips', 'fries'): the hit must lead with
+        # it, else the overlap is a modifier ('bacon strip, meatless', 'calamari, fried').
+        return 0.0
+    return len(r & h) / len(r)
+
+
+def canonicalize(name: str, merchant: str | None = None) -> tuple[str, float | None]:
+    """(canonical item, protein per 100 g) via USDA — accepted only when the best hit
+    scores ≥ RECEIPT_USDA_MIN_SCORE (see score_hit) and doesn't name a DIFFERENT chain
+    than the merchant. Otherwise the printed name (lightly normalized) and None, so a
+    guessed row never carries protein it doesn't have."""
+    fallback = _norm(name)[:80] or name.lower()[:80]
     try:
         from usda import search_usda
         hits = search_usda(name, page_size=3)
-        if hits:
-            h = hits[0]
-            return (h.get("description") or name).lower()[:80], h.get("protein_g")
     except Exception as e:  # noqa: BLE001 — UsdaUnavailable or anything else: keep the line
         logger.info("RECEIPT_USDA_MISS name=%r err=%s", name, e)
-    return name.lower()[:80], None
+        return fallback, None
+    merchant_n = _norm(merchant or "")
+    best, best_score, rejected = None, 0.0, []     # rejected: (description, score, reason)
+    for h in hits or []:
+        desc = (h.get("description") or "")
+        s = score_hit(name, desc)
+        brand = _hit_brand(desc)
+        if brand and brand not in merchant_n:
+            # 'big mac (mcdonalds)' for a Trader Joe's (or Chick-fil-A) line: another chain's food.
+            rejected.append((desc, s, f"foreign_brand={brand}"))
+            continue
+        if s > best_score:
+            best, best_score = h, s
+    if best is not None and best_score >= config.RECEIPT_USDA_MIN_SCORE:
+        return (best.get("description") or fallback).lower()[:80], best.get("protein_g")
+    if hits:
+        top = max(rejected + ([((best or {}).get("description"), best_score, "below_floor")] if best else []),
+                  key=lambda t: t[1], default=(None, 0.0, "no_candidate"))
+        logger.info("RECEIPT_USDA_REJECTED name=%r best=%r score=%.2f reason=%s floor=%.2f",
+                    name, top[0], top[1], top[2], config.RECEIPT_USDA_MIN_SCORE)
+    return fallback, None
 
 
 def _weekday_name(d) -> str:
     return d.strftime("%A").lower()
 
 
-def ingest_receipt(user_id: int, extraction: dict) -> str | None:
-    """Upsert pantry rows + one signals row; return the ONE reply line, or None when
-    nothing edible was found."""
-    store = (extraction.get("store") or "").strip().lower() or "the store"
-    rows = []
+def _listed(labels: list[str]) -> str:
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return ", ".join(labels[:-1]) + f", and {labels[-1]}"
+
+
+def _food_items(extraction: dict) -> list[dict]:
+    out = []
     for it in extraction.get("items") or []:
         if not isinstance(it, dict) or not it.get("name"):
             continue
         if it.get("is_food") is False:
             continue
-        canonical, pp100 = canonicalize(str(it["name"]))
-        try:
-            grams = float(it.get("est_grams")) if it.get("est_grams") is not None else None
-        except (TypeError, ValueError):
-            grams = None
-        try:
-            qty = float(it.get("qty")) if it.get("qty") is not None else None
-        except (TypeError, ValueError):
-            qty = None
+        out.append(it)
+    return out
+
+
+def _num(v, cast=float):
+    try:
+        return cast(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ─── grocery → pantry ───────────────────────────────────────────────────────
+
+def ingest_receipt(user_id: int, extraction: dict) -> str | None:
+    """Upsert pantry rows + one signals row; return the ONE reply line (built from the
+    rows actually written), or None when nothing edible was found."""
+    store = merchant_of(extraction) or "the store"
+    rows = []
+    for it in _food_items(extraction):
+        canonical, pp100 = canonicalize(str(it["name"]), merchant=store)
+        grams = _num(it.get("est_grams"))
+        qty = _num(it.get("qty"))
         protein_g = (grams or 0) * (pp100 or 0) / 100.0
         rows.append({"item": canonical, "label": str(it["name"]).strip().lower()[:80], "qty": qty,
                      "unit": (it.get("unit") or None), "est_grams": grams, "pp100": pp100, "protein_g": protein_g})
@@ -155,6 +375,7 @@ def ingest_receipt(user_id: int, extraction: dict) -> str | None:
     try:
         user = session.get(User, user_id)
         now = _utcnow()
+        written = []
         for r in rows:
             existing = (session.query(PantryItem)
                         .filter(PantryItem.user_id == user_id, PantryItem.item == r["item"], PantryItem.depleted_at.is_(None))
@@ -165,35 +386,167 @@ def ingest_receipt(user_id: int, extraction: dict) -> str | None:
                 existing.added_at, existing.source, existing.label = now, "receipt", r["label"]
                 if r["pp100"] is not None:
                     existing.protein_per_100g = r["pp100"]
+                written.append(existing)
             else:
-                session.add(PantryItem(user_id=user_id, item=r["item"], label=r["label"], qty=r["qty"], unit=r["unit"],
-                                       est_grams=r["est_grams"], protein_per_100g=r["pp100"], added_at=now, source="receipt"))
+                row = PantryItem(user_id=user_id, item=r["item"], label=r["label"], qty=r["qty"], unit=r["unit"],
+                                 est_grams=r["est_grams"], protein_per_100g=r["pp100"], added_at=now, source="receipt")
+                session.add(row)
+                written.append(row)
         session.add(Signal(user_id=user_id, kind="receipt", ts=now, source="photo",
-                           payload={"store": store, "items": [{k: v for k, v in r.items() if k != "protein_g"} for r in rows]}))
+                           payload={"kind": "grocery", "store": store,
+                                    "items": [{k: v for k, v in r.items() if k != "protein_g"} for r in rows]}))
+        session.flush()
+        # Reply from the rows as WRITTEN (labels read back off the flushed rows), not the plan.
+        written_labels = [(w.label, r["protein_g"]) for w, r in zip(written, rows)]
         session.commit()
         target = user.protein_target
         tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
     finally:
         session.close()
 
-    top = [r["label"] for r in sorted(rows, key=lambda r: -r["protein_g"])[:3]]
-    listed = top[0] if len(top) == 1 else (f"{top[0]} and {top[1]}" if len(top) == 2 else f"{top[0]}, {top[1]}, and {top[2]}")
-    reply = f"got your {store} receipt. logged {listed}"
+    top = [lbl for lbl, _p in sorted(written_labels, key=lambda t: -t[1])[:3]]
+    reply = f"got your {store} receipt. stocked {_listed(top)}"
     protein_on_hand = sum(r["protein_g"] for r in rows)
     if target and protein_on_hand > 0:
         days = min(int(protein_on_hand // target), config.PANTRY_MAX_STOCKED_DAYS)
         through = datetime.now(tz).date() + timedelta(days=days)
-        reply += f" — you're stocked through {_weekday_name(through)}."
+        reply += f" — you're set through {_weekday_name(through)}."
     else:
         reply += "."
-    logger.info("RECEIPT_INGESTED user=%s store=%r items=%d protein_on_hand=%.0f target=%s",
+    logger.info("RECEIPT_INGESTED user=%s kind=grocery store=%r items=%d protein_on_hand=%.0f target=%s",
                 user_id, store, len(rows), protein_on_hand, target)
     return reply
 
 
-def handle_receipt_image(user_id: int, image_data: dict) -> str | None:
-    """The image-turn entry: classify → (receipt) extract → ingest → reply. Returns
-    None for meal/other so the existing path runs untouched."""
+# ─── restaurant → one grouped meal ──────────────────────────────────────────
+
+_MACROS = ("calories", "protein_g", "carbs_g", "fat_g")
+
+
+def ingest_restaurant_receipt(user_id: int, extraction: dict) -> str | None:
+    """Write the order as ONE grouped meal eaten now (log_meal's write path: shared
+    meal_group_id, totals recomputed) — nothing touches the pantry. The reply is built
+    from the meal rows actually written."""
+    from agent_tools import log_meal_batch, _meal_slot
+    merchant = merchant_of(extraction) or "the restaurant"
+    items = []
+    for it in _food_items(extraction):
+        name = str(it.get("food") or it["name"]).strip().lower()[:80]
+        qty = _num(it.get("qty"))
+        if qty and qty > 1 and not re.search(rf"\b(x\s*{qty:g}|{qty:g}\s*(ct|x|pc|pcs))\b", name):
+            name = f"{name} x{qty:g}"
+        macros = {}
+        for m in _MACROS:
+            v = _num(it.get(m), int)
+            if v is None:
+                logger.info("RECEIPT_RESTAURANT_MACRO_MISSING user=%s item=%r macro=%s → 0", user_id, name, m)
+                v = 0
+            macros[m] = max(0, v)
+        items.append({"description": name, **macros})
+    if not items:
+        return None
+
+    now = _utcnow()
+    res = log_meal_batch(user_id, items, source="photo", confidence="medium",
+                         notes=f"from {merchant} receipt", when=now)
+    rows = res["rows"]
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz = ZoneInfo((user.user_timezone if user else None) or "America/Los_Angeles")
+        session.add(Signal(user_id=user_id, kind="receipt", ts=now, source="photo",
+                           payload={"kind": "restaurant", "store": merchant, "meal_group_id": res["group_id"],
+                                    "meal_ids": [r["id"] for r in rows],
+                                    "items": [{"name": r["description"], "calories": r["calories"],
+                                               "protein_g": r["protein_g"]} for r in rows]}))
+        session.commit()
+    finally:
+        session.close()
+
+    slot = _meal_slot(now, tz)
+    names = [r["description"] for r in rows]
+    shown = names if len(names) <= 5 else names[:5] + [f"+{len(names) - 5} more"]
+    total = sum(r["calories"] or 0 for r in rows)
+    reply = f"got the {merchant} receipt — logged it as {slot}: {', '.join(shown)} (~{total} cal). fix any if off"
+    logger.info("RECEIPT_INGESTED user=%s kind=restaurant store=%r items=%d cal=%d group=%s",
+                user_id, merchant, len(rows), total, res["group_id"])
+    return reply
+
+
+# ─── unsure → ask, resolve in code ──────────────────────────────────────────
+
+PENDING_KIND = "receipt_pending"
+
+
+def _set_pending(user_id: int, extraction: dict) -> None:
+    session = get_session()
+    try:
+        now = _utcnow()
+        for old in session.query(Signal).filter(Signal.user_id == user_id, Signal.kind == PENDING_KIND).all():
+            session.delete(old)
+        session.add(Signal(user_id=user_id, kind=PENDING_KIND, ts=now, source="photo", payload=extraction,
+                           expires_at=now + timedelta(minutes=config.RECEIPT_PENDING_TTL_MIN)))
+        session.commit()
+    finally:
+        session.close()
+
+
+def _pop_pending(user_id: int) -> dict | None:
+    session = get_session()
+    try:
+        rows = session.query(Signal).filter(Signal.user_id == user_id, Signal.kind == PENDING_KIND).all()
+        live = None
+        now = _utcnow()
+        for r in rows:
+            if r.expires_at is None or r.expires_at > now:
+                live = dict(r.payload or {})
+            session.delete(r)
+        session.commit()
+        return live
+    finally:
+        session.close()
+
+
+def _ask_kind_line(extraction: dict) -> str:
+    m = merchant_of(extraction)
+    lead = f"got the {m} receipt — " if m else "got the receipt — "
+    return lead + "that a meal u just ate, or groceries?"
+
+
+def handle_pending_receipt_reply(user_id: int, text: str) -> str | None:
+    """A pending 'meal or groceries?' answered in code. Returns the reply line, or None
+    when there's nothing pending or the text doesn't answer it (a normal turn)."""
+    if not config.RECEIPTS_ENABLED or not text or len(text) > 120:
+        return None
+    session = get_session()
+    try:
+        has = (session.query(Signal).filter(Signal.user_id == user_id, Signal.kind == PENDING_KIND).count() > 0)
+    finally:
+        session.close()
+    if not has:
+        return None
+    meal, groc = bool(MEAL_WORDS_RE.search(text)), bool(GROCERY_WORDS_RE.search(text))
+    if meal == groc:
+        return None
+    data = _pop_pending(user_id)
+    if not data:
+        return None
+    kind = "restaurant" if meal else "grocery"
+    logger.info("RECEIPT_PENDING_RESOLVED user=%s kind=%s", user_id, kind)
+    return _ingest_by_kind(user_id, data, kind)
+
+
+def _ingest_by_kind(user_id: int, data: dict, kind: str) -> str:
+    if kind == "restaurant" and config.RECEIPT_RESTAURANT_MEAL_ENABLED:
+        reply = ingest_restaurant_receipt(user_id, data)
+    else:
+        reply = ingest_receipt(user_id, data)
+    return reply or "got the receipt but nothing on it looked like food to me. send me what you actually bought?"
+
+
+def handle_receipt_image(user_id: int, image_data: dict, caption: str | None = None) -> str | None:
+    """The image-turn entry: classify → (receipt) extract → route by kind → reply.
+    Returns None for meal/other so the existing path runs untouched."""
     if not config.RECEIPTS_ENABLED:
         return None
     if classify_image(image_data, user_id) != "receipt":
@@ -206,8 +559,15 @@ def handle_receipt_image(user_id: int, image_data: dict) -> str | None:
                 "main protein stuff you got (meat, eggs, dairy, etc.) and i'll log it")
     if not data:
         return "couldn't pull the items off that one. just type the main things you got and i'll save it"
-    reply = ingest_receipt(user_id, data)
-    return reply or "got the receipt but nothing on it looked like food to me. send me what you actually bought?"
+    kind = receipt_kind(data, caption) if config.RECEIPT_RESTAURANT_MEAL_ENABLED else "grocery"
+    logger.info("RECEIPT_KIND user=%s kind=%s model_kind=%s merchant=%r", user_id, kind,
+                data.get("kind"), merchant_of(data))
+    if kind == "ask":
+        if not _food_items(data):
+            return "got the receipt but nothing on it looked like food to me. send me what you actually bought?"
+        _set_pending(user_id, data)
+        return _ask_kind_line(data)
+    return _ingest_by_kind(user_id, data, kind)
 
 
 # ─── 1.4 text updates ───────────────────────────────────────────────────────
@@ -248,6 +608,15 @@ def _fmt_qty(it: PantryItem) -> str:
     return f"{it.label or it.item} (~{q} {it.unit})"
 
 
+def _ranked(items: list[PantryItem]) -> list[PantryItem]:
+    """Matched items (a real USDA protein figure) by protein on hand, then every
+    unmatched item (protein None — a floor-rejected or unknown line) LAST, newest
+    first. A guessed row never outranks a known one."""
+    return sorted(items, key=lambda it: (1 if it.protein_per_100g is None else 0,
+                                         -((it.est_grams or 0) * (it.protein_per_100g or 0)),
+                                         -(it.added_at.timestamp() if it.added_at else 0)))
+
+
 def handle_pantry_text(user_id: int, text: str) -> str | None:
     """Deterministic pantry updates. Returns the one reply line, or None (not a pantry text)."""
     if not config.RECEIPTS_ENABLED or not text or len(text) > 80:
@@ -274,9 +643,7 @@ def handle_pantry_text(user_id: int, text: str) -> str | None:
 def inventory_line(user_id: int) -> str:
     session = get_session()
     try:
-        items = _active_items(session, user_id)
-        ranked = sorted(items, key=lambda it: -((it.est_grams or 0) * (it.protein_per_100g or 0)))
-        parts = [_fmt_qty(it) for it in ranked[:4]]
+        parts = [_fmt_qty(it) for it in _ranked(_active_items(session, user_id))[:4]]
     finally:
         session.close()
     if not parts:
@@ -291,11 +658,14 @@ def pantry_context(user_id: int, limit: int = 12) -> str:
         return ""
     session = get_session()
     try:
-        items = _active_items(session, user_id)[:limit]
-        lines = [_fmt_qty(it) for it in items]
+        items = _ranked(_active_items(session, user_id))[:limit]
+        lines = [f"[id {it.id}] {_fmt_qty(it)}" for it in items]
     finally:
         session.close()
     if not lines:
         return ""
     return ("## PANTRY (what they have at home — prefer what they have when you suggest a meal)\n"
+            "This is stock, NOT food eaten. If they say one of these was a meal they ate (or a "
+            "restaurant order that got filed here), log_meal it AND manage_log delete it with "
+            "entity='pantry' (the id is for you, never say it).\n"
             + "\n".join(f"- {l}" for l in lines))

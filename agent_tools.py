@@ -24,7 +24,7 @@ from sqlalchemy.orm.attributes import flag_modified
 import config
 
 from models import (Message, get_session, User, Workout, Meal, Event, DiningMenuItem, active, Signal,
-                    recompute_daily_totals, confirm_workout_today)
+                    PantryItem, recompute_daily_totals, confirm_workout_today)
 from memory import apply_facts, invalidate_entry, CATEGORIES
 
 logger = logging.getLogger("cued.agent_tools")
@@ -724,16 +724,21 @@ MANAGE_LOG_TOOL = {
     "description": (
         "List, edit, or soft-delete the user's logged meals / workouts / events by "
         "their short id (shown in your context). Use delete for a duplicate or wrong "
-        "entry, edit to fix macros or details. IMPORTANT: only confirm a change to "
-        "the user AFTER this returns 'ok' — if it returns an 'error', tell them you "
-        "couldn't make the change; never claim you did."
+        "entry, edit to fix macros or details. entity='pantry' (delete only) takes a "
+        "PANTRY stock item off the list — use it when something in PANTRY was actually "
+        "a meal they ate (log_meal it in the same turn) or they no longer have it; "
+        "scope='receipt' clears every item stocked together with it. IMPORTANT: only "
+        "confirm a change to the user AFTER this returns 'ok' — if it returns an "
+        "'error', tell them you couldn't make the change; never claim you did."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["list", "delete", "edit"]},
-            "entity": {"type": "string", "enum": ["meal", "workout", "event"]},
+            "entity": {"type": "string", "enum": ["meal", "workout", "event", "pantry"]},
             "id": {"type": "integer", "description": "the short id of the entry (delete/edit)"},
+            "label": {"type": "string",
+                      "description": "pantry only: the item as listed in PANTRY, when you'd rather name it than pass its id"},
             "fields": {"type": "object",
                        "description": "for edit: only the fields to change (others untouched). "
                        "meal: calories/protein_g/carbs_g/fat_g/description/notes/date. "
@@ -742,10 +747,12 @@ MANAGE_LOG_TOOL = {
                        "the meal/event to a new day — 'today'/'yesterday'/'tomorrow'/'YYYY-MM-DD' "
                        "— keeping its existing time. To MOVE a meal to another day, EDIT its "
                        "`date` (never delete-and-relog — that double-logs)."},
-            "scope": {"type": "string", "enum": ["item", "meal"], "default": "item",
-                      "description": "meal only. 'meal' applies the delete or `date` move to the "
+            "scope": {"type": "string", "enum": ["item", "meal", "receipt"], "default": "item",
+                      "description": "meal: 'meal' applies the delete or `date` move to the "
                       "WHOLE meal this id was logged with (every item from the same log_meal "
-                      "batch) in one atomic op — use it for 'move/delete the <X> meal'. 'item' "
+                      "batch) in one atomic op — use it for 'move/delete the <X> meal'. pantry: "
+                      "'receipt' takes off EVERY item stocked together with this one (the same "
+                      "receipt) — use it when a whole restaurant order was filed as stock. 'item' "
                       "(default) touches only this one row (use for a single item's macros)."},
             "from_app": {"type": "string",
                          "description": "edit only: the numbers come from a screenshot of THEIR food-app diary "
@@ -1187,6 +1194,41 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     ids = [m for m, _d, _c, _p, _s in logged]
     total_cal = sum(c for _m, _d, c, _p, _s in logged)
     return f"ok: logged {len(logged)} items: {names} (ids {ids}, {total_cal}cal total)" + tail
+
+
+def log_meal_batch(user_id: int, items: list[dict], *, source: str, confidence: str | None = None,
+                   notes: str | None = None, when: datetime | None = None) -> dict:
+    """The code-side twin of handle_log_meal's write: every item in `items` becomes a
+    Meal row sharing ONE meal_group_id (so manage_log scope='meal' moves/deletes them as
+    a unit), then today's totals are recomputed once. Used by receipts (a restaurant
+    receipt is one meal eaten now). Returns {"group_id", "rows": [{id, description,
+    calories, protein_g}]} — the rows as written, for a reply built from writes."""
+    when = when or _naive_utcnow()
+    group_id = uuid.uuid4().hex if config.MEAL_GROUP_ENABLED else None
+    rows = []
+    session = get_session()
+    try:
+        for it in items:
+            desc = (it.get("description") or "").strip()
+            if not desc:
+                continue
+            meal = Meal(user_id=user_id, description=desc,
+                        calories=it.get("calories"), protein_g=it.get("protein_g"),
+                        carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
+                        source=source, log_type="user_reported", confidence=confidence,
+                        notes=notes, eaten_at=when, meal_group_id=group_id)
+            session.add(meal)
+            session.flush()
+            rows.append({"id": int(meal.id), "description": meal.description,
+                         "calories": meal.calories, "protein_g": meal.protein_g})
+        session.commit()
+    finally:
+        session.close()
+    recompute_daily_totals(user_id)
+    for r in rows:
+        logger.info("LOG_MEAL user=%s meal_id=%s source=%s desc=%r (batch)", user_id, r["id"], source,
+                    r["description"][:40])
+    return {"group_id": group_id, "rows": rows}
 
 
 LOG_EVENT_TOOL = {
@@ -1660,6 +1702,55 @@ def _meal_group_rows(session, user_id: int, row):
     return rows or [row]
 
 
+def _manage_pantry(user_id: int, action: str, tool_input: dict) -> str:
+    """manage_log entity='pantry': take stock off the list (depleted_at — the pantry's
+    soft delete) by id or by label; scope='receipt' takes every item stocked in the same
+    receipt batch. Pantry rows carry no macros, so there is nothing to edit. The
+    2026-10-03 un-stock path: a restaurant order filed as groceries gets log_meal'd AND
+    cleared here in the same turn — 'fixed' is only true after both."""
+    if action != "delete":
+        return ("error: pantry items can only be deleted (taken off the list) — there's nothing "
+                "to edit on a stock row; delete it and, if they ate it, log_meal the food.")
+    from receipts import _active_items, _match_item, _tokens
+    entry_id = tool_input.get("id")
+    label = (tool_input.get("label") or "").strip()
+    if not entry_id and not label:
+        return "error: pantry delete needs the item's id (from PANTRY) or its label"
+    session = get_session()
+    try:
+        items = _active_items(session, user_id)
+        row = None
+        if entry_id:
+            row = next((it for it in items if int(it.id) == int(entry_id)), None)
+            if row is None:
+                return f"error: no pantry item with id {entry_id} on the list (already off or wrong id)"
+        else:
+            row = _match_item(items, label)
+            if row is None:
+                # The model may say the food plainly ('mac and cheese') for an abbreviated
+                # receipt label ('mac&chz sm'): compare content tokens, abbreviations expanded.
+                want = set(_tokens(label))
+                scored = [(len(want & set(_tokens(it.label or it.item))) / len(want), it) for it in items] if want else []
+                scored = [(sc, it) for sc, it in scored if sc >= 0.5]
+                row = max(scored, key=lambda t: t[0])[1] if scored else None
+            if row is None:
+                return f"error: nothing in PANTRY matches {label!r} — check the list and pass its id"
+        scope = (tool_input.get("scope") or "item").lower()
+        targets = [it for it in items if it.added_at == row.added_at] if scope == "receipt" else [row]
+        now = _naive_utcnow()
+        for it in targets:
+            it.depleted_at = now
+        labels = [it.label or it.item for it in targets]
+        ids = [int(it.id) for it in targets]
+        session.commit()
+    finally:
+        session.close()
+    logger.info("PANTRY_DEPLETED_VIA_TOOL user=%s ids=%s scope=%s labels=%s", user_id, ids, scope, labels)
+    return (f"ok: took {len(targets)} pantry item{'s' if len(targets) != 1 else ''} off the list: "
+            + ", ".join(f"'{l}'" for l in labels)
+            + " | if they ATE this, make sure the meal is logged too (log_meal) before you say it's fixed")
+
+
 def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """List / edit / soft-delete the user's records by short id. Deletes are soft;
     meal changes recompute today's totals. Returns 'ok:...' ONLY on real success —
@@ -1678,6 +1769,11 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             lines += [f"event [id {e.id}] {(e.raw_text or e.event_type or '').strip()}"
                       + (f" ({e.occurred_at:%m-%d %H:%M}Z)" if e.occurred_at else "")
                       for e in events]
+            pantry = (session.query(PantryItem)
+                      .filter(PantryItem.user_id == user_id, PantryItem.depleted_at.is_(None))
+                      .order_by(PantryItem.added_at.desc()).limit(15).all())
+            lines += [f"pantry [id {p.id}] {p.label or p.item}" + (f" ({p.qty:g})" if p.qty is not None else "")
+                      for p in pantry]
             return "ok:\n" + ("\n".join(lines) if lines else "(nothing logged)")
         finally:
             session.close()
@@ -1686,6 +1782,8 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         return f"error: unknown action {action!r}"
 
     entity = (tool_input.get("entity") or "").lower()
+    if entity == "pantry":
+        return _manage_pantry(user_id, action, tool_input)
     Model = _ENTITY_MODEL.get(entity)
     if Model is None:
         return f"error: unknown entity {entity!r}"

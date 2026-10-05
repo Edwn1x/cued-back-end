@@ -843,10 +843,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             system += f"\n\n{estimation}"
 
     if image_data and config.READ_IMAGE_ENABLED and config.RECEIPTS_ENABLED:
-        # Series §1.2: a cheap pre-classifier. A receipt is itemized into the pantry
-        # and answered in code — the meal path never sees it. meal/other → unchanged.
+        # Series §1.2: a cheap pre-classifier. A receipt is itemized and answered in
+        # code — grocery → pantry, restaurant → one grouped meal, unsure → one question
+        # (the caption is a kind signal). The meal path never sees it. meal/other → unchanged.
         from receipts import handle_receipt_image
-        receipt_reply = handle_receipt_image(user.id, image_data)
+        receipt_reply = handle_receipt_image(user.id, image_data, caption=combined_body)
         if receipt_reply is not None:
             return receipt_reply
     if image_data and config.READ_IMAGE_ENABLED:
