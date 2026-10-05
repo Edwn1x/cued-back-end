@@ -391,6 +391,16 @@ CAPABILITIES: list[Capability] = [
         used=lambda session, u: getattr(u, "weather_place", None) is not None,
         reveal_when="they ask about the weather, mention rain/cold/heat, travel, or say where they are",
     ),
+    Capability(
+        id="fetch_page",
+        what="send me a link — a syllabus, a course site, a place's hours page — and i'll actually read it and pull out what matters",
+        how="text me the link (or name the class and i'll find its site); i'll grab exam dates, due dates, grading, hours — and put the dated stuff on your calendar",
+        tools=("fetch_page",),
+        enabled=lambda u: config.FETCH_PAGE_TOOL_ENABLED,
+        relevance=lambda u: 7 if (getattr(u, "occupation", "") or "").lower().startswith("student") else 4,
+        used=None,
+        reveal_when="they paste a link, mention a syllabus or a course site, or ask when something is due / what a class's exam dates are",
+    ),
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.
