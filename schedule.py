@@ -74,6 +74,77 @@ def _strip_annotations(text: str) -> str:
     return _PAREN_RE.sub("", text).strip()
 
 
+# Weekday-CONDITIONAL annotations. The #152 strip above is right on the days the note does
+# NOT apply, but the live title "cs70 Discussion (friday = quiz)" is a recurring Wed+Fri
+# event whose Friday occurrence genuinely IS the quiz (live 2026-10-02: the code gates —
+# high-load tone, deadline radar, high_load_soon — stayed weekday-blind while the chat
+# model read the raw title). So BEFORE stripping, each parenthetical is scanned for
+# "<weekday> = <exam>" / "<exam> on <weekday>"; if the event's LOCAL weekday (user tz)
+# matches the named day, that occurrence is an exam — class-type guard notwithstanding
+# (a discussion that is the quiz is the quiz). A bare "(quiz day)" / "(exam day)" with no
+# weekday is an unconditional exam marker for that occurrence.
+_WEEKDAY_IDX = {
+    "mon": 0, "monday": 0,
+    "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "wednesday": 2,
+    "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4,
+    "sat": 5, "saturday": 5,
+    "sun": 6, "sunday": 6,
+}
+_WD = (r"(?:mon(?:day)?|tue(?:sday|s)?|wed(?:nesday)?|thu(?:rsday|rs|r)?|"
+       r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)")
+_EXAM_WORD = r"(?:quiz(?:zes)?|exams?|midterms?|tests?|finals?)"
+_Q = r"""[\s"'“”‘’]*"""     # whitespace + straight/curly quotes between tokens
+_PAREN_BODY_RE = re.compile(r"[\(\[\{]([^\(\)\[\]\{\}]*)[\)\]\}]")
+_COND_EXAM_RE = re.compile(
+    rf"\b(?P<d1>{_WD})s?\b{_Q}[=:–—-]?{_Q}(?P<e1>{_EXAM_WORD})\b"
+    rf"|\b(?<!no )(?P<e2>{_EXAM_WORD})\b{_Q}(?:(?:on|every)\s+)?(?P<d2>{_WD})s?\b",
+    re.IGNORECASE,
+)
+_EXAM_DAY_RE = re.compile(rf"\b{_EXAM_WORD}\s+day\b", re.IGNORECASE)
+
+
+def _weekday_index(tok: str):
+    k = (tok or "").strip().lower()
+    if k not in _WEEKDAY_IDX and k.endswith("s"):
+        k = k[:-1]                               # "fridays" → "friday"
+    return _WEEKDAY_IDX.get(k)
+
+
+def _local_weekday(ev, user):
+    """The event's weekday (Mon=0 … Sun=6) in the user's LOCAL zone, from its stored
+    naive-UTC occurred_at. None when the event has no instant to judge by."""
+    when = getattr(ev, "occurred_at", None)
+    if when is None:
+        return None
+    try:
+        tz = _tz(user) if user is not None else ZoneInfo(DEFAULT_TZ)
+        aware = when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+        return aware.astimezone(tz).weekday()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _annotation_marks_exam(text: str, ev, user) -> bool:
+    """True when a parenthetical note says THIS occurrence is the assessment: a bare
+    '(quiz day)', or a weekday-conditional '(friday = quiz)' / '(quiz on thursday)' whose
+    named day equals the event's local weekday. A conditional note whose day does NOT
+    match (or an event with no instant) is just a note → False (caller strips it)."""
+    for body in _PAREN_BODY_RE.findall(text):
+        if _EXAM_DAY_RE.search(body):
+            return True
+        m = _COND_EXAM_RE.search(body)
+        if not m:
+            continue
+        idx = _weekday_index(m.group("d1") or m.group("d2"))
+        if idx is None:
+            continue
+        if _local_weekday(ev, user) == idx:
+            return True
+    return False
+
+
 # ─── dataclasses ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -301,9 +372,13 @@ def free_blocks(user_id: int, session=None, *, horizon_hours: int = None,
             session.close()
 
 
-def _is_deadline(ev) -> tuple[bool, bool]:
+def _is_deadline(ev, user=None) -> tuple[bool, bool]:
     """(is_deadline, is_exam) for an event, from its title/text. bcourses & canvas
-    assignments carry a 'due: ' prefix; gcal/model items match the keyword floor."""
+    assignments carry a 'due: ' prefix; gcal/model items match the keyword floor.
+
+    `user` (optional) supplies the zone used to judge a weekday-conditional annotation
+    such as "(friday = quiz)" against the event's LOCAL weekday; without it the default
+    zone is used, and an event with no occurred_at can never match such a note."""
     text = (getattr(ev, "title", None) or getattr(ev, "raw_text", None) or "").strip()
     if not text:
         return False, False
@@ -311,9 +386,13 @@ def _is_deadline(ev) -> tuple[bool, bool]:
     # it counts even for a class-typed title, and even if the keyword sits in a parenthetical.
     if text.lower().startswith("due:"):
         return True, bool(_EXAM_RE.search(text))
+    # A note that names THIS occurrence as the assessment ("(friday = quiz)" on a Friday,
+    # "(quiz day)") makes it an exam outright — even for a class-typed title.
+    if _annotation_marks_exam(text, ev, user):
+        return True, True
     # Otherwise apply the keyword floor to the PRIMARY title only: strip parenthetical notes
-    # (a "(friday = quiz)" annotation must not fire) and refuse to promote a recurring
-    # class/meeting type on the keyword floor alone.
+    # (a "(friday = quiz)" annotation on a non-Friday must not fire) and refuse to promote a
+    # recurring class/meeting type on the keyword floor alone.
     primary = _strip_annotations(text)
     if not primary or _CLASS_TYPE_RE.search(primary):
         return False, False
@@ -360,7 +439,7 @@ def deadline_items(user_id: int, session=None, *, days: int = None, now=None) ->
                 .order_by(Event.occurred_at).limit(200).all())
         out: list[Deadline] = []
         for e in rows:
-            is_dl, is_exam = _is_deadline(e)
+            is_dl, is_exam = _is_deadline(e, user)
             if not is_dl:
                 continue
             all_day = bool(getattr(e, "all_day", False))
@@ -551,9 +630,10 @@ def collect_rundown(user_id: int, *, lo: datetime, hi: datetime, now=None, sessi
     on error."""
     own = session is None
     try:
-        from models import get_session, active, Event
+        from models import get_session, active, Event, User
         session = session or get_session()
         now_utc = _now_naive_utc(now)
+        user = session.get(User, user_id)
         rows = (active(session, Event, user_id=user_id)
                 .filter(Event.source.in_(CALENDAR_SOURCES),
                         Event.occurred_at.isnot(None),
@@ -563,7 +643,7 @@ def collect_rundown(user_id: int, *, lo: datetime, hi: datetime, now=None, sessi
         out: list[RundownEvent] = []
         seen: set = set()
         for e in rows:
-            is_dl, is_exam = _is_deadline(e)
+            is_dl, is_exam = _is_deadline(e, user)
             title = (getattr(e, "title", None) or getattr(e, "raw_text", None)
                      or getattr(e, "event_type", None) or "event").strip()[:160]
             all_day = bool(getattr(e, "all_day", False))
