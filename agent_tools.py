@@ -741,7 +741,10 @@ MANAGE_LOG_TOOL = {
                       "description": "pantry only: the item as listed in PANTRY, when you'd rather name it than pass its id"},
             "fields": {"type": "object",
                        "description": "for edit: only the fields to change (others untouched). "
-                       "meal: calories/protein_g/carbs_g/fat_g/description/notes/date. "
+                       "meal: calories/protein_g/carbs_g/fat_g/description/notes/date/eaten_at_hint "
+                       "(`eaten_at_hint` re-times the meal within its day from the user's words — "
+                       "'before my run', 'this morning', '2:30pm', 'an hour ago'; 'last night' moves it "
+                       "to yesterday evening — use it for 'actually that was before the gym'). "
                        "workout: workout_type/notes. event: description/starts_at/ends_at/date "
                        "(times are local 'HH:MM', e.g. {\"starts_at\": \"13:00\"}; `date` moves "
                        "the meal/event to a new day — 'today'/'yesterday'/'tomorrow'/'YYYY-MM-DD' "
@@ -786,13 +789,23 @@ LOG_MEAL_TOOL = {
         "estimated and tells you which row to manage_log-edit instead. If they're "
         "telling you about a meal from an EARLIER day ('last night's dinner', 'yesterday I "
         "had…'), pass `date` ('yesterday' or YYYY-MM-DD) so it lands on that day — never "
-        "log a past meal as today (it would wrongly eat into today's remaining)."
+        "log a past meal as today (it would wrongly eat into today's remaining). If they "
+        "give a TIME cue for today ('before my run', 'this morning', 'at 1', 'an hour "
+        "ago', 'after the gym'), pass it VERBATIM as `eaten_at_hint` — code turns it into "
+        "the clock time (a workout cue is anchored to their logged workout); never compute "
+        "the time yourself and never bake it into the description instead of the hint."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "description": {"type": "string"},
             "date": {"type": "string", "description": "'yesterday' or 'YYYY-MM-DD' when the meal was NOT today (default today)"},
+            "eaten_at_hint": {"type": "string",
+                              "description": "WHEN they ate it, in their own words or a local 'HH:MM' — "
+                                             "'before my run', 'after the gym', 'this morning', 'at lunch', "
+                                             "'2:30pm', 'an hour ago', 'last night'. Code resolves it; omit "
+                                             "when they ate it just now. Applies to every item unless an "
+                                             "item carries its own."},
             "calories": {"type": "integer"},
             "protein_g": {"type": "integer"},
             "carbs_g": {"type": "integer"},
@@ -808,13 +821,15 @@ LOG_MEAL_TOOL = {
                      "description": "with from_app: the meal slot the screenshot labels (default: from the clock)"},
             "items": {"type": "array",
                       "description": "OR log several items at once: a list of "
-                                     "{description, calories?, protein_g?, carbs_g?, fat_g?, portion_guessed?, saw_similar?} objects.",
+                                     "{description, calories?, protein_g?, carbs_g?, fat_g?, portion_guessed?, saw_similar?, eaten_at_hint?} objects.",
                       "items": {"type": "object", "properties": {
                           "description": {"type": "string"},
                           "calories": {"type": "integer"}, "protein_g": {"type": "integer"},
                           "carbs_g": {"type": "integer"}, "fat_g": {"type": "integer"},
                           "portion_guessed": {"type": "boolean"},
                           "saw_similar": {"type": "array", "items": {"type": "integer"}},
+                          "eaten_at_hint": {"type": "string",
+                                            "description": "this item's own time cue when it differs from the call's"},
                       }, "required": ["description"]}},
         },
     },
@@ -1033,7 +1048,8 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     # 2026-09-12: Friday's SF pizza logged as Saturday → "why is it 1450 cal, i just
     # woke up" → deleted instead of re-dated. Bad date → today (never lose a meal).
     date_str = (tool_input.get("date") or "").strip() or None
-    when, is_today, target_day = _naive_utcnow(), True, None
+    now_utc = _naive_utcnow()
+    when, is_today, target_day, explicit_day = now_utc, True, None, None
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -1044,16 +1060,56 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         tz = ZoneInfo(tz_str)
     except Exception:
         tz = ZoneInfo("America/Los_Angeles")
+    today_cal = now_utc.replace(tzinfo=timezone.utc).astimezone(tz).date()
     if date_str:
         try:
             local_day = _resolve_local_date(tz, date_str, strict=True)
-            is_today = local_day == datetime.now(tz).date()
+            explicit_day = local_day
+            is_today = local_day == today_cal
             if not is_today:
                 target_day = local_day
                 when = (datetime(local_day.year, local_day.month, local_day.day, 12, 0, tzinfo=tz)
                         .astimezone(timezone.utc).replace(tzinfo=None))
         except Exception:
-            when, is_today, target_day = _naive_utcnow(), True, None
+            when, is_today, target_day, explicit_day = now_utc, True, None, None
+
+    # eaten_at hint (2026-10-03 rice-krispie): the user's time cue ('before my run',
+    # 'this morning', '2:30pm', 'an hour ago') resolved in CODE to a clock time on the
+    # meal's day — the model never computes times. A call-level hint covers every item;
+    # an item's own hint overrides it. Unrecognized → eaten_at stays now + a note so the
+    # coach can ask for a clock time. 'last night' with no `date` implies yesterday.
+    hint_notes, hint_tags = [], []
+
+    def _hint(text, ref_day):
+        from meal_time import resolve_eaten_at_hint
+        res = resolve_eaten_at_hint(user, text, now_utc=now_utc, ref_day=ref_day)
+        logger.info("MEAL_EATEN_AT_HINT user=%s hint=%r resolved=%s", user_id, text,
+                    (f"{res.when.isoformat()}Z local={res.local_hm} day={res.day} kind={res.kind}"
+                     if res.when is not None else f"unrecognized ({res.kind})"))
+        if res.note and res.note not in hint_notes:
+            hint_notes.append(res.note)
+        if res.when is not None and (res.local_hm, text) not in hint_tags:
+            hint_tags.append((res.local_hm, text))
+        return res
+
+    call_hint = (tool_input.get("eaten_at_hint") or "").strip() or None
+    if config.MEAL_EATEN_AT_HINT_ENABLED and call_hint:
+        res = _hint(call_hint, explicit_day)
+        if res.when is not None:
+            when = res.when
+            if explicit_day is None and res.day != _nutrition_day_of(user, now_utc):
+                is_today, target_day = False, res.day      # 'last night' → yesterday's tab
+    item_when = []
+    for it in items:
+        w = when
+        ih = (it.get("eaten_at_hint") or "").strip() or None
+        if config.MEAL_EATEN_AT_HINT_ENABLED and ih and ih != call_hint:
+            # an item's own cue lands on the call's day (explicit `date`, or the day the
+            # call-level hint chose) unless it names a day itself
+            res = _hint(ih, explicit_day if explicit_day is not None else target_day)
+            if res.when is not None:
+                w = res.when
+        item_when.append(w)
 
     if from_app:
         # §3 slot check: the screenshot's meal slot must not already hold a row this
@@ -1105,7 +1161,7 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
     logged, guessed = [], []
     session = get_session()
     try:
-        for it in items:
+        for it, when_i in zip(items, item_when):
             saw = it.get("saw_similar") or []
             notes = f"saw_similar={saw}" if saw else None
             if from_app:
@@ -1117,7 +1173,7 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                 carbs_g=it.get("carbs_g"), fat_g=it.get("fat_g"),
                 source=source, log_type="app_reported" if from_app else "user_reported",
                 confidence="high" if from_app else ("low" if is_guess else None),
-                notes=notes, eaten_at=when, meal_group_id=group_id,
+                notes=notes, eaten_at=when_i, meal_group_id=group_id,
             )
             session.add(meal)
             session.flush()
@@ -1148,14 +1204,20 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
         refined_ids = set(by_id)
         guessed = [(m, d) for (m, d) in guessed if m not in refined_ids]
 
-    day = ""
-    if is_today:
+    # One labeled total per LOCAL nutrition day the batch touched (normally one). Today →
+    # recompute once after all inserts + the FRESH today total so the coach quotes it (not
+    # head math); a past day → THAT day's labeled total, or the coach adds the batch to a
+    # number it said earlier and drifts (2026-10-02). Item-level hints can split a batch
+    # across days ('the toast was last night') — each day then gets its own line.
+    today_nd = _nutrition_day_of(user, now_utc)
+    days_touched = []
+    for w in item_when:
+        d = _nutrition_day_of(user, w)
+        if d not in days_touched:
+            days_touched.append(d)
+    if today_nd in days_touched:
         recompute_daily_totals(user_id)  # once, after all inserts — a past-day meal leaves today alone
-        day = _day_total_suffix(user_id)  # the FRESH post-log total, so the coach quotes it (not head math)
-    elif target_day is not None:
-        # A past-day log still needs an authoritative total to quote — THAT day's, labeled,
-        # or the coach adds the batch to a number it said earlier and drifts (2026-10-02).
-        day = _day_total_suffix(user_id, target_day)
+    day = _affected_days_suffix(user_id, days_touched)
     for mid, desc, _cal, _pro, saw in logged:
         if saw:
             logger.info("LOG_MEAL_SAW_SIMILAR user=%s meal_id=%s saw=%s (model logged as distinct serving)",
@@ -1183,7 +1245,13 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                  "fix any of them at once (\"2 eggs, 3/4 cup yogurt, 2 toasts — fix any of those\"); "
                  "a correction is a manage_log edit on that id")
 
-    dated = f", dated {date_str}" if (date_str and not is_today) else ""
+    for hm, text in hint_tags:
+        tail += f" | eaten at {hm} local (from '{text}') — say the time back if it matters"
+    for note in hint_notes:
+        tail += f" | {note}"
+
+    dated = f", dated {date_str}" if (date_str and not is_today) else (
+        f", dated {target_day.isoformat()}" if target_day is not None else "")
     if len(logged) == 1:
         mid, desc, cal, pro, saw = logged[0]
         # Include the description so the reply NAMES what was logged ("logged the chicken
@@ -1599,7 +1667,10 @@ _EDIT_FIELDS = {
              "description": ("description", "str"), "notes": ("notes", "str"),
              # "date" moves eaten_at to a new local day, keeping its time-of-day — a
              # one-op day move (never add-new-then-delete-old, which double-logged).
-             "date": ("eaten_at", "meal_date")},
+             "date": ("eaten_at", "meal_date"),
+             # "eaten_at_hint" re-times eaten_at WITHIN the row's day from the user's own
+             # words (meal_time.py) — a time move; 'last night' is the one cross-day form.
+             "eaten_at_hint": ("eaten_at", "meal_time")},
     "workout": {"workout_type": ("workout_type", "str"),
                 "user_notes": ("user_notes", "str"), "notes": ("user_notes", "str")},
     "event": {"description": ("raw_text", "str"),
@@ -1663,6 +1734,14 @@ def _photo_reread_blocks_delete(user_id: int, entity: str) -> bool:
     if config.MEAL_DAY_MOVE_ENABLED and _MOVE_INTENT_RE.search(caption):
         return False
     return True
+
+
+def _hint_names_prev_day(text: str) -> bool:
+    """True when an eaten_at hint itself names the previous day ('last night',
+    'yesterday at 9') — the only case a manage_log re-time may leave the row's day."""
+    from meal_time import parse_hint
+    parsed = parse_hint(text)
+    return bool(parsed and parsed[2])
 
 
 def _user_tz(session, user_id: int) -> ZoneInfo:
@@ -1882,7 +1961,8 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         # occurred_at, so a combined {"date": ..., "starts_at": ...} edit only lands
         # on the new day if the date move has already been applied to the row.
         ordered_fields = sorted(
-            fields.items(), key=lambda kv: spec.get(kv[0], (None, ""))[1] != "event_date"
+            fields.items(),
+            key=lambda kv: spec.get(kv[0], (None, ""))[1] not in ("event_date", "meal_date")
         )
         for mfield, value in ordered_fields:
             if mfield not in spec:
@@ -1945,6 +2025,36 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                               "old": _ser(old), "new": _ser(newcol)})
                 setattr(row, column, newcol)
                 applied[mfield] = new_day.isoformat()
+                continue
+            elif kind == "meal_time":
+                # Re-time a meal WITHIN its day from the user's words ('before my run',
+                # 'this morning', '2:30pm') — resolved in code (meal_time.py), never by the
+                # model. The row's current local day is the reference (so a `date` move in
+                # the same call lands first); 'last night' is the one form that re-days it
+                # (to yesterday relative to now). Unrecognized → error, nothing changes.
+                if not config.MEAL_EATEN_AT_HINT_ENABLED:
+                    continue
+                from meal_time import resolve_eaten_at_hint
+                u = session.get(User, user_id)
+                now_utc = _naive_utcnow()
+                text = str(value).strip()
+                old = getattr(row, column, None) or now_utc
+                ref_day = None if ("date" not in fields and _hint_names_prev_day(text)) \
+                    else _nutrition_day_of(u, old)
+                res = resolve_eaten_at_hint(u, text, now_utc=now_utc, ref_day=ref_day)
+                logger.info("MEAL_EATEN_AT_HINT user=%s hint=%r resolved=%s meal_id=%s", user_id, text,
+                            (f"{res.when.isoformat()}Z local={res.local_hm} day={res.day} kind={res.kind}"
+                             if res.when is not None else f"unrecognized ({res.kind})"), row.id)
+                if res.when is None:
+                    return (f"error: {res.note or 'could not read the time ' + repr(text)} — nothing "
+                            "changed; pass a clock time like '13:00' or '1pm' in eaten_at_hint")
+                newval = res.when
+                audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
+                              "old": _ser(old), "new": _ser(newval)})
+                setattr(row, column, newval)
+                applied[mfield] = f"{res.local_hm} local on {res.day.isoformat()}"
+                if res.note:
+                    applied["note"] = res.note
                 continue
             elif kind == "event_time":
                 if tz_str is None:
