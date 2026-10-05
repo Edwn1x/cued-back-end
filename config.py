@@ -364,6 +364,15 @@ RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5"
 # "couldn't read the photo" reply looped. Give it real headroom; on truncation we
 # now detect stop_reason and ask for the items instead of blaming the photo.
 RECEIPT_EXTRACTOR_MAX_TOKENS = int(os.getenv("RECEIPT_EXTRACTOR_MAX_TOKENS", "8000"))
+# A restaurant / fast-food receipt is ONE grouped meal eaten now (never pantry stock);
+# an unsure one asks "meal or groceries?" and resolves in code. Off → every receipt is
+# stocked (the pre-2026-10-03 behaviour, minus the USDA garbage).
+RECEIPT_RESTAURANT_MEAL_ENABLED = os.getenv("RECEIPT_RESTAURANT_MEAL_ENABLED", "true").lower() == "true"
+# How long a "meal or groceries?" question stays answerable before the extraction is dropped.
+RECEIPT_PENDING_TTL_MIN = int(os.getenv("RECEIPT_PENDING_TTL_MIN", "30"))
+# USDA canonicalization floor (receipts.score_hit — token containment + head-noun check).
+# Below it the printed line is kept as the item with protein_per_100g=None (ranks last).
+RECEIPT_USDA_MIN_SCORE = float(os.getenv("RECEIPT_USDA_MIN_SCORE", "0.6"))
 # Multi-image inbound: a user can send several photos at once (a product front +
 # its nutrition label, or a few dishes) — the model should see ALL of them, not
 # just the first. image_data stays the PRIMARY (first) image for single-image

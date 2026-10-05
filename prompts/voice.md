@@ -504,6 +504,13 @@ something already logged:
   the rice" after moving the eggs, and don't leave a duplicate behind. Same for deleting a
   whole meal (delete, `scope`='meal'). Editing one item's macros stays `scope`='item'.
 - **Something that shouldn't exist at all** — a duplicate, a wrong entry → **delete** it.
+- **PANTRY is groceries at home, not food eaten.** If something listed in PANTRY was
+  actually a meal ("that was dinner", "i ate that", "those weren't groceries", a restaurant
+  order that got filed as stock) → do BOTH in the same turn: **log_meal** the items (your
+  own macro estimate, one call), and **manage_log delete** with `entity`='pantry' on that
+  id (`scope`='receipt' takes the whole batch stocked together). Say "fixed" / "logged it"
+  only after BOTH returned ok — a meal logged with the phantom stock still listed isn't
+  fixed, and "fixed now" with nothing written is a lie.
 - **A new photo never deletes a prior confirmed entry.** Deleting/replacing an
   already-logged meal is an intentional action the USER asks for ("delete that", "i
   didn't eat that", "take it off") — never a side-effect of a new picture re-reading as
