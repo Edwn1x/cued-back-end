@@ -888,6 +888,26 @@ OUTBOUND_NEAR_DEDUP_THRESHOLD = float(os.getenv("OUTBOUND_NEAR_DEDUP_THRESHOLD",
 # candidate for the timer-vs-append race; logged for observability. The actual
 # absorption is done by the per-timer token guard in message_buffer._flush_buffer.
 BUFFER_JOIN_WINDOW_S = float(os.getenv("BUFFER_JOIN_WINDOW_S", "2.0"))
+# Text burst + photo close together (live 2026-10-02 13:16, 2026-10-01 18:19 — 3 in
+# 24h): the photo must ride the SAME turn as the pending texts, not become a second
+# turn that restates the outcome. Layer A (message_buffer.buffer_message): a photo
+# joining a PENDING text turn folds in and extends that turn to the photo band (a
+# photo with a caption included — a trailing "also log this" often follows). A text
+# joining a pending photo already folds (the caption's band applies). The #119
+# per-timer token is untouched: a flush already in progress keeps its turn and the
+# photo starts a fresh one — that residual is what layer B (below) covers.
+INBOUND_FOLD_PHOTO_INTO_PENDING_TEXT = os.getenv("INBOUND_FOLD_PHOTO_INTO_PENDING_TEXT", "true").lower() == "true"
+# Layer B — restatement guard (agent_loop._apply_restatement_guard): a reactive turn
+# that made NO writes (no log/edit/delete/remember… tool succeeded) and whose reply
+# restates the outbound sent inside this window — same day-total figure ("N cal",
+# "N for the day", "ur at N") or near-dup similarity at/above the threshold — is
+# replaced by a minimal ack (👍 tapback on iMessage, else "got it"). A reply with a
+# NEW day-total figure, a question, or a correction marker is never suppressed, nor
+# is a reply to a question. Below the 0.85 near-dup send guard on purpose: that one
+# catches paraphrases; this one catches "same outcome, different words".
+OUTBOUND_RESTATEMENT_GUARD_ENABLED = os.getenv("OUTBOUND_RESTATEMENT_GUARD_ENABLED", "true").lower() == "true"
+OUTBOUND_RESTATEMENT_WINDOW_S = int(os.getenv("OUTBOUND_RESTATEMENT_WINDOW_S", "180"))
+OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD = float(os.getenv("OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD", "0.6"))
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

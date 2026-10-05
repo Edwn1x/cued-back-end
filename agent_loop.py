@@ -789,6 +789,152 @@ def _is_failed_image_text(text: str) -> bool:
     return not re.search(r"[A-Za-z0-9]", stripped)
 
 
+# ─── Restatement guard (layer B of the text+photo double-reply fix) ─────────────
+# Live 2026-10-02 13:16: texts "did not finish it / left like half / [image] / also log
+# this banana" → the text turn replied "cut it to 450, banana's in · 555 cal, 20g protein
+# so far"; the photo (it reached Flask after that flush) became a second turn that
+# wrote nothing and replied "That banana's already in — logged it at 105 cal. Ur at 555
+# for the day." Correct, and redundant. The send-time near-dup guard (0.85) misses it:
+# same outcome, different words. This guard runs where the reply is finalized, with the
+# one fact the sender can't see — whether the turn WROTE anything.
+
+# Every integer in a reply ("1,250" → 1250): the figures it states.
+_ANY_FIGURE_RE = re.compile(r"\d[\d,]*")
+# A DAY-TOTAL figure: "ur at 555", "you're at 1,070", "sitting at 980", "puts u at 1400",
+# "555 cal for the day", "137g so far", "1070 total", "1400 today". Item-level numbers
+# ("logged it at 105 cal") deliberately do NOT match — in a no-write turn they are
+# read-backs of rows that already exist, not new information.
+_DAY_TOTAL_RE = re.compile(
+    r"(?:\b(?:ur|u'?re|you'?re|you are|u are|now|sitting|that puts (?:u|you)|puts (?:u|you)|"
+    r"brings (?:u|you) to|total(?:'?s| is|:)?)\s*(?:at\s+)?~?(\d[\d,]*)\b"
+    r"|\b(\d[\d,]*)\s*(?:k?cal(?:ories|s)?|cals|g|grams?)?\s*(?:for the day|so far|today|"
+    r"on the day|total|for today)\b)",
+    re.IGNORECASE)
+# A correction is never muted — the second line IS the point. ("fixed"/"updated" are
+# NOT markers: in a turn that wrote nothing they are claims about the last turn's work.)
+_CORRECTION_RE = re.compile(
+    r"\b(?:actually|my bad|scratch that|correction|wait,?|wrong|not \d|should be)\b", re.IGNORECASE)
+# The user asked something (no '?' needed): the reply is an answer, never an ack.
+_INBOUND_QUESTION_RE = re.compile(
+    r"\?|^\s*(?:what|whats|what's|how|when|where|why|which|who|did|do|does|is|are|am|can|could|"
+    r"should|would|was|were|will|any|got)\b", re.IGNORECASE)
+
+
+def _figures(text: str) -> set:
+    out = set()
+    for m in _ANY_FIGURE_RE.findall(text or ""):
+        try:
+            out.add(int(m.replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def _day_totals(text: str) -> set:
+    out = set()
+    for a, b in _DAY_TOTAL_RE.findall(text or ""):
+        raw = a or b
+        try:
+            n = int(raw.replace(",", ""))
+        except ValueError:
+            continue
+        if n >= 100:   # a day total is calories- or grams-sized, never "2 eggs"
+            out.add(n)
+    return out
+
+
+def _recent_outbound_text(user_id: int, window_s: int) -> str:
+    """Bodies of the coach's text sends to this user inside the window (newest first),
+    reactions excluded — the restatement candidate's reference. '' when none."""
+    from datetime import timedelta
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=window_s)
+    session = get_session()
+    try:
+        rows = (session.query(Message.body)
+                .filter(Message.user_id == user_id, Message.direction == "out",
+                        Message.created_at >= since,
+                        Message.message_type != "reaction")
+                .order_by(Message.id.desc()).limit(5).all())
+    finally:
+        session.close()
+    return "\n".join(r[0] for r in rows if r[0] and not r[0].startswith("[reacted"))
+
+
+def _restatement_figure(reply: str, inbound: str, prev: str):
+    """The day-total figure (or 'neardup') that makes `reply` a restatement of `prev`,
+    else None. Pure: no I/O, no state."""
+    if not reply or not prev:
+        return None
+    if "?" in reply or _CORRECTION_RE.search(reply):
+        return None
+    if _INBOUND_QUESTION_RE.search(inbound or ""):
+        return None
+    prev_figs = _figures(prev)
+    totals = _day_totals(reply)
+    if totals - prev_figs:
+        return None          # a NEW day total is new information
+    if totals:
+        return sorted(totals)[-1]
+    # No day total stated: fall back to the near-dup score, but only when the reply
+    # brings no figure the previous one didn't.
+    if _figures(reply) - prev_figs:
+        return None
+    from sms import _norm_body, _similarity
+    try:
+        score = _similarity(_norm_body(prev), _norm_body(reply))
+    except Exception:  # noqa: BLE001 — fail open
+        return None
+    if score >= config.OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD:
+        return "neardup"
+    return None
+
+
+def _apply_restatement_guard(user, text: str, combined_body: str, state: dict) -> str:
+    """Final reply → the reply to send. When the turn wrote nothing and `text` restates
+    the outbound sent inside OUTBOUND_RESTATEMENT_WINDOW_S, send a minimal ack instead:
+    a 👍 tapback on iMessage (returns '' — the caller treats it as a reaction-only turn),
+    else 'got it'. Anything that changed state, answers, asks, or corrects passes
+    through untouched. Fail-open on any error."""
+    if not config.OUTBOUND_RESTATEMENT_GUARD_ENABLED or not text:
+        return text
+    try:
+        from agent_tools import turn_wrote
+        if turn_wrote(user.id):
+            return text
+        prev = _recent_outbound_text(user.id, config.OUTBOUND_RESTATEMENT_WINDOW_S)
+        figure = _restatement_figure(text, combined_body, prev)
+        if figure is None:
+            return text
+        logger.info("AGENT_LOOP_RESTATEMENT_SUPPRESSED user=%s figure=%s reply=%r",
+                    user.id, figure, text[:80])
+        if state.get("reacted"):
+            return ""        # a tapback already went up this turn — that IS the ack
+        if config.IMESSAGE_REACTIONS_ENABLED:
+            from agent_tools import latest_inbound_imessage_sid
+            from sms import react_to_message, _resolve_channel
+            if _resolve_channel(user.id) == "imessage":
+                sid = latest_inbound_imessage_sid(user.id)
+                if sid and react_to_message(user.id, sid, "like"):
+                    state["reacted"] = True
+                    return ""
+        return "got it"
+    except Exception as e:  # noqa: BLE001 — the guard must never cost a reply
+        logger.warning("AGENT_LOOP_RESTATEMENT_GUARD_FAILED user=%s err=%s", user.id, e)
+        return text
+
+
+# Image-path register. The photo turn's system ends with the long, analytical
+# estimation block, and live replies on that path drifted to "That banana's already in —
+# … Ur at 555 for the day." (sentence caps, support-rep register) while text turns stayed
+# in voice. One line, after the estimation block (outside the cached prefix), restating
+# the identity rule the text path already lives by. Register only — no behaviour change.
+_IMAGE_REGISTER_REMINDER = (
+    "Register check for this photo reply: it is still a text from a friend — lowercase "
+    "default (capitalize for emphasis only), short, plain, no sentence-case paragraphs; "
+    "the numbers exact, everything else loose. Same voice as your text replies."
+)
+
+
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
                    message_id: str = None, image_data_list: list = None) -> str:
     """One agentic turn → the reply text. Raises only on genuine anomalies (caller
@@ -828,6 +974,13 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     # stable text, so it extends the CACHED prefix — [voice, routing] — keeping the
     # per-turn cost at cache-read rates. Heartbeat composes its own system; unaffected.
     routing = _meal_routing_prompt() if config.MEAL_ROUTING_PROMPT_ENABLED else None
+
+    # Photo turns end with a one-line register reminder (_IMAGE_REGISTER_REMINDER) — the
+    # text path's lowercase friend voice, restated. It rides the tail of the Phase A
+    # block (which stays the LAST, uncached segment), or stands alone when that's off.
+    if image_data and config.READ_IMAGE_ENABLED:
+        estimation = (f"{estimation}\n\n{_IMAGE_REGISTER_REMINDER}" if estimation
+                      else _IMAGE_REGISTER_REMINDER)
 
     if config.PROMPT_CACHING_ENABLED:
         system = [{"type": "text", "text": voice, "cache_control": {"type": "ephemeral"}}]
@@ -1146,7 +1299,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 return ""
         if text:
             _persist_recent_photo(user.id, image_data, combined_body, text)
-            return text
+            # Restatement guard (layer B): a no-write turn that restates the reply sent
+            # moments ago becomes an ack, never a second "already in — ur at 555".
+            return _apply_restatement_guard(user, text, combined_body, state)
 
         # A reaction-only turn: the tapback WAS the reply. Empty text is the correct
         # outcome, not an anomaly — the caller sends nothing and clears the bubble.
