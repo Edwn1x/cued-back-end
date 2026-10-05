@@ -26,6 +26,7 @@ from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSe
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
 from llm_client import make_client
+from stale_skip import SKIP_REASON_PREFIX
 
 logger = logging.getLogger("cued.heartbeat")
 client = make_client()
@@ -34,11 +35,23 @@ STAY_SILENT_TOOL = {
     "name": "stay_silent",
     "description": ("Call this to stay silent on this tick — a good coach mostly says "
                     "nothing. Pass a one-line reason (e.g. 'nothing new to add', "
-                    "'already nudged about the skip today')."),
+                    "'already nudged about the skip today'). If your silence has a KNOWN "
+                    "expiry — a planned session time, 'too early' until they're up, a "
+                    "window that opens later — also pass recheck_in_minutes (minutes from "
+                    "now) so the next real look lands then instead of on the clock."),
     "input_schema": {"type": "object",
-                     "properties": {"reason": {"type": "string"}},
+                     "properties": {"reason": {"type": "string"},
+                                    "recheck_in_minutes": {
+                                        "type": "integer",
+                                        "description": "Optional. Minutes until this silence should be "
+                                                       "re-evaluated (10–1440)."}},
                      "required": ["reason"]},
 }
+
+# stay_silent's recheck_in_minutes is clamped into this range: never a re-look sooner
+# than a tick, never a silence pinned past a day.
+RECHECK_MIN_MINUTES = 10
+RECHECK_MAX_MINUTES = 1440
 
 # Speaking is a tool call too, NOT bare text. Burn-in finding: with only a
 # stay_silent tool offered, a model that had DECIDED to speak still reflexively
@@ -88,7 +101,7 @@ Accountability is the job; fun is the delivery, not a substitute for it. One tex
 
 Call EXACTLY ONE tool:
 - To SPEAK: call send_text with the exact SMS to send, in your voice — nothing else.
-- To STAY SILENT: call stay_silent with a one-line reason.
+- To STAY SILENT: call stay_silent with a one-line reason — and if your silence has a known expiry (a planned session time, "too early" until they're up, a window that opens later), pass recheck_in_minutes so the next real look lands then.
 If any part of your reasoning concludes a text is warranted, call send_text. NEVER call stay_silent and then say in the reason that you should have spoken — that is a contradiction; call send_text instead."""
 
 
@@ -114,7 +127,13 @@ def _log_tick(user_id, spoke, reason, message=None, search=None):
         session.add(HeartbeatTick(user_id=user_id, spoke=spoke, reason=reason, message=message,
                                   search_available=search.get("available", False),
                                   search_used=search.get("used", False),
-                                  search_query=search.get("query")))
+                                  search_query=search.get("query"),
+                                  # stale-skip side-channel (stale_skip.py): the state
+                                  # fingerprint the NEXT tick compares against, the shadow
+                                  # verdict, and the model's own recheck time if it set one.
+                                  fingerprint=search.get("fingerprint"),
+                                  stale_would_skip=bool(search.get("stale_would_skip")),
+                                  recheck_at=search.get("recheck_at")))
         session.commit()
     finally:
         session.close()
@@ -1537,7 +1556,8 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
                   .order_by(Message.created_at.desc()).limit(6).all())
 
     ticks = (session.query(HeartbeatTick)
-             .filter(HeartbeatTick.user_id == user.id)
+             .filter(HeartbeatTick.user_id == user.id,
+                     ~HeartbeatTick.reason.like(f"{SKIP_REASON_PREFIX}%"))
              .order_by(HeartbeatTick.decided_at.desc())
              .limit(config.HEARTBEAT_RECENT_TICKS).all())
 
@@ -1565,21 +1585,40 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
     return "\n\n".join(parts)
 
 
-def decide(user_id: int) -> tuple[bool, str, dict]:
+def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     """One decision call. Returns (spoke, payload, search): payload is the message if
-    spoke, else the silence reason; search is the search DECISION for the tick record
-    — {"available": offered-under-budget, "used": model-invoked-it, "query": first
-    query or None}. The model calls send_text to speak or stay_silent to stay quiet
-    (both outcomes are explicit tools — see SEND_TEXT_TOOL). Loads the user in its own
-    session so callers can pass just an id (no detached instance)."""
+    spoke, else the silence reason; search is the tick-record side-channel — the search
+    DECISION ({"available": offered-under-budget, "used": model-invoked-it, "query":
+    first query or None}) plus the stale-skip fields ("fingerprint", "stale_would_skip",
+    "stale_detail", "recheck_at"). The model calls send_text to speak or stay_silent to
+    stay quiet (both outcomes are explicit tools — see SEND_TEXT_TOOL). Loads the user
+    in its own session so callers can pass just an id (no detached instance).
+
+    Stale skip (stale_skip.py): with HEARTBEAT_STALE_SKIP_ENABLED and a would-skip
+    verdict, returns a labelled silent tick WITHOUT calling the model. allow_skip=False
+    (the admin dry-run) always runs the model. In shadow mode the verdict is recorded
+    on the tick and the model runs regardless."""
     session = get_session()
     try:
         user = session.get(User, user_id)
         state: dict = {}
         context = _proactive_context(user, session, state=state)
         search = {"available": _search_available(user, session), "used": False, "query": None}
+        if config.HEARTBEAT_STALE_SKIP_SHADOW or config.HEARTBEAT_STALE_SKIP_ENABLED:
+            try:
+                from stale_skip import evaluate
+                v = evaluate(user, session, context)
+                search["fingerprint"] = v.fingerprint
+                search["stale_would_skip"] = v.would_skip
+                search["stale_detail"] = v.detail
+            except Exception as e:  # noqa: BLE001 — fail open: an eval error means "run the model"
+                logger.warning("HEARTBEAT_STALE_EVAL_FAILED user=%s err=%s", user_id, e)
     finally:
         session.close()
+
+    if allow_skip and config.HEARTBEAT_STALE_SKIP_ENABLED and search.get("stale_would_skip"):
+        logger.info("HEARTBEAT_STALE_SKIPPED user=%s detail=%s", user_id, search.get("stale_detail"))
+        return (False, f"{SKIP_REASON_PREFIX} ({search.get('stale_detail')})", search)
     # Set only on the morning-open daily-briefing tick: the material the sent text is
     # verified against (weather guarantee + BRIEFING_DROPPED_ITEM). None on every other tick.
     briefing = state.get("briefing")
@@ -1645,7 +1684,15 @@ def decide(user_id: int) -> tuple[bool, str, dict]:
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
             if silent is not None:
-                return (False, (silent.input or {}).get("reason", "chose silence"), search)
+                inp = silent.input or {}
+                try:
+                    mins = inp.get("recheck_in_minutes")
+                    if mins is not None:
+                        mins = max(RECHECK_MIN_MINUTES, min(RECHECK_MAX_MINUTES, int(mins)))
+                        search["recheck_at"] = _naive_utcnow() + timedelta(minutes=mins)
+                except (TypeError, ValueError):
+                    pass
+                return (False, inp.get("reason", "chose silence"), search)
             # a server tool (web_search) — feed nothing back for client tools; continue
             _decision_names = ("send_text", "stay_silent")
             messages.append({"role": "assistant", "content": resp.content})
@@ -1710,6 +1757,16 @@ def heartbeat_tick(user_id: int):
         from typing_indicator import typing_start
         typing_start(user_id)  # a friend texting first: dots, then the message
     spoke, payload, search = decide(user_id)
+    # Shadow audit (stale_skip.py): a would-skip verdict that the model then SPOKE on is
+    # a false negative of the skip rule — the number that decides whether the real skip
+    # can be turned on. Only meaningful when the model actually ran (not already skipped).
+    if search.get("stale_would_skip") and not payload.startswith(SKIP_REASON_PREFIX):
+        if spoke:
+            logger.warning("HEARTBEAT_STALE_SHADOW_MISS user=%s detail=%s message=%r",
+                           user_id, search.get("stale_detail"), payload[:160])
+        else:
+            logger.info("HEARTBEAT_STALE_SHADOW_HIT user=%s detail=%s reason=%r",
+                        user_id, search.get("stale_detail"), payload[:120])
     if spoke:
         send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
         _log_tick(user_id, True, "spoke", payload, search=search)

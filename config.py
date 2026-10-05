@@ -740,6 +740,18 @@ HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (
 # fix for the unanswered_gap deadlock. Only proactive (heartbeat) outbounds count;
 # reactive replies never gate initiation. See rewrite/heartbeat-calibration.
 HEARTBEAT_STACK_WINDOW_MINUTES = int(os.getenv("HEARTBEAT_STACK_WINDOW_MINUTES", "180"))
+# Stale-tick skip (stale_skip.py, 2026-10-05). Prod read: 90% of model ticks had nothing
+# new since the previous tick and re-derived "already sent X today" at full Opus cost
+# (~$3.76 per spoken text). The skip is a CODE rule, narrower than "nothing new": same
+# state fingerprint as the last real (silent) decision, nothing landed since, no code
+# gate in between, under the floor, no model recheck due. SHADOW records the verdict on
+# every tick but still runs the model (HEARTBEAT_STALE_SHADOW_MISS = the false-negative
+# audit); ENABLED actually skips. Ships shadow-on / skip-off — flip after a clean week.
+HEARTBEAT_STALE_SKIP_SHADOW = os.getenv("HEARTBEAT_STALE_SKIP_SHADOW", "true").lower() == "true"
+HEARTBEAT_STALE_SKIP_ENABLED = os.getenv("HEARTBEAT_STALE_SKIP_ENABLED", "false").lower() == "true"
+# The floor: a real evaluation at least this often regardless — a trigger the
+# fingerprint misses costs at most this delay, never a lost text.
+HEARTBEAT_STALE_MAX_HOURS = float(os.getenv("HEARTBEAT_STALE_MAX_HOURS", "3"))
 # Addendum (post-burn-in): ON for burn-in, deliberately — proactive search is part
 # of the product claim burn-in exists to validate (a coach that can check hours/
 # availability before texting). The managed risk is search UN-BUDGETED, not search
