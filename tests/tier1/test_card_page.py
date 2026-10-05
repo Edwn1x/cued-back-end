@@ -42,7 +42,11 @@ def test_card_token_roundtrip_expiry_and_tamper():
     tok = card_token(31, 7)
     assert verify_card_token(tok) == (31, 7)
     u, s, e, mac = tok.split(".")
-    assert verify_card_token(f"{u}.{s}.{e}.{mac[:-1]}x") is None        # tampered mac
+    # Tamper the FIRST mac char (always changes the decoded bytes). Tampering the last
+    # char was flaky: with '=' padding stripped, the final base64 char only partly
+    # encodes bits, so 'x' could decode to the same signature bytes (CI 2026-10-05).
+    bad0 = "A" if mac[0] != "A" else "B"
+    assert verify_card_token(f"{u}.{s}.{e}.{bad0}{mac[1:]}") is None    # tampered mac
     assert verify_card_token(f"{u}.8.{e}.{mac}") is None                 # session swapped
     assert verify_card_token(f"32.{s}.{e}.{mac}") is None                # user swapped
     assert verify_card_token(tok, now=time.time() + 25 * 3600) is None   # expired
