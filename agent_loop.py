@@ -200,11 +200,24 @@ def build_loop_context(user, session) -> str:
     # each fact's [id:…] so the model can update/invalidate a specific entry precisely
     # (invalidate needs an entry_id; without ids shown it could only use the fragile
     # substring update). The ids are threaded into the injected block via render_categories.
+    # coaching_lessons are the coach's notes about ITSELF, not facts about the user —
+    # they render as their own authoritative block below, never inside this one.
+    _fact_cats = tuple(c for c in CATEGORIES if c != "coaching_lessons")
     mem_text, _ids = render_categories(
-        profile, CATEGORIES, include_safety_universal=True,
+        profile, _fact_cats, include_safety_universal=True,
         show_ids=config.MEMORY_ENTRY_IDS_IN_PROMPT_ENABLED)
     if mem_text:
         parts.append(f"## WHAT YOU REMEMBER ABOUT {user.name.upper()}\n{mem_text}")
+
+    # 1b. Lessons from coaching them (lessons.py) — flag-gated, fail-open; also reaches
+    # the heartbeat, whose _proactive_context begins with this builder.
+    try:
+        from lessons import lessons_block
+        _lb, _ = lessons_block(user)
+        if _lb:
+            parts.append(_lb)
+    except Exception as e:  # noqa: BLE001 — never break a turn over a hint
+        logger.warning("LESSONS_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     # 2. Typed-column profile (source of truth for body/diet/targets).
     if user.profile_summary:

@@ -57,6 +57,15 @@ CONVERSATION_HISTORY_LIMIT = 50  # last N messages to include in prompt context
 USER_PROFILE_MEMORY_CHAR_LIMIT = 2000  # global hard cap; eviction trigger
 USER_PROFILE_MEMORY_CATEGORY_SOFT_CAP = 400  # per-category soft cap so no bucket starves others
 COACHING_POINTS_CHAR_LIMIT = 1000  # delivered_coaching_points cap
+# Coaching lessons (lessons.py): the coach's SELF-authored notes about its own past
+# misses with a user ("verify the meat type in a photo before logging it"), stored in
+# the `coaching_lessons` memory category and rendered as their own authoritative block.
+# LESSONS_ENABLED gates category writes + rendering; LESSONS_EXTRACT_ENABLED gates the
+# background Haiku extractor (runs only when a correction cue fires — a budget gate).
+LESSONS_ENABLED = os.getenv("LESSONS_ENABLED", "false").lower() == "true"
+LESSONS_EXTRACT_ENABLED = os.getenv("LESSONS_EXTRACT_ENABLED", "false").lower() == "true"
+LESSONS_SOFT_CAP = int(os.getenv("LESSONS_SOFT_CAP", "700"))      # chars; own cap, not the 400 generic
+LESSONS_MAX_LEN = int(os.getenv("LESSONS_MAX_LEN", "160"))        # one lesson = one instruction
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"
