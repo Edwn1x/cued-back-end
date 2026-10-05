@@ -233,6 +233,19 @@ WEB_SEARCH_BLOCKED_DOMAINS = [d for d in ([
     "phplive-aws.uccs.edu",       # "CodeForge Hub" spam mirror (wrong RSF hours)
     "sbc-hc-proxy.stanford.edu",  # proxy gateway serving the same spam
 ] + [x.strip() for x in os.getenv("WEB_SEARCH_BLOCKED_DOMAINS_EXTRA", "").split(",")]) if d]
+# fetch_page — READ one public web page as text (webfetch.py). web_search can only FIND
+# pages; this is how the coach reads a course site / syllabus / hours page / a link the
+# user texted. Client-side tool, no per-call vendor fee. Public http(s) only with an SSRF
+# guard (private/loopback hosts refused, redirects re-checked), the web_search denylist
+# applies, bounded by timeout + byte cap + char cap (honest "[truncated]" marker). The
+# per-turn cap keeps a reply from turning into a crawl.
+FETCH_PAGE_TOOL_ENABLED = os.getenv("FETCH_PAGE_TOOL_ENABLED", "false").lower() == "true"
+FETCH_PAGE_TIMEOUT_S = float(os.getenv("FETCH_PAGE_TIMEOUT_S", "8"))
+FETCH_PAGE_MAX_BYTES = int(os.getenv("FETCH_PAGE_MAX_BYTES", str(2_000_000)))
+FETCH_PAGE_MAX_CHARS = int(os.getenv("FETCH_PAGE_MAX_CHARS", "12000"))
+FETCH_PAGE_MAX_REDIRECTS = int(os.getenv("FETCH_PAGE_MAX_REDIRECTS", "5"))
+FETCH_PAGE_CACHE_TTL_S = int(os.getenv("FETCH_PAGE_CACHE_TTL_S", "600"))     # 10 min per-process cache
+FETCH_PAGE_MAX_PER_TURN = int(os.getenv("FETCH_PAGE_MAX_PER_TURN", "3"))
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
