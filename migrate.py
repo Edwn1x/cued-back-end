@@ -543,6 +543,11 @@ MIGRATIONS = [
     # row; the real number parks in archived_phone while `phone` holds the sentinel.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS archived_phone VARCHAR(20)",
+    # Stale-tick skip (stale_skip.py, 2026-10-05): state fingerprint + shadow verdict +
+    # model-declared recheck time per heartbeat tick. Nullable; no backfill.
+    "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(32)",
+    "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS stale_would_skip BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS recheck_at TIMESTAMP",
 ]
 
 def wait_for_db(retries=10, delay=3):

@@ -719,6 +719,13 @@ class HeartbeatTick(Base):
     search_available = Column(Boolean, default=False)
     search_used = Column(Boolean, default=False)
     search_query = Column(Text)
+    # Stale-tick skip (stale_skip.py): the state fingerprint the NEXT tick compares
+    # against; whether the skip rule would have skipped this tick (shadow audit —
+    # stale_would_skip AND spoke == a false negative); and the model's own recheck
+    # time from stay_silent(recheck_in_minutes), if it set one.
+    fingerprint = Column(String(32))
+    stale_would_skip = Column(Boolean, default=False)
+    recheck_at = Column(DateTime)
 
 
 class ConsolidationRun(Base):
