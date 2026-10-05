@@ -343,7 +343,7 @@ def sync_all() -> int:
     try:
         ids = [i.user_id for i in session.query(Integration)
                .filter(Integration.provider == SOURCE,
-                       Integration.status.in_(("connected", "error"))).all()]
+                       Integration.status.in_(base.SYNCABLE_STATUSES)).all()]
     finally:
         session.close()
     n = 0

@@ -22,6 +22,15 @@ logger = logging.getLogger("cued.integrations")
 
 REFRESH_SKEW_S = 5 * 60   # refresh if the access token dies within 5 minutes
 
+# Row statuses a scheduler sweep or an inbound webhook may act on. Everything else —
+# pending (handshake in flight), revoked, and `archived` (the account was archived by
+# account_lifecycle; tokens kept only for Restore) — is invisible to sync_all /
+# users_for_health_ids, so an archived account never keeps syncing and a NEW account
+# on the same healthUserId is the only match. Status vocabulary:
+#   pending | connected | error | revoked | archived
+SYNCABLE_STATUSES = ("connected", "error")
+STATUS_ARCHIVED = "archived"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)

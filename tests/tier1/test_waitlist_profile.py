@@ -416,12 +416,14 @@ def test_remove_waitlister_deprovisions_the_photon_seat(db, client, monkeypatch)
 
 
 def test_delete_user_deprovisions_the_photon_seat(db, client, monkeypatch):
+    """Hard delete lives at /delete-forever now (account_lifecycle, 2026-10-05) and
+    needs the typed confirmation; the seat release is unchanged."""
     from tests.factories import make_user
     import photon
     user = make_user(db, phone="+15105550372", name="Gone", photon_user_id="ph-72")
     seen = []
     monkeypatch.setattr(photon, "deprovision_user", lambda pid: seen.append(pid) or True)
-    r = client.post(f"/admin/user/{user.id}/delete")
+    r = client.post(f"/admin/user/{user.id}/delete-forever", json={"confirm": "DELETE"})
     assert r.status_code == 200 and r.get_json()["status"] == "ok"
     assert seen == ["ph-72"]
 
@@ -439,7 +441,7 @@ def test_delete_still_succeeds_when_photon_api_fails(db, client, monkeypatch, ph
     def _boom(url, headers=None, timeout=None):
         raise RuntimeError("photon 500")
     monkeypatch.setattr(photon.requests, "delete", _boom)
-    r = client.post(f"/admin/user/{uid}/delete")
+    r = client.post(f"/admin/user/{uid}/delete-forever", data={"confirm": str(uid)})
     assert r.status_code == 200 and r.get_json()["status"] == "ok"
     db.expunge_all()
     assert db.query(User).filter(User.id == uid).count() == 0

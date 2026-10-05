@@ -53,6 +53,14 @@ class User(Base):
     wearable = Column(String(50))  # apple_watch, oura, garmin, none
     motivation = Column(Text)  # why they want coaching — personal touch
     active = Column(Boolean, default=True)
+    # Archive & restart (account_lifecycle.py, 2026-10-05): the founder wants to keep
+    # every row of an old account AND start a brand-new one from the same number.
+    # Archiving releases the number — `phone` becomes the sentinel "archived-<id>"
+    # (unique, ≤20 chars) and the real E.164 moves here — so the next inbound from
+    # that phone matches no user and the normal sign-up path runs from zero.
+    # Restore swaps them back (refused while another row holds the number).
+    archived_at = Column(DateTime, default=None)
+    archived_phone = Column(String(20), default=None)
     unanswered_count = Column(Integer, default=0)  # increments on outbound questions with no reply; resets on any reply
     communication_style = Column(Text, default=None)  # auto-derived tone descriptor, updated after enough exchanges
     food_context = Column(Text, default=None)  # what they actually have/eat — fridge contents, nearby restaurants, go-to orders
@@ -653,7 +661,7 @@ class Integration(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     provider = Column(String(16), nullable=False)   # gcal | bcourses | strava | fitbit | whoop | oura
     account = Column(String(64), nullable=False, default="", server_default="")   # "" = primary
-    status = Column(String(16), nullable=False, default="pending")  # pending | connected | revoked | error
+    status = Column(String(16), nullable=False, default="pending")  # pending | connected | revoked | error | archived (account_lifecycle; tokens kept for Restore, never synced)
     access_token = Column(Text)                      # Fernet ciphertext (nullable — bcourses has none)
     refresh_token = Column(Text)                     # Fernet ciphertext
     expires_at = Column(DateTime)                    # naive UTC; when the access token dies
