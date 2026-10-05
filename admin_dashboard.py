@@ -875,7 +875,7 @@ document.addEventListener('DOMContentLoaded', () => filterUsers());
 // number; Restore reverses it; Delete forever is the one destructive door and needs a
 // typed confirmation — the server refuses anything else with nothing touched.
 async function archiveUser(userId, name) {
-  if (!confirm('Archive & restart ' + name + ' (id ' + userId + ')?\n\nEvery row stays under this id (restorable from the Archived tab). Their number is released, so the next sign-up from it starts from zero as a NEW account. Nothing is sent to them.')) return;
+  if (!confirm('Archive & restart ' + name + ' (id ' + userId + ')?\\n\\nEvery row stays under this id (restorable from the Archived tab). Their number is released, so the next sign-up from it starts from zero as a NEW account. Nothing is sent to them.')) return;
   const res = await fetch('/admin/user/' + userId + '/archive', {method: 'POST'});
   const data = await res.json().catch(() => ({}));
   if (res.ok) location.reload();
@@ -895,7 +895,7 @@ async function restoreUser(userId, name, btn) {
 }
 
 async function deleteForever(userId, name) {
-  const typed = prompt('PERMANENTLY delete ' + name + ' (id ' + userId + ') and ALL their data? This cannot be undone.\n\nType DELETE to confirm:');
+  const typed = prompt('PERMANENTLY delete ' + name + ' (id ' + userId + ') and ALL their data? This cannot be undone.\\n\\nType DELETE to confirm:');
   if (typed === null) return;
   const res = await fetch('/admin/user/' + userId + '/delete-forever', {
     method: 'POST',
