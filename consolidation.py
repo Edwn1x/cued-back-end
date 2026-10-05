@@ -94,6 +94,10 @@ def _close_stale(candidate: dict, ops: list, now: datetime) -> None:
     for cat, e in list(_valid_entries(candidate)):
         if e.get("safety"):
             continue
+        if cat == "coaching_lessons":
+            # A lesson is confirmed by the correction that created it; "never used"
+            # is not a signal against it (it is rendered every turn regardless).
+            continue
         if e.get("uses", 0) == 0 and _age_days(e, now) > limit:
             if invalidate_entry(candidate, e["id"], by="consolidation:stale"):
                 ops.append(("closed", f"{_short(e.get('text'))}, stale {int(_age_days(e, now))}d"))

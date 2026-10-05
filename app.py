@@ -844,6 +844,15 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             daemon=True,
         ).start()
 
+        # Coaching lessons (lessons.py): did they just CORRECT the coach? Flag + cue
+        # gated inside the task (no model call on an ordinary turn).
+        from lessons import extract_and_store_lesson_task
+        threading.Thread(
+            target=extract_and_store_lesson_task,
+            args=(user.id, combined_body, response_text),
+            daemon=True,
+        ).start()
+
         # A4: async uses-bump for memory entries that were rendered into the
         # agent's context this turn. We collect ids for every agent map and
         # dedupe — bump_uses is keyed by id, so duplicates are free. Pure-Python
@@ -854,6 +863,14 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             for _atype in ("nutrition", "training", "readiness", "coach"):
                 _, _ids = build_memory_block_with_ids(user, _atype)
                 injected_ids.update(_ids)
+            # Lessons render every turn via build_loop_context; count that as a use
+            # so eviction order (lowest-uses-first) doesn't target them first.
+            try:
+                from lessons import lessons_block
+                _, _lids = lessons_block(user)
+                injected_ids.update(_lids)
+            except Exception:  # noqa: BLE001
+                pass
             if injected_ids:
                 threading.Thread(
                     target=update_memory_uses_task,

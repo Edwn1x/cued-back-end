@@ -53,7 +53,14 @@ REMEMBER_TOOL = {
         "for update, a distinctive fragment of the old fact as replaces_text. "
         "Write fact text with resolved absolute dates — 'tomorrow' → the actual "
         "date — because the fact will be read on later days when relative words "
-        "mislead. Do NOT log eaten meals or completed workouts here (separate tools)."
+        "mislead. Do NOT log eaten meals or completed workouts here (separate tools). "
+        "LESSONS ABOUT YOURSELF: when they CORRECT you — a photo you misread, a nudge "
+        "you repeated, a day you dropped from a rundown, a question you asked that the "
+        "log already answered — fix the data with the right tool AND save the lesson here "
+        "with category 'coaching_lessons': an instruction to yourself, generalized past "
+        "the one incident ('Verify the meat type in a photo before logging it; ask when "
+        "ambiguous'), not a fact about them. A correction you only apologize for is one "
+        "you'll repeat."
     ),
     "input_schema": {
         "type": "object",
@@ -90,6 +97,8 @@ def handle_remember(user_id: int, tool_input: dict, *, message_id=None) -> str:
             text = (tool_input.get("text") or "").strip()
             if category not in CATEGORIES:
                 return f"error: unknown category {category!r}"
+            if category == "coaching_lessons" and not config.LESSONS_ENABLED:
+                return "error: coaching lessons are not enabled"
             if not text:
                 return "error: no text provided"
             # De-deixis floor: a memory fact is timeless text — a bare "tomorrow"

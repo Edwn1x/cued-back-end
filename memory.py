@@ -66,6 +66,11 @@ CATEGORIES = (
     # expire_stale_entries) — so a grocery haul can't crowd the safety bucket or
     # evict durable facts. Routed here by the remember tool + extraction prompt.
     "food_on_hand",
+    # Coaching lessons (lessons.py): the coach's own notes about its past misses with
+    # this user — instructions to itself, not facts about them. Own soft cap
+    # (LESSONS_SOFT_CAP), never safety, exempt from consolidation's stale-close,
+    # rendered as a separate authoritative block (NOT inside WHAT YOU REMEMBER).
+    "coaching_lessons",
 )
 
 # Validity windows: an invalidated entry is MOVED out of its category list into
@@ -608,6 +613,14 @@ def _evict_one(profile: dict, *, prefer_category: str = None, user_id=None,
     return True
 
 
+def _soft_cap_for(category: str) -> int:
+    """Per-category soft cap. Lessons carry their own (an instruction is longer than a
+    fact, and five of them must not evict each other under the generic 400)."""
+    if category == "coaching_lessons":
+        return config.LESSONS_SOFT_CAP
+    return config.USER_PROFILE_MEMORY_CATEGORY_SOFT_CAP
+
+
 def _enforce_caps(profile: dict, user_id=None, *, protected_ids=None) -> None:
     """
     Enforce per-category soft cap then global hard cap. Soft cap evicts within
@@ -615,12 +628,12 @@ def _enforce_caps(profile: dict, user_id=None, *, protected_ids=None) -> None:
     never targeted; if a category is entirely safety entries, the cap is
     silently exceeded (correct — safety dominates the budget by design).
     """
-    soft = config.USER_PROFILE_MEMORY_CATEGORY_SOFT_CAP
     hard = config.USER_PROFILE_MEMORY_CHAR_LIMIT
 
     for cat in list(profile.keys()):
         if cat == HISTORY_KEY:
             continue
+        soft = _soft_cap_for(cat)
         while _category_chars(profile.get(cat) or []) > soft:
             if not _evict_one(profile, prefer_category=cat,
                               user_id=user_id, reason="category_soft_cap",
