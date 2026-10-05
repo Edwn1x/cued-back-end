@@ -99,6 +99,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 .btn:hover{opacity:.85}
 .btn-primary{background:var(--accent);color:#fff}
 .btn-danger{background:rgba(255,69,58,.12);color:var(--red)}
+.btn-warn{background:rgba(255,214,10,.12);color:var(--yellow)}
 .btn-sm{padding:4px 10px;font-size:11px;border-radius:5px}
 
 /* ── CHART BAR ── */
@@ -150,6 +151,12 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <span class="icon">◌</span> Waitlist
     {% if waitlist_count and waitlist_count > 0 %}
     <span class="badge-count">{{ waitlist_count }}</span>
+    {% endif %}
+  </button>
+  <button class="nav-item" onclick="showPage('archived',this)">
+    <span class="icon">◫</span> Archived
+    {% if archived_count and archived_count > 0 %}
+    <span class="badge-count">{{ archived_count }}</span>
     {% endif %}
   </button>
   <button class="nav-item" onclick="showPage('messages',this)">
@@ -356,8 +363,11 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
           {% elif u.days_inactive <= 7 %}<span class="badge badge-yellow">QUIET</span>
           {% else %}<span class="badge badge-red">{{ u.days_inactive }}d SILENT</span>{% endif %}
         </td>
-        <td onclick="event.stopPropagation()">
-          <button class="btn btn-danger btn-sm" onclick="deleteUser({{ u.id }},'{{ u.name }}')">Delete</button>
+        <td onclick="event.stopPropagation()" style="white-space:nowrap">
+          <button class="btn btn-warn btn-sm" title="Keep every row under this id, release the number so the next sign-up from it starts from zero. Restorable."
+                  onclick="archiveUser({{ u.id }}, '{{ u.name|replace("'","\\'") }}')">Archive &amp; restart</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px" title="Permanently delete this account and ALL its data. Typed confirmation."
+                  onclick="deleteForever({{ u.id }}, '{{ u.name|replace("'","\\'") }}')">Delete forever</button>
         </td>
       </tr>
       {% endfor %}
@@ -463,6 +473,53 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
   </div>
   {% else %}
   <p class="empty">No one on the waitlist right now.</p>
+  {% endif %}
+</div>
+
+<!-- ─── ARCHIVED ─── -->
+<div id="page-archived" class="page">
+  <div class="page-header">
+    <h1>Archived</h1>
+    <p>Accounts archived with "Archive &amp; restart": every row is kept under the old id, the number is released so a new sign-up from it starts from zero, and no sweep or send touches them. Restore puts the number back (refused while another account holds it). Delete forever is the only way anything here is removed.</p>
+  </div>
+
+  <div class="grid grid-3" style="margin-bottom:20px">
+    <div class="stat-card">
+      <div class="stat-label">Archived</div>
+      <div class="stat-val">{{ archived_count }}</div>
+      <div class="stat-sub">accounts kept, numbers released</div>
+    </div>
+  </div>
+
+  {% if archived %}
+  <div class="table-wrap">
+    <table id="archived-table">
+      <tr>
+        <th>Name</th><th>Was</th><th>Archived</th><th>Signed Up</th>
+        <th>Messages</th><th>Meals</th><th>Workout Sessions</th><th>Set Logs</th><th>Events</th><th>Wearable Days</th><th></th>
+      </tr>
+      {% for a in archived %}
+      <tr class="clickable archived-row" data-id="{{ a.id }}" onclick="window.location.href='/admin/user/{{ a.id }}'">
+        <td style="color:var(--text);font-weight:500">{{ a.name }} <span class="badge badge-gray" style="margin-left:6px">ID {{ a.id }}</span></td>
+        <td>···{{ a.phone }}</td>
+        <td>{{ a.archived }}</td>
+        <td>{{ a.signed_up }}</td>
+        <td>{{ a.messages }}</td>
+        <td>{{ a.meals }}</td>
+        <td>{{ a.workout_sessions }}</td>
+        <td>{{ a.set_logs }}</td>
+        <td>{{ a.events }}</td>
+        <td>{{ a.wearable_days }}</td>
+        <td onclick="event.stopPropagation()" style="white-space:nowrap">
+          <button class="btn btn-primary btn-sm" onclick="restoreUser({{ a.id }}, '{{ a.name|replace("'","\\'") }}', this)">Restore</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:6px" onclick="deleteForever({{ a.id }}, '{{ a.name|replace("'","\\'") }}')">Delete forever</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No archived accounts.</p>
   {% endif %}
 </div>
 
@@ -814,12 +871,40 @@ function filterUsers() {
 // Init on page load
 document.addEventListener('DOMContentLoaded', () => filterUsers());
 
-async function deleteUser(userId, name) {
-  if (!confirm('Delete ' + name + '? This removes all their data. Cannot be undone.')) return;
-  const res = await fetch('/admin/user/' + userId + '/delete', {method: 'POST'});
-  const data = await res.json();
-  if (data.status === 'ok') location.reload();
-  else alert('Error: ' + data.message);
+// Account lifecycle (account_lifecycle.py). Archive keeps everything and releases the
+// number; Restore reverses it; Delete forever is the one destructive door and needs a
+// typed confirmation — the server refuses anything else with nothing touched.
+async function archiveUser(userId, name) {
+  if (!confirm('Archive & restart ' + name + ' (id ' + userId + ')?\n\nEvery row stays under this id (restorable from the Archived tab). Their number is released, so the next sign-up from it starts from zero as a NEW account. Nothing is sent to them.')) return;
+  const res = await fetch('/admin/user/' + userId + '/archive', {method: 'POST'});
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) location.reload();
+  else alert('Error: ' + (data.message || 'Archive failed.'));
+}
+
+async function restoreUser(userId, name, btn) {
+  if (!confirm('Restore ' + name + ' (id ' + userId + ')? Their number goes back on this account. Refused while another account holds it.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  const res = await fetch('/admin/user/' + userId + '/restore', {method: 'POST'});
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) location.reload();
+  else {
+    alert('Error: ' + (data.message || 'Restore failed.'));
+    if (btn) { btn.disabled = false; btn.textContent = 'Restore'; }
+  }
+}
+
+async function deleteForever(userId, name) {
+  const typed = prompt('PERMANENTLY delete ' + name + ' (id ' + userId + ') and ALL their data? This cannot be undone.\n\nType DELETE to confirm:');
+  if (typed === null) return;
+  const res = await fetch('/admin/user/' + userId + '/delete-forever', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({confirm: typed})
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) location.reload();
+  else alert('Error: ' + (data.message || 'Delete refused.'));
 }
 
 async function activateWaitlist(userId, name, btn) {

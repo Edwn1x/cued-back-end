@@ -190,7 +190,8 @@ def sweep(now_utc: datetime | None = None) -> int:
     sent = 0
     session = get_session()
     try:
-        users = session.query(User).filter(User.onboarding_step >= 3).all()
+        # active only: an archived account (account_lifecycle) must never get a beat.
+        users = session.query(User).filter(User.active.is_(True), User.onboarding_step >= 3).all()
         for user in users:
             try:
                 reason = guardrail_reason(user, session)

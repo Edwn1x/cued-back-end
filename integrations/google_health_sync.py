@@ -246,7 +246,7 @@ def sync_all() -> int:
     session = get_session()
     try:
         ids = [i.user_id for i in session.query(Integration)
-               .filter(Integration.provider == SOURCE, Integration.status.in_(("connected", "error"))).all()]
+               .filter(Integration.provider == SOURCE, Integration.status.in_(base.SYNCABLE_STATUSES)).all()]
     finally:
         session.close()
     n = 0
@@ -269,7 +269,7 @@ def users_for_health_ids(health_ids) -> list[int]:
     try:
         rows = (session.query(Integration.user_id)
                 .filter(Integration.provider == SOURCE, Integration.external_id.in_(ids),
-                        Integration.status.in_(("connected", "error"))).all())
+                        Integration.status.in_(base.SYNCABLE_STATUSES)).all())   # never 'archived'
         return sorted({r[0] for r in rows})
     finally:
         session.close()

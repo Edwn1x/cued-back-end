@@ -2251,12 +2251,18 @@ def admin():
         # rate, dN_rate, total_users, etc. They get their own table in the
         # admin Waitlist tab.
         _all_users_raw = session.query(User).all()
+        # Archived accounts (account_lifecycle): kept rows, released number. Their own
+        # section — out of every metric, the Users table and the waitlist.
+        archived_users = sorted(
+            (u for u in _all_users_raw if u.archived_at),
+            key=lambda u: u.archived_at, reverse=True,
+        )
         pending_waitlist = sorted(
-            (u for u in _all_users_raw if u.waitlist_status == "pending"),
+            (u for u in _all_users_raw if u.waitlist_status == "pending" and not u.archived_at),
             key=lambda u: u.created_at or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
-        all_users = [u for u in _all_users_raw if u.waitlist_status is None]
+        all_users = [u for u in _all_users_raw if u.waitlist_status is None and not u.archived_at]
         total_users = len(all_users)
         active_users = sum(1 for u in all_users if u.active)
         waitlist_count = len(pending_waitlist)
@@ -2379,7 +2385,7 @@ def admin():
 
         # ── RECENT MESSAGES ──
         recent = sorted(all_messages, key=lambda m: m.created_at if m.created_at else now, reverse=True)[:50]
-        user_map = {u.id: u.name for u in all_users}
+        user_map = {u.id: u.name for u in _all_users_raw}   # archived rows still own their messages/meals
         recent_messages_data = [{
             "time": fmt_pst(m.created_at),
             "user_name": user_map.get(m.user_id, "Unknown"),
@@ -2477,6 +2483,21 @@ def admin():
                 "channel": _waitlist_channel_state(wu),
             })
 
+        # Archived tab (account_lifecycle): what is being kept, per account.
+        from account_lifecycle import archived_counts
+        archived_data = []
+        for au in archived_users:
+            c = archived_counts(session, au.id)
+            archived_data.append({
+                "id": au.id,
+                "name": au.name,
+                "phone": au.archived_phone[-4:] if au.archived_phone else "—",
+                "archived": fmt_pst(au.archived_at),
+                "signed_up": fmt_pst(au.created_at) if au.created_at else "—",
+                "onboarding_step": au.onboarding_step or 0,
+                **c,
+            })
+
         return render_template_string(ADMIN_HTML,
             now=now.astimezone(pst).strftime("%b %d, %Y %I:%M %p PST"),
             total_users=total_users,
@@ -2527,6 +2548,9 @@ def admin():
             # Waitlist
             waitlist=waitlist_data,
             waitlist_count=waitlist_count,
+            # Archived (account_lifecycle)
+            archived=archived_data,
+            archived_count=len(archived_data),
         )
     finally:
         session.close()
@@ -2562,6 +2586,8 @@ def admin_send():
         user_id = int(request.form.get("user_id"))
         body = request.form.get("body", "").strip()
         user = session.get(User, user_id)
+        if user and user.archived_at:
+            return jsonify({"status": "error", "message": "User is archived — restore first."}), 400
         if user and body:
             if _admin_send_is_duplicate(user.id, body):
                 logger.info("ADMIN_SEND_DUPLICATE user=%s body=%r (within %ss — not resent)",
@@ -2609,23 +2635,45 @@ def admin_activate_waitlist(user_id):
         session.close()
 
 
-# ─── Delete User (admin) ────────────────────────────
-def _purge_user_rows(session, user_id: int) -> None:
-    """Delete every child row that does NOT cascade from users (see models.py:
-    Message/Meal/Workout/DailyLog/WeightLog/Signal/PantryItem/Place/QueueTicket/
-    WorkoutSession(+SetLog)/TargetAdjustment carry plain FKs). The newer tables
-    (events, heartbeat_ticks, episodic, token_usage, processed_messages) cascade
-    or SET NULL on their own. Caller deletes the User row and commits."""
-    from models import (Meal, WeightLog, Signal, PantryItem, Place, QueueTicket,
-                        WorkoutSession, SetLog, TargetAdjustment)
-    session_ids = [sid for (sid,) in session.query(WorkoutSession.id)
-                   .filter(WorkoutSession.user_id == user_id).all()]
-    if session_ids:
-        session.query(SetLog).filter(SetLog.session_id.in_(session_ids)) \
-               .delete(synchronize_session=False)
-    for model in (WorkoutSession, QueueTicket, Place, PantryItem, Signal, TargetAdjustment,
-                  Message, Meal, WeightLog, Workout, DailyLog):
-        session.query(model).filter(model.user_id == user_id).delete(synchronize_session=False)
+# ─── Account lifecycle (admin): archive & restart / restore / delete forever ───
+# The row-level work lives in account_lifecycle.py; these are the thin admin doors.
+from account_lifecycle import purge_user_rows as _purge_user_rows  # noqa: E402  (remove-waitlist uses it)
+
+
+def _lifecycle_response(fn, *args):
+    from account_lifecycle import LifecycleError
+    try:
+        out = fn(*args)
+    except LifecycleError as e:
+        return jsonify({"status": "error", "message": e.message}), e.status
+    return jsonify({"status": "ok", **out}), 200
+
+
+@app.route("/admin/user/<int:user_id>/archive", methods=["POST"])
+def admin_archive_user(user_id):
+    """Archive & restart: keep every row under this id, release the number so the next
+    sign-up from it starts from zero (account_lifecycle.archive_user). Sends nothing."""
+    from account_lifecycle import archive_user
+    return _lifecycle_response(archive_user, user_id)
+
+
+@app.route("/admin/user/<int:user_id>/restore", methods=["POST"])
+def admin_restore_user(user_id):
+    """Undo an archive. 409 while another row holds the number."""
+    from account_lifecycle import restore_user
+    return _lifecycle_response(restore_user, user_id)
+
+
+@app.route("/admin/user/<int:user_id>/delete-forever", methods=["POST"])
+def admin_delete_user_forever(user_id):
+    """Permanently delete a user (archived or active) and all their data. Requires the
+    typed confirmation `confirm` = "DELETE" or the user id — wrong → 400, nothing
+    touched. This is the ONLY hard-delete door for activated users (the old /delete
+    route is gone); pending waitlisters still go through /remove-waitlist."""
+    from account_lifecycle import delete_user_forever
+    body = request.get_json(silent=True) or {}
+    typed = request.form.get("confirm") or body.get("confirm") or ""
+    return _lifecycle_response(delete_user_forever, user_id, typed)
 
 
 @app.route("/admin/user/<int:user_id>/google-allowlisted", methods=["POST"])
@@ -2638,30 +2686,6 @@ def admin_google_allowlisted(user_id):
     if not mark_allowlisted(user_id, email):
         return jsonify({"status": "error", "message": "No Google account on file for this user."}), 400
     return jsonify({"status": "ok"}), 200
-
-
-@app.route("/admin/user/<int:user_id>/delete", methods=["POST"])
-def admin_delete_user(user_id):
-    """Permanently delete a user and all their data."""
-    session = get_session()
-    try:
-        user = session.get(User, user_id)
-        if not user:
-            return jsonify({"status": "error", "message": "User not found"}), 404
-        name = user.name
-        photon_user_id = user.photon_user_id
-        _purge_user_rows(session, user_id)
-        session.delete(user)
-        session.commit()
-        logger.info(f"Admin deleted user: {name} (id={user_id})")
-        # Free the shared-pool Photon seat so it doesn't linger (best-effort; a
-        # Photon failure never blocks the local delete — the seat can be freed
-        # manually). No-op when the user was never provisioned.
-        import photon
-        photon.deprovision_user(photon_user_id)
-        return jsonify({"status": "ok", "message": f"{name} deleted."})
-    finally:
-        session.close()
 
 
 @app.route("/admin/user/<int:user_id>/remove-waitlist", methods=["POST"])
@@ -2836,6 +2860,9 @@ def admin_user(user_id):
             profile_link=profile_url(user),
             coach_memory=build_memory_block(user, "admin"),
             google_state=google_state,
+            archived=bool(user.archived_at),
+            archived_at=fmt_pst(user.archived_at) if user.archived_at else None,
+            archived_phone_last4=(user.archived_phone or "")[-4:] or "—",
         )
     finally:
         session.close()
@@ -2950,6 +2977,31 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
 <div class="header">
   <a href="/admin" class="back">← Dashboard</a>
+  {% if archived %}
+  <div id="archivedBanner" style="margin:12px 0 4px;padding:12px 16px;border-radius:10px;border:1px solid rgba(255,214,10,.35);background:rgba(255,214,10,.08);display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <span style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--yellow)">ARCHIVED</span>
+    <span style="font-size:13px;color:var(--text2)">since {{ archived_at }} &nbsp;·&nbsp; number released (was ···{{ archived_phone_last4 }}) &nbsp;·&nbsp; every row kept under id {{ user.id }} &nbsp;·&nbsp; no sweeps, no sends</span>
+    <span style="margin-left:auto;display:flex;gap:8px">
+      <button onclick="restoreUser({{ user.id }}, '{{ user.name|replace("'","\\'") }}')" style="font-size:12px;padding:5px 12px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:600;cursor:pointer">Restore</button>
+      <button onclick="deleteForever({{ user.id }}, '{{ user.name|replace("'","\\'") }}')" style="font-size:12px;padding:5px 12px;border-radius:8px;border:none;background:rgba(255,69,58,.15);color:var(--red);font-weight:600;cursor:pointer">Delete forever</button>
+    </span>
+  </div>
+  <script>
+  async function restoreUser(uid, name){
+    if (!confirm('Restore ' + name + ' (id ' + uid + ')? Their number goes back on this account. Refused while another account holds it.')) return;
+    const r = await fetch('/admin/user/' + uid + '/restore', {method:'POST'});
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) location.reload(); else alert(d.message || 'Restore failed.');
+  }
+  async function deleteForever(uid, name){
+    const typed = prompt('PERMANENTLY delete ' + name + ' (id ' + uid + ') and ALL their data? This cannot be undone.\n\nType DELETE to confirm:');
+    if (typed === null) return;
+    const r = await fetch('/admin/user/' + uid + '/delete-forever', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({confirm: typed})});
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) window.location.href = '/admin'; else alert(d.message || 'Delete refused.');
+  }
+  </script>
+  {% endif %}
   <div class="header-top">
     <div class="user-title">
       <h1>{{ user.name }}</h1>

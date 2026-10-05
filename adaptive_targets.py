@@ -201,7 +201,9 @@ def run_all() -> int:
     """Scheduler sweep (daily): every completed user due for a cycle."""
     session = get_session()
     try:
-        ids = [u.id for u in session.query(User).filter(User.onboarding_step >= 3).all()]
+        # active only: an archived account (account_lifecycle) must not keep cycling.
+        ids = [u.id for u in session.query(User)
+               .filter(User.active.is_(True), User.onboarding_step >= 3).all()]
     finally:
         session.close()
     n = 0
