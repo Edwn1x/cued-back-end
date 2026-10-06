@@ -208,6 +208,18 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they complain the gym's packed or ask about the crowd",
     ),
     Capability(
+        id="stat_cards",
+        what="i can drop a quick card in the chat: how packed rsf is, where your macros are today, what your week looks like",
+        how="just ask, like 'how packed is rsf' or 'how am i doing today'",
+        tools=("send_stat_card",),
+        enabled=lambda u: config.STAT_CARD_TOOL_ENABLED,
+        relevance=lambda u: 5,
+        used=lambda session, u: session.query(__import__("models").Message.id).filter(
+            __import__("models").Message.user_id == u.id,
+            __import__("models").Message.message_type.like("stat_card_%")).first() is not None,
+        reveal_when="they ask how packed the gym is, how today's numbers look, or what their week looks like",
+    ),
+    Capability(
         id="campus_lookup",
         what="i can look things up for you — gym hours, a place, a class time",
         how="just ask, like 'what time does rsf close'",

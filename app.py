@@ -812,6 +812,11 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         else:
             logger.info("REACTION_ONLY_TURN user=%s — no text sent", user.id)
             typing_stop(user.id)
+        # Stat cards the coach queued (send_stat_card) land AFTER its line, never on a
+        # glitch reply (the turn that queued them didn't finish).
+        if turn.get("stat_cards") and not loop_raised:
+            from agent_tools import flush_stat_cards
+            flush_stat_cards(user.id, turn)
 
         # Detect end-of-workout signals and clear session state
         end_signals = ["done", "finished", "that's it", "thats it", "heading out", "heading home", "leaving gym", "left the gym"]

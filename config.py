@@ -503,11 +503,15 @@ INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-producti
 # week" bubbles. The page is server-rendered by THIS app (/card/stat/<kind>), so the
 # base is the Flask host, same as the connect links. STAT_CARDS_MODE: live = the page
 # renders inline (the extension fixes the frame ~268×292pt); image = a static card
-# showing the card as a 2.5:1 picture (about half the height, dark only, not live);
-# static = captions only. Tap always opens the page. STAT_CARDS_LIVE=false (legacy) = static.
+# showing the card as a 2.5:1 picture (about half the height, dark only, not live;
+# falls back to static if Photon refuses the picture); static = captions only. Tap always
+# opens the page. STAT_CARDS_LIVE=false (legacy) = static.
 STAT_CARD_BASE_URL = os.getenv("STAT_CARD_BASE_URL", "") or INTEGRATIONS_BASE_URL
 STAT_CARDS_LIVE = os.getenv("STAT_CARDS_LIVE", "true").lower() == "true"
-STAT_CARDS_MODE = (os.getenv("STAT_CARDS_MODE", "") or ("live" if STAT_CARDS_LIVE else "static")).strip().lower()
+# Default image: the founder's pick after testing all three on the phone (2026-10-05).
+STAT_CARDS_MODE = (os.getenv("STAT_CARDS_MODE", "") or ("image" if STAT_CARDS_LIVE else "static")).strip().lower()
+# The coach's send_stat_card tool: queues a card that goes out right after its reply.
+STAT_CARD_TOOL_ENABLED = os.getenv("STAT_CARD_TOOL_ENABLED", "true").lower() == "true"
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
 # Google Calendar WRITE-BACK (create events). OFF by default: turning it on requires

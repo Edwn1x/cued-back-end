@@ -2683,7 +2683,7 @@ _NARRATION_RE = re.compile(
     r"\bshould (react|explain)\b|\breact/explain\b|\bexplain that (tapping|the card|they)\b|"   # live 2026-09-24: "Should react/explain. … Explain that tapping offers…"
     r"\b(set_reminder|cancel_reminder|log_meal|manage_log|log_workout|log_event|react_to_message|"
     r"reply_in_thread|send_text|save_routine|reconstruct_routine_from_history|set_lift_anchors|start_workout_session|set_targets|usda_food_lookup|"
-    r"set_card_delivery)\b)",
+    r"set_card_delivery|send_stat_card)\b)",
     re.IGNORECASE)
 
 
@@ -3531,6 +3531,82 @@ def handle_send_gym_line_link(user_id: int, tool_input: dict, *, message_id=None
     return send_line_link(user_id)
 
 
+SEND_STAT_CARD_TOOL = {
+    "name": "send_stat_card",
+    "description": (
+        "Drop a small picture card into the thread, RIGHT AFTER your reply. Three kinds:\n"
+        "  rsf: the RSF weight room right now (% full, a bar, 'basically empty. go.'). Use it when "
+        "they ask how packed the gym is, or they're deciding whether to go.\n"
+        "  macros: today's calories and protein against their targets (with a 'low'/'hit' badge). "
+        "Use it when they ask how today's going or what's left, or right after a log when the day "
+        "total is the point.\n"
+        "  week: their next 5 days, with deadlines/exams from the calendar and their planned lift "
+        "days. Use it when they're stressed about the week ('so cooked this week') or ask what's "
+        "coming.\n"
+        "The card shows the numbers, so your reply is ONE short line around it ('i know. saw the "
+        "ochem midterm tues.'), never a re-list of what's on it. Only send one when seeing it beats "
+        "reading it: not every turn, not the same card twice in a row. The result tells you what "
+        "the card says; match it. An error (meter offline, gym closed, sent a few minutes ago) "
+        "means NO card goes out, so just answer in text and never say 'here's the card'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"kind": {"type": "string", "enum": ["rsf", "macros", "week"]}},
+        "required": ["kind"],
+    },
+}
+
+STAT_CARD_REPEAT_MIN = 20     # the same card again within this window is refused (nagging)
+STAT_CARD_MAX_PER_TURN = 2
+
+
+def handle_send_stat_card(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Queue a stat card on the turn; app.py sends it right after the reply text, so
+    the thread reads coach line → card (the founder's mockups). Validated NOW so the
+    coach never promises a card that won't go out."""
+    import stat_cards
+    kind = (tool_input.get("kind") or "").strip().lower()
+    if kind not in stat_cards.KINDS:
+        return f"error: kind must be one of {', '.join(stat_cards.KINDS)}"
+    st = _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})
+    queued = st.setdefault("stat_cards", [])
+    if kind in queued:
+        return f"ok: the {kind} card is already going out after your reply"
+    if len(queued) >= STAT_CARD_MAX_PER_TURN:
+        return f"error: already sending {len(queued)} cards this turn; no more, answer in text"
+    ago = stat_cards.minutes_since_sent(user_id, kind)
+    if ago is not None and ago < STAT_CARD_REPEAT_MIN:
+        return (f"error: you sent the {kind} card {int(ago)} min ago and it's still right there in "
+                "the thread; don't resend. Point at it or answer in text.")
+    try:
+        state = stat_cards.build_state(kind, user_id)
+    except stat_cards.StatCardUnavailable as e:
+        return f"error: no {kind} card right now ({e}); answer in text"
+    if not state.get("available"):
+        return f"error: no {kind} card right now ({state.get('subcaption')}); answer in text, no numbers invented"
+    queued.append(kind)
+    says = " · ".join(x for x in (state.get("headline"), state.get("subline")) if x) or state.get("subcaption") or ""
+    if kind == "week" and state.get("empty_note"):
+        says = f"empty grid — '{state['empty_note']}'"
+    logger.info("STAT_CARD_QUEUED user=%s kind=%s says=%r", user_id, kind, says[:80])
+    return (f"ok: the {state['label']} card goes out right after your reply. It shows: {says or state['subcaption']}. "
+            "Don't repeat those numbers; one short line around it.")
+
+
+def flush_stat_cards(user_id: int, turn: dict) -> int:
+    """Send the cards this turn queued (called by app.py after the reply text). Never
+    raises: a card that fails is logged and skipped; the reply already went."""
+    sent = 0
+    for kind in (turn or {}).get("stat_cards") or []:
+        try:
+            import stat_cards
+            stat_cards.send_stat_card(user_id, kind)
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("STAT_CARD_FLUSH_FAILED user=%s kind=%s err=%s", user_id, kind, e)
+    return sent
+
+
 CREATE_CALENDAR_EVENT_TOOL = {
     "name": "create_calendar_event",
     "description": (
@@ -3713,6 +3789,7 @@ _HANDLERS = {
     "create_calendar_event": handle_create_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
+    "send_stat_card": handle_send_stat_card,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
     "get_weather": handle_get_weather,

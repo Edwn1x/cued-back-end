@@ -252,6 +252,8 @@ def sidecar(monkeypatch):
     monkeypatch.setattr(config, "SIDECAR_URL", "http://sidecar.test:8080")
     monkeypatch.setattr(config, "INTERNAL_SHARED_SECRET", SECRET)
     monkeypatch.setattr(config, "STAT_CARD_BASE_URL", "https://web.test")
+    import sms
+    monkeypatch.setattr(sms, "_resolve_channel", lambda user_id: "imessage")   # cards only render in iMessage
     calls = []
 
     def fake_post(url, json=None, headers=None, timeout=None):
@@ -294,8 +296,44 @@ def test_link_fallback_user_gets_the_url_as_text(db, sidecar, sms_capture):
     if not config.CARD_LINK_FALLBACK_ENABLED:
         pytest.skip("fallback disabled")
     r = send_stat_card(u.id, "week")
-    assert sidecar == [] and r["card_session"] is None
-    assert "/card/stat/week?t=" in json.dumps(sms_capture)
+    assert r["card_session"] is None and r["mode"] == "link"
+    assert not any(url.endswith("/send-card") for url, _ in sidecar)      # no card, just text
+    texts = [p.get("text", "") for url, p in sidecar if url.endswith("/send")] + [b for _, b in sms_capture]
+    assert any(t.startswith("this week: ") and "/card/stat/week?t=" in t for t in texts)
+
+
+def test_sms_only_user_gets_the_link_in_one_gsm_segment(db, sidecar, sms_capture, monkeypatch):
+    """Green-bubble users can't render a card: the link goes as plain ASCII text."""
+    import sms
+    from stat_cards import send_stat_card
+    monkeypatch.setattr(sms, "_resolve_channel", lambda user_id: "sms")
+    u = make_user(db)
+    r = send_stat_card(u.id, "macros")
+    assert r["mode"] == "link" and not any(url.endswith("/send-card") for url, _ in sidecar)
+    body = sms_capture[-1][1]
+    assert body.startswith("today: https://web.test/card/stat/macros?t=") and body.isascii()
+
+
+def test_image_refused_by_photon_falls_back_to_captions(db, monkeypatch):
+    """The U+2800 title is a workaround; if Photon closes it, the card degrades to
+    captions instead of vanishing."""
+    import config, sms, photon_cards
+    from stat_cards import send_stat_card
+    monkeypatch.setattr(config, "SIDECAR_URL", "http://sidecar.test:8080")
+    monkeypatch.setattr(config, "STAT_CARD_BASE_URL", "https://web.test")
+    monkeypatch.setattr(sms, "_resolve_channel", lambda user_id: "imessage")
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append(json)
+        if "imageBase64" in (json.get("layout") or {}):
+            return _Resp(502, {"ok": False, "error": "[upstream] layout.image and layout.image_title must be set together"})
+        return _Resp(200, {"ok": True, "provider_message_id": "card-2", "card_session": {"id": "card-2"}})
+    monkeypatch.setattr(photon_cards.requests, "post", fake_post)
+    u = make_user(db)
+    r = send_stat_card(u.id, "week", mode="image")
+    assert r["mode"] == "static" and r["provider_message_id"] == "card-2"
+    assert "imageBase64" in calls[0]["layout"] and calls[1]["layout"]["caption"] == "this week"
 
 
 def test_update_re_renders_in_place_with_a_new_version(db, sidecar):
