@@ -487,6 +487,7 @@ def _layout(state: dict) -> dict:
 
 
 MODES = ("live", "image", "static")
+BLANK_TITLE = "\u2800"
 
 
 def _mode(mode: str | None, live: bool | None) -> str:
@@ -510,10 +511,13 @@ def _card_args(mode: str, state: dict) -> dict:
         # The picture IS the bubble: no caption (so no caption strip) and a blank
         # imageTitle (the SDK requires one with an image; letting it build the layout
         # from og tags printed the title over the picture AND in a strip, phone 10-05).
+        # U+2800 (braille blank): Photon's upstream strips " " and U+200B and then
+        # refuses the image ("image and image_title must be set together"); this one
+        # survives and draws nothing.
         import base64
         from stat_card_image import render_jpeg
         return {"live": False, "layout": {"imageBase64": base64.b64encode(render_jpeg(state)).decode("ascii"),
-                                          "imageTitle": " ", "summary": state["label"]}}
+                                          "imageTitle": BLANK_TITLE, "summary": state["label"]}}
     return {"live": False, "layout": _layout(state)}
 
 
