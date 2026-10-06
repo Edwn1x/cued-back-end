@@ -37,6 +37,8 @@ CORS(app, origins=config.ALLOWED_ORIGINS)
 app.register_blueprint(admin_system_bp)
 from card_page import card_bp
 app.register_blueprint(card_bp)
+from stat_cards import stat_bp
+app.register_blueprint(stat_bp)
 # Third-party OAuth connect flow (/c/<provider>, /oauth/<provider>/callback).
 # Provider modules register themselves on import; import them here so the registry
 # is populated before the first request (each is a no-op behind its own flag).
@@ -1860,6 +1862,8 @@ def card_test_send():
     founder can run the install-flow experiment with plain curl:
       {"phone": "+1…", "action": "send"}                        → sends /card/test as a live card
       {"phone": "+1…", "action": "update", "card_session": {…}, "v": 2} → edits it in place
+      {"phone": "+1…", "action": "send_stat", "kind": "rsf|macros|week", "live"?: bool} → a stat card
+      {"phone": "+1…", "action": "update_stat", "kind": …, "card_session": {…}}     → re-render it in place
     Returns the sidecar's answer verbatim; a refusal (tier, extension) comes back as
     502 with Photon's text — that text IS the experiment's result."""
     if request.headers.get("X-Internal-Secret") != config.INTERNAL_SHARED_SECRET or not config.INTERNAL_SHARED_SECRET:
@@ -1880,6 +1884,37 @@ def card_test_send():
             return jsonify({"ok": False, "error": str(e)}), 502
         except (ValueError, TypeError) as e:
             return jsonify({"ok": False, "error": str(e)}), 400
+    if action in ("send_stat", "update_stat"):
+        # Stat cards (rsf / macros / week) to the user on this phone — the founder's
+        # live-bubble retest before the coach sends them.
+        from models import User
+        from stat_cards import send_stat_card, update_stat_card, StatCardUnavailable, KINDS
+        kind = str(d.get("kind") or "").lower()
+        if kind not in KINDS:
+            return jsonify({"ok": False, "error": f"kind must be one of {'|'.join(KINDS)}"}), 400
+        s = get_session()
+        try:
+            u = s.query(User).filter(User.phone == phone).first()
+            user_id = u.id if u else None
+        finally:
+            s.close()
+        if not user_id:
+            return jsonify({"ok": False, "error": "no user with that phone"}), 404
+        live = None if d.get("live") is None else d.get("live") is not False
+        try:
+            if action == "send_stat":
+                r = send_stat_card(user_id, kind, live=live)
+            else:
+                cs = d.get("card_session")
+                if not isinstance(cs, dict) or not cs.get("id"):
+                    return jsonify({"ok": False, "error": "update_stat needs card_session from the send"}), 400
+                r = update_stat_card(user_id, kind, cs, live=live)
+            return jsonify({"ok": True, **r})
+        except StatCardUnavailable as e:
+            return jsonify({"ok": False, "error": f"nothing true to show: {e}"}), 409
+        except CardError as e:
+            logger.warning("CARD_TEST_REFUSED phone_last4=%s action=%s err=%s", phone[-4:], action, e)
+            return jsonify({"ok": False, "error": str(e)}), 502
     base = request.url_root.rstrip("/").replace("http://", "https://")
     url = f"{base}/card/test"
     # Optional same-origin override (e.g. a real /card/workout/<token> link) so a
@@ -1899,7 +1934,7 @@ def card_test_send():
             v = d.get("v", 2)
             update_card(phone, cs, f"{url}?v={v}")
             return jsonify({"ok": True, "url": f"{url}?v={v}"})
-        return jsonify({"ok": False, "error": "action must be send|update|send_session"}), 400
+        return jsonify({"ok": False, "error": "action must be send|update|send_session|send_stat|update_stat"}), 400
     except CardError as e:
         logger.warning("CARD_TEST_REFUSED phone_last4=%s action=%s err=%s", phone[-4:], action, e)
         return jsonify({"ok": False, "error": str(e)}), 502
