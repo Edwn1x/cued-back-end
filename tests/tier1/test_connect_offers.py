@@ -102,7 +102,7 @@ def test_send_connect_link_refuses_google_until_allowlisted(db, sms_capture):
     from connect_offers import mark_allowlisted
     assert mark_allowlisted(u.id) is True
     r = handle_send_connect_link(u.id, {"provider": "gcal"})
-    assert r.startswith("ok:") and len(sms_capture) == 1 and "/c/gcal?t=" in sms_capture[0][1]
+    assert r.startswith("ok:") and len(sms_capture) == 1 and "/c/gcal/" in sms_capture[0][1]
     # a second set_google_account with the same address keeps the allowlist stamp
     assert "set up — send the link now" in handle_set_google_account(u.id, {"email": "jane.doe@gmail.com"})
     # a DIFFERENT account needs its own entry
@@ -158,7 +158,7 @@ def test_revoked_google_row_gets_one_nudge_per_revoke(db, sms_capture):
 
     assert sweep(_now()) == 1
     b = _bodies(sms_capture)
-    assert b[0] == RECONNECT_LINE["google_health"].format(device="fitbit") and "/c/google_health?t=" in b[1]
+    assert b[0] == RECONNECT_LINE["google_health"].format(device="fitbit") and "/c/google_health/" in b[1]
     assert _integ(u.id, "google_health").meta.get("reconnect_nudged_at")
     assert sweep(_now()) == 0 and len(sms_capture) == 2      # once per revoke
 
@@ -201,7 +201,7 @@ def test_first_offer_carries_the_link_when_allowlisted_or_published(db, sms_capt
     u = _onboarded(db, google_email="a@gmail.com", google_allowlisted_at=_now())
     assert sweep(_now()) == 1
     b = _bodies(sms_capture)
-    assert b[0] == OFFER_GCAL_LINK and b[1].startswith("https://app.example/c/gcal?t=")
+    assert b[0] == OFFER_GCAL_LINK and b[1].startswith("https://app.example/c/gcal/")
     assert _integ(u.id, "gcal").status == "pending"
     sms_capture.clear()
     monkeypatch.setattr(config, "GOOGLE_OAUTH_TESTING_MODE", False)
@@ -252,7 +252,7 @@ def test_allowlisting_sends_the_promised_link(db, sms_capture, client):
     sms_capture.clear()
     assert sweep(_now() + timedelta(hours=30)) == 1
     b = _bodies(sms_capture)
-    assert b[0] == ALLOWLISTED_LINE["gcal"] and "/c/gcal?t=" in b[1]
+    assert b[0] == ALLOWLISTED_LINE["gcal"] and "/c/gcal/" in b[1]
     assert sweep(_now() + timedelta(hours=31)) == 0 and "gcal_link" in _u(u.id).connect_offers
 
 

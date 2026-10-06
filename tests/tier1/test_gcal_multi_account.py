@@ -171,7 +171,7 @@ def test_reconnect_nudge_names_the_dead_secondary_account(db, sms_capture):
     assert sweep(_now()) == 1
     bodies = [b for _p, b in sms_capture]
     assert bodies[0] == "ur google calendar (jane@berkeley.edu) disconnected on google's end. tap to reconnect"
-    assert "/c/gcal?t=" in bodies[1]
+    assert "/c/gcal/" in bodies[1]
     assert sweep(_now()) == 0                                            # once per revoke
 
 

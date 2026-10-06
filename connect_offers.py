@@ -233,12 +233,8 @@ def needs_allowlisting(session) -> list:
 
 def mint_link(user_id: int, provider: str) -> str:
     """A fresh single-use connect link (same plumbing as the coach's send_connect_link)."""
-    import time as _time
     from integrations import base
-    from integrations.tokens import connect_token
-    token, nonce = connect_token(user_id, provider)
-    base.set_pending(user_id, provider, nonce, int(_time.time()) + 30 * 60)
-    return f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/c/{provider}?t={token}"
+    return base.mint_connect_link(user_id, provider)
 
 
 def send_link(user_id: int, provider: str, line: str | None, *, source: str) -> None:

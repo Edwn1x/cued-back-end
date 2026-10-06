@@ -220,6 +220,98 @@ def test_connect_start_used_link_rejected(client, db, fake_provider):
     assert r.status_code == 400
 
 
+# ─── the short branded link (/c/<provider>/<code>) ───────────────────────────
+
+def _handoff_target(resp) -> str:
+    """The provider URL the handoff page sends the browser to (its JS redirect)."""
+    import json as _json
+    import re as _re
+    m = _re.search(r"location\.replace\((\"[^<]*?\")\)", resp.get_data(as_text=True))
+    assert m, "handoff page has no redirect"
+    return _json.loads(m.group(1))
+
+
+def _state_of(url: str) -> str:
+    from urllib.parse import urlparse, parse_qs
+    return parse_qs(urlparse(url).query)["state"][0]
+
+
+def test_mint_connect_link_is_short_and_branded(db, fake_provider, monkeypatch):
+    from integrations import base
+    monkeypatch.setattr(config, "CONNECT_LINK_BASE_URL", "https://app.cued.fit/")
+    user = make_user(db)
+    link = base.mint_connect_link(user.id, "faketest")
+    assert link.startswith("https://app.cued.fit/c/faketest/")
+    code = link.rsplit("/", 1)[1]
+    assert len(code) == 12 and "?" not in link
+    assert base.pending_nonce(user.id, "faketest") == code
+    assert base.pending_by_code("faketest", code)[0] == user.id
+
+
+def test_mint_connect_link_falls_back_to_the_flask_host(db, fake_provider, monkeypatch):
+    from integrations import base
+    monkeypatch.setattr(config, "CONNECT_LINK_BASE_URL", "")
+    user = make_user(db)
+    assert base.mint_connect_link(user.id, "faketest").startswith("https://app.example/c/faketest/")
+
+
+def test_short_link_hands_off_with_a_valid_state_then_connects_once(client, db, fake_provider, sms_capture):
+    from integrations import base
+    from integrations.tokens import verify_connect_token
+    user = make_user(db)
+    code = base.mint_connect_link(user.id, "faketest").rsplit("/", 1)[1]
+
+    r = client.get(f"/c/faketest/{code}")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "og:title" in body and "connect your faketest · cued" in body
+    target = _handoff_target(r)
+    assert target.startswith("https://prov.example/auth?")
+    assert "oauth/faketest/callback" in target   # the callback host is unchanged
+    state = _state_of(target)
+    assert verify_connect_token(state) == (user.id, "faketest", code)
+
+    # the rebuilt token is accepted by the unchanged callback, and burns the code
+    cb = client.get(f"/oauth/faketest/callback?code=abc&state={state}")
+    assert cb.status_code == 200
+    db.expire_all()
+    assert base.get_integration(db, user.id, "faketest").status == "connected"
+    again = client.get(f"/c/faketest/{code}")
+    assert again.status_code == 400 and "already used" in again.get_data(as_text=True)
+
+
+def test_short_link_expired(client, db, fake_provider):
+    from integrations import base
+    user = make_user(db)
+    code = base.mint_connect_link(user.id, "faketest").rsplit("/", 1)[1]
+    base.set_pending(user.id, "faketest", code, 1)   # same code, exp long past
+    r = client.get(f"/c/faketest/{code}")
+    assert r.status_code == 400 and "expired" in r.get_data(as_text=True)
+
+
+def test_short_link_replaced_by_a_newer_link_is_dead(client, db, fake_provider):
+    from integrations import base
+    user = make_user(db)
+    old = base.mint_connect_link(user.id, "faketest").rsplit("/", 1)[1]
+    new = base.mint_connect_link(user.id, "faketest").rsplit("/", 1)[1]
+    assert client.get(f"/c/faketest/{old}").status_code == 400
+    assert client.get(f"/c/faketest/{new}").status_code == 200
+
+
+def test_short_link_unknown_or_malformed_code(client, db, fake_provider):
+    assert client.get("/c/faketest/AAAAAAAAAAAA").status_code == 400
+    assert client.get("/c/faketest/x").status_code == 400
+    assert client.get("/c/nope/AAAAAAAAAAAA").status_code == 404
+
+
+def test_short_code_is_scoped_to_its_provider(client, db, fake_provider):
+    """A code minted for one provider never resolves under another provider's path."""
+    from integrations import base
+    user = make_user(db)
+    code = base.mint_connect_link(user.id, "faketest").rsplit("/", 1)[1]
+    assert base.pending_by_code("gcal", code) is None
+
+
 def test_callback_happy_path_connects_and_texts(client, db, fake_provider, sms_capture):
     from integrations import base
     from integrations.tokens import connect_token
@@ -306,6 +398,6 @@ def test_tool_sends_link_bubble_and_sets_pending(db, monkeypatch, sms_capture):
     out = handle_send_connect_link(user.id, {"provider": "gcal"})
     assert out.startswith("ok")
     # a link bubble went out, and it points at /c/gcal
-    assert any("/c/gcal?t=" in body for _p, body in sms_capture)
+    assert any("/c/gcal/" in body for _p, body in sms_capture)
     # pending nonce recorded so the callback can enforce single use
     assert base.pending_nonce(user.id, "gcal")

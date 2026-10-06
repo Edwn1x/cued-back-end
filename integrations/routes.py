@@ -1,8 +1,13 @@
 """OAuth connect flow routes (Blueprint `integrations_bp`, registered in app.py).
 
+    GET /c/<provider>/<code>
+        The link the coach texts (short, on CONNECT_LINK_BASE_URL). The code is the
+        row's single-use nonce; the signed token is rebuilt from the row and passed
+        on as `state` from a cued-branded handoff page.
+
     GET /c/<provider>?t=<connect_token>
-        The link the coach texts. Verifies the single-use token, then 302s to the
-        provider's authorize screen with `state` = the token.
+        The original long link, still honored for links already sent. Verifies the
+        single-use token, then 302s to the provider's authorize screen.
 
     GET /oauth/<provider>/callback?code=…&state=…
         Provider redirects back here. Validates state (+ single-use nonce),
@@ -14,14 +19,17 @@ The Strava webhook route is added to this same blueprint in Part 2.
 """
 from __future__ import annotations
 
+import html
+import json
 import logging
+import re
 
 from flask import Blueprint, request, redirect, Response
 
 import config
 from models import get_session, User
 from integrations import base
-from integrations.tokens import verify_connect_token
+from integrations.tokens import connect_token, verify_connect_token
 
 logger = logging.getLogger("cued.integrations.routes")
 
@@ -65,6 +73,63 @@ def connect_start(provider: str):
         base.mark_error(user_id, provider, f"authorize_url: {e}")
         return _page("something went wrong", "try again in a bit.", 500)
     return redirect(url, code=302)
+
+
+_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
+_OG_IMAGE = "https://cued.fit/images/og-image-cued.png"
+
+
+def _handoff_page(label: str, authorize_url: str) -> Response:
+    """The short link's landing: cued-branded link-preview tags for the iMessage bubble,
+    then straight on to the provider's sign-in (meta refresh + JS, a tap-through fallback)."""
+    title = html.escape(f"connect your {label} · cued")
+    desc = html.escape(f"one tap and i can see your {label}.")
+    href = html.escape(authorize_url, quote=True)
+    page = (
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>{title}</title>"
+        f"<meta property='og:title' content='{title}'>"
+        f"<meta property='og:description' content='{desc}'>"
+        "<meta property='og:site_name' content='cued'>"
+        f"<meta property='og:image' content='{_OG_IMAGE}'>"
+        f"<meta http-equiv=refresh content='0;url={href}'>"
+        "<style>body{font:16px -apple-system,system-ui,sans-serif;margin:14vh auto;max-width:20rem;"
+        "text-align:center;color:#111;padding:0 1.5rem}h1{font-size:1.1rem;font-weight:600}"
+        "a{color:#0a84ff}@media(prefers-color-scheme:dark){body{background:#000;color:#eee}}</style>"
+        f"<script>location.replace({json.dumps(authorize_url)})</script></head><body>"
+        f"<h1>connecting your {html.escape(label)}…</h1>"
+        f"<p><a href='{href}'>tap here if nothing happens</a></p></body></html>"
+    )
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
+
+
+@integrations_bp.route("/c/<provider>/<code>", methods=["GET"])
+def connect_short(provider: str, code: str):
+    """The short link: the code is the row's live single-use nonce. Rebuild the signed
+    token from the row and hand off to the provider with it as `state`, so the callback
+    (and its single-use check) is exactly the long-link path's."""
+    prov = base.get_provider(provider)
+    if prov is None or not prov.enabled():
+        return _page("not available", "this connection isn't turned on yet.", 404)
+    if not _CODE_RE.match(code or ""):
+        return _page("link expired", "ask the coach to send a fresh link.", 400)
+
+    hit = base.pending_by_code(provider, code)
+    if hit is None:
+        return _page("link already used", "ask the coach to send a fresh link.", 400)
+    user_id, exp = hit
+    token, _ = connect_token(user_id, provider, nonce=code, exp=exp)
+    if verify_connect_token(token) is None:      # past exp
+        return _page("link expired", "ask the coach to send a fresh link.", 400)
+
+    try:
+        url = prov.authorize_url(state=token, redirect_uri=_redirect_uri(provider))
+    except Exception as e:
+        logger.exception("CONNECT_START_FAILED provider=%s user=%s", provider, user_id)
+        base.mark_error(user_id, provider, f"authorize_url: {e}")
+        return _page("something went wrong", "try again in a bit.", 500)
+    return _handoff_page(getattr(prov, "label", None) or provider, url)
 
 
 @integrations_bp.route("/oauth/<provider>/callback", methods=["GET"])

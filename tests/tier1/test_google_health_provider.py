@@ -181,5 +181,5 @@ def test_connect_tool_accepts_google_health_and_gates_on_flag(db, monkeypatch, s
     assert handle_send_connect_link(user.id, {"provider": "fitbit"}).startswith("error")
     monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", True)
     assert handle_send_connect_link(user.id, {"provider": "google_health"}).startswith("ok")
-    assert any("/c/google_health?t=" in body for _p, body in sms_capture)
+    assert any("/c/google_health/" in body for _p, body in sms_capture)
     assert base.pending_nonce(user.id, "google_health")
