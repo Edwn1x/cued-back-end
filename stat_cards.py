@@ -165,11 +165,13 @@ def macros_state(user_id: int) -> dict:
         {"label": "calories", "frac": None if cf is None else min(cf, 1.0),
          "tone": "red" if cal_badge else "blue", "badge": cal_badge[0] if cal_badge else None,
          "badge_tone": cal_badge[1] if cal_badge else None,
-         "value": f"{cal:,} / {cal_t:,}" if cal_t else f"{cal:,}"},
+         "value": f"{cal:,} / {cal_t:,}" if cal_t else f"{cal:,}",
+         "big": f"{cal:,}", "of": f"/ {cal_t:,} cal" if cal_t else "cal"},
         {"label": "protein", "frac": None if pf is None else min(pf, 1.0),
          "tone": pro_badge[1] if pro_badge else "blue", "badge": pro_badge[0] if pro_badge else None,
          "badge_tone": pro_badge[1] if pro_badge else None,
-         "value": f"{pro} / {pro_t}g" if pro_t else f"{pro}g"},
+         "value": f"{pro} / {pro_t}g" if pro_t else f"{pro}g",
+         "big": f"{pro}g", "of": f"/ {pro_t}g" if pro_t else ""},
     ]
     sub = f"{cal:,} cal · {pro}g protein"
     if pro_badge and pro_badge[0] == "low":
@@ -287,8 +289,12 @@ def week_state(user_id: int, *, now_utc: datetime | None = None) -> dict:
     n_dl = sum(1 for d in dates for c in cols[d] if c["tone"] in ("exam", "due"))
     n_lift = sum(1 for d in dates for c in cols[d] if c["tone"] == "lift")
     label = "this week" if start.weekday() == 0 else "next 5 days"
+    # An all-empty grid says why instead of looking broken.
+    empty_note = None
+    if not n_dl and not any(cols[d] for d in dates):
+        empty_note = "nothing due. tell me your lift days and they'll show here." if not weekdays else "nothing due."
     return {"kind": "week", "label": label, "available": True, "headline": None, "subline": None,
-            "bars": [], "week": week, "caption": label,
+            "bars": [], "week": week, "caption": label, "empty_note": empty_note,
             "subcaption": f"{n_dl} due · {n_lift} lift day{'s' if n_lift != 1 else ''}"}
 
 
@@ -304,10 +310,13 @@ def build_state(kind: str, user_id: int, *, now_utc: datetime | None = None) -> 
 
 # ─── page ────────────────────────────────────────────────────────────────────
 
-# Fixed height per kind: the bubble never scrolls (the 2026-09-14 live-card test failed
-# on a tall page fighting the thread's scroll). The launcher icon overlays the top-left
-# ~36px, so it IS the dot before the label in the mockups; we leave room for it.
-HEIGHT = {"rsf": 128, "macros": 132, "week": 158}
+# The live bubble's frame is set by the Spectrum extension, not the page: on the
+# founder's phone (2026-10-05) every card came out ~268×292pt, near square, whatever
+# height the page asked for, and a fixed 300px body clipped on the right. So the page
+# FILLS the frame: fluid width, full height, content spread top to bottom, overflow
+# hidden (never scrolls; the 09-14 live test failed on a page fighting the thread's
+# scroll). The launcher icon overlays the top-left ~36px, so it IS the dot before the
+# label in the mockups; we leave room for it.
 
 PAGE_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -327,75 +336,101 @@ PAGE_HTML = """<!doctype html>
             --green-bg: #173826; --green-fg: #6fd39b; }
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: {{ height }}px; overflow: hidden; background: transparent; }
-  body { width: 300px; padding: 12px 16px; color: var(--fg);
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body { display: flex; flex-direction: column; padding: 12px 16px 16px; color: var(--fg);
          font-family: -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  .label { padding-left: 24px; font-size: 15px; color: var(--muted); line-height: 20px; margin-bottom: 6px;
-           display: flex; justify-content: space-between; }
-  .label .foot { font-size: 12px; }
-  .headline { font-size: 34px; font-weight: 700; letter-spacing: -0.5px; line-height: 40px; }
-  .subline { font-size: 15px; color: var(--muted); line-height: 20px; margin: 2px 0 10px; }
-  .track { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
-  .fill { height: 100%; border-radius: 4px; }
+  .label { flex: none; padding-left: 24px; font-size: 15px; color: var(--muted); line-height: 22px; }
+  .main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .track { height: 10px; border-radius: 5px; background: var(--track); overflow: hidden; flex: none; }
+  .fill { height: 100%; border-radius: 5px; }
   .fill.blue { background: var(--blue); } .fill.amber { background: var(--amber); }
   .fill.red { background: var(--red); } .fill.green { background: var(--green); }
-  .row { margin-top: 8px; }
-  .row-top { display: flex; align-items: center; justify-content: space-between; height: 22px; margin-bottom: 5px; }
-  .row-top .name { font-size: 15px; }
-  .row-top .val { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-  .badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+  .muted { color: var(--muted); }
+  .badge { font-size: 13px; font-weight: 600; padding: 2px 9px; border-radius: 10px; white-space: nowrap; }
   .badge.amber { background: var(--amber-bg); color: var(--amber-fg); }
   .badge.red { background: var(--red-bg); color: var(--red-fg); }
   .badge.green { background: var(--green-bg); color: var(--green-fg); }
-  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
-  .grid { display: grid; grid-template-columns: repeat({{ s.week|length or 5 }}, 1fr); gap: 5px; }
-  .dow { text-align: center; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+
+  /* rsf: the number owns the middle, the bar sits on the floor */
+  .rsf .main { justify-content: center; }
+  .headline { font-size: clamp(40px, 19vw, 72px); font-weight: 700; letter-spacing: -1px; line-height: 1.05; }
+  .subline { font-size: 17px; color: var(--muted); line-height: 22px; margin-top: 4px; }
+  .rsf .floor { flex: none; }
+  .rsf .foot { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+  /* macros: two rows spread over the height, number big, target small */
+  .macros .main { justify-content: space-evenly; }
+  .row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .row-top .name { font-size: 15px; color: var(--muted); }
+  .num { font-size: clamp(24px, 11vw, 40px); font-weight: 700; letter-spacing: -0.5px; line-height: 1.1;
+         margin: 2px 0 8px; white-space: nowrap; }
+  .num small { font-size: 15px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  .note { font-size: 13px; color: var(--muted); }
+
+  /* week: the columns take all the height left */
+  body.week { padding-left: 12px; padding-right: 12px; }
+  .week .label { padding-left: 28px; }
+  .week .main { margin-top: 6px; }
+  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat({{ s.week|length or 5 }}, minmax(0, 1fr));
+          grid-template-rows: auto 1fr; gap: 4px; }
+  .dow { text-align: center; font-size: 13px; color: var(--muted); }
   .dow.today { color: var(--blue); font-weight: 600; }
-  .cell { background: var(--cell); border-radius: 8px; height: 84px; padding: 5px 3px;
-          display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
-  .chip { font-size: 12px; font-weight: 600; text-align: center; border-radius: 6px; padding: 3px 2px;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cell { background: var(--cell); border-radius: 8px; min-height: 0; padding: 4px 2px;
+          display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  .chip { font-size: 11px; font-weight: 600; letter-spacing: -0.2px; text-align: center; border-radius: 6px; padding: 3px 0;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
   .chip.exam { background: var(--red-bg); color: var(--red-fg); }
   .chip.due { background: var(--amber-bg); color: var(--amber-fg); }
   .chip.lift { background: var(--blue); color: #fff; }
   .chip.done { background: var(--green-bg); color: var(--green-fg); }
   .chip.more { color: var(--muted); font-weight: 500; }
   .spacer { flex: 1; }
+  .empty { font-size: 13px; color: var(--muted); text-align: center; margin-top: 6px; flex: none; }
 </style></head>
 <body class="{{ s.kind }}">
-<div class="label"><span>{{ s.label }}</span>{% if s.foot %}<span class="foot">{{ s.foot }}</span>{% endif %}</div>
-{% if s.headline %}<div class="headline">{{ s.headline }}</div>{% endif %}
-{% if s.subline %}<div class="subline">{{ s.subline }}</div>{% endif %}
+<div class="label">{{ s.label }}</div>
 {% if s.kind == 'rsf' %}
-  {% for b in s.bars %}<div class="track"><div class="fill {{ b.tone }}" style="width: {{ (b.frac * 100)|round(1) }}%"></div></div>{% endfor %}
-{% elif s.kind == 'macros' %}
-  {% for b in s.bars %}
-  <div class="row">
-    <div class="row-top"><span class="name">{{ b.label }}</span>
-      <span class="val">{% if b.badge %}<span class="badge {{ b.badge_tone }}">{{ b.badge }}</span>{% else %}{{ b.value }}{% endif %}</span></div>
-    {% if b.frac is not none %}<div class="track"><div class="fill {{ b.tone }}" style="width: {{ (b.frac * 100)|round(1) }}%"></div></div>{% endif %}
+  <div class="main">
+    {% if s.headline %}<div class="headline">{{ s.headline }}</div>{% endif %}
+    {% if s.subline %}<div class="subline">{{ s.subline }}</div>{% endif %}
   </div>
+  <div class="floor">
+    {% for b in s.bars %}<div class="track"><div class="fill {{ b.tone }}" style="width: {{ (b.frac * 100)|round(1) }}%"></div></div>{% endfor %}
+    {% if s.foot %}<div class="foot">{{ s.foot }}</div>{% endif %}
+  </div>
+{% elif s.kind == 'macros' %}
+  <div class="main">
+  {% for b in s.bars %}
+    <div class="row">
+      <div class="row-top"><span class="name">{{ b.label }}</span>{% if b.badge %}<span class="badge {{ b.badge_tone }}">{{ b.badge }}</span>{% endif %}</div>
+      <div class="num">{{ b.big }}{% if b.of %} <small>{{ b.of }}</small>{% endif %}</div>
+      {% if b.frac is not none %}<div class="track"><div class="fill {{ b.tone }}" style="width: {{ (b.frac * 100)|round(1) }}%"></div></div>{% endif %}
+    </div>
   {% endfor %}
   {% if s.no_targets %}<div class="note">no targets set yet</div>{% endif %}
+  </div>
 {% elif s.kind == 'week' %}
-  <div class="grid">
-    {% for d in s.week %}<div class="dow{{ ' today' if d.today else '' }}">{{ d.dow }}</div>{% endfor %}
-    {% for d in s.week %}<div class="cell">
-      {% for c in d['items'] %}{% if c.tone in ('lift', 'done') %}<div class="spacer"></div>{% endif %}<div class="chip {{ c.tone }}">{{ c.text }}</div>{% endfor %}
-      {% if d.more %}<div class="chip more">+{{ d.more }}</div>{% endif %}
-    </div>{% endfor %}
+  <div class="main">
+    <div class="grid">
+      {% for d in s.week %}<div class="dow{{ ' today' if d.today else '' }}">{{ d.dow }}</div>{% endfor %}
+      {% for d in s.week %}<div class="cell">
+        {% for c in d['items'] %}{% if c.tone in ('lift', 'done') %}<div class="spacer"></div>{% endif %}<div class="chip {{ c.tone }}">{{ c.text }}</div>{% endfor %}
+        {% if d.more %}<div class="chip more">+{{ d.more }}</div>{% endif %}
+      </div>{% endfor %}
+    </div>
+    {% if s.empty_note %}<div class="empty">{{ s.empty_note }}</div>{% endif %}
   </div>
 {% endif %}
 </body></html>"""
 
 EXPIRED_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
-<style>body{margin:0;padding:14px 16px 14px 40px;width:300px;box-sizing:border-box;font:15px -apple-system,system-ui,sans-serif;color:#8a8a8e;background:transparent}</style>
+<style>body{margin:0;padding:14px 16px 14px 40px;box-sizing:border-box;font:15px -apple-system,system-ui,sans-serif;color:#8a8a8e;background:transparent}</style>
 </head><body>this card expired. text me for a fresh one.</body></html>"""
 
 
 def render(state: dict) -> str:
-    return render_template_string(PAGE_HTML, s=state, height=HEIGHT.get(state.get("kind"), 140))
+    return render_template_string(PAGE_HTML, s=state)
 
 
 @stat_bp.route("/card/stat/<kind>", methods=["GET"])

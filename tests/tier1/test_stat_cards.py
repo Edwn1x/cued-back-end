@@ -94,7 +94,9 @@ def test_rsf_page_renders_fixed_height_no_js(client, db, rsf_open):
     assert r.status_code == 200 and r.headers["Cache-Control"] == "no-store"
     html = r.get_data(as_text=True)
     assert "18% full" in html and "basically empty. go." in html and "width: 18.0%" in html
-    assert "<script" not in html and "height: 128px" in html and "overflow: hidden" in html
+    assert "<script" not in html and "overflow: hidden" in html
+    # fills the extension's frame: fluid width, full height, never a fixed px width
+    assert "width: 100%; height: 100%" in html and "width: 300px" not in html
 
 
 # ─── macros ──────────────────────────────────────────────────────────────────
@@ -113,6 +115,7 @@ def test_macros_card_flags_protein_low_when_it_trails_calories(db):
     s = macros_state(u.id)
     cal, pro = s["bars"]
     assert cal["frac"] == pytest.approx(1400 / 2400) and cal["badge"] is None and cal["value"] == "1,400 / 2,400"
+    assert (cal["big"], cal["of"], pro["big"], pro["of"]) == ("1,400", "/ 2,400 cal", "30g", "/ 160g")
     assert pro["badge"] == "low" and pro["tone"] == "amber" and pro["frac"] == pytest.approx(30 / 160)
     assert s["subcaption"] == "1,400 cal · 30g protein · protein's low"
 
@@ -192,6 +195,17 @@ def test_week_card_overflow_collapses_to_plus_n(db):
         _deadline(u.id, f"Essay {i} due", datetime(2026, 10, 6, 9 + i, 0, tzinfo=PT))
     tue = {d["dow"]: d for d in week_state(u.id, now_utc=SUN_NIGHT.astimezone(timezone.utc))["week"]}["tue"]
     assert len(tue["items"]) == 2 and tue["more"] == 2
+
+
+def test_week_card_empty_grid_says_why(db):
+    from stat_cards import week_state
+    u = make_user(db)
+    s = week_state(u.id, now_utc=SUN_NIGHT.astimezone(timezone.utc))
+    assert s["empty_note"] == "nothing due. tell me your lift days and they'll show here."
+    u2 = make_user(db, confirmed_training_days="sat")      # training days, none in the window
+    assert week_state(u2.id, now_utc=SUN_NIGHT.astimezone(timezone.utc))["empty_note"] == "nothing due."
+    u3 = make_user(db, confirmed_training_days="mon")
+    assert week_state(u3.id, now_utc=SUN_NIGHT.astimezone(timezone.utc))["empty_note"] is None
 
 
 def test_week_card_unmapped_split_says_lift_not_a_guess(db):
