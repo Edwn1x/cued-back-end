@@ -521,6 +521,37 @@ def _card_args(mode: str, state: dict) -> dict:
     return {"live": False, "layout": _layout(state)}
 
 
+def _send_with_fallback(phone: str, url: str, mode: str, state: dict, *, user_id: int, kind: str):
+    """send_card in `mode`; an image the sidecar/Photon refuses (the U+2800 title is a
+    workaround Photon could close) goes again as plain captions, so a Photon-side
+    change degrades the card instead of dropping it. → (result, mode actually used)."""
+    from photon_cards import send_card, CardError
+    try:
+        return send_card(phone, url, **_card_args(mode, state)), mode
+    except CardError as e:
+        if mode != "image":
+            raise
+        logger.warning("STAT_CARD_IMAGE_REFUSED user=%s kind=%s err=%s — captions instead", user_id, kind, e)
+        return send_card(phone, url, **_card_args("static", state)), "static"
+
+
+def minutes_since_sent(user_id: int, kind: str, *, now_utc: datetime | None = None) -> float | None:
+    """Minutes since this card kind last went to the user (any mode), or None."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        row = (session.query(Message.created_at)
+               .filter(Message.user_id == user_id, Message.direction == "out",
+                       Message.message_type == f"stat_card_{kind}")
+               .order_by(Message.created_at.desc()).first())
+    finally:
+        session.close()
+    if not row or not row[0]:
+        return None
+    now = (now_utc or datetime.now(timezone.utc)).replace(tzinfo=None)
+    return (now - row[0]).total_seconds() / 60
+
+
 def send_stat_card(user_id: int, kind: str, *, mode: str | None = None, live: bool | None = None,
                    now_utc: datetime | None = None) -> dict:
     """Send one stat card to the user's thread in `mode` (live / image / static, see
@@ -531,7 +562,6 @@ def send_stat_card(user_id: int, kind: str, *, mode: str | None = None, live: bo
     Returns {provider_message_id, card_session, url, state}. Keep card_session to
     update_stat_card() the bubble in place."""
     from models import get_session, User, Message
-    from photon_cards import send_card
     if kind not in KINDS:
         raise ValueError(f"unknown stat card kind: {kind}")
     state = build_state(kind, user_id, now_utc=now_utc)
@@ -547,15 +577,17 @@ def send_stat_card(user_id: int, kind: str, *, mode: str | None = None, live: bo
         session.close()
     url = stat_url(kind, user_id, version=int(time.time()))
     mode = _mode(mode, live)
-
-    if prefers_link and config.CARD_LINK_FALLBACK_ENABLED:
+    from sms import _resolve_channel
+    # A card only renders in iMessage. On SMS (green bubbles) or for a user who chose
+    # links, the URL goes as text; its preview is the same picture (og:image).
+    if (prefers_link and config.CARD_LINK_FALLBACK_ENABLED) or _resolve_channel(user_id) != "imessage":
         from sms import send_sms
-        sid = send_sms(phone, f"{state['caption']} — {state['subcaption']}: {url}",
-                       user_id=user_id, message_type=f"stat_card_{kind}")
+        # Plain ASCII so it stays one GSM-7 segment; the preview carries the numbers.
+        sid = send_sms(phone, f"{state['label']}: {url}", user_id=user_id, message_type=f"stat_card_{kind}")
         logger.info("STAT_CARD_LINK_SENT user=%s kind=%s id=%s", user_id, kind, sid)
-        return {"provider_message_id": sid, "card_session": None, "url": url, "state": state}
+        return {"provider_message_id": sid, "card_session": None, "url": url, "state": state, "mode": "link"}
 
-    r = send_card(phone, url, **_card_args(mode, state))
+    r, mode = _send_with_fallback(phone, url, mode, state, user_id=user_id, kind=kind)
     session = get_session()
     try:
         session.add(Message(user_id=user_id, direction="out",
@@ -575,7 +607,7 @@ def update_stat_card(user_id: int, kind: str, card_session: dict, *, mode: str |
     """Re-render the bubble in place (same page, new `v`): the RSF meter ticking, the
     macros bar after a log. Best-effort; raises CardError on refusal."""
     from models import get_session, User
-    from photon_cards import update_card
+    from photon_cards import update_card, CardError
     state = build_state(kind, user_id)
     session = get_session()
     try:
@@ -587,6 +619,13 @@ def update_stat_card(user_id: int, kind: str, card_session: dict, *, mode: str |
         raise StatCardUnavailable("no such user")
     mode = _mode(mode, live)
     url = stat_url(kind, user_id, version=int(time.time()))
-    update_card(phone, card_session, url, **_card_args(mode, state))
+    try:
+        update_card(phone, card_session, url, **_card_args(mode, state))
+    except CardError as e:
+        if mode != "image":
+            raise
+        logger.warning("STAT_CARD_IMAGE_REFUSED user=%s kind=%s op=update err=%s — captions instead", user_id, kind, e)
+        mode = "static"
+        update_card(phone, card_session, url, **_card_args(mode, state))
     logger.info("STAT_CARD_UPDATED user=%s kind=%s mode=%s sub=%s", user_id, kind, mode, state["subcaption"])
     return {"url": url, "state": state, "mode": mode}

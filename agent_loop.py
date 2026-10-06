@@ -1171,6 +1171,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # heading-out flow sends) so the coach never fakes 'here's the line link'.
         from agent_tools import SEND_GYM_LINE_LINK_TOOL
         tools.append(SEND_GYM_LINE_LINK_TOOL)
+    if config.STAT_CARD_TOOL_ENABLED:
+        # rsf / macros / week picture cards (stat_cards.py), queued on the turn and sent
+        # by app.py right after the reply text.
+        from agent_tools import SEND_STAT_CARD_TOOL
+        tools.append(SEND_STAT_CARD_TOOL)
 
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
