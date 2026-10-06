@@ -144,6 +144,55 @@ def pending_nonce(user_id: int, provider: str) -> str | None:
         session.close()
 
 
+# ─── the connect link users see ───────────────────────────────────────────────
+#
+# The link is short and branded: "<CONNECT_LINK_BASE_URL>/c/<provider>/<code>", where
+# the code IS the single-use nonce stored on the row. The full signed token (what the
+# OAuth `state` carries) is rebuilt from the row on tap, so the callback is unchanged.
+# 9 random bytes = 12 url-safe chars, 72 bits; the code also dies on first connect and
+# after 30 minutes.
+
+SHORT_CODE_BYTES = 9
+
+
+def connect_link_base() -> str:
+    """The host the user sees in the link (app.cued.fit). Falls back to the Flask host,
+    which also serves /c/ — the OAuth callback stays on INTEGRATIONS_BASE_URL either way."""
+    return (config.CONNECT_LINK_BASE_URL or config.INTEGRATIONS_BASE_URL).rstrip("/")
+
+
+def mint_connect_link(user_id: int, provider: str) -> str:
+    """A fresh single-use connect link. One exp is used for both the token and the row,
+    so the token rebuilt from the row on tap verifies exactly."""
+    import secrets
+    import time
+    from integrations.tokens import connect_token, TOKEN_TTL_S
+    code = secrets.token_urlsafe(SHORT_CODE_BYTES)
+    exp = int(time.time()) + TOKEN_TTL_S
+    connect_token(user_id, provider, nonce=code, exp=exp)   # validates the provider name
+    set_pending(user_id, provider, code, exp)
+    return f"{connect_link_base()}/c/{provider}/{code}"
+
+
+def pending_by_code(provider: str, code: str) -> tuple[int, int] | None:
+    """(user_id, exp) of the row holding this short code as its live nonce, else None
+    (never minted, already used, or replaced by a newer link)."""
+    session = get_session()
+    try:
+        integ = (session.query(Integration)
+                 .filter(Integration.provider == provider,
+                         Integration.meta["connect_nonce"].as_string() == code)
+                 .first())
+        if integ is None:
+            return None
+        exp = (integ.meta or {}).get("connect_exp")
+        if exp is None:
+            return None
+        return int(integ.user_id), int(exp)
+    finally:
+        session.close()
+
+
 def _row_for_bundle(session, user_id: int, provider: str, bundle: TokenBundle) -> Integration:
     """Which row a successful OAuth callback lands on (multi-account, 2026-10-02):
       - a row already holding this account (external_id) → that row (a reconnect);
@@ -406,6 +455,7 @@ def status_line(user_id: int) -> str | None:
 __all__ = [
     "Provider", "TokenBundle", "PROVIDERS", "register", "get_provider",
     "get_integration", "rows_for", "set_pending", "pending_nonce", "complete_connection",
+    "connect_link_base", "mint_connect_link", "pending_by_code", "SHORT_CODE_BYTES",
     "mark_error", "mark_revoked", "get_valid_access_token", "status_line",
     "RefreshFailed", "REFRESH_SKEW_S",
     "note_sync_failure", "note_sync_success", "redact_inbound",

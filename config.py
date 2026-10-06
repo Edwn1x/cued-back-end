@@ -499,6 +499,10 @@ CONNECT_TOKEN_SECRET = os.getenv("CONNECT_TOKEN_SECRET", "")
 # host can't 302 into an OAuth flow. The OAuth redirect_uri registered with Google
 # and Strava must exactly match "<INTEGRATIONS_BASE_URL>/oauth/<provider>/callback".
 INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-production-90171c.up.railway.app")
+# The host users SEE in a connect link ("app.cued.fit/c/gcal/<code>"): a custom domain
+# pointed at this same Flask app. Empty → INTEGRATIONS_BASE_URL. Only the link moves;
+# the OAuth redirect_uri stays on INTEGRATIONS_BASE_URL, so no Google/Canvas console change.
+CONNECT_LINK_BASE_URL = os.getenv("CONNECT_LINK_BASE_URL", "")
 # Stat cards (stat_cards.py): the small fixed-height "rsf right now" / "today" / "this
 # week" bubbles. The page is server-rendered by THIS app (/card/stat/<kind>), so the
 # base is the Flask host, same as the connect links. STAT_CARDS_MODE: live = the page

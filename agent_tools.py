@@ -3289,7 +3289,7 @@ def handle_set_google_account(user_id: int, tool_input: dict, *, message_id=None
 
 def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Mint a single-use connect token, record it on the pending Integration row,
-    and text the user the /c/<provider> link as its own bubble. Returns a status
+    and text the user the short /c/<provider>/<code> link as its own bubble. Returns a status
     string for the model (the model's own reply is the sentence around the link).
     Google providers are gated while the OAuth app is in Testing (connect_offers)."""
     provider = (tool_input or {}).get("provider", "").strip().lower()
@@ -3303,7 +3303,6 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
         return f"error: {provider} is not enabled"
 
     from integrations import base
-    from integrations.tokens import connect_token
 
     session = get_session()
     try:
@@ -3327,10 +3326,7 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
     if not phone:
         return "error: no phone on file"
 
-    token, nonce = connect_token(user_id, provider)
-    import time as _time
-    base.set_pending(user_id, provider, nonce, int(_time.time()) + 30 * 60)
-    link = f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/c/{provider}?t={token}"
+    link = base.mint_connect_link(user_id, provider)
 
     from sms import send_sms
     send_sms(phone, link, user_id=user_id, message_type="connect_link")
