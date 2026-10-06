@@ -110,7 +110,7 @@ def rsf_state(*, now_utc: datetime | None = None) -> dict:
     pct, label = reading["pct"], reading["label"]
     if reading["line_on"]:
         wait = reading.get("est_wait_min")
-        sub = f"line's on · ~{wait} min wait." if wait else "line's on."
+        sub = f"line's on · ~{wait} min." if wait else "line's on."
         tone = "red"
     else:
         sub, tone = RSF_SUBLINE.get(label, ""), RSF_TONE.get(label, "blue")
@@ -323,8 +323,9 @@ PAGE_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>{{ s.label }}</title>
-<meta property="og:title" content="{{ s.caption }}">
-<meta property="og:description" content="{{ s.subcaption }}">
+<meta property="og:title" content="{{ s.label }}">
+{% if og_image %}<meta property="og:image" content="{{ og_image }}">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="479">{% endif %}
 <style>
   :root { color-scheme: light dark; --fg: #111; --muted: #8a8a8e; --track: #ececef; --cell: #f4f4f6;
           --blue: #2f6bf6; --amber: #f2a93b; --red: #e5484d; --green: #30a46c;
@@ -429,8 +430,8 @@ EXPIRED_HTML = """<!doctype html><html><head><meta charset="utf-8">
 </head><body>this card expired. text me for a fresh one.</body></html>"""
 
 
-def render(state: dict) -> str:
-    return render_template_string(PAGE_HTML, s=state)
+def render(state: dict, *, og_image: str | None = None) -> str:
+    return render_template_string(PAGE_HTML, s=state, og_image=og_image)
 
 
 @stat_bp.route("/card/stat/<kind>", methods=["GET"])
@@ -442,7 +443,11 @@ def stat_card_page(kind):
     else:
         try:
             state = build_state(kind, user_id)
-            resp = make_response(render(state))
+            # og:image = the same card as a picture: image mode's bubble (the SDK builds a
+            # static layout from these tags) and the link preview for web-link users.
+            og = (f"{config.STAT_CARD_BASE_URL.rstrip('/')}/card/stat/{kind}/image.png"
+                  f"?t={request.args.get('t')}&v={(request.args.get('v') or '')[:12]}")
+            resp = make_response(render(state, og_image=og))
             logger.info("STAT_CARD_VIEW user=%s kind=%s v=%s", user_id, kind, (request.args.get("v") or "")[:12])
         except StatCardUnavailable:
             resp = make_response(EXPIRED_HTML, 404)
@@ -457,15 +462,59 @@ def stat_card_page(kind):
     return resp
 
 
+@stat_bp.route("/card/stat/<kind>/image.png", methods=["GET"])
+def stat_card_image(kind):
+    """The card as a 2.5:1 PNG (stat_card_image.py), same token as the page."""
+    user_id = verify_stat_token(kind, request.args.get("t"))
+    if user_id is None:
+        return make_response("link expired", 401)
+    try:
+        from stat_card_image import render_png
+        png = render_png(build_state(kind, user_id))
+    except StatCardUnavailable:
+        return make_response("not found", 404)
+    resp = make_response(png)
+    resp.headers["Content-Type"] = "image/png"
+    resp.headers["Cache-Control"] = "no-store"
+    logger.info("STAT_CARD_IMAGE user=%s kind=%s bytes=%s", user_id, kind, len(png))
+    return resp
+
+
 # ─── send / update ───────────────────────────────────────────────────────────
 
 def _layout(state: dict) -> dict:
     return {"caption": state["caption"], "subcaption": state["subcaption"], "summary": state["label"]}
 
 
-def send_stat_card(user_id: int, kind: str, *, live: bool | None = None, now_utc: datetime | None = None) -> dict:
-    """Send one stat card to the user's thread. Live (page inline) by default
-    (STAT_CARDS_LIVE); static = captions, tap opens the page. A user on the web-link
+MODES = ("live", "image", "static")
+
+
+def _mode(mode: str | None, live: bool | None) -> str:
+    """live = the page inline in the bubble (frame fixed ~268×292 by the extension);
+    image = a static card whose layout the SDK builds from the page's og tags, i.e. the
+    2.5:1 picture, about half the height; static = captions only. Default
+    STAT_CARDS_MODE; the legacy `live` flag maps to live/static."""
+    if mode:
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}")
+        return mode
+    if live is not None:
+        return "live" if live else "static"
+    return config.STAT_CARDS_MODE
+
+
+def _card_args(mode: str, state: dict) -> dict:
+    if mode == "live":
+        return {"live": True, "layout": None}
+    if mode == "image":
+        return {"live": False, "layout": None}     # no layout → the SDK reads og:title + og:image
+    return {"live": False, "layout": _layout(state)}
+
+
+def send_stat_card(user_id: int, kind: str, *, mode: str | None = None, live: bool | None = None,
+                   now_utc: datetime | None = None) -> dict:
+    """Send one stat card to the user's thread in `mode` (live / image / static, see
+    _mode; tapping any of them opens the page). A user on the web-link
     fallback gets the URL as text. Raises StatCardUnavailable when there's nothing true
     to show (RSF closed / meter stale) and CardError when the sidecar refuses.
 
@@ -487,7 +536,7 @@ def send_stat_card(user_id: int, kind: str, *, live: bool | None = None, now_utc
     finally:
         session.close()
     url = stat_url(kind, user_id, version=int(time.time()))
-    live = config.STAT_CARDS_LIVE if live is None else bool(live)
+    mode = _mode(mode, live)
 
     if prefers_link and config.CARD_LINK_FALLBACK_ENABLED:
         from sms import send_sms
@@ -496,7 +545,7 @@ def send_stat_card(user_id: int, kind: str, *, live: bool | None = None, now_utc
         logger.info("STAT_CARD_LINK_SENT user=%s kind=%s id=%s", user_id, kind, sid)
         return {"provider_message_id": sid, "card_session": None, "url": url, "state": state}
 
-    r = send_card(phone, url, live=live, layout=None if live else _layout(state))
+    r = send_card(phone, url, **_card_args(mode, state))
     session = get_session()
     try:
         session.add(Message(user_id=user_id, direction="out",
@@ -506,12 +555,13 @@ def send_stat_card(user_id: int, kind: str, *, live: bool | None = None, now_utc
         session.commit()
     finally:
         session.close()
-    logger.info("STAT_CARD_SENT user=%s kind=%s live=%s id=%s sub=%s",
-                user_id, kind, live, r.get("provider_message_id"), state["subcaption"])
-    return {**r, "url": url, "state": state}
+    logger.info("STAT_CARD_SENT user=%s kind=%s mode=%s id=%s sub=%s",
+                user_id, kind, mode, r.get("provider_message_id"), state["subcaption"])
+    return {**r, "url": url, "state": state, "mode": mode}
 
 
-def update_stat_card(user_id: int, kind: str, card_session: dict, *, live: bool | None = None) -> dict:
+def update_stat_card(user_id: int, kind: str, card_session: dict, *, mode: str | None = None,
+                     live: bool | None = None) -> dict:
     """Re-render the bubble in place (same page, new `v`): the RSF meter ticking, the
     macros bar after a log. Best-effort; raises CardError on refusal."""
     from models import get_session, User
@@ -525,8 +575,8 @@ def update_stat_card(user_id: int, kind: str, card_session: dict, *, live: bool 
         session.close()
     if not phone:
         raise StatCardUnavailable("no such user")
-    live = config.STAT_CARDS_LIVE if live is None else bool(live)
+    mode = _mode(mode, live)
     url = stat_url(kind, user_id, version=int(time.time()))
-    update_card(phone, card_session, url, live=live, layout=None if live else _layout(state))
-    logger.info("STAT_CARD_UPDATED user=%s kind=%s sub=%s", user_id, kind, state["subcaption"])
-    return {"url": url, "state": state}
+    update_card(phone, card_session, url, **_card_args(mode, state))
+    logger.info("STAT_CARD_UPDATED user=%s kind=%s mode=%s sub=%s", user_id, kind, mode, state["subcaption"])
+    return {"url": url, "state": state, "mode": mode}
