@@ -88,10 +88,13 @@ def _pill(d, x_right, y_mid, s, colors, pt=10):
 
 
 PAD = 14
+# The Spectrum launcher icon sits over the picture's top-left (~32pt, phone 2026-10-05:
+# it covered "rsf r", "tod"), so the label row starts after it.
+LABEL_X = PAD + 32
 
 
 def _draw_rsf(d, s):
-    _text(d, (PAD, 24), s["label"], "Regular", 13, MUTED)
+    _text(d, (LABEL_X, 24), s["label"], "Regular", 13, MUTED)
     if s.get("foot"):
         _text(d, (W_PT - PAD, 24), s["foot"], "Regular", 11, MUTED, anchor="rs")
     head = s.get("headline") or ""
@@ -106,7 +109,7 @@ def _draw_rsf(d, s):
 
 
 def _draw_macros(d, s):
-    _text(d, (PAD, 24), s["label"], "Regular", 13, MUTED)
+    _text(d, (LABEL_X, 24), s["label"], "Regular", 13, MUTED)
     bars = s.get("bars") or []
     gap = 16
     col_w = (W_PT - 2 * PAD - gap) / 2
@@ -128,7 +131,7 @@ def _draw_macros(d, s):
 
 
 def _draw_week(d, s):
-    _text(d, (PAD, 24), s["label"], "Regular", 13, MUTED)
+    _text(d, (LABEL_X, 24), s["label"], "Regular", 13, MUTED)
     days = s.get("week") or []
     n = max(len(days), 1)
     gap = 4
@@ -168,11 +171,21 @@ def _chip(d, x, y, w, h, c):
 DRAW = {"rsf": _draw_rsf, "macros": _draw_macros, "week": _draw_week}
 
 
-def render_png(state: dict) -> bytes:
-    """The card as a 1200×480 PNG (dark)."""
+def _draw(state: dict) -> Image.Image:
     img = Image.new("RGB", (_p(W_PT), _p(H_PT)), BG)
     DRAW[state["kind"]](ImageDraw.Draw(img), state)
-    out = img.resize((OUT_W, int(round(OUT_W * H_PT / W_PT))), Image.LANCZOS)
+    return img.resize((OUT_W, int(round(OUT_W * H_PT / W_PT))), Image.LANCZOS)
+
+
+def render_png(state: dict) -> bytes:
+    """The card as a 1200×479 PNG (dark): og:image / link previews."""
     buf = io.BytesIO()
-    out.save(buf, "PNG", optimize=True)
+    _draw(state).save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def render_jpeg(state: dict) -> bytes:
+    """The card as JPEG: the bubble's layout image (the SDK's own previews are JPEG)."""
+    buf = io.BytesIO()
+    _draw(state).save(buf, "JPEG", quality=92, optimize=True)
     return buf.getvalue()
