@@ -350,7 +350,7 @@ def test_page_og_tags_point_at_the_image_with_the_same_token(client, db, monkeyp
 
 def test_image_mode_sends_the_picture_as_the_whole_layout(db, sidecar):
     """No caption (no strip) and a blank imageTitle (the SDK needs one; a real title is
-    printed over the picture). The image is JPEG, base64 for the sidecar."""
+    printed over the picture; Photon strips plain whitespace, so U+2800). JPEG, base64."""
     import base64
     from stat_cards import send_stat_card, update_stat_card
     u = make_user(db)
@@ -358,7 +358,7 @@ def test_image_mode_sends_the_picture_as_the_whole_layout(db, sidecar):
     payload = sidecar[0][1]
     lay = payload["layout"]
     assert payload["live"] is False and r["mode"] == "image"
-    assert set(lay) == {"imageBase64", "imageTitle", "summary"} and lay["imageTitle"] == " " and lay["summary"] == "today"
+    assert set(lay) == {"imageBase64", "imageTitle", "summary"} and lay["imageTitle"] == "\u2800" and lay["summary"] == "today"
     assert base64.b64decode(lay["imageBase64"])[:2] == b"\xff\xd8"          # JPEG
     update_stat_card(u.id, "macros", {"id": "card-1"}, mode="image")
     assert "imageBase64" in sidecar[1][1]["layout"] and sidecar[1][1]["live"] is False
