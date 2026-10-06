@@ -70,7 +70,7 @@ def test_rsf_card_line_on_shows_the_wait(db, rsf_open):
     from stat_cards import rsf_state
     _reading(db, 97, wait=25)
     s = rsf_state()
-    assert s["headline"] == "97% full" and s["subline"] == "line's on · ~25 min wait." and s["bars"][0]["tone"] == "red"
+    assert s["headline"] == "97% full" and s["subline"] == "line's on · ~25 min." and s["bars"][0]["tone"] == "red"
 
 
 def test_rsf_card_never_invents_a_number(db, monkeypatch, rsf_open):
@@ -320,3 +320,61 @@ def test_driver_sends_a_stat_card_to_the_user_on_that_phone(client, db, sidecar,
                        json={"phone": u.phone, "action": "send_stat", "kind": "bogus"}).status_code == 400
     assert client.post("/internal/card-test", headers=h,
                        json={"phone": "+19999999999", "action": "send_stat", "kind": "rsf"}).status_code == 404
+
+
+# ─── image mode: the card as a 2.5:1 picture (half the live bubble's height) ──
+
+def test_image_route_draws_a_wide_png_and_is_token_gated(client, db, rsf_open):
+    import io
+    from PIL import Image
+    from stat_cards import stat_token
+    _reading(db, 81)
+    u = make_user(db, calorie_target=2400, protein_target=160, confirmed_training_days="wed", current_split="ppl")
+    for kind in ("rsf", "macros", "week"):
+        r = client.get(f"/card/stat/{kind}/image.png?t={stat_token(kind, u.id)}&v=1")
+        assert r.status_code == 200 and r.headers["Content-Type"] == "image/png", kind
+        assert Image.open(io.BytesIO(r.data)).size == (1200, 479)
+    assert client.get(f"/card/stat/week/image.png?t={stat_token('rsf', u.id)}").status_code == 401
+
+
+def test_page_og_tags_point_at_the_image_with_the_same_token(client, db, monkeypatch):
+    import config
+    from stat_cards import stat_token
+    monkeypatch.setattr(config, "STAT_CARD_BASE_URL", "https://web.test")
+    u = make_user(db)
+    t = stat_token("week", u.id)
+    html = client.get(f"/card/stat/week?t={t}&v=7").get_data(as_text=True)
+    assert f'<meta property="og:image" content="https://web.test/card/stat/week/image.png?t={t}&amp;v=7">' in html
+    assert '<meta property="og:title" content="this week">' in html and "og:description" not in html
+
+
+def test_image_mode_sends_a_static_card_with_no_layout_so_the_sdk_reads_og(db, sidecar):
+    from stat_cards import send_stat_card, update_stat_card
+    u = make_user(db)
+    r = send_stat_card(u.id, "macros", mode="image")
+    payload = sidecar[0][1]
+    assert payload["live"] is False and "layout" not in payload and r["mode"] == "image"
+    update_stat_card(u.id, "macros", {"id": "card-1"}, mode="image")
+    assert sidecar[1][1]["live"] is False and "layout" not in sidecar[1][1]
+
+
+def test_mode_defaults_from_config_and_rejects_junk(db, sidecar, monkeypatch):
+    import config
+    from stat_cards import send_stat_card
+    u = make_user(db)
+    monkeypatch.setattr(config, "STAT_CARDS_MODE", "image")
+    assert send_stat_card(u.id, "week")["mode"] == "image"
+    assert send_stat_card(u.id, "week", live=True)["mode"] == "live"   # legacy flag still wins over the default
+    with pytest.raises(ValueError):
+        send_stat_card(u.id, "week", mode="huge")
+
+
+def test_image_renderer_never_overflows_long_text():
+    """Everything is drawn through _fit, so long chips/sublines truncate, never spill."""
+    from stat_card_image import render_png
+    days = [{"dow": d, "today": False, "items": [{"text": "supercalifragilistic", "tone": "exam"}] * 2, "more": 3}
+            for d in ("mon", "tue", "wed", "thu", "fri")]
+    assert render_png({"kind": "week", "label": "this week", "week": days})[:4] == b"\x89PNG"
+    assert render_png({"kind": "rsf", "label": "rsf right now", "headline": "100% full",
+                       "subline": "line's on · ~120 min. bring a book and a snack.",
+                       "bars": [{"frac": 1.0, "tone": "red"}], "foot": "as of 12:59pm"})[:4] == b"\x89PNG"

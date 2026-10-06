@@ -1862,7 +1862,7 @@ def card_test_send():
     founder can run the install-flow experiment with plain curl:
       {"phone": "+1…", "action": "send"}                        → sends /card/test as a live card
       {"phone": "+1…", "action": "update", "card_session": {…}, "v": 2} → edits it in place
-      {"phone": "+1…", "action": "send_stat", "kind": "rsf|macros|week", "live"?: bool} → a stat card
+      {"phone": "+1…", "action": "send_stat", "kind": "rsf|macros|week", "mode"?: "live|image|static"} → a stat card
       {"phone": "+1…", "action": "update_stat", "kind": …, "card_session": {…}}     → re-render it in place
     Returns the sidecar's answer verbatim; a refusal (tier, extension) comes back as
     502 with Photon's text — that text IS the experiment's result."""
@@ -1901,17 +1901,20 @@ def card_test_send():
         if not user_id:
             return jsonify({"ok": False, "error": "no user with that phone"}), 404
         live = None if d.get("live") is None else d.get("live") is not False
+        mode = str(d.get("mode") or "").lower() or None
         try:
             if action == "send_stat":
-                r = send_stat_card(user_id, kind, live=live)
+                r = send_stat_card(user_id, kind, mode=mode, live=live)
             else:
                 cs = d.get("card_session")
                 if not isinstance(cs, dict) or not cs.get("id"):
                     return jsonify({"ok": False, "error": "update_stat needs card_session from the send"}), 400
-                r = update_stat_card(user_id, kind, cs, live=live)
+                r = update_stat_card(user_id, kind, cs, mode=mode, live=live)
             return jsonify({"ok": True, **r})
         except StatCardUnavailable as e:
             return jsonify({"ok": False, "error": f"nothing true to show: {e}"}), 409
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
         except CardError as e:
             logger.warning("CARD_TEST_REFUSED phone_last4=%s action=%s err=%s", phone[-4:], action, e)
             return jsonify({"ok": False, "error": str(e)}), 502
