@@ -11,6 +11,7 @@ import {
   createHandler,
   forwardInbound,
   last4,
+  pickLayout,
   resolveEmoji,
   type Deps,
 } from "./index.ts";
@@ -595,6 +596,22 @@ describe("card layout (static preview + overlay)", () => {
     expect(res.status).toBe(200);
     expect(d.calls).toEqual([["updateCard", "+1555", "photon-card-1", "https://cued.fit/card.html?t=x&v=2", false,
       { caption: "push · wed", trailingCaption: "13/13 · 8,040 lb" }]]);
+  });
+
+  test("pickLayout decodes a base64 image when it comes with an imageTitle", () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString("base64");
+    const out = pickLayout({ imageBase64: jpeg, imageTitle: " ", summary: "rsf right now" });
+    expect(out?.image).toBeInstanceOf(Uint8Array);
+    expect(Array.from(out!.image!)).toEqual([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    expect(out?.imageTitle).toBe(" ");
+    expect(out?.caption).toBeUndefined();
+  });
+
+  test("pickLayout drops an image without a title, and a title without an image", () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 1]).toString("base64");
+    expect(pickLayout({ imageBase64: jpeg, caption: "x" })).toEqual({ caption: "x" });
+    expect(pickLayout({ imageTitle: "t", caption: "x" })).toEqual({ caption: "x" });
+    expect(pickLayout({ imageBase64: "", imageTitle: "t" })).toBeUndefined();
   });
 
   test("pickLayout drops non-strings and empty objects", async () => {

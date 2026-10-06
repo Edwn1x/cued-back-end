@@ -77,15 +77,29 @@ export type Deps = {
  *  text fields; `image` is not exposed here. */
 export type CardLayout = {
   caption?: string; subcaption?: string; trailingCaption?: string; trailingSubcaption?: string; summary?: string;
+  image?: Uint8Array; imageTitle?: string; imageSubtitle?: string;
 };
+
+// A layout image arrives as base64 JPEG (`imageBase64`) — JSON can't carry bytes. The
+// SDK wants `image` and `imageTitle` together, so an image without a title is dropped.
+// Stat cards (Flask stat_cards.py image mode) send a picture with NO caption, so the
+// bubble is just the picture: the SDK's own OG-derived layout always adds the page
+// title twice (over the image + a caption strip).
+const MAX_IMAGE_B64 = 2_000_000;
 
 export function pickLayout(v: unknown): CardLayout | undefined {
   if (!v || typeof v !== "object") return undefined;
   const o = v as Record<string, unknown>;
   const out: CardLayout = {};
-  for (const k of ["caption", "subcaption", "trailingCaption", "trailingSubcaption", "summary"] as const) {
+  for (const k of ["caption", "subcaption", "trailingCaption", "trailingSubcaption", "summary", "imageTitle", "imageSubtitle"] as const) {
     if (typeof o[k] === "string" && (o[k] as string).length) out[k] = (o[k] as string).slice(0, 200);
   }
+  const b64 = o.imageBase64;
+  if (typeof b64 === "string" && b64.length && b64.length <= MAX_IMAGE_B64 && out.imageTitle) {
+    const bytes = Uint8Array.from(Buffer.from(b64, "base64"));
+    if (bytes.length) out.image = bytes;
+  }
+  if (!out.image) { delete out.imageTitle; delete out.imageSubtitle; }
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -265,7 +279,7 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       try {
         const layout = pickLayout(body.layout);
         const { provider_message_id, card_session } = await deps.sendCard(body.phone, body.url, body.live !== false, layout);
-        log("info", "card sent", { to: last4(body.phone), id: provider_message_id, live: body.live !== false, layout: !!layout });
+        log("info", "card sent", { to: last4(body.phone), id: provider_message_id, live: body.live !== false, layout: !!layout, image: !!layout?.image });
         return json(200, { ok: true, provider_message_id, card_session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

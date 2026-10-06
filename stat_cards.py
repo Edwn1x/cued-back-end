@@ -491,8 +491,8 @@ MODES = ("live", "image", "static")
 
 def _mode(mode: str | None, live: bool | None) -> str:
     """live = the page inline in the bubble (frame fixed ~268×292 by the extension);
-    image = a static card whose layout the SDK builds from the page's og tags, i.e. the
-    2.5:1 picture, about half the height; static = captions only. Default
+    image = a static card whose layout is just the 2.5:1 picture (JPEG via the sidecar's
+    imageBase64), about half the height; static = captions only. Default
     STAT_CARDS_MODE; the legacy `live` flag maps to live/static."""
     if mode:
         if mode not in MODES:
@@ -507,7 +507,13 @@ def _card_args(mode: str, state: dict) -> dict:
     if mode == "live":
         return {"live": True, "layout": None}
     if mode == "image":
-        return {"live": False, "layout": None}     # no layout → the SDK reads og:title + og:image
+        # The picture IS the bubble: no caption (so no caption strip) and a blank
+        # imageTitle (the SDK requires one with an image; letting it build the layout
+        # from og tags printed the title over the picture AND in a strip, phone 10-05).
+        import base64
+        from stat_card_image import render_jpeg
+        return {"live": False, "layout": {"imageBase64": base64.b64encode(render_jpeg(state)).decode("ascii"),
+                                          "imageTitle": " ", "summary": state["label"]}}
     return {"live": False, "layout": _layout(state)}
 
 
