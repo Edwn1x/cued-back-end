@@ -499,6 +499,12 @@ CONNECT_TOKEN_SECRET = os.getenv("CONNECT_TOKEN_SECRET", "")
 # host can't 302 into an OAuth flow. The OAuth redirect_uri registered with Google
 # and Strava must exactly match "<INTEGRATIONS_BASE_URL>/oauth/<provider>/callback".
 INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-production-90171c.up.railway.app")
+# Stat cards (stat_cards.py): the small fixed-height "rsf right now" / "today" / "this
+# week" bubbles. The page is server-rendered by THIS app (/card/stat/<kind>), so the
+# base is the Flask host, same as the connect links. STAT_CARDS_LIVE sends them as a
+# live bubble (the page renders inline); false = static captions, tap opens the page.
+STAT_CARD_BASE_URL = os.getenv("STAT_CARD_BASE_URL", "") or INTEGRATIONS_BASE_URL
+STAT_CARDS_LIVE = os.getenv("STAT_CARDS_LIVE", "true").lower() == "true"
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
 # Google Calendar WRITE-BACK (create events). OFF by default: turning it on requires
