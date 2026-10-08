@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import re
+import threading
 
 from flask import Blueprint, request, redirect, Response
 
@@ -47,6 +48,18 @@ def _page(title: str, body: str, status: int = 200) -> Response:
     return Response(html, status=status, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
+def _connected_page() -> Response:
+    return _page("you're connected", "head back to Messages — the coach has it.")
+
+
+def _already_used(user_id: int | None, provider: str) -> Response:
+    """A dead link for a user who IS connected is a re-tap of the link that worked (or a
+    stale one) — say so instead of 'ask for a fresh link' (live 2026-10-06, user 48)."""
+    if user_id is not None and base.is_connected(user_id, provider):
+        return _connected_page()
+    return _page("link already used", "ask the coach to send a fresh link.", 400)
+
+
 def _redirect_uri(provider: str) -> str:
     return f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/oauth/{provider}/callback"
 
@@ -64,7 +77,7 @@ def connect_start(provider: str):
 
     # single-use: the row must still be holding exactly this nonce
     if base.pending_nonce(user_id, provider) != nonce:
-        return _page("link already used", "ask the coach to send a fresh link.", 400)
+        return _already_used(user_id, provider)
 
     try:
         url = prov.authorize_url(state=request.args["t"], redirect_uri=_redirect_uri(provider))
@@ -117,7 +130,7 @@ def connect_short(provider: str, code: str):
 
     hit = base.pending_by_code(provider, code)
     if hit is None:
-        return _page("link already used", "ask the coach to send a fresh link.", 400)
+        return _already_used(base.connected_by_code(provider, code), provider)
     user_id, exp = hit
     token, _ = connect_token(user_id, provider, nonce=code, exp=exp)
     if verify_connect_token(token) is None:      # past exp
@@ -148,7 +161,7 @@ def oauth_callback(provider: str):
     user_id, _, nonce = parsed
 
     if base.pending_nonce(user_id, provider) != nonce:
-        return _page("link already used", "ask the coach to send a fresh link.", 400)
+        return _already_used(user_id, provider)
 
     code = request.args.get("code")
     if not code:
@@ -166,13 +179,17 @@ def oauth_callback(provider: str):
 
     # Immediate first pull so the user isn't blind until the next scheduled sync — they
     # often ask "what's on it?" seconds after connecting. Best-effort; a sync failure
-    # must not fail the connect (the scheduler will catch up).
-    try:
-        prov.sync_now(user_id)
-    except Exception:
-        logger.exception("OAUTH_SYNC_NOW_FAILED provider=%s user=%s", provider, user_id)
+    # must not fail the connect (the scheduler will catch up). In the BACKGROUND: inline it
+    # held the page open for 3 minutes (135 events, user 48) and the user's retries hit
+    # "link already used" while the first callback was still running.
+    def _first_pull():
+        try:
+            prov.sync_now(user_id)
+            logger.info("OAUTH_SYNC_NOW_DONE provider=%s user=%s", provider, user_id)
+        except Exception:
+            logger.exception("OAUTH_SYNC_NOW_FAILED provider=%s user=%s", provider, user_id)
 
-    # one confirmation text through the normal outbound path — success only
+    # one confirmation text through the normal outbound path — success only, BEFORE the pull
     try:
         session = get_session()
         try:
@@ -188,6 +205,11 @@ def oauth_callback(provider: str):
     except Exception:
         logger.exception("OAUTH_CONFIRM_SEND_FAILED provider=%s user=%s", provider, user_id)
         # the connection still succeeded; just the confirmation text failed
+
+    if config.OAUTH_SYNC_IN_BACKGROUND:
+        threading.Thread(target=_first_pull, name=f"oauth-sync-{provider}-{user_id}", daemon=True).start()
+    else:
+        _first_pull()
 
     return _page("connected", "you're all set — head back to Messages.")
 

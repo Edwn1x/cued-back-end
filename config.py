@@ -518,6 +518,10 @@ STAT_CARDS_MODE = (os.getenv("STAT_CARDS_MODE", "") or ("image" if STAT_CARDS_LI
 STAT_CARD_TOOL_ENABLED = os.getenv("STAT_CARD_TOOL_ENABLED", "true").lower() == "true"
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
+# OAuth callback: say "connected" (page + text) right away and pull the calendar in a
+# background thread. Live 2026-10-06 (user 48): the first pull ran INLINE in the callback,
+# the page hung for 3 minutes, and his two retries hit "link already used".
+OAUTH_SYNC_IN_BACKGROUND = os.getenv("OAUTH_SYNC_IN_BACKGROUND", "true").lower() == "true"
 # Google Calendar WRITE-BACK (create events). OFF by default: turning it on requires
 # adding the calendar.events (read/WRITE) scope to the OAuth consent screen AND every
 # existing user RE-CONNECTING (readonly grants can't create). When ON, the gcal

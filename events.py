@@ -152,6 +152,56 @@ def upsert_external_event(user_id: int, *, source: str, external_id: str, title:
         session.close()
 
 
+def upsert_external_events(user_id: int, *, source: str, rows: list[dict]) -> dict:
+    """Batch form of upsert_external_event: ONE session, one SELECT for every incoming
+    external_id, one commit — and a row whose title/times/all_day already match is left
+    untouched. Live 2026-10-06 (user 48): 135 events re-saved one at a time (open session,
+    SELECT, mutate, commit, refresh — ~3 round trips each) every 30-min tick, 3 minutes per
+    sync, 'idle in transaction' backends in between. Each row: external_id, title,
+    occurred_at, ends_at, all_day, event_type (optional). Returns
+    {"inserted", "updated", "unchanged"}."""
+    from models import get_session
+    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    if not rows:
+        return counts
+    session = get_session()
+    try:
+        ids = [r["external_id"] for r in rows]
+        existing = {}
+        for i in range(0, len(ids), 500):
+            for ev in (session.query(Event)
+                       .filter(Event.user_id == user_id, Event.source == source,
+                               Event.external_id.in_(ids[i:i + 500])).all()):
+                existing[ev.external_id] = ev
+        for r in rows:
+            title = (r.get("title") or "")[:300]
+            etype = r.get("event_type") or "scheduled"
+            all_day = bool(r.get("all_day"))
+            ev = existing.get(r["external_id"])
+            if ev is None:
+                ev = Event(user_id=user_id, source=source, external_id=r["external_id"], event_type=etype,
+                           title=title, raw_text=title, occurred_at=r["occurred_at"], ends_at=r.get("ends_at"),
+                           all_day=all_day, deleted_at=None)
+                session.add(ev)
+                existing[r["external_id"]] = ev
+                counts["inserted"] += 1
+                continue
+            same = (ev.title == title and ev.occurred_at == r["occurred_at"] and ev.ends_at == r.get("ends_at")
+                    and bool(ev.all_day) == all_day and ev.event_type == etype and ev.deleted_at is None)
+            if same:
+                counts["unchanged"] += 1
+                continue
+            ev.title, ev.raw_text = title, title
+            ev.occurred_at, ev.ends_at, ev.all_day, ev.event_type = r["occurred_at"], r.get("ends_at"), all_day, etype
+            ev.deleted_at = None
+            counts["updated"] += 1
+        if counts["inserted"] or counts["updated"]:
+            session.commit()
+        return counts
+    finally:
+        session.close()
+
+
 def prune_external_events(user_id: int, *, source: str, keep: set, lo, hi, now=None) -> int:
     """Soft-delete every active `source` event in [lo, hi) whose external_id is not in
     `keep` — the event dropped out of the feed (deleted / unpublished / superseded by

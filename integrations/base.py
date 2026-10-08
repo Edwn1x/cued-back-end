@@ -236,12 +236,39 @@ def complete_connection(user_id: int, provider: str, bundle: TokenBundle) -> Non
         integ.scopes = bundle.scopes
         integ.external_id = bundle.external_id
         meta = dict(integ.meta or {})
-        meta.pop("connect_nonce", None)
+        used = meta.pop("connect_nonce", None) or ((primary.meta or {}).get("connect_nonce") if primary is not None else None)
         meta.pop("connect_exp", None)
         meta.pop("last_error", None)
+        if used:
+            # The burned code is kept so a re-tap of the SAME link after success can say
+            # "you're connected" instead of "link already used" (live 2026-10-06, user 48:
+            # two retries while the first callback was still syncing, both 400).
+            meta["connected_code"] = used
         integ.meta = meta
         integ.updated_at = _utcnow()
         session.commit()
+    finally:
+        session.close()
+
+
+def connected_by_code(provider: str, code: str) -> int | None:
+    """user_id of a CONNECTED row whose last successful handshake used this short code —
+    a re-tap of a link that already worked. None otherwise."""
+    session = get_session()
+    try:
+        integ = (session.query(Integration)
+                 .filter(Integration.provider == provider, Integration.status == "connected",
+                         Integration.meta["connected_code"].as_string() == code)
+                 .first())
+        return int(integ.user_id) if integ is not None else None
+    finally:
+        session.close()
+
+
+def is_connected(user_id: int, provider: str) -> bool:
+    session = get_session()
+    try:
+        return any(r.status == "connected" for r in rows_for(session, user_id, provider))
     finally:
         session.close()
 

@@ -276,8 +276,10 @@ def test_short_link_hands_off_with_a_valid_state_then_connects_once(client, db, 
     assert cb.status_code == 200
     db.expire_all()
     assert base.get_integration(db, user.id, "faketest").status == "connected"
+    # a re-tap of the link that WORKED says so (live 2026-10-06: two retries while the
+    # first callback was still syncing both got "link already used")
     again = client.get(f"/c/faketest/{code}")
-    assert again.status_code == 400 and "already used" in again.get_data(as_text=True)
+    assert again.status_code == 200 and "you're connected" in again.get_data(as_text=True)
 
 
 def test_short_link_expired(client, db, fake_provider):
@@ -339,7 +341,14 @@ def test_callback_is_single_use(client, db, fake_provider, sms_capture):
     first = client.get(f"/oauth/faketest/callback?code=abc&state={token}")
     assert first.status_code == 200
     second = client.get(f"/oauth/faketest/callback?code=abc&state={token}")
-    assert second.status_code == 400          # nonce already burned
+    assert second.status_code == 200 and "you're connected" in second.get_data(as_text=True)   # burned, but connected
+    # a dead link for a user who is NOT connected is still a 400
+    other = make_user(db, phone="+15105551235")
+    tok2, nonce2 = connect_token(other.id, "faketest")
+    base.set_pending(other.id, "faketest", nonce2, int(_utcnow().timestamp()) + 1800)
+    base.set_pending(other.id, "faketest", "replaced-nonce", int(_utcnow().timestamp()) + 1800)
+    dead = client.get(f"/oauth/faketest/callback?code=abc&state={tok2}")
+    assert dead.status_code == 400 and "already used" in dead.get_data(as_text=True)
 
 
 def test_callback_bad_state_no_connection(client, db, fake_provider):
@@ -401,3 +410,77 @@ def test_tool_sends_link_bubble_and_sets_pending(db, monkeypatch, sms_capture):
     assert any("/c/gcal/" in body for _p, body in sms_capture)
     # pending nonce recorded so the callback can enforce single use
     assert base.pending_nonce(user.id, "gcal")
+
+
+
+# ─── connect: say "connected" first, pull in the background (2026-10-06, user 48) ───
+
+class _SyncingProvider(FakeProvider):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def sync_now(self, user_id):
+        self.events.append(("sync", user_id))
+
+
+def test_callback_texts_and_returns_before_the_first_pull(client, db, sms_capture, monkeypatch):
+    """The page and the confirmation text never wait on the first pull; the pull runs on a
+    thread (inline here) AFTER the text. A pull that raises still leaves 'connected'."""
+    import threading
+    from integrations import base
+    from integrations.tokens import connect_token
+    from models import Integration
+    prov = _SyncingProvider()
+    base.register(prov)
+    try:
+        started = []
+        monkeypatch.setattr(threading, "Thread", lambda target=None, args=(), kwargs=None, daemon=None, name=None:
+                            type("T", (), {"start": lambda self: (started.append(name), target(*args, **(kwargs or {})))})())
+        user = make_user(db, phone="+15105551234")
+        token, nonce = connect_token(user.id, "faketest")
+        base.set_pending(user.id, "faketest", nonce, int(_utcnow().timestamp()) + 1800)
+        import sms as _sms
+        order = []
+        real = _sms.send_sms
+        def _spy(phone, body, **kw):
+            order.append(("text", body))
+            return real(phone, body, **kw)
+        monkeypatch.setattr("sms.send_sms", _spy)
+        r = client.get(f"/oauth/faketest/callback?code=abc&state={token}")
+        assert r.status_code == 200 and "connected" in r.get_data(as_text=True)
+        assert started == ["oauth-sync-faketest-%d" % user.id]
+        assert prov.events == [("sync", user.id)]
+        assert any("connected" in b for _p, b in sms_capture)
+        db.expire_all()
+        assert db.query(Integration).filter_by(user_id=user.id, provider="faketest").one().status == "connected"
+    finally:
+        base.PROVIDERS.pop("faketest", None)
+
+
+def test_callback_flag_off_pulls_inline(client, db, sms_capture, monkeypatch):
+    from integrations import base
+    from integrations.tokens import connect_token
+    monkeypatch.setattr(config, "OAUTH_SYNC_IN_BACKGROUND", False)
+    prov = _SyncingProvider()
+    base.register(prov)
+    try:
+        user = make_user(db, phone="+15105551234")
+        token, nonce = connect_token(user.id, "faketest")
+        base.set_pending(user.id, "faketest", nonce, int(_utcnow().timestamp()) + 1800)
+        assert client.get(f"/oauth/faketest/callback?code=abc&state={token}").status_code == 200
+        assert prov.events == [("sync", user.id)]
+    finally:
+        base.PROVIDERS.pop("faketest", None)
+
+
+def test_long_link_re_tap_after_connect_says_connected(client, db, fake_provider, sms_capture):
+    from integrations import base
+    from integrations.tokens import connect_token
+    user = make_user(db, phone="+15105551234")
+    token, nonce = connect_token(user.id, "faketest")
+    base.set_pending(user.id, "faketest", nonce, int(_utcnow().timestamp()) + 1800)
+    assert client.get(f"/oauth/faketest/callback?code=abc&state={token}").status_code == 200
+    r = client.get(f"/c/faketest?t={token}")
+    assert r.status_code == 200 and "you're connected" in r.get_data(as_text=True)
+    assert base.connected_by_code("faketest", nonce) == user.id and base.is_connected(user.id, "faketest")
