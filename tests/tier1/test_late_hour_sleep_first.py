@@ -194,3 +194,79 @@ def test_flag_off_context_is_inert(db, monkeypatch):
     ctx = _ctx(user.id)
 
     assert SIGNAL_HEADER not in ctx, "signal present with the flag OFF"
+
+
+# --------------------------------------------------------------------------------------
+# The mirror: EVENING FOR THEM, NOT LATE (live 2026-10-05 22:56, user 48, bed ~3am:
+# "it's almost 11, maybe just sleep").
+# --------------------------------------------------------------------------------------
+EVENING_HEADER = "## EVENING FOR THEM, NOT LATE"
+
+
+def test_1056pm_is_evening_for_a_3am_sleeper(db, monkeypatch):
+    from tests.factories import make_user
+    user = make_user(db, sleep_time="03:00", wake_time="12:00", calorie_target=2450, protein_target=139)
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 22, 56))
+    ctx = _ctx(user.id)
+    assert EVENING_HEADER in ctx and SIGNAL_HEADER not in ctx, ctx
+    assert "10:56pm" in ctx and "bed is ~3am" in ctx and "up ~noon" in ctx
+    assert "Do NOT call it late" in ctx
+
+
+def test_2am_is_still_before_their_bed(db, monkeypatch):
+    from tests.factories import make_user
+    user = make_user(db, sleep_time="03:00", wake_time="11:00")
+    _freeze(monkeypatch, _pdt(2026, 10, 6, 2, 0))
+    ctx = _ctx(user.id)
+    assert EVENING_HEADER in ctx and SIGNAL_HEADER not in ctx and "up ~11am" in ctx
+
+
+def test_4am_hands_over_to_the_late_block(db, monkeypatch):
+    from tests.factories import make_user
+    user = make_user(db, sleep_time="03:00", wake_time="12:00", protein_target=139)
+    _freeze(monkeypatch, _pdt(2026, 10, 6, 4, 0))
+    ctx = _ctx(user.id)
+    assert SIGNAL_HEADER in ctx and EVENING_HEADER not in ctx
+
+
+def test_an_evening_sleeper_gets_neither_block_at_11pm(db, monkeypatch):
+    from tests.factories import make_user
+    user = make_user(db, sleep_time="23:00", wake_time="07:00")
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 22, 56))
+    ctx = _ctx(user.id)
+    assert EVENING_HEADER not in ctx and SIGNAL_HEADER not in ctx
+
+
+def test_no_sleep_data_and_daytime_get_no_evening_block(db, monkeypatch):
+    from tests.factories import make_user
+    u1 = make_user(db, sleep_time=None, wake_time=None)
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 23, 0))
+    assert EVENING_HEADER not in _ctx(u1.id)
+    u2 = make_user(db, sleep_time="03:00", wake_time="12:00")
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 15, 0))
+    assert EVENING_HEADER not in _ctx(u2.id)
+
+
+def test_evening_flag_off_is_inert(db, monkeypatch):
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "EVENING_NOT_LATE_SIGNAL_ENABLED", False)
+    user = make_user(db, sleep_time="03:00", wake_time="12:00")
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 22, 56))
+    assert EVENING_HEADER not in _ctx(user.id)
+
+
+def test_measured_bed_beats_the_profile_for_the_evening_block(db, monkeypatch):
+    """Watch says bed ~1:30am even though the profile says 23:00 → 11pm is evening for them."""
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "MEASURED_SLEEP_WINDOW_ENABLED", True)
+    monkeypatch.setattr(agent_loop, "_measured_late_hours", lambda user, session: (1, 9))
+    user = make_user(db, sleep_time="23:00", wake_time="07:00")
+    _freeze(monkeypatch, _pdt(2026, 10, 5, 23, 10))
+    ctx = _ctx(user.id)
+    assert EVENING_HEADER in ctx and "bed is ~1am" in ctx and "up ~9am" in ctx
+
+
+def test_voice_rule_names_their_late_not_the_clocks():
+    from agent_loop import _VOICE_PATH
+    raw = open(_VOICE_PATH, encoding="utf-8").read()
+    assert "Late is THEIR late, not the clock's" in raw and "EVENING FOR THEM, NOT LATE" in raw
