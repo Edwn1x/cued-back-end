@@ -560,11 +560,17 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
                 session.delete(r)
         session.flush()
         rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
+        skipped: list[str] = []
         for e in exercises or []:
             if not isinstance(e, dict):
                 continue
             name = (e.get("name") or "").strip().lower()
-            slug = next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None) or slug_for_name(name)
+            # An exercise that isn't on the card and isn't in the template library still
+            # gets a slug from its name ("pull ups" → pull_ups): the session is theirs, the
+            # set happened. Live 2026-10-08 02:17 (user 48): "pull ups … got 7" → slug None →
+            # nothing written, while the reply said "logged, 7 on pull ups".
+            slug = (next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None)
+                    or slug_for_name(name) or _slugify_exercise(name))
             n_sets = int(e.get("sets") or 1)
             w, r = e.get("weight"), e.get("reps")
             mine = [x for x in rows if x.exercise == slug and not x.done]
@@ -574,19 +580,38 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
                                      actual_weight=w if w is not None else mine[i].planned_weight,
                                      actual_reps=r if r is not None else mine[i].planned_reps, source="text")
                     applied += 1
-                elif slug and w is not None and r is not None:
+                elif slug and r is not None:
+                    # weight optional: a bodyweight move (pull ups, dips) logs at 0 added load
+                    load = w if w is not None else 0
                     new = SetLog(session_id=ws_id, exercise=slug, exercise_label=labels.get(slug, name or slug),
-                                 set_index=len([x for x in rows if x.exercise == slug]) + i, planned_weight=w, planned_reps=r)
+                                 set_index=len([x for x in rows if x.exercise == slug]) + i, planned_weight=load, planned_reps=r)
                     session.add(new); session.flush()
-                    apply_set_update(session, ws, new, done=True, actual_weight=w, actual_reps=r, source="text")
+                    rows.append(new)
+                    apply_set_update(session, ws, new, done=True, actual_weight=load, actual_reps=r, source="text")
                     applied += 1
+                elif slug:
+                    skipped.append(f"{name or slug} (no reps given)")
     finally:
         session.close()
     from workouts.card import refresh_card_async
     refresh_card_async(ws_id)
-    logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s", user_id, ws_id, applied)
-    return (f"ok: logged {applied} sets into today's open session (#{ws_id}); it's still open — "
+    logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s skipped=%s", user_id, ws_id, applied, skipped)
+    if applied == 0:
+        # Honesty: nothing landed, so the result can't read as success (the model said
+        # "logged" and then "it's counted" on a 0-set write).
+        why = ("; ".join(skipped) if skipped else "no exercise names/reps could be read")
+        return (f"error: NOTHING was logged into the open session (#{ws_id}) — {why}. Pass each "
+                f"exercise with `name` and `reps` (weight optional for bodyweight moves). Do not tell them it's logged.")
+    tail = f" (skipped: {'; '.join(skipped)})" if skipped else ""
+    return (f"ok: logged {applied} sets into today's open session (#{ws_id}){tail}; it's still open — "
             f"they finish on the card or by texting 'done'")
+
+
+def _slugify_exercise(name: str) -> str | None:
+    """'pull ups' → 'pull_ups'; '' → None. Only for a named exercise the library doesn't know."""
+    import re as _re
+    s = _re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower()).strip("_")
+    return s[:60] or None
 
 
 def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
