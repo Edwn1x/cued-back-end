@@ -23,7 +23,7 @@ import config
 from models import get_session, User, Message, WorkoutSession, is_workout_confirmed_today
 from sms import send_sms
 import occupancy
-from integrations.rsf import is_open, TZ
+from integrations.rsf import is_open, hours_for, TZ
 from integrations.waitwell.client import join as queue_join, QueueUnavailable, PUBLIC_URL, JOIN_URL, open_ticket
 
 logger = logging.getLogger("cued.gym_beats")
@@ -148,6 +148,13 @@ OPTIN_ASK = ("rsf line's on. want me to handle the queue for you from now on whe
              "i'll use your number so their texts come to you.")
 
 
+def minutes_to_close(now_local: datetime) -> int:
+    """Minutes until today's RSF close (hours_for, weekday-aware); 0 when already closed."""
+    _o, c = hours_for(now_local.weekday())
+    left = c * 60 - (now_local.hour * 60 + now_local.minute)
+    return max(0, left)
+
+
 def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
     """Pure decision (no sends) except queue_join, which is the D2 action itself."""
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -175,7 +182,12 @@ def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
         return Beat("line_d1", d1_text(reading, walk), "gym_line_d1")
 
     # Quiet enough for a quick session. Only below GYM_DEAD_MAX_PCT (so ~45% — the top of
-    # the "light" band — is never called "dead"); the word matches the real reading.
+    # the "light" band — is never called "dead"); the word matches the real reading. And
+    # only with a real session's worth of time left: the gym empties out in its last hour
+    # BECAUSE it's closing (Sun 2026-10-05 22:51, 11%, closes 23:00 → "gym's dead, quick
+    # push?" to two users who couldn't use it).
+    if minutes_to_close(now_local) < config.GYM_DEAD_MIN_MINUTES_TO_CLOSE:
+        return None
     if reading["pct"] < config.GYM_DEAD_MAX_PCT:
         mood = "dead" if reading["label"] == "dead" else "quiet"
         return Beat("dead", f"gym's {mood} right now. quick {_template_for(user)}?", "gym_dead")

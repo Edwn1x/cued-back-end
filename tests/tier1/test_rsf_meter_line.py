@@ -585,3 +585,24 @@ def test_rsf_context_block_carries_the_link_only_when_the_line_is_on(db, meter_o
     _reading(db, 96)
     blk = gym_beats.rsf_context_block(occupancy.now())
     assert "the virtual line is ON" in blk and ww.JOIN_URL in blk and "one exception to the no-links rule" in blk
+
+
+
+def test_no_dead_beat_in_the_last_hour_before_close(db, rsf_on, monkeypatch):
+    """Sun 2026-10-05 22:51 PT: 11% full, RSF closes 23:00 → the closing-hour emptying is
+    not a session window. Earlier the same evening (90 min left) the beat still fires."""
+    import gym_beats, config
+    from models import get_session, User
+    user = make_user(db, **dict(FOUNDER, confirmed_training_days="sun"))
+    _reading(db, 11)
+    s = get_session()
+    try:
+        u = s.get(User, user.id)
+        sunday_2251 = _now_local(22, 51, day=13)                     # 2026-09-13 is a Sunday; close 23:00
+        assert gym_beats.minutes_to_close(sunday_2251.astimezone(TZ)) == 9
+        assert gym_beats.propose(u, s, sunday_2251) is None
+        assert gym_beats.propose(u, s, _now_local(21, 30, day=13)) is not None   # 90 min left → beat
+        monkeypatch.setattr(config, "GYM_DEAD_MIN_MINUTES_TO_CLOSE", 5)
+        assert gym_beats.propose(u, s, sunday_2251) is not None      # the cut-off is the config
+    finally:
+        s.close()
