@@ -420,31 +420,83 @@ def set_anchors(user_id: int, items: list[dict], *, source: str) -> dict:
 # Onboarding has no tools, so a stated lift in a reply is caught in code. Precision
 # over recall: a stating form only ("i bench 135", "my squat is 185", "bench 135 for 5",
 # "squat: 185x5"), never a goal ("wanna bench 225", "get my squat to 2 plates").
-_ANCHOR_LIFT_WORDS = r"(bench|squat|deadlift|dl|ohp|overhead press|shoulder press|military press|barbell row|row|rdl|leg press|incline)"
+_ANCHOR_LIFT_WORDS = r"(?P<lift>bench|squat|deadlift|dl|ohp|overhead press|shoulder press|military press|barbell row|row|rdl|leg press|incline)"
+# A number that is NOT a load: "open 24 hours", "45 min", "3 sets", "6pm", "500m" …
+_NOT_A_LOAD = (r"(?!\s*(?:hours?|hrs?|mins?|minutes?|days?|weeks?|months?|years?|times|sets?|%|percent|"
+               r"am\b|pm\b|cal\b|g\b|m\b|km\b|k\b|degrees?|°|th\b|st\b|nd\b|rd\b|o'?clock))")
+_LOAD_TAIL = (r"(?<![\d])(?P<w>\d{2,3})\s*(?:lbs?|pounds?)?"
+              r"(?:\s*(?:x|×|for)\s*(?P<r>\d{1,2})(?:\s*reps?)?)?(?![\d])" + _NOT_A_LOAD)
+# Strict (onboarding capture, any message): lift word → a few known connectors → the number.
 _STATED_ANCHOR_RE = re.compile(
     r"(?<![a-z])(?:i|my|current|currently)?\s*" + _ANCHOR_LIFT_WORDS +
-    r"(?:es|s|'s|s'|ing)?(?:\s*(?::|is|at|around|about|like|currently|usually|rn|=|~))*\s*(\d{2,3})\s*(?:lbs?|pounds?)?"
-    r"(?:\s*(?:x|×|for)\s*(\d{1,2})(?:\s*reps?)?)?(?![\d])",
+    r"(?:es|s|'s|s'|ing)?(?:\s*(?::|is|was|at|around|about|like|currently|usually|rn|lwk|=|~))*\s*" + _LOAD_TAIL,
     re.IGNORECASE)
+# Loose (the ANSWER to a first-card ask, where a lift number is what was asked for): anything
+# short and digit-free may sit between the lift word and the number — "bench pr on flat bench
+# was 185lb for 1", "squat, lwk i'm stuck between 135 and 150" (live 2026-10-05, user 48: the
+# strict form read nothing, the turn fell to the model, and the card lost its setup mode).
+_LOOSE_ANCHOR_RE = re.compile(
+    r"(?<![a-z])" + _ANCHOR_LIFT_WORDS + r"(?:es|s|'s|s'|ing)?[^\d.!?\n]{0,30}?" + _LOAD_TAIL,
+    re.IGNORECASE)
+# "but i can do like 135 for 10" — a bare load WITH reps in a later clause belongs to the
+# lift just named (loose mode only; reps required so a stray number never becomes a lift).
+_BARE_LOAD_RE = re.compile(
+    r"(?<![\d])(?P<w>\d{2,3})\s*(?:lbs?|pounds?)?\s*(?:x|×|for)\s*(?P<r>\d{1,2})(?:\s*reps?)?(?![\d])" + _NOT_A_LOAD,
+    re.IGNORECASE)
+# "between 135 and 150" / "135-150" / "135 to 150" → the midpoint, to the nearest 5.
+_RANGE_RE = re.compile(
+    r"(?:\b(?:between|from)\s+(?P<a>\d{2,3})\s+(?:and|to|or)\s+(?P<b>\d{2,3})\b"
+    r"|(?<![\d])(?P<c>\d{2,3})\s*(?:-|–|to)\s*(?P<d>\d{2,3})(?![\d])(?!\s*(?:reps?|x|×|am\b|pm\b|min)))",
+    re.IGNORECASE)
+# A clause about a MAX ("my pr is 185", "maxed 225") with no reps stated is a 1-rep number,
+# not a ~5-rep working weight (else a 185 max would seed a 185×5 card).
+_MAX_WORDS_RE = re.compile(r"\b(pr|prs|max|maxed|maxes|1\s?rm|one[- ]rep|all[- ]time|best ever)\b", re.IGNORECASE)
 _GOAL_WORDS_RE = re.compile(r"\b(want|wanna|goal|get to|hit|reach|hoping|trying to|one day|eventually|someday|target)\b", re.IGNORECASE)
 
 
-def parse_stated_anchors(text: str) -> list[dict]:
+def _collapse_ranges(text: str) -> str:
+    def _mid(m):
+        a = m.group("a") or m.group("c")
+        b = m.group("b") or m.group("d")
+        lo, hi = int(a), int(b)
+        if 20 <= lo <= 900 and lo < hi <= lo + 100:
+            return str(int((lo + hi) / 2 / 5.0 + 0.5) * 5)   # midpoint to the nearest 5, halves up
+        return m.group(0)
+    return _RANGE_RE.sub(_mid, text)
+
+
+def parse_stated_anchors(text: str, *, loose: bool = False) -> list[dict]:
     """"i bench 135 and squat 185 for 5" → [{"exercise": "bench", "weight": 135}, {..., "reps": 5}].
-    A clause carrying a goal word yields nothing (precision-biased)."""
+    A clause carrying a goal word yields nothing (precision-biased). A range collapses to its
+    midpoint; a max/PR clause without reps is a 1-rep number. `loose` (the first-card ask's
+    answer) also accepts a short digit-free gap before the number and a bare "W for R" in a
+    following clause as the lift just named."""
     out: list[dict] = []
     if not text:
         return out
+    text = _collapse_ranges(text)
+    rx = _LOOSE_ANCHOR_RE if loose else _STATED_ANCHOR_RE
+    last_lift: str | None = None
     for clause in re.split(r"[.!?\n;]|,\s*(?:and|but)\s+|\band\b", text):
         if _GOAL_WORDS_RE.search(clause):
             continue
-        for m in _STATED_ANCHOR_RE.finditer(clause):
-            lift, w, r = m.group(1), int(m.group(2)), m.group(3)
+        maxish = bool(_MAX_WORDS_RE.search(clause))
+        found = False
+        for m in rx.finditer(clause):
+            lift, w, r = m.group("lift"), int(m.group("w")), m.group("r")
             if 20 <= w <= 900 and anchor_slug(lift):
                 item = {"exercise": lift, "weight": w}
                 if r:
                     item["reps"] = int(r)
+                elif maxish:
+                    item["reps"] = 1
                 out.append(item)
+                last_lift, found = lift, True
+        if loose and not found and last_lift:
+            for m in _BARE_LOAD_RE.finditer(clause):
+                w, r = int(m.group("w")), int(m.group("r"))
+                if 20 <= w <= 900:
+                    out.append({"exercise": last_lift, "weight": w, "reps": r})
     return out
 
 
@@ -570,8 +622,8 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     if not key or not (text or "").strip():
         return False
     setup = peek_pending_setup(user_id)
-    from workouts.start import start_workout_session
-    items = parse_stated_anchors(text)
+    from workouts.start import start_workout_session, send_defaults_note
+    items = parse_stated_anchors(text, loose=True)
     if items:
         r = set_anchors(user_id, items, source="reply")
         if r.get("saved"):
@@ -579,6 +631,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
                 pop_pending_card(user_id)
                 sr = start_workout_session(user_id, key, setup=setup)
                 logger.info("PENDING_CARD_ANSWERED user=%s key=%s anchors=%s session=%s", user_id, key, r["saved"], sr["session_id"])
+                send_defaults_note(user_id, sr)
                 return True
             except Exception as e:  # noqa: BLE001 — fall through to the model with anchors saved
                 logger.warning("PENDING_CARD_ANSWER_FAILED user=%s key=%s err=%s", user_id, key, e)
@@ -587,6 +640,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
         try:
             sr = start_workout_session(user_id, key, no_anchors=True, setup=setup)
             logger.info("PENDING_CARD_NO_NUMBER user=%s key=%s session=%s", user_id, key, sr["session_id"])
+            send_defaults_note(user_id, sr)
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning("PENDING_CARD_NO_NUMBER_FAILED user=%s key=%s err=%s", user_id, key, e)
