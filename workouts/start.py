@@ -173,8 +173,45 @@ def _untouched(session, session_id: int) -> bool:
     return session.query(SetLog.id).filter(SetLog.session_id == session_id, SetLog.done.is_(True)).first() is None
 
 
+def one_off_templates(rows: list[dict]) -> list:
+    """The coach's ad-hoc exercise list → ExerciseTemplates for ONE session. Each row:
+    name (required), sets, reps, weight (optional: a library default for a known movement,
+    else 0 = bodyweight / whatever they pick on the card). Nothing is saved."""
+    from workouts.templates import ExerciseTemplate, slug_for_name, _all_templates
+    import re as _re
+    known = {}
+    for group in _all_templates():          # yields each day's LIST of templates
+        for t in (group if isinstance(group, (list, tuple)) else [group]):
+            known.setdefault(getattr(t, 'slug', None), t)
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()
+        if not name:
+            continue
+        slug = slug_for_name(name) or _re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:60]
+        if not slug:
+            continue
+        base = known.get(slug)
+        try:
+            sets = max(1, min(int(r.get("sets") or (base.sets if base else 3)), 10))
+            reps = max(1, min(int(r.get("reps") or (base.reps if base else 10)), 50))
+        except (TypeError, ValueError):
+            sets, reps = 3, 10
+        w = r.get("weight")
+        try:
+            weight = float(w) if w is not None and str(w).strip() != "" else (base.default_weight if base else 0.0)
+        except (TypeError, ValueError):
+            weight = base.default_weight if base else 0.0
+        step = base.plate_step if base else (5.0 if weight else 0.0)
+        rep_step = base.rep_step if base else (2 if not weight else 0)
+        out.append(ExerciseTemplate(slug, (base.label if base and base.label else name.lower())[:80], sets, reps, weight, step, rep_step))
+    return out
+
+
 def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False,
-                          setup: bool = False) -> dict:
+                          setup: bool = False, one_off: list[dict] | None = None) -> dict:
     """→ {"session_id", "template_key", "surface": "card"|"messages"|"refused", "sets", "first", "setup"}.
     Raises ValueError on an unknown template, and NeedsAnchors (a ValueError) on a trained
     user's first loaded card when nothing is known about their lifts — unless `no_anchors`
@@ -254,9 +291,15 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     finally:
         session.close()
 
+    adhoc = one_off_templates(one_off) if one_off else []
+    if one_off and not adhoc:
+        raise ValueError("the one-off plan had no usable exercises (each needs a name)")
+    if adhoc:
+        used_default = False                    # a plan they just got is not "generic defaults"
+        logger.info("WORKOUT_SESSION_ONE_OFF user=%s key=%s exercises=%s", user_id, key, [t.slug for t in adhoc])
     from workouts.calibrate import pop_pending_card
     pop_pending_card(user_id)                   # a card is going out; any parked ask is moot
-    ws = build_session(user, key)
+    ws = build_session(user, key, exercises=adhoc or None)
     session = get_session()
     try:
         row = session.get(WorkoutSession, ws.id)
@@ -299,7 +342,8 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s",
                 user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
-            "first": first, "estimated": estimated, "setup": setup, "used_default": used_default}
+            "first": first, "estimated": estimated, "setup": setup, "used_default": used_default,
+            "one_off": bool(adhoc)}
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,

@@ -306,7 +306,14 @@ START_WORKOUT_SESSION_TOOL = {
         "it in one line, then set_lift_anchors with the answer and the card sends itself; if they don't "
         "know or say start light, call this again with no_anchors=true. "
         "After 'ok', reply with exactly [silent] — the text and the card already went out; "
-        "never add a per-set prompt or a second intro. On 'error' tell them plainly."
+        "never add a per-set prompt or a second intro. On 'error' tell them plainly. "
+        "ONE-OFF PLAN: when today's exercises are a one-time thing — limited equipment at "
+        "someone else's gym, a deload, a time-boxed session, 'just do these today' — pass them "
+        "as `exercises` and the card is built from THAT list for this session only; it is NOT "
+        "saved as their routine (save_routine is for what they usually run). Do this INSTEAD of "
+        "writing the plan out as text while a card is open: the card is where the plan lives. "
+        "If a session is already open and untouched it's replaced; if it has logged sets, "
+        "reset_workout_session first."
     ),
     "input_schema": {
         "type": "object",
@@ -314,6 +321,20 @@ START_WORKOUT_SESSION_TOOL = {
             "template_key": {"type": "string", "description": "only if they named the day"},
             "no_anchors": {"type": "boolean",
                            "description": "true when they don't know their numbers or said to just start light — skips the lift ask and calibrates from their stats"},
+            "exercises": {
+                "type": "array",
+                "description": "ONE-OFF plan for this session only (not saved): the exercises in order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "sets": {"type": "integer"},
+                        "reps": {"type": "integer"},
+                        "weight": {"type": "number", "description": "starting load in lb; omit for bodyweight or to let code calibrate a known lift"},
+                    },
+                    "required": ["name"],
+                },
+            },
         },
         "required": [],
     },
@@ -322,9 +343,13 @@ START_WORKOUT_SESSION_TOOL = {
 
 def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from workouts.start import start_workout_session
+    one_off = tool_input.get("exercises")
+    if one_off is not None and not isinstance(one_off, list):
+        return "error: exercises must be a list of {name, sets, reps, weight}"
     try:
         r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None,
-                                  no_anchors=bool(tool_input.get("no_anchors")))
+                                  no_anchors=bool(tool_input.get("no_anchors")),
+                                  one_off=one_off or None)
     except ValueError as e:
         return f"error: {e}"
     except Exception as e:  # noqa: BLE001 — a send failure must not crash the turn
@@ -335,6 +360,10 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
     if r.get("first"):
         first = (" First card: the intro already told them the weights are a guess from their stats they can edit."
                  if r.get("estimated") else " First card: the intro already said the weights are from what they told you.")
+    if r.get("one_off"):
+        return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets) from your "
+                f"one-off list — NOT saved as their routine (their usual {r['template_key']} day is untouched).{first} "
+                f"Reply with exactly [silent].")
     base = f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first}"
     if r.get("used_default"):
         # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
@@ -4134,6 +4163,13 @@ def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None)
     # Write tracking for the restatement guard: a successful non-read tool call is a
     # write (the handlers all report failure as "error: …", so that prefix is the
     # success signal here). Only the turn's own state is touched — never the result.
+    st = _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})
+    st.setdefault("called", set()).add(name)
     if name not in READ_ONLY_TOOLS and not str(out or "").lstrip().lower().startswith("error"):
-        _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})["wrote"] = True
+        st["wrote"] = True
     return out
+
+
+def turn_called(user_id: int, name: str) -> bool:
+    """True once `name` was dispatched (ok or error) in the current turn."""
+    return name in (_TURN_STATE.get(user_id, {}).get("called") or set())

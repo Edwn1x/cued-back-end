@@ -89,7 +89,10 @@ def next_targets(session, user_id: int, tmpl, user=None) -> tuple[float, int, st
     return tmpl.default_weight, tmpl.reps, "template"
 
 
-def build_session(user, template_key: str, *, now=None) -> WorkoutSession:
+def build_session(user, template_key: str, *, now=None, exercises=None) -> WorkoutSession:
+    """`exercises` (list[ExerciseTemplate]) = a ONE-OFF plan for this session — used
+    instead of the day's template and never saved as the user's routine (a night at a
+    friend's apartment gym, a deload, a time-boxed session)."""
     key = normalize_template_key(template_key)
     if not key:
         raise ValueError(f"unknown template {template_key!r}")
@@ -100,7 +103,7 @@ def build_session(user, template_key: str, *, now=None) -> WorkoutSession:
         session.add(ws)
         session.flush()
         sources: dict[str, str] = {}
-        for tmpl in day_template(user, key):
+        for tmpl in (exercises if exercises else day_template(user, key)):
             weight, reps, src = next_targets(session, user.id, tmpl, user=user)
             sources[tmpl.slug] = src
             for i in range(tmpl.sets):
