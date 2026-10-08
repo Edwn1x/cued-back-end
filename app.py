@@ -3631,8 +3631,44 @@ async function handleSubmit(e) {
 """
 
 # ─── App Startup ────────────────────────────────────
+def _install_shutdown_drain():
+    """SIGTERM (a deploy swapping the container) → flush the in-memory inbound buffers
+    before exiting, so a turn that was 20s from its timer isn't lost. Whatever can't finish
+    in the grace period is still marked in inbound_pending for the next boot."""
+    if not config.INBOUND_DRAIN_ON_SIGTERM_ENABLED:
+        return
+    import signal
+
+    def _on_term(signum, frame):
+        try:
+            from message_buffer import drain_all
+            n = drain_all("sigterm")
+            logger.warning("SHUTDOWN_DRAIN signal=%s flushed=%d", signum, n)
+        except Exception as e:  # noqa: BLE001
+            logger.error("SHUTDOWN_DRAIN_FAILED err=%s", e, exc_info=True)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, _on_term)
+
+
+def _recover_inbound_in_background():
+    """Boot: replay the turns the previous process never finished (inbound_recovery)."""
+    if not config.INBOUND_RECOVERY_ENABLED:
+        return
+    import threading
+
+    def _run():
+        try:
+            from inbound_recovery import recover_orphans
+            recover_orphans(process_buffered_message)
+        except Exception as e:  # noqa: BLE001
+            logger.error("INBOUND_RECOVERY_FAILED err=%s", e, exc_info=True)
+    threading.Thread(target=_run, name="inbound-recovery", daemon=True).start()
+
+
 if __name__ == "__main__":
     logger.info("Starting Cued...")
+    _install_shutdown_drain()
     start_scheduler()
+    _recover_inbound_in_background()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)

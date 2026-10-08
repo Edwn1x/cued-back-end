@@ -332,6 +332,15 @@ MIGRATIONS = [
         depleted_at TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pantry_user ON pantry (user_id, depleted_at)",
+    # inbound_pending: a row per buffered inbound turn, so a deploy can't silently drop one.
+    """CREATE TABLE IF NOT EXISTS inbound_pending (
+        phone VARCHAR(20) PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        first_message_id INTEGER,
+        has_image BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+    )""",
     # stock_pantry (photo of a package not eaten yet): the estimate rides the row so the
     # later "ate the whole thing" logs from it.
     "ALTER TABLE pantry ADD COLUMN kcal_per_100g DOUBLE PRECISION",

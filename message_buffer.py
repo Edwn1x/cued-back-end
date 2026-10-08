@@ -34,6 +34,55 @@ def _get_delay():
     return random.randint(MIN_DELAY, MAX_DELAY)
 
 
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _mark_pending(phone: str, user_id: int, has_image: bool, *, first: bool) -> None:
+    """Persist 'a turn is pending for this phone' (inbound_recovery reads it after a deploy).
+    `first` = the buffer was just created: the latest inbound row is the turn's first.
+    Fail-open — the buffer never depends on this write."""
+    if not config.INBOUND_RECOVERY_ENABLED:
+        return
+    try:
+        from models import get_session, InboundPending, Message
+        s = get_session()
+        try:
+            row = s.get(InboundPending, phone)
+            if row is None:
+                row = InboundPending(phone=phone, user_id=user_id, has_image=False, created_at=_utcnow())
+                s.add(row)
+            if first or row.first_message_id is None:
+                latest = (s.query(Message.id).filter(Message.user_id == user_id, Message.direction == "in")
+                          .order_by(Message.id.desc()).first())
+                row.first_message_id = latest[0] if latest else None
+            row.user_id = user_id
+            row.has_image = bool(row.has_image) or bool(has_image)
+            row.updated_at = _utcnow()
+            s.commit()
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("INBOUND_PENDING_MARK_FAILED phone=%s err=%s", phone, e)
+
+
+def _clear_pending(phone: str) -> None:
+    if not config.INBOUND_RECOVERY_ENABLED:
+        return
+    try:
+        from models import get_session, InboundPending
+        s = get_session()
+        try:
+            row = s.get(InboundPending, phone)
+            if row is not None:
+                s.delete(row)
+                s.commit()
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("INBOUND_PENDING_CLEAR_FAILED phone=%s err=%s", phone, e)
+
+
 def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                    image_url: str = None, process_callback=None, delay_override: tuple = None,
                    images: list = None):
@@ -80,6 +129,7 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 logger.info("BUFFER_FOLD phone=%s kind=%s messages=%d band=%s",
                             phone, fold, len(pending), delay_override)
             logger.info(f"Appended to buffer for {phone} ({len(pending)} messages)")
+            _mark_pending(phone, user_id, has_image, first=False)
         else:
             # Create new buffer entry. If this phone was flushed a heartbeat ago,
             # this message raced the timer that just fired — the previous turn is
@@ -102,12 +152,14 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 "user_id": user_id,
             }
             logger.info(f"New buffer created for {phone}")
+            _mark_pending(phone, user_id, has_image, first=True)
 
         # Start a new timer, tagged with a unique token. The token is how a flush
         # tells "I am the current timer" from "I was superseded by a later append
         # but fired anyway because cancel() lost the race" — see _flush_buffer.
         token = object()
         _buffers[phone]["token"] = token
+        _buffers[phone]["callback"] = process_callback      # drain_all needs it without the timer
         delay = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
         _buffers[phone]["band"] = delay_override or (MIN_DELAY, MAX_DELAY)
         timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback, token])
@@ -140,6 +192,7 @@ def _flush_buffer(phone: str, process_callback, token=None):
         buffer_data = _buffers.pop(phone)
         _last_flush[phone] = time.monotonic()
 
+    _clear_pending(phone)        # this process owns the turn from here; no replay after a deploy
     messages = buffer_data["messages"]
     user_id = buffer_data["user_id"]
 
@@ -184,3 +237,36 @@ def cancel_buffer(phone: str):
             _buffers[phone]["timer"].cancel()
             del _buffers[phone]
             logger.info(f"Buffer cancelled for {phone}")
+
+
+def pending_phones() -> list[str]:
+    with _lock:
+        return list(_buffers.keys())
+
+
+def drain_all(reason: str = "shutdown") -> int:
+    """Flush every pending buffer NOW, synchronously, in this thread — the SIGTERM path.
+    Each flush is the full turn (model call + send), so this is bounded only by the
+    platform's grace period; whatever doesn't finish is still covered by the
+    inbound_pending marker (inbound_recovery on the next boot). Returns turns flushed."""
+    with _lock:
+        phones = list(_buffers.keys())
+        for ph in phones:
+            try:
+                _buffers[ph]["timer"].cancel()
+            except Exception:  # noqa: BLE001
+                pass
+    if phones:
+        logger.warning("BUFFER_DRAIN reason=%s pending=%d phones=%s", reason, len(phones), phones)
+    n = 0
+    for ph in phones:
+        with _lock:
+            entry = _buffers.get(ph)
+        if not entry:
+            continue
+        try:
+            _flush_buffer(ph, entry.get("callback"), entry.get("token"))
+            n += 1
+        except Exception as e:  # noqa: BLE001
+            logger.error("BUFFER_DRAIN_FLUSH_FAILED phone=%s err=%s", ph, e, exc_info=True)
+    return n
