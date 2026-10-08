@@ -548,9 +548,11 @@ def build_loop_context(user, session) -> str:
     if user.protein_target:
         lines.append(f"protein remaining vs target: {user.protein_target - tot_pro}g "
                      f"({tot_pro}/{user.protein_target}g)")
+    from timefmt import describe_day_reset
+    reset_txt = describe_day_reset(user)
     parts.append(
         "## TODAY'S TOTALS (authoritative — the ONLY source for today's running total; "
-        "it resets to 0 at local midnight)\n" + "\n".join(lines) +
+        f"it resets to 0 at {reset_txt})\n" + "\n".join(lines) +
         "\nWhen you state the day's total, use THESE numbers as they are — read them here, "
         "don't recompute or add meals up yourself, and don't carry forward a total from "
         "earlier in the thread (it may be a previous day). Just after you log or edit a meal "
@@ -572,7 +574,7 @@ def build_loop_context(user, session) -> str:
         unmet = ""
         if user.protein_target and (user.protein_target - tot_pro) > 0:
             unmet = (f" They're ~{user.protein_target - tot_pro}g of protein short of "
-                     "today's target — that's fine, it resets at local midnight.")
+                     f"today's target — that's fine, it resets at {reset_txt.split(' (')[0]}.")
         parts.append(
             "## LATE / PAST SLEEP WINDOW — PRIORITIZE SLEEP OVER MACRO-COMPLETION\n"
             "It's the small hours for them (past their sleep pattern)." + unmet +

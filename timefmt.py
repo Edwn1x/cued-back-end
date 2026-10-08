@@ -47,17 +47,96 @@ def to_local(dt: datetime, user) -> datetime:
     return _as_aware_utc(dt).astimezone(resolve_tz(user))
 
 
+_HHMM_STRICT_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+
+# set_day_reset(0) stores this instead of 0: "the standard midnight day — and don't
+# auto-shift me". A plain 0/None column is "unset", which lets the bedtime rule below apply.
+EXPLICIT_MIDNIGHT = -1
+# A bedtime at/before this local hour counts as an AFTER-MIDNIGHT bedtime (03:00, 00:30);
+# 11:00 or later is an evening bedtime → the standard day. Keeps the derived hour ≤ 11.
+AUTO_RESET_MAX_BED_HOUR = 10
+
+
+def _strict_hhmm(s) -> tuple[int, int] | None:
+    m = _HHMM_STRICT_RE.match(str(s or ""))
+    if not m:
+        return None
+    h, mm = int(m.group(1)), int(m.group(2))
+    return (h, mm) if 0 <= h <= 23 and 0 <= mm <= 59 else None
+
+
+def auto_day_reset_hour(user) -> int:
+    """The rollover hour an AFTER-MIDNIGHT bedtime implies: one hour past their usual
+    sleep_time (03:00 → 4, 00:30 → 1), capped at 11. An evening bedtime, a phrase instead
+    of a clock, or the flag off → 0 (the standard midnight day, exactly as before).
+
+    Live 2026-10-06 (user 48, sleeps ~3am): a 12:10am burger became "980 for the day" on a
+    fresh day and he had to ask for it to be moved to yesterday. The rhythm the day should
+    follow was already in the profile."""
+    import config
+    if not getattr(config, "NUTRITION_DAY_AUTO_RESET_ENABLED", True):
+        return 0
+    hm = _strict_hhmm(getattr(user, "sleep_time", None))
+    if hm is None:
+        return 0
+    h = hm[0]
+    if 0 <= h <= AUTO_RESET_MAX_BED_HOUR:
+        return min(h + 1, 11)
+    return 0
+
+
 def day_reset_hour(user) -> int:
-    """The local hour the user's nutrition day rolls over. Default 0 (midnight) — the
-    behavior for everyone unless they explicitly asked to shift it (set_day_reset). A
-    value of e.g. 4 means the day runs 4am→4am, so a 12:20am meal counts for the day
-    that STARTED yesterday morning (founder 2026-09-16: 'clean slate after I sleep').
-    Clamped to 0–11 so a 'day' can't run backwards or skip the actual day."""
+    """The local hour the user's nutrition day rolls over. An explicit set_day_reset value
+    (1–11) wins; EXPLICIT_MIDNIGHT (-1) pins the standard day; otherwise (0/None) the hour
+    is DERIVED from an after-midnight bedtime (auto_day_reset_hour), else 0. A value of
+    e.g. 4 means the day runs 4am→4am, so a 12:20am meal counts for the day that STARTED
+    yesterday morning (founder 2026-09-16: 'clean slate after I sleep'). Clamped 0–11 so a
+    'day' can't run backwards or skip the actual day."""
     try:
         h = int(getattr(user, "day_reset_hour", 0) or 0)
     except (TypeError, ValueError):
+        h = 0
+    if h == EXPLICIT_MIDNIGHT:
         return 0
-    return h if 0 <= h <= 11 else 0
+    if 1 <= h <= 11:
+        return h
+    return auto_day_reset_hour(user)
+
+
+def day_reset_source(user) -> str:
+    """'explicit' (they asked), 'auto' (derived from an after-midnight bedtime), or
+    'default' (standard midnight day)."""
+    try:
+        h = int(getattr(user, "day_reset_hour", 0) or 0)
+    except (TypeError, ValueError):
+        h = 0
+    if h == EXPLICIT_MIDNIGHT or 1 <= h <= 11:
+        return "explicit"
+    return "auto" if auto_day_reset_hour(user) else "default"
+
+
+def _hour_label(h: int) -> str:
+    return "midnight" if h == 0 else f"{h}am"
+
+
+def describe_day_reset(user) -> str:
+    """The prompt's one-line description of WHEN the running total resets: 'local
+    midnight', or e.g. '4am local (their day runs 4am→4am: a 12:10am meal still counts for
+    the day before — derived from their ~3:00 bedtime)'."""
+    h = day_reset_hour(user)
+    if h == 0:
+        return "local midnight"
+    src = day_reset_source(user)
+    why = ""
+    if src == "auto":
+        hm = _strict_hhmm(getattr(user, "sleep_time", None))
+        if hm:
+            why = f" — derived from their ~{hm[0]}:{hm[1]:02d} bedtime"
+    elif src == "explicit":
+        why = " — they asked for it"
+    lab = _hour_label(h)
+    return (f"{lab} local (their day runs {lab}→{lab}: a 12:10am meal still counts for the "
+            f"day before{why})")
 
 
 def local_day_bounds(user, *, now: datetime = None) -> tuple[datetime, datetime]:
