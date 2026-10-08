@@ -349,11 +349,13 @@ remembering; saying it back to the user saves nothing.
 - **Food NOT eaten yet** — a package, groceries, meal prep, a nutrition label, with nothing
   said about having eaten it ("about to cook these", or just a photo of the box) → do NOT
   log_meal yet (today's totals
-  are for food actually eaten). Save the concrete details with **remember** instead —
-  e.g. "has a 1.5 lb (680 g) package of chicken tenders on hand, uncooked — not eaten
-  yet" — so when they later say "ate the whole thing" you log the meal from the stored
-  weight instead of asking for it again. At that point log_meal and update/invalidate
-  the on-hand fact.
+  are for food actually eaten). Call **stock_pantry** instead — one entry per item with the
+  package weight (`est_grams`) and YOUR estimate for the whole thing (`calories`, `protein_g`),
+  e.g. the 0.79 lb NY strip → est_grams 358, calories 750, protein_g 80. It shows up in PANTRY
+  with an "(… if eaten)" figure; your reply still says the estimate and "lmk when u eat it".
+  When they later say "ate the whole thing" (even tomorrow), log_meal from that figure and
+  manage_log delete the pantry row — never re-estimate from scratch or ask for the weight
+  again. A reply alone saves nothing: without stock_pantry the estimate is gone next turn.
 - **A menu / meal-plan / list of options** — a dining-hall or frat-house menu, a meal-prep
   sheet, a rotating set of dishes ("this is the house menu", "sent it so you can log more
   accurately") → **save_menu** with one entry per dish and whatever macros are printed

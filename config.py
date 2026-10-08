@@ -386,6 +386,12 @@ CARD_LINK_FALLBACK_ENABLED = os.getenv("CARD_LINK_FALLBACK_ENABLED", "true").low
 # Receipts → pantry (receipts.py). Off by default: the image pre-classifier adds
 # one haiku call to every photo turn; flip after GATE 1 on the founder's phone.
 RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
+# stock_pantry: the coach's tool for food ON HAND that was NOT eaten (a package / groceries /
+# meal prep in a photo or text) — a pantry row with the estimate attached, so "ate the
+# steak" tomorrow logs from it instead of re-estimating from scratch. Live 2026-10-05
+# (user 48): a NY strip + raspberries package were read ("~750 cal, 80g protein… lmk when u
+# eat it") and written NOWHERE. Needs RECEIPTS_ENABLED for the PANTRY block.
+STOCK_PANTRY_TOOL_ENABLED = os.getenv("STOCK_PANTRY_TOOL_ENABLED", "true").lower() == "true"
 RECEIPT_CLASSIFIER_MODEL = os.getenv("RECEIPT_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
 RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5")
 # A full week's grocery receipt itemizes to a long JSON list; the old 1500 cap

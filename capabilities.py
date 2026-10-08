@@ -181,7 +181,7 @@ CAPABILITIES: list[Capability] = [
         id="receipts",
         what="send me a grocery receipt and i'll log what you've got so dinner ideas use it",
         how="a photo of the receipt — i read the lines; 'out of chicken' or 'what do i have' keeps it current",
-        tools=(),
+        tools=("stock_pantry",),
         enabled=lambda u: config.RECEIPTS_ENABLED and config.READ_IMAGE_ENABLED,
         relevance=lambda u: 7 if "cook" in (getattr(u, "cooking_situation", "") or "").lower() else 4,
         used=lambda session, u: session.query(__import__("models").PantryItem.id).filter_by(user_id=u.id).first() is not None,

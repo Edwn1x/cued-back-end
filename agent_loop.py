@@ -1082,6 +1082,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SAVE_MENU_TOOL_ENABLED:
         from agent_tools import SAVE_MENU_TOOL
         tools.append(SAVE_MENU_TOOL)
+    if config.STOCK_PANTRY_TOOL_ENABLED and config.RECEIPTS_ENABLED:
+        # Food on hand, not eaten (a package photo) → a pantry row with the estimate attached,
+        # so the later "ate it" logs from it. Live 2026-10-05: read, said, saved nowhere.
+        from agent_tools import STOCK_PANTRY_TOOL
+        tools.append(STOCK_PANTRY_TOOL)
     if config.WEATHER_ENABLED:
         # Reactive weather answer + correctable location. The morning-brief weather line
         # rides the heartbeat brief, not a tool. open-meteo, no key, fail-open.
