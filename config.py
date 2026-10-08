@@ -581,6 +581,12 @@ CONTEXT_LOCAL_TIME_ENABLED = os.getenv("CONTEXT_LOCAL_TIME_ENABLED", "true").low
 # food/macro question is still answered honestly. Fail-open (no/unparseable sleep data →
 # a small-hours default; any error → today's behavior). See agent_loop._is_late_hour.
 LATE_HOUR_SLEEP_FIRST_ENABLED = os.getenv("LATE_HOUR_SLEEP_FIRST_ENABLED", "true").lower() == "true"
+# The mirror image: EVENING FOR THEM, NOT LATE. Live 2026-10-05 22:56 (user 48, bed ~3am):
+# "it's almost 11, maybe just sleep" — the model read the clock, not his rhythm (and said
+# "it's past 11, u eating or calling it?" the next night). When their bedtime is after
+# midnight and it's 9pm → their bed hour, build_loop_context says so; the LATE block still
+# takes over once it actually is past their bedtime. Fail-open.
+EVENING_NOT_LATE_SIGNAL_ENABLED = os.getenv("EVENING_NOT_LATE_SIGNAL_ENABLED", "true").lower() == "true"
 
 # Anti-nagging / nudge-repetition guard. Live 2026-09-28 (founder, user 31): the
 # coach delivered essentially the SAME standing nudge ~5× in one day across separate

@@ -176,6 +176,64 @@ def _is_late_hour(user, *, now: datetime = None, session=None) -> bool:
         return False
 
 
+def _after_midnight_bed_wake(user, session=None) -> tuple[int, int | None] | None:
+    """(bed_hour, wake_hour) local when their usual bedtime is AFTER midnight (0–6am) —
+    measured (watch) first, else the profile clock values. None when bed is in the evening
+    or unknown: then the clock's idea of "late" is roughly right and no signal is owed."""
+    from heartbeat import _parse_hour
+    measured = _measured_late_hours(user, session)
+    if measured is not None:
+        hs, hw = measured
+    else:
+        hs = _parse_hour(getattr(user, "sleep_time", None))
+        hw = _parse_hour(getattr(user, "wake_time", None))
+    if hs is None or not (0 <= hs <= LATE_HOUR_DEFAULT_END):
+        return None
+    return hs, hw
+
+
+def _hour_words(h: int | None, *, fallback: str) -> str:
+    if h is None:
+        return fallback
+    if h == 0:
+        return "midnight"
+    if h == 12:
+        return "noon"
+    return f"{h}am" if h < 12 else f"{h - 12}pm"
+
+
+def _evening_not_late_block(user, session=None, *, now: datetime = None) -> str | None:
+    """The EVENING FOR THEM, NOT LATE signal: 9pm → their (after-midnight) bed hour, so the
+    coach doesn't read 10:56pm as bedtime for someone who sleeps at 3. Live 2026-10-05
+    (user 48): "it's almost 11, maybe just sleep" / "it's past 11, u eating or calling it?".
+    Flag-gated, fail-open (None)."""
+    if not config.EVENING_NOT_LATE_SIGNAL_ENABLED:
+        return None
+    try:
+        bw = _after_midnight_bed_wake(user, session)
+        if not bw:
+            return None
+        bed, wake = bw
+        from timefmt import resolve_tz
+        ref = now if now is not None else _late_clock()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        local = ref.astimezone(resolve_tz(user))
+        if not (local.hour >= 21 or local.hour < bed):
+            return None
+        clock = local.strftime("%I:%M%p").lstrip("0").lower()
+        return (
+            "## EVENING FOR THEM, NOT LATE\n"
+            f"It's {clock}; their usual bed is ~{_hour_words(bed, fallback='after midnight')} "
+            f"(up ~{_hour_words(wake, fallback='late morning')}). This is mid-evening on THEIR clock. "
+            "Do NOT call it late, suggest sleep, or 'call it a night' — eating now is normal for them "
+            "and still today's food. Late is defined by their rhythm, not the wall clock: when it is "
+            "actually past their bedtime, the past-bedtime sleep-first block appears instead."
+        )
+    except Exception:  # noqa: BLE001 — a clock/tz hiccup must never break a turn
+        return None
+
+
 def build_loop_context(user, session) -> str:
     """The VOLATILE per-user block, injected AFTER the cached voice prefix.
 
@@ -581,6 +639,10 @@ def build_loop_context(user, session) -> str:
             "report food, still LOG it normally (never refuse a log); just change the "
             "nudging PRIORITY. If they explicitly ask about food or their macros, answer "
             "honestly and plainly — don't proactively push them to eat to hit a target now.")
+    else:
+        _ev = _evening_not_late_block(user, session)
+        if _ev:
+            parts.append(_ev)
 
     # 7b. YESTERDAY's meals — ids for corrections, never for today's math. Live
     # 2026-09-19: the muffin she disputed was yesterday's row; with only today's ids in
