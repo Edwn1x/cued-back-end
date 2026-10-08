@@ -332,6 +332,9 @@ MIGRATIONS = [
         depleted_at TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pantry_user ON pantry (user_id, depleted_at)",
+    # stock_pantry (photo of a package not eaten yet): the estimate rides the row so the
+    # later "ate the whole thing" logs from it.
+    "ALTER TABLE pantry ADD COLUMN kcal_per_100g DOUBLE PRECISION",
     """CREATE TABLE IF NOT EXISTS gym_occupancy (
         id SERIAL PRIMARY KEY,
         facility VARCHAR(20) NOT NULL,

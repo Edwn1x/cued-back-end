@@ -175,12 +175,13 @@ def run_onboarding_setup(user_id: int) -> str:
     from workouts.session_ops import active_session_id
     if active_session_id(user_id):
         return "skipped:open_session"
-    from workouts.start import start_workout_session, NeedsAnchors
+    from workouts.start import start_workout_session, NeedsAnchors, send_defaults_note
     u = _user(user_id)
     if u is None:
         return "skipped:no_user"
     try:
         r = start_workout_session(user_id, setup=True)
+        send_defaults_note(user_id, r)
     except NeedsAnchors:
         send_sms(u.phone, ask_text(u), user_id=user_id, message_type=MESSAGE_TYPE)
         logger.info("CARD_SETUP_ASKED user=%s", user_id)

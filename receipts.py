@@ -617,6 +617,79 @@ def _ranked(items: list[PantryItem]) -> list[PantryItem]:
                                          -(it.added_at.timestamp() if it.added_at else 0)))
 
 
+def _norm_item(label: str) -> str:
+    return re.sub(r"\s+", " ", (label or "").strip().lower())[:80]
+
+
+def stock_items(user_id: int, items: list[dict], *, source: str = "text") -> dict:
+    """Food on hand, NOT eaten — from the coach's stock_pantry tool (a package / groceries /
+    meal prep in a photo or text). Each item: label (required), est_grams, qty, unit, and the
+    coach's estimate for the WHOLE item as calories / protein_g, stored per 100 g so the
+    later log can reuse it. Same open label → merged (grams add, estimate refreshed).
+    Returns {"written": [labels], "rejected": [labels]}."""
+    written: list[str] = []
+    rejected: list[str] = []
+    now = _utcnow()
+    session = get_session()
+    try:
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("label") or it.get("item") or "").strip()
+            if not label:
+                rejected.append("?")
+                continue
+            try:
+                grams = float(it["est_grams"]) if it.get("est_grams") not in (None, "") else None
+                kcal = float(it["calories"]) if it.get("calories") not in (None, "") else None
+                prot = float(it["protein_g"]) if it.get("protein_g") not in (None, "") else None
+                qty = float(it["qty"]) if it.get("qty") not in (None, "") else None
+            except (TypeError, ValueError):
+                rejected.append(label)
+                continue
+            if grams is not None and grams <= 0:
+                grams = None
+            kp100 = round(kcal / grams * 100, 1) if (kcal is not None and grams) else None
+            pp100 = round(prot / grams * 100, 1) if (prot is not None and grams) else None
+            key = _norm_item(label)
+            existing = (session.query(PantryItem)
+                        .filter(PantryItem.user_id == user_id, PantryItem.item == key, PantryItem.depleted_at.is_(None))
+                        .first())
+            if existing:
+                existing.est_grams = (existing.est_grams or 0) + (grams or 0) or existing.est_grams
+                if qty is not None:
+                    existing.qty = (existing.qty or 0) + qty
+                existing.label, existing.added_at, existing.source = label[:80], now, source[:10]
+                if kp100 is not None:
+                    existing.kcal_per_100g = kp100
+                if pp100 is not None:
+                    existing.protein_per_100g = pp100
+            else:
+                session.add(PantryItem(user_id=user_id, item=key, label=label[:80], qty=qty,
+                                       unit=(str(it.get("unit") or "")[:20] or None), est_grams=grams,
+                                       protein_per_100g=pp100, kcal_per_100g=kp100, added_at=now, source=source[:10]))
+            written.append(label)
+        session.commit()
+    finally:
+        session.close()
+    if written:
+        logger.info("PANTRY_STOCKED_VIA_TOOL user=%s source=%s items=%s", user_id, source, written)
+    return {"written": written, "rejected": rejected}
+
+
+def _if_eaten(it: PantryItem) -> str:
+    """' (~750 cal, 80g protein if eaten)' when the row carries an estimate, else ''."""
+    g = it.est_grams or 0
+    if not g or (it.kcal_per_100g is None and it.protein_per_100g is None):
+        return ""
+    bits = []
+    if it.kcal_per_100g is not None:
+        bits.append(f"~{int(round(it.kcal_per_100g * g / 100))} cal")
+    if it.protein_per_100g is not None:
+        bits.append(f"{int(round(it.protein_per_100g * g / 100))}g protein")
+    return f" ({', '.join(bits)} if eaten)"
+
+
 def handle_pantry_text(user_id: int, text: str) -> str | None:
     """Deterministic pantry updates. Returns the one reply line, or None (not a pantry text)."""
     if not config.RECEIPTS_ENABLED or not text or len(text) > 80:
@@ -659,7 +732,7 @@ def pantry_context(user_id: int, limit: int = 12) -> str:
     session = get_session()
     try:
         items = _ranked(_active_items(session, user_id))[:limit]
-        lines = [f"[id {it.id}] {_fmt_qty(it)}" for it in items]
+        lines = [f"[id {it.id}] {_fmt_qty(it)}{_if_eaten(it)}" for it in items]
     finally:
         session.close()
     if not lines:
@@ -667,5 +740,6 @@ def pantry_context(user_id: int, limit: int = 12) -> str:
     return ("## PANTRY (what they have at home — prefer what they have when you suggest a meal)\n"
             "This is stock, NOT food eaten. If they say one of these was a meal they ate (or a "
             "restaurant order that got filed here), log_meal it AND manage_log delete it with "
-            "entity='pantry' (the id is for you, never say it).\n"
+            "entity='pantry' (the id is for you, never say it). An '(… if eaten)' estimate is the "
+            "number to log from when they ate the whole thing — scale it if they ate part.\n"
             + "\n".join(f"- {l}" for l in lines))

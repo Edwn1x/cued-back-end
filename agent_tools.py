@@ -364,18 +364,23 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets) from your "
                 f"one-off list — NOT saved as their routine (their usual {r['template_key']} day is untouched).{first} "
                 f"Reply with exactly [silent].")
+    base = f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first}"
     if r.get("used_default"):
         # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
         # to capture the real ones is the whole point (live incident user 31: generic pull card
         # passed off as "their card").
-        return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
-                f"NO routine on file for {r['template_key']} — these are STARTING DEFAULT exercises, not their "
-                f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
-                f"{r['template_key']} day so you can save it (save_routine). Don't call it 'their card' and don't "
-                f"reply [silent].")
-    return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
-            f"Reply with exactly [silent].")
+        return base + " " + _defaults_instruction(r["template_key"])
+    return base + " Reply with exactly [silent]."
+
+
+def _defaults_instruction(key: str) -> str:
+    """The tool-result sentence that makes the coach flag a generic day — shared by the
+    start tool and the set_lift_anchors pending-card branch (which used to say [silent])."""
+    return (f"NO routine on file for {key} — these are STARTING DEFAULT exercises, not their "
+            f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
+            f"{key} day so you can save it (save_routine). Don't call it 'their card' and don't "
+            f"reply [silent].")
 
 
 RESET_WORKOUT_SESSION_TOOL = {
@@ -461,16 +466,23 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
     # The answer to a first-card ask: code sends the parked day's card right here.
     # Live 2026-09-23 (3/3): told "call start_workout_session now", the model replied
     # "got it" and never did.
-    from workouts.calibrate import pop_pending_card
+    from workouts.calibrate import pop_pending_card, peek_pending_setup
+    setup = peek_pending_setup(user_id)      # read BEFORE pop clears the marker
     pending = pop_pending_card(user_id)
     if pending:
         from workouts.start import start_workout_session
         try:
-            sr = start_workout_session(user_id, pending)
+            # setup= carries the onboarding mode through (live 2026-10-05, user 48: dropped
+            # here, the at-home setup card went out as a LIVE session — "start the card,
+            # tap each set as u go" to someone on his couch).
+            sr = start_workout_session(user_id, pending, setup=setup)
             how = "card" if sr["surface"] == "card" else "one message per exercise"
-            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s", user_id, pending, sr["session_id"])
-            return (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
-                    f"as a {how} ({sr['sets']} sets) starting from these numbers. Reply with exactly [silent].")
+            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s", user_id, pending, sr["session_id"], setup)
+            base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
+                    f"as a {how} ({sr['sets']} sets) starting from these numbers.")
+            if sr.get("used_default"):
+                return base + " " + _defaults_instruction(sr["template_key"])
+            return base + " Reply with exactly [silent]."
         except Exception as e:  # noqa: BLE001 — anchors are saved regardless
             logger.warning("LIFT_ANCHORS_PENDING_CARD_FAILED user=%s key=%s err=%s", user_id, pending, e)
             return f"ok: saved {saved}{rej} — but the card didn't send ({e}); call start_workout_session."
@@ -577,11 +589,17 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
                 session.delete(r)
         session.flush()
         rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
+        skipped: list[str] = []
         for e in exercises or []:
             if not isinstance(e, dict):
                 continue
             name = (e.get("name") or "").strip().lower()
-            slug = next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None) or slug_for_name(name)
+            # An exercise that isn't on the card and isn't in the template library still
+            # gets a slug from its name ("pull ups" → pull_ups): the session is theirs, the
+            # set happened. Live 2026-10-08 02:17 (user 48): "pull ups … got 7" → slug None →
+            # nothing written, while the reply said "logged, 7 on pull ups".
+            slug = (next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None)
+                    or slug_for_name(name) or _slugify_exercise(name))
             n_sets = int(e.get("sets") or 1)
             w, r = e.get("weight"), e.get("reps")
             mine = [x for x in rows if x.exercise == slug and not x.done]
@@ -591,19 +609,38 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
                                      actual_weight=w if w is not None else mine[i].planned_weight,
                                      actual_reps=r if r is not None else mine[i].planned_reps, source="text")
                     applied += 1
-                elif slug and w is not None and r is not None:
+                elif slug and r is not None:
+                    # weight optional: a bodyweight move (pull ups, dips) logs at 0 added load
+                    load = w if w is not None else 0
                     new = SetLog(session_id=ws_id, exercise=slug, exercise_label=labels.get(slug, name or slug),
-                                 set_index=len([x for x in rows if x.exercise == slug]) + i, planned_weight=w, planned_reps=r)
+                                 set_index=len([x for x in rows if x.exercise == slug]) + i, planned_weight=load, planned_reps=r)
                     session.add(new); session.flush()
-                    apply_set_update(session, ws, new, done=True, actual_weight=w, actual_reps=r, source="text")
+                    rows.append(new)
+                    apply_set_update(session, ws, new, done=True, actual_weight=load, actual_reps=r, source="text")
                     applied += 1
+                elif slug:
+                    skipped.append(f"{name or slug} (no reps given)")
     finally:
         session.close()
     from workouts.card import refresh_card_async
     refresh_card_async(ws_id)
-    logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s", user_id, ws_id, applied)
-    return (f"ok: logged {applied} sets into today's open session (#{ws_id}); it's still open — "
+    logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s skipped=%s", user_id, ws_id, applied, skipped)
+    if applied == 0:
+        # Honesty: nothing landed, so the result can't read as success (the model said
+        # "logged" and then "it's counted" on a 0-set write).
+        why = ("; ".join(skipped) if skipped else "no exercise names/reps could be read")
+        return (f"error: NOTHING was logged into the open session (#{ws_id}) — {why}. Pass each "
+                f"exercise with `name` and `reps` (weight optional for bodyweight moves). Do not tell them it's logged.")
+    tail = f" (skipped: {'; '.join(skipped)})" if skipped else ""
+    return (f"ok: logged {applied} sets into today's open session (#{ws_id}){tail}; it's still open — "
             f"they finish on the card or by texting 'done'")
+
+
+def _slugify_exercise(name: str) -> str | None:
+    """'pull ups' → 'pull_ups'; '' → None. Only for a named exercise the library doesn't know."""
+    import re as _re
+    s = _re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower()).strip("_")
+    return s[:60] or None
 
 
 def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> str:
@@ -3245,6 +3282,62 @@ def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
     return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
 
 
+STOCK_PANTRY_TOOL = {
+    "name": "stock_pantry",
+    "description": (
+        "Save food they HAVE but have NOT eaten — a package, groceries, meal prep, a nutrition "
+        "label, in a photo or text with nothing said about eating it ('about to cook these', or "
+        "just a pic of the steak in its tray). Call this INSTEAD of log_meal (today's totals are "
+        "for food actually eaten) and instead of remember. One entry per item: `label` (what it "
+        "is, as they'd say it), `est_grams` (read the package weight; 1 lb = 454 g), `qty`/`unit` "
+        "if useful, and YOUR estimate for the WHOLE item as `calories` and `protein_g` (what "
+        "you'd tell them it is if they ate all of it). It lands in the PANTRY block with an "
+        "'(… if eaten)' figure, so when they say 'ate the whole thing' you log_meal from that "
+        "number and manage_log delete the pantry row — no re-estimating, no asking again. Your "
+        "reply still says the estimate and 'lmk when u eat it'. Not for a meal they ate (log_meal) "
+        "and not for a menu (save_menu)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "est_grams": {"type": "number"},
+                        "qty": {"type": "number"},
+                        "unit": {"type": "string"},
+                        "calories": {"type": "number", "description": "estimate for the whole item"},
+                        "protein_g": {"type": "number", "description": "estimate for the whole item"},
+                    },
+                    "required": ["label"],
+                },
+            },
+        },
+        "required": ["items"],
+    },
+}
+
+
+def handle_stock_pantry(user_id: int, tool_input: dict, *, message_type=None, message_id=None) -> str:
+    """Food on hand, not eaten → pantry rows carrying the estimate (receipts.stock_items)."""
+    items = (tool_input or {}).get("items")
+    if not isinstance(items, list) or not items:
+        return "error: items must be a non-empty list of {label, est_grams, calories, protein_g, …}"
+    from receipts import stock_items
+    st = _TURN_STATE.get(user_id) or {}
+    source = "photo" if st.get("has_image") else "text"
+    r = stock_items(user_id, items, source=source)
+    if not r["written"]:
+        return "error: no usable items — each needs at least a `label`"
+    rej = f" (skipped: {', '.join(r['rejected'])})" if r["rejected"] else ""
+    return (f"ok: on hand, not eaten — {', '.join(r['written'])}{rej}. It's in PANTRY with an 'if eaten' "
+            "estimate; when they eat it, log_meal from that number and manage_log delete the pantry row. "
+            "Reply with the estimate and 'lmk when u eat it' — don't say it's logged.")
+
+
 GET_WEATHER_TOOL = {
     "name": "get_weather",
     "description": (
@@ -4006,6 +4099,7 @@ _HANDLERS = {
     "send_stat_card": handle_send_stat_card,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
+    "stock_pantry": handle_stock_pantry,
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
     "schedule_task": handle_schedule_task,

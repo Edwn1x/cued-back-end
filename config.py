@@ -331,6 +331,12 @@ SCHEDULE_RUNDOWN_ENABLED = os.getenv("SCHEDULE_RUNDOWN_ENABLED", "true").lower()
 # call schedule_rundown. Live 2026-10-06 05:44 (user 48): "Send me my week" → only the two
 # deadlines, while the events table held 10 classes/meetings that week.
 WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED = os.getenv("WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED", "true").lower() == "true"
+# WHICH CLASS?: an academic task mentioned WITHOUT a course ("readings for the weekly warmup
+# quiz") gets a context block with this week's classes and the code's own match when they
+# pointed at one ("discussion today" → the one discussion on today's calendar). Live
+# 2026-10-08 (user 48): the warmup-quiz readings were pinned to the CS70 Friday quiz; they
+# were for the Data C104 discussion that was on the calendar at 12:30 the same day.
+ACADEMIC_COURSE_MATCH_ENABLED = os.getenv("ACADEMIC_COURSE_MATCH_ENABLED", "true").lower() == "true"
 SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
 # Message-length guard for very large calendars: cap the *routine one-off* events listed
 # per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
@@ -407,6 +413,12 @@ CARD_LINK_FALLBACK_ENABLED = os.getenv("CARD_LINK_FALLBACK_ENABLED", "true").low
 # Receipts → pantry (receipts.py). Off by default: the image pre-classifier adds
 # one haiku call to every photo turn; flip after GATE 1 on the founder's phone.
 RECEIPTS_ENABLED = os.getenv("RECEIPTS_ENABLED", "false").lower() == "true"
+# stock_pantry: the coach's tool for food ON HAND that was NOT eaten (a package / groceries /
+# meal prep in a photo or text) — a pantry row with the estimate attached, so "ate the
+# steak" tomorrow logs from it instead of re-estimating from scratch. Live 2026-10-05
+# (user 48): a NY strip + raspberries package were read ("~750 cal, 80g protein… lmk when u
+# eat it") and written NOWHERE. Needs RECEIPTS_ENABLED for the PANTRY block.
+STOCK_PANTRY_TOOL_ENABLED = os.getenv("STOCK_PANTRY_TOOL_ENABLED", "true").lower() == "true"
 RECEIPT_CLASSIFIER_MODEL = os.getenv("RECEIPT_CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
 RECEIPT_EXTRACTOR_MODEL = os.getenv("RECEIPT_EXTRACTOR_MODEL", "claude-sonnet-5")
 # A full week's grocery receipt itemizes to a long JSON list; the old 1500 cap
@@ -628,6 +640,12 @@ LATE_HOUR_SLEEP_FIRST_ENABLED = os.getenv("LATE_HOUR_SLEEP_FIRST_ENABLED", "true
 # midnight and it's 9pm → their bed hour, build_loop_context says so; the LATE block still
 # takes over once it actually is past their bedtime. Fail-open.
 EVENING_NOT_LATE_SIGNAL_ENABLED = os.getenv("EVENING_NOT_LATE_SIGNAL_ENABLED", "true").lower() == "true"
+# UP SINCE: once today's wake is KNOWN (watch sleep end / first activity), the context says
+# they're up and that any "go sleep" earlier in the thread was last night. Live 2026-10-08
+# 12:33 PT (user 48, in class, 44 min after a measured 11:50 wake): "but that's later. go
+# sleep rn" — the 5am thread carried forward; no code block said late.
+UP_SINCE_SIGNAL_ENABLED = os.getenv("UP_SINCE_SIGNAL_ENABLED", "true").lower() == "true"
+UP_SINCE_MIN_MINUTES = int(os.getenv("UP_SINCE_MIN_MINUTES", "10"))
 
 # Anti-nagging / nudge-repetition guard. Live 2026-09-28 (founder, user 31): the
 # coach delivered essentially the SAME standing nudge ~5× in one day across separate

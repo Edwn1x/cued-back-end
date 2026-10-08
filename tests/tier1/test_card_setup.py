@@ -352,3 +352,57 @@ def test_the_link_is_never_offered_up_front():
     from workouts.card_setup import EXTENSION_INTRO, EXTENSION_REMINDER, BREAKDOWN
     for line in (*EXTENSION_INTRO, EXTENSION_REMINDER, *BREAKDOWN):
         assert "link" not in line.lower() and "browser" not in line.lower(), line
+
+
+# ─── the setup flag survives the model's set_lift_anchors; generic days are labelled ───
+
+def test_set_lift_anchors_keeps_the_setup_card_in_setup_mode(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
+    """Live 2026-10-05 (user 48): the ask's answer went through the model's
+    set_lift_anchors tool, which dropped setup= → an ACTIVE live session ('start the
+    card, tap each set') to someone at home. Now: the same 'tap it now' setup card."""
+    import onboarding_agent as oa
+    from agent_tools import handle_set_lift_anchors
+    from workouts.card_setup import ASK_TRAINED, EXTENSION_INTRO, BREAKDOWN
+    from workouts.calibrate import peek_pending_card, peek_pending_setup
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _imsg_user(db, experience="intermediate", lift_anchors=None)
+    oa._complete_onboarding(_u(u.id), "yes")
+    assert sidecar_ok[1] == ASK_TRAINED and peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
+
+    out = handle_set_lift_anchors(u.id, {"lifts": [{"exercise": "bench", "weight": 135, "reps": 10}]})
+    bodies = sidecar_ok[2:]
+    assert bodies[:2] == list(EXTENSION_INTRO)
+    assert bodies[2].startswith("here's ur first card") and "tap it now" in bodies[2], bodies[2]
+    assert bodies[3:6] == list(BREAKDOWN)
+    assert _sessions(u.id)[-1][1] == "planned"                      # setup card: planned, not active
+    assert peek_pending_card(u.id) is None
+    # no saved push routine → the tool result makes the coach flag the defaults (not [silent])
+    assert "STARTING DEFAULT exercises" in out and "Reply with exactly [silent]" not in out
+
+
+def test_code_sent_setup_cards_label_a_generic_day_after_the_tour(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
+    import onboarding_agent as oa
+    from workouts.card_setup import BREAKDOWN
+    from workouts.start import defaults_note
+    from workouts.calibrate import handle_pending_card_reply
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    # kickoff with anchors already on file → card straight away, then the note
+    u = _imsg_user(db)
+    oa._complete_onboarding(_u(u.id), "yes")
+    assert sidecar_ok[4:7] == list(BREAKDOWN) and sidecar_ok[7] == defaults_note("push"), sidecar_ok
+    # the ask → code-answered → card → tour → the note
+    sidecar_ok.clear()
+    v = _imsg_user(db, experience="beginner", lift_anchors=None, phone="+15550003333")
+    oa._complete_onboarding(_u(v.id), "yes")
+    assert handle_pending_card_reply(v.id, "bench 65 for 5") is True
+    assert sidecar_ok[-1] == defaults_note("push") and sidecar_ok[-4:-1] == list(BREAKDOWN)
+
+
+def test_a_saved_routine_gets_no_note_at_setup(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
+    import onboarding_agent as oa
+    from workouts.start import defaults_note
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    rows = [{"slug": "bench_press", "label": "bench press", "sets": 4, "reps": 5, "default_weight": 135, "plate_step": 5}]
+    u = _imsg_user(db, custom_templates={"push": rows})
+    oa._complete_onboarding(_u(u.id), "yes")
+    assert defaults_note("push") not in sidecar_ok

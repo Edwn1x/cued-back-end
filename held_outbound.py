@@ -45,7 +45,7 @@ logger = logging.getLogger("cued.held_outbound")
 
 # Types that are noise if they land late — expire fast, never re-sent stale.
 PROACTIVE_TYPES = frozenset({"heartbeat", "reminder", "goodnight", "gym_summon", "session_probe",
-                             "water_offer", "workout_intro"})
+                             "water_offer", "workout_intro", "routine_capture_offer"})
 RETRY_BACKOFF_S = (30, 60, 120, 300)
 NOTE_TYPE = "outage_note"
 

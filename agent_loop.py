@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import anthropic
 import config
@@ -161,6 +161,44 @@ def _evening_not_late_block(user, session=None, *, now: datetime = None) -> str 
             "actually past their bedtime, the past-bedtime sleep-first block appears instead."
         )
     except Exception:  # noqa: BLE001 — a clock/tz hiccup must never break a turn
+        return None
+
+
+def _up_since_block(user, session=None, *, now: datetime = None) -> str | None:
+    """They're UP — today's wake is KNOWN (watch sleep end, or their first activity), it was
+    at least UP_SINCE_MIN_MINUTES ago, and it's daytime. Says so, and that any 'go sleep'
+    earlier in the thread belongs to last night. Live 2026-10-08 12:33 PT (user 48): the
+    reply to "What?" ended "go sleep rn" 44 minutes after a measured 11:50 wake, in class —
+    the 5am exchange carried forward because nothing marked the sleep in between.
+    Profile / typical wakes are guesses, not evidence they're up → no block. Fail-open."""
+    if not config.UP_SINCE_SIGNAL_ENABLED or session is None:
+        return None
+    try:
+        from wake_model import resolve_wake
+        from timefmt import resolve_tz
+        info = resolve_wake(user, session, now=now)
+        if info is None or info.source not in ("measured_today", "activity") or info.at_utc is None:
+            return None
+        ref = now if now is not None else _late_clock()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        local = ref.astimezone(resolve_tz(user))
+        woke_local = info.at_utc.replace(tzinfo=timezone.utc).astimezone(resolve_tz(user))
+        mins = int((ref - info.at_utc.replace(tzinfo=timezone.utc)).total_seconds() // 60)
+        if mins < config.UP_SINCE_MIN_MINUTES or local.hour >= 21 or woke_local.date() != local.date():
+            return None
+        how = "the watch's sleep end" if info.source == "measured_today" else f"their first activity ({info.detail or 'text'})"
+        up = f"{mins} min" if mins < 120 else f"{mins // 60}h{mins % 60:02d}"
+        clock = woke_local.strftime("%I:%M%p").lstrip("0").lower()
+        return (
+            f"## UP SINCE {clock} (today — {how})\n"
+            f"They've been up {up}. Any \"go sleep\" / \"go down now\" / sleep math earlier in this thread "
+            "was LAST NIGHT, before they slept — it is stale now; do not repeat it or tell them to sleep. "
+            "A short night can shape today's plan (a lighter session, an earlier bed tonight), never a "
+            "mid-day bedtime push."
+        )
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("UP_SINCE_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
         return None
 
 
@@ -810,6 +848,10 @@ def build_loop_context(user, session) -> str:
     _ev = _evening_not_late_block(user, session)
     if _ev:
         parts.append(_ev)
+    # UP SINCE — the daytime mirror: today's wake is known, so last night's "go sleep" is stale.
+    _up = _up_since_block(user, session)
+    if _up:
+        parts.append(_up)
 
     return "\n\n".join(parts)
 
@@ -845,6 +887,74 @@ _WEEK_ASK_RE = re.compile(
     r"|\bwhat(?:'?s|\s+is)\s+(?:on\s+)?(?:the\s+)?schedule\b"
     r"|\banything\s+due\b|\bwhat'?s\s+due\b",
     re.I)
+
+
+# An academic task they mention (quiz, readings, hw, pset…) — the thing the coach tends to
+# pin to the wrong course when none is named.
+_ACADEMIC_TASK_RE = re.compile(
+    r"\b(quiz(?:zes)?|exam|midterm|final|readings?|homework|hw\d*|pset\d*|problem\s*set|essay|paper|"
+    r"lab\s*report|project|warm-?ups?|assignment|study(?:ing)?|review\s+session)\b", re.I)
+# A course named outright: "cs70", "data c104", "engin 183", "61c", "math 54", "ochem", "stat 20"
+_COURSE_TOKEN_RE = re.compile(
+    r"\b(?:[a-z]{2,8}\s?c?\d{1,3}[a-z]?\b|\d{2,3}[a-z]\b|o-?chem|physics|chem(?:istry)?|bio(?:logy)?|"
+    r"calc(?:ulus)?|econ(?:omics)?|stats?\b|linear\s+algebra)", re.I)
+_CLASS_KIND_RE = re.compile(r"\b(discussion|disc|section|lecture|lab|seminar|recitation)\b", re.I)
+_CLASS_TITLE_RE = re.compile(r"\b(lecture|discussion|section|lab|seminar|recitation)\b", re.I)
+
+
+def _which_class_block(user, text: str, session, *, now: datetime = None) -> str | None:
+    """They named an academic task but not its course → this week's classes from the
+    calendar, plus the code's own match when they pointed at a kind of class ("discussion
+    today" → the one discussion on today's calendar). Tells the coach to pair the task
+    with THAT, or ask — never with another course's item. None when it doesn't apply.
+    Read-only, fail-open."""
+    if not config.ACADEMIC_COURSE_MATCH_ENABLED or not text or session is None:
+        return None
+    try:
+        if not _ACADEMIC_TASK_RE.search(text) or _COURSE_TOKEN_RE.search(text):
+            return None
+        from schedule import collect_rundown, _fmt_span, _tz, _ref_local
+        from timefmt import to_local
+        local = _ref_local(user, now)
+        tz = _tz(user)
+        day0 = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        lo = day0.astimezone(timezone.utc).replace(tzinfo=None)
+        hi = (day0 + timedelta(days=7)).astimezone(timezone.utc).replace(tzinfo=None)
+        # class-titled events, INCLUDING a section the radar also reads as a quiz day
+        # ("cs70 Discussion (friday = quiz)") — it is still the class they may point at
+        events = [e for e in collect_rundown(user.id, lo=lo, hi=hi, now=now, session=session)
+                  if _CLASS_TITLE_RE.search(e.title or "")]
+        if not events:
+            return None
+        today = local.date()
+        kinds = {k.lower() for k in _CLASS_KIND_RE.findall(text)}
+        kinds = {"discussion" if k in ("disc", "section", "recitation") else k for k in kinds}
+        says_today = bool(re.search(r"\b(today|tonight|this morning|this afternoon|rn|right now)\b", text, re.I))
+        match = None
+        if kinds:
+            cands = [e for e in events if any(k in (e.title or "").lower() or (k == "discussion" and "section" in (e.title or "").lower()) for k in kinds)]
+            if says_today:
+                cands = [e for e in cands if to_local(e.start, user).date() == today]
+            if cands:
+                match = sorted(cands, key=lambda e: e.start)[0]
+        lines = []
+        for e in sorted(events, key=lambda e: e.start)[:14]:
+            d = to_local(e.start, user)
+            lines.append(f"- {d.strftime('%a')}{' (today)' if d.date() == today else ''} {_fmt_span(user, e)} — {e.title}")
+        head = "## WHICH CLASS? (they named a task but not the course)\n"
+        if match:
+            head += (f"Code match: they pointed at a {', '.join(sorted(kinds))}{' today' if says_today else ''} and the "
+                     f"calendar has exactly that: {match.title} ({to_local(match.start, user).strftime('%a')} "
+                     f"{_fmt_span(user, match)}). Treat the task as belonging to THAT course unless they say otherwise.\n")
+        else:
+            head += ("No course named and nothing they said pins it to one of these — ask which class in one short "
+                     "line if it matters to the reply, or stay neutral.\n")
+        head += ("Never pair the task with a DIFFERENT course's calendar item (live: 'weekly warmup quiz' readings "
+                 "were pinned to the CS70 quiz; they were for the Data C104 discussion). Their classes this week:\n")
+        return head + "\n".join(lines)
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("WHICH_CLASS_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
 
 
 def _week_asked(text: str) -> bool:
@@ -1094,6 +1204,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # and relayed, instead of hoping the model calls schedule_rundown (live 2026-10-06
         # 05:44: "Send me my week" → two deadlines, ten classes missing).
         context += _week_ask_block(user, combined_body, session)
+        # An academic task without a course → this week's classes + the code's own match.
+        _wc = _which_class_block(user, combined_body, session)
+        if _wc:
+            context += "\n\n" + _wc
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
@@ -1205,6 +1319,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SAVE_MENU_TOOL_ENABLED:
         from agent_tools import SAVE_MENU_TOOL
         tools.append(SAVE_MENU_TOOL)
+    if config.STOCK_PANTRY_TOOL_ENABLED and config.RECEIPTS_ENABLED:
+        # Food on hand, not eaten (a package photo) → a pantry row with the estimate attached,
+        # so the later "ate it" logs from it. Live 2026-10-05: read, said, saved nowhere.
+        from agent_tools import STOCK_PANTRY_TOOL
+        tools.append(STOCK_PANTRY_TOOL)
     if config.WEATHER_ENABLED:
         # Reactive weather answer + correctable location. The morning-brief weather line
         # rides the heartbeat brief, not a tool. open-meteo, no key, fail-open.

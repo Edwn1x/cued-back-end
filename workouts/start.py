@@ -91,6 +91,41 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
     return f"{day_label(key)} day. {lead_txt}, then the usual. tap as you go — text me if a set goes different."
 
 
+ROUTINE_NOTE_TYPE = "routine_capture_offer"
+
+
+def defaults_note(key: str) -> str:
+    """The one line that says a generic day is generic. Code-sent cards (the first-card
+    ask answered in code, the onboarding kickoff) have no model turn to say it, so the
+    user-31 incident — a default pull day passed off as 'their card' — repeated on the
+    from-zero account (2026-10-05, user 48)."""
+    d = day_label(key)
+    return (f"one thing — those are starter {d} day exercises, not urs yet. tell me what u "
+            f"actually run on {d} day and i'll swap em in")
+
+
+def send_defaults_note(user_id: int, sr: dict | None) -> bool:
+    """After a code-sent card: when the day was the GENERIC default (sr['used_default']),
+    text the defaults_note. Returns True when it went out. Never raises."""
+    if not sr or not sr.get("used_default"):
+        return False
+    try:
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            phone = u.phone if u else None
+        finally:
+            session.close()
+        if not phone:
+            return False
+        send_sms(phone, defaults_note(sr["template_key"]), user_id=user_id, message_type=ROUTINE_NOTE_TYPE)
+        logger.info("ROUTINE_CAPTURE_NOTE_SENT user=%s key=%s session=%s", user_id, sr["template_key"], sr.get("session_id"))
+        return True
+    except Exception as e:  # noqa: BLE001 — the card already went out; the note is extra
+        logger.warning("ROUTINE_CAPTURE_NOTE_FAILED user=%s err=%s", user_id, e)
+        return False
+
+
 def _is_first_card(session, user_id: int) -> bool:
     """No session with a completed set yet — a planned-and-abandoned card doesn't count."""
     from models import SetLog

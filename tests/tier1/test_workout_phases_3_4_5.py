@@ -386,6 +386,29 @@ def test_silent_sentinel_after_the_start_tool_sends_nothing(db, imessage_on, sid
     assert "[silent]" not in "".join(sidecar_ok)
 
 
+def test_a_bodyweight_exercise_not_on_the_card_still_lands_in_the_open_session(db, imessage_on, sidecar_ok, card_ok):
+    """Live 2026-10-08 02:17 (user 48): 'pull ups … got 7' with an upper card open → the
+    library had no slug and no weight was given → 0 sets written, while the coach said
+    'logged, 7 on pull ups' and then 'it's counted'. Now: a named exercise always gets a
+    slug, a bodyweight set logs at 0 added load, and a 0-set write is an error."""
+    from agent_tools import handle_log_workout
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = _open_push(db, user)
+    out = handle_log_workout(user.id, {"split_day": "push", "exercises": [{"name": "pull ups", "sets": 1, "reps": 7}]})
+    assert out.startswith("ok: logged 1 sets into today's open session"), out
+    rows = _sets(db, sid)
+    pu = [r for r in rows if r[0] == "pull_ups"]
+    assert len(pu) == 1 and pu[0][2] is True and pu[0][3] == 0 and pu[0][4] == 7
+    # a second set appends (set_index advances), still bodyweight
+    out2 = handle_log_workout(user.id, {"split_day": "push", "exercises": [{"name": "pull ups", "sets": 2, "reps": 6}]})
+    assert out2.startswith("ok: logged 2 sets")
+    assert len([r for r in _sets(db, sid) if r[0] == "pull_ups"]) == 2        # text sets reconcile, not pile up
+    # nothing readable → an explicit error, never "ok: logged 0"
+    out3 = handle_log_workout(user.id, {"split_day": "push", "exercises": [{"name": "farmer carries"}]})
+    assert out3.startswith("error: NOTHING was logged") and "farmer carries (no reps given)" in out3
+    assert "Do not tell them it's logged" in out3
+
+
 # ─── one-off plan (not their routine) + the re-card nudge (live 2026-10-08 02:14, user 48) ───
 
 PLAN_TEXT = ("cable machine + db up to 50, that's a full day\n\ntry this:\n1. incline db press - 3x10\n"
