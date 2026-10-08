@@ -299,7 +299,11 @@ def test_link_fallback_user_gets_the_url_as_text(db, sidecar, sms_capture):
     assert r["card_session"] is None and r["mode"] == "link"
     assert not any(url.endswith("/send-card") for url, _ in sidecar)      # no card, just text
     texts = [p.get("text", "") for url, p in sidecar if url.endswith("/send")] + [b for _, b in sms_capture]
-    assert any(t.startswith("this week: ") and "/card/stat/week?t=" in t for t in texts)
+    # The week label is "this week" only when the grid starts on a Monday, else "next 5 days"
+    # (#179/#184) — read it from the shipped rule so the test isn't red six days out of seven.
+    from stat_cards import week_state
+    label = week_state(u.id)["label"]
+    assert any(t.startswith(f"{label}: ") and "/card/stat/week?t=" in t for t in texts)
 
 
 def test_sms_only_user_gets_the_link_in_one_gsm_segment(db, sidecar, sms_capture, monkeypatch):
@@ -333,7 +337,8 @@ def test_image_refused_by_photon_falls_back_to_captions(db, monkeypatch):
     u = make_user(db)
     r = send_stat_card(u.id, "week", mode="image")
     assert r["mode"] == "static" and r["provider_message_id"] == "card-2"
-    assert "imageBase64" in calls[0]["layout"] and calls[1]["layout"]["caption"] == "this week"
+    from stat_cards import week_state
+    assert "imageBase64" in calls[0]["layout"] and calls[1]["layout"]["caption"] == week_state(u.id)["label"]
 
 
 def test_update_re_renders_in_place_with_a_new_version(db, sidecar):
@@ -383,7 +388,8 @@ def test_page_og_tags_point_at_the_image_with_the_same_token(client, db, monkeyp
     t = stat_token("week", u.id)
     html = client.get(f"/card/stat/week?t={t}&v=7").get_data(as_text=True)
     assert f'<meta property="og:image" content="https://web.test/card/stat/week/image.png?t={t}&amp;v=7">' in html
-    assert '<meta property="og:title" content="this week">' in html and "og:description" not in html
+    from stat_cards import week_state
+    assert f'<meta property="og:title" content="{week_state(u.id)["label"]}">' in html and "og:description" not in html
 
 
 def test_image_mode_sends_the_picture_as_the_whole_layout(db, sidecar):
