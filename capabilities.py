@@ -208,6 +208,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they complain the gym's packed or ask about the crowd",
     ),
     Capability(
+        id="study_rooms",
+        what="when you need somewhere to study i'll find you a real open room at moffitt and send the booking link, or tell you which libraries are open right now",
+        how="text me 'need a room for 4 at 3' or 'what's open late tonight' — i check the live booking grid and the hours page, you tap the link and book with calnet",
+        tools=("find_study_space", "send_study_room_link"),
+        enabled=lambda u: config.FIND_STUDY_SPACE_TOOL_ENABLED,
+        relevance=lambda u: 7 if (getattr(u, "occupation", "") or "").lower().startswith("student") else 3,
+        used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="study_room_link").first() is not None,
+        reveal_when="they mention studying, a group project, a midterm coming up, or ask where to go / what's open",
+    ),
+    Capability(
         id="stat_cards",
         what="i can drop a quick card in the chat: how packed rsf is, where your macros are today, what your week looks like",
         how="just ask, like 'how packed is rsf' or 'how am i doing today'",

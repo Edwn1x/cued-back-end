@@ -192,6 +192,11 @@ def start_scheduler():
                       replace_existing=True, coalesce=True, max_instances=1)
     scheduler.add_job(rsf_refresh_hours, trigger=CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=ZoneInfo("America/Los_Angeles")),
                       id="rsf_hours_refresh", replace_existing=True)
+    # Campus libraries: weekly room-directory refresh (unions over the seeds; flag-gated
+    # inside). Availability + hours are fetched on demand with TTL caches, no job.
+    from integrations.campus_libraries import refresh_rooms as library_rooms_refresh
+    scheduler.add_job(library_rooms_refresh, trigger=CronTrigger(day_of_week="mon", hour=6, minute=10, timezone=ZoneInfo("America/Los_Angeles")),
+                      id="library_rooms_refresh", replace_existing=True)
     scheduler.add_job(gym_beats_sweep, trigger=_IT3(minutes=15), id="gym_beats_sweep",
                       replace_existing=True, coalesce=True, max_instances=1)
     scheduler.add_job(poll_open_tickets, trigger=_IT3(seconds=60), id="queue_ticket_poll",
