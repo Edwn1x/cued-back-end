@@ -1762,13 +1762,35 @@ def _user_tz(session, user_id: int) -> ZoneInfo:
         return ZoneInfo("America/Los_Angeles")
 
 
-def _apply_meal_day_move(row, tz: ZoneInfo, new_day) -> str:
-    """Move a meal row's eaten_at to `new_day`, keeping its local time-of-day — a day move,
-    not a time move. Appends the change to the row's audit and returns the new day iso."""
+def _moved_eaten_at(old: datetime, tz: ZoneInfo, new_day, user=None) -> datetime:
+    """eaten_at for a meal re-dated to `new_day` (naive UTC). Keeps the local time-of-day,
+    with two exceptions when `user` is known:
+      • the row already sits inside the target day's nutrition window (a shifted
+        day_reset_hour) → unchanged — the move is a no-op, not a −24h jump;
+      • a SMALL-HOURS row (local time before 4am / the reset hour) pushed to an EARLIER
+        day → it lands just before that day's rollover (23:59 on a midnight day), not a
+        full day earlier. Live 2026-10-06 (user 48): a 12:11am burger "moved to yesterday"
+        was stamped 12:11am the PREVIOUS day — right total, a clock time he was asleep for."""
+    local = old.replace(tzinfo=timezone.utc).astimezone(tz)
+    same_clock = (datetime.combine(new_day, local.time(), tzinfo=tz)
+                  .astimezone(timezone.utc).replace(tzinfo=None))
+    if user is None:
+        return same_clock
+    from timefmt import local_day_bounds, day_reset_hour
+    noon = datetime(new_day.year, new_day.month, new_day.day, 12, 0, tzinfo=tz)
+    w_start, w_end = local_day_bounds(user, now=noon)
+    if w_start <= old < w_end:
+        return old
+    if old >= w_end and local.hour < max(4, day_reset_hour(user)):
+        return w_end - timedelta(minutes=1)
+    return same_clock
+
+
+def _apply_meal_day_move(row, tz: ZoneInfo, new_day, user=None) -> str:
+    """Move a meal row's eaten_at to `new_day` — a day move, not a time move (clock rules in
+    _moved_eaten_at). Appends the change to the row's audit and returns the new day iso."""
     old = getattr(row, "eaten_at", None) or _naive_utcnow()
-    local_time = old.replace(tzinfo=timezone.utc).astimezone(tz).time()
-    newval = (datetime.combine(new_day, local_time, tzinfo=tz)
-              .astimezone(timezone.utc).replace(tzinfo=None))
+    newval = _moved_eaten_at(old, tz, new_day, user)
     audit = list(row.edits or [])
     audit.append({"at": _naive_utcnow().isoformat(), "field": "date",
                   "old": _ser(old), "new": _ser(newval)})
@@ -1944,8 +1966,9 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                 new_day = _resolve_local_date(tz, str(fields["date"]), strict=True)
             except ValueError:
                 return "error: date must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
+            mover = session.get(User, user_id)
             for r in targets:
-                _apply_meal_day_move(r, tz, new_day)
+                _apply_meal_day_move(r, tz, new_day, user=mover)
             session.commit()
             recompute_daily_totals(user_id)
             for r in targets:
@@ -2027,9 +2050,7 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                 except ValueError:
                     return f"error: {mfield} must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
                 old = getattr(row, column, None) or _naive_utcnow()
-                local_time = old.replace(tzinfo=timezone.utc).astimezone(tz).time()
-                newcol = (datetime.combine(new_day, local_time, tzinfo=tz)
-                          .astimezone(timezone.utc).replace(tzinfo=None))
+                newcol = _moved_eaten_at(old, tz, new_day, session.get(User, user_id))
                 audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
                               "old": _ser(old), "new": _ser(newcol)})
                 setattr(row, column, newcol)
@@ -3122,13 +3143,20 @@ def handle_set_day_reset(user_id: int, tool_input: dict, *, message_id=None) -> 
         user = session.get(User, user_id)
         if not user:
             return "error: user not found"
-        user.day_reset_hour = hour
+        from timefmt import EXPLICIT_MIDNIGHT, auto_day_reset_hour
+        was_auto = auto_day_reset_hour(user) if hour == 0 else 0
+        # 0 is stored as the EXPLICIT_MIDNIGHT sentinel: "standard day, and don't derive a
+        # later rollover from my after-midnight bedtime" (a plain 0 means unset → auto).
+        user.day_reset_hour = hour if hour else EXPLICIT_MIDNIGHT
         session.commit()
     finally:
         session.close()
     recompute_daily_totals(user_id)   # re-window today's totals under the new reset
     logger.info("SET_DAY_RESET user=%s hour=%s", user_id, hour)
     if hour == 0:
+        if was_auto:
+            return (f"ok: nutrition day resets at midnight (standard) — pinned, so it no longer "
+                    f"follows their after-midnight bedtime (was auto-rolling at {was_auto}am)")
         return "ok: nutrition day resets at midnight (standard)"
     return f"ok: nutrition day now resets at {hour}am local — meals before then count for the previous day"
 

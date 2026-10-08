@@ -342,6 +342,12 @@ LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() =
 # Lets the coach shift a user's nutrition-day rollover hour when they explicitly ask
 # (default day stays midnight for everyone). On — it only acts on an explicit request.
 SET_DAY_RESET_TOOL_ENABLED = os.getenv("SET_DAY_RESET_TOOL_ENABLED", "true").lower() == "true"
+# Auto day boundary (timefmt.auto_day_reset_hour): a user whose profile bedtime is AFTER
+# midnight (sleep_time 03:00) gets their nutrition day rolling one hour past it (4am)
+# without asking — a 12:10am meal counts for the evening it belongs to. Evening bedtimes
+# keep the standard midnight day; an explicit set_day_reset always wins. Live 2026-10-06
+# (user 48): "980 for the day" at 12:22am → "no add it to yesterday".
+NUTRITION_DAY_AUTO_RESET_ENABLED = os.getenv("NUTRITION_DAY_AUTO_RESET_ENABLED", "true").lower() == "true"
 # save_menu: persist a menu / meal-plan / list of options a user sends "so you can log
 # accurately later" (a dining-hall, frat-house, or meal-prep menu) into a per-user
 # saved_menus JSON, surfaced every turn so "I ate the Wednesday burrito" logs from the

@@ -110,3 +110,177 @@ def test_tool_sets_reset_and_clamps(db):
     # reject out of range
     assert handle_set_day_reset(user.id, {"hour": 20}).startswith("error")
     assert handle_set_day_reset(user.id, {"hour": "x"}).startswith("error")
+
+
+# ---------------------------------------------------------------------------
+# Auto day boundary from an after-midnight bedtime (2026-10-06, user 48: "980 for the
+# day" at 12:22am → "no add it to yesterday"). The rhythm was already in the profile.
+# ---------------------------------------------------------------------------
+
+class _S:
+    """A user with a profile bedtime; day_reset_hour unset unless given."""
+    user_timezone = "America/Los_Angeles"
+    def __init__(self, sleep=None, reset=0):
+        self.sleep_time = sleep
+        self.day_reset_hour = reset
+
+
+@pytest.mark.parametrize("sleep, expect", [
+    ("03:00", 4),     # the founder: bed ~3am → day rolls at 4am
+    ("00:30", 1),
+    ("10:00", 11),    # capped at 11
+    ("11:00", 0),     # 11am is not an after-midnight bedtime
+    ("23:30", 0),     # evening bedtime → standard day, exactly as before
+    ("21:00", 0),
+    ("around 3", 0),  # a phrase is not a clock → no derivation
+    (None, 0),
+])
+def test_auto_reset_derives_from_an_after_midnight_bedtime(sleep, expect):
+    from timefmt import day_reset_hour, auto_day_reset_hour
+    assert auto_day_reset_hour(_S(sleep)) == expect
+    assert day_reset_hour(_S(sleep)) == expect
+
+
+def test_explicit_reset_beats_the_derived_hour():
+    from timefmt import day_reset_hour, day_reset_source
+    assert day_reset_hour(_S("03:00", reset=2)) == 2
+    assert day_reset_source(_S("03:00", reset=2)) == "explicit"
+
+
+def test_explicit_midnight_sentinel_pins_the_standard_day():
+    from timefmt import day_reset_hour, day_reset_source, EXPLICIT_MIDNIGHT
+    assert day_reset_hour(_S("03:00", reset=EXPLICIT_MIDNIGHT)) == 0
+    assert day_reset_source(_S("03:00", reset=EXPLICIT_MIDNIGHT)) == "explicit"
+    assert day_reset_source(_S("03:00")) == "auto"
+    assert day_reset_source(_S("23:00")) == "default"
+
+
+def test_auto_reset_flag_off_keeps_midnight(monkeypatch):
+    import config
+    from timefmt import day_reset_hour
+    monkeypatch.setattr(config, "NUTRITION_DAY_AUTO_RESET_ENABLED", False)
+    assert day_reset_hour(_S("03:00")) == 0
+
+
+def test_describe_day_reset_names_the_rollover_and_why():
+    from timefmt import describe_day_reset, EXPLICIT_MIDNIGHT
+    assert describe_day_reset(_S("23:00")) == "local midnight"
+    auto = describe_day_reset(_S("03:00"))
+    assert auto.startswith("4am local") and "4am→4am" in auto and "3:00 bedtime" in auto
+    assert "they asked" in describe_day_reset(_S("03:00", reset=5))
+    assert describe_day_reset(_S("03:00", reset=EXPLICIT_MIDNIGHT)) == "local midnight"
+
+
+def test_founder_scenario_post_midnight_burger_counts_for_the_evening_before():
+    """Sun 18:37 burger+fries, Mon 00:11 cheeseburger, bed ~3am: at 00:22 Monday the
+    running day is still Sunday and holds both — no 'add it to yesterday' needed."""
+    from timefmt import local_day_bounds
+    from agent_tools import _nutrition_day_of
+    from datetime import date
+    u = _S("03:00")
+    sunday_dinner = _at_pdt(2026, 10, 5, 18, 37)
+    monday_0011 = _at_pdt(2026, 10, 6, 0, 11)
+    now = _at_pdt(2026, 10, 6, 0, 22).replace(tzinfo=timezone.utc)
+    start, end = local_day_bounds(u, now=now)
+    assert start == _at_pdt(2026, 10, 5, 4, 0) and end == _at_pdt(2026, 10, 6, 4, 0)
+    assert start <= sunday_dinner < end and start <= monday_0011 < end
+    assert _nutrition_day_of(u, monday_0011) == date(2026, 10, 5)
+    # and by 9am Monday a new day has started
+    s2, _ = local_day_bounds(u, now=_at_pdt(2026, 10, 6, 9, 0).replace(tzinfo=timezone.utc))
+    assert s2 == _at_pdt(2026, 10, 6, 4, 0)
+
+
+def test_tool_zero_pins_midnight_against_the_derived_hour(db):
+    from tests.factories import make_user
+    from agent_tools import handle_set_day_reset
+    from models import get_session, User
+    from timefmt import day_reset_hour, EXPLICIT_MIDNIGHT
+    user = make_user(db, sleep_time="03:00")
+    s = get_session()
+    try:
+        assert day_reset_hour(s.get(User, user.id)) == 4          # derived
+    finally:
+        s.close()
+    out = handle_set_day_reset(user.id, {"hour": 0})
+    assert "midnight" in out and "pinned" in out and "4am" in out
+    s = get_session()
+    try:
+        u = s.get(User, user.id)
+        assert u.day_reset_hour == EXPLICIT_MIDNIGHT and day_reset_hour(u) == 0
+    finally:
+        s.close()
+    assert handle_set_day_reset(user.id, {"hour": 6}).startswith("ok")
+    s = get_session()
+    try:
+        assert day_reset_hour(s.get(User, user.id)) == 6
+    finally:
+        s.close()
+
+
+# ---------------------------------------------------------------------------
+# Re-dating a small-hours meal to an earlier day lands just before that day's rollover,
+# not a full 24h earlier (live: the 12:11am burger was stamped 12:11am the day BEFORE).
+# ---------------------------------------------------------------------------
+
+def test_small_hours_row_moved_to_yesterday_lands_at_2359_on_a_midnight_day():
+    from agent_tools import _moved_eaten_at
+    from zoneinfo import ZoneInfo
+    from datetime import date
+    tz = ZoneInfo("America/Los_Angeles")
+    u = _S("23:00")                                  # standard midnight day
+    old = _at_pdt(2026, 10, 6, 0, 11)
+    assert _moved_eaten_at(old, tz, date(2026, 10, 5), u) == _at_pdt(2026, 10, 5, 23, 59)
+
+
+def test_row_already_in_the_target_window_is_left_alone_under_a_shifted_day():
+    from agent_tools import _moved_eaten_at
+    from zoneinfo import ZoneInfo
+    from datetime import date
+    tz = ZoneInfo("America/Los_Angeles")
+    u = _S("03:00")                                  # auto 4am day: 00:11 Mon is already Sunday
+    old = _at_pdt(2026, 10, 6, 0, 11)
+    assert _moved_eaten_at(old, tz, date(2026, 10, 5), u) == old
+
+
+def test_daytime_row_keeps_its_clock_when_re_dated():
+    from agent_tools import _moved_eaten_at
+    from zoneinfo import ZoneInfo
+    from datetime import date
+    tz = ZoneInfo("America/Los_Angeles")
+    old = _at_pdt(2026, 10, 6, 13, 0)
+    assert _moved_eaten_at(old, tz, date(2026, 10, 5), _S("23:00")) == _at_pdt(2026, 10, 5, 13, 0)
+    assert _moved_eaten_at(old, tz, date(2026, 10, 5), None) == _at_pdt(2026, 10, 5, 13, 0)
+
+
+def test_manage_log_move_to_yesterday_uses_the_rule(db, monkeypatch):
+    """End to end through manage_log: a 00:11 row on a midnight-day user moved to
+    'yesterday' lands at 23:59 yesterday and yesterday's total is reported."""
+    import config
+    from tests.factories import make_user
+    from models import get_session, Meal
+    from agent_tools import handle_manage_log
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "MEAL_DAY_MOVE_ENABLED", True)
+    user = make_user(db, sleep_time="23:00")
+    tz = ZoneInfo("America/Los_Angeles")
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    # a row at 00:11 local TODAY
+    row_local = now_local.replace(hour=0, minute=11, second=0, microsecond=0)
+    eaten = row_local.astimezone(timezone.utc).replace(tzinfo=None)
+    s = get_session()
+    try:
+        m = Meal(user_id=user.id, description="cheeseburger", calories=600, protein_g=30,
+                 eaten_at=eaten, source="photo", log_type="user_reported")
+        s.add(m); s.commit(); mid = m.id
+    finally:
+        s.close()
+    out = handle_manage_log(user.id, {"entity": "meal", "action": "edit", "id": mid,
+                                      "fields": {"date": "yesterday"}})
+    assert out.startswith("ok"), out
+    s = get_session()
+    try:
+        moved = s.get(Meal, mid).eaten_at.replace(tzinfo=timezone.utc).astimezone(tz)
+        assert (moved.hour, moved.minute) == (23, 59)
+        assert moved.date() == (row_local.date() - timedelta(days=1))
+    finally:
+        s.close()
