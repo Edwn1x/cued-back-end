@@ -164,6 +164,44 @@ def _evening_not_late_block(user, session=None, *, now: datetime = None) -> str 
         return None
 
 
+def _up_since_block(user, session=None, *, now: datetime = None) -> str | None:
+    """They're UP — today's wake is KNOWN (watch sleep end, or their first activity), it was
+    at least UP_SINCE_MIN_MINUTES ago, and it's daytime. Says so, and that any 'go sleep'
+    earlier in the thread belongs to last night. Live 2026-10-08 12:33 PT (user 48): the
+    reply to "What?" ended "go sleep rn" 44 minutes after a measured 11:50 wake, in class —
+    the 5am exchange carried forward because nothing marked the sleep in between.
+    Profile / typical wakes are guesses, not evidence they're up → no block. Fail-open."""
+    if not config.UP_SINCE_SIGNAL_ENABLED or session is None:
+        return None
+    try:
+        from wake_model import resolve_wake
+        from timefmt import resolve_tz
+        info = resolve_wake(user, session, now=now)
+        if info is None or info.source not in ("measured_today", "activity") or info.at_utc is None:
+            return None
+        ref = now if now is not None else _late_clock()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        local = ref.astimezone(resolve_tz(user))
+        woke_local = info.at_utc.replace(tzinfo=timezone.utc).astimezone(resolve_tz(user))
+        mins = int((ref - info.at_utc.replace(tzinfo=timezone.utc)).total_seconds() // 60)
+        if mins < config.UP_SINCE_MIN_MINUTES or local.hour >= 21 or woke_local.date() != local.date():
+            return None
+        how = "the watch's sleep end" if info.source == "measured_today" else f"their first activity ({info.detail or 'text'})"
+        up = f"{mins} min" if mins < 120 else f"{mins // 60}h{mins % 60:02d}"
+        clock = woke_local.strftime("%I:%M%p").lstrip("0").lower()
+        return (
+            f"## UP SINCE {clock} (today — {how})\n"
+            f"They've been up {up}. Any \"go sleep\" / \"go down now\" / sleep math earlier in this thread "
+            "was LAST NIGHT, before they slept — it is stale now; do not repeat it or tell them to sleep. "
+            "A short night can shape today's plan (a lighter session, an earlier bed tonight), never a "
+            "mid-day bedtime push."
+        )
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("UP_SINCE_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+
+
 def _late_clock() -> datetime:
     """The reactive loop's clock (aware UTC). Patched in tests to freeze a wall time so
     the late-hour signal is deterministic (never assert against real now — date-fragile)."""
@@ -810,6 +848,10 @@ def build_loop_context(user, session) -> str:
     _ev = _evening_not_late_block(user, session)
     if _ev:
         parts.append(_ev)
+    # UP SINCE — the daytime mirror: today's wake is known, so last night's "go sleep" is stale.
+    _up = _up_since_block(user, session)
+    if _up:
+        parts.append(_up)
 
     return "\n\n".join(parts)
 
