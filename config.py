@@ -228,6 +228,10 @@ AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 # text ends in a short direct paragraph, send just that instead of a retry. Off → the
 # pre-existing nudge-once-then-drop path, byte-identical.
 NARRATION_SALVAGE_ENABLED = os.getenv("NARRATION_SALVAGE_ENABLED", "true").lower() == "true"
+# The lowercase friend voice, in code (voice_norm.lowercase_lead): sentence-initial
+# capitals and the pronoun I are lowered on every coach reply. Live 2026-10-05/06 (user 48):
+# "What", "Nice. go film it", "Yeah, you're at 980 for the day, 35g protein."
+LOWERCASE_REPLIES_ENABLED = os.getenv("LOWERCASE_REPLIES_ENABLED", "true").lower() == "true"
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"

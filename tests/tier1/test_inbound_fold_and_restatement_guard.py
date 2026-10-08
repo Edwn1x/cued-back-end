@@ -24,6 +24,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from voice_norm import lowercase_lead   # the voice pass lowers every reply
+
 import config
 import message_buffer
 from tests._fake_anthropic import ToolUse
@@ -391,7 +393,7 @@ def test_turn_that_wrote_is_never_suppressed(db, anthropic_stub, monkeypatch):
     user = make_user(db, preferred_channel="sms")
     _outbound(db, user, PREV_REPLY, minutes_ago=1)
     anthropic_stub.push(ToolUse("log_meal", {"description": "apple", "calories": 95}), RESTATEMENT)
-    assert run_agent_loop(user, "and an apple", "freeform") == RESTATEMENT
+    assert run_agent_loop(user, "and an apple", "freeform") == lowercase_lead(RESTATEMENT)
 
 
 def test_new_day_total_is_not_suppressed(db, anthropic_stub):
@@ -417,7 +419,7 @@ def test_outbound_outside_the_window_does_not_count(db, anthropic_stub):
     user = make_user(db, preferred_channel="sms")
     _outbound(db, user, PREV_REPLY, minutes_ago=10)
     anthropic_stub.push(RESTATEMENT)
-    assert run_agent_loop(user, "", "freeform") == RESTATEMENT
+    assert run_agent_loop(user, "", "freeform") == lowercase_lead(RESTATEMENT)
 
 
 def test_guard_flag_off_restores_the_original_reply(db, anthropic_stub, monkeypatch):
@@ -426,7 +428,7 @@ def test_guard_flag_off_restores_the_original_reply(db, anthropic_stub, monkeypa
     user = make_user(db, preferred_channel="sms")
     _outbound(db, user, PREV_REPLY, minutes_ago=1)
     anthropic_stub.push(RESTATEMENT)
-    assert run_agent_loop(user, "", "freeform") == RESTATEMENT
+    assert run_agent_loop(user, "", "freeform") == lowercase_lead(RESTATEMENT)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -560,14 +560,15 @@ def test_5656_text_sends_only_the_real_line(db, imessage_on, sidecar, anthropic_
     with caplog.at_level(logging.WARNING):
         app.process_buffered_message(user.id, body, "freeform")
     sends = [j for r, j in sidecar if r == "send"]
-    assert len(sends) == 1 and sends[0]["text"] == FOUNDER_5656_REPLY
+    from voice_norm import lowercase_lead
+    assert len(sends) == 1 and sends[0]["text"] == lowercase_lead(FOUNDER_5656_REPLY)   # the voice pass lowers it
     assert "AGENT_LOOP_NARRATION_SALVAGED" in caplog.text
     assert f"dropped_chars={len(FOUNDER_5656) - len(FOUNDER_5656_REPLY)}" in caplog.text
     assert "AGENT_LOOP_NARRATION_NUDGE" not in caplog.text
     assert "AGENT_LOOP_NARRATION_DROPPED" not in caplog.text
     assert not any("planning notes" in str(m.get("content")) for c in anthropic_stub.calls for m in c["messages"])
     out = _rows(db, user)
-    assert [m.body for m in out if m.message_type != "reaction"] == [FOUNDER_5656_REPLY]
+    assert [m.body for m in out if m.message_type != "reaction"] == [lowercase_lead(FOUNDER_5656_REPLY)]
 
 
 def test_single_marker_reply_goes_out_untouched(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):

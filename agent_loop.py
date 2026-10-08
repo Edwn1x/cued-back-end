@@ -1404,6 +1404,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 return ""
         if text:
             _persist_recent_photo(user.id, image_data, combined_body, text)
+            if config.LOWERCASE_REPLIES_ENABLED:
+                from voice_norm import lowercase_lead
+                lowered = lowercase_lead(text)
+                if lowered != text:
+                    logger.info("AGENT_LOOP_LOWERCASED user=%s before=%r", user.id, text[:60])
+                    text = lowered
             # Restatement guard (layer B): a no-write turn that restates the reply sent
             # moments ago becomes an ack, never a second "already in — ur at 555".
             return _apply_restatement_guard(user, text, combined_body, state)
