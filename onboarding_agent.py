@@ -112,8 +112,33 @@ GOAL_LABELS = {
 }
 
 
+def _goal_words(goal_str: str, table: dict, default: str) -> str:
+    """A goal value as words. The form stores a comma list ("fat_loss,muscle_building,
+    strength"); the table knows the single goals and the recomp pair, so: known pair
+    first, each remaining goal mapped, joined with ' + '. Live 2026-10-05 (user 48): the
+    summary read "fat loss,muscle building,strength"."""
+    raw = (goal_str or "").strip()
+    if not raw:
+        return default
+    if raw in table:
+        return table[raw]
+    parts = [g.strip() for g in raw.split(",") if g.strip()]
+    out: list[str] = []
+    rest = list(parts)
+    pair = {"fat_loss", "muscle_building"}
+    if pair <= set(rest):
+        out.append(table.get("fat_loss,muscle_building", "recomp"))
+        rest = [g for g in rest if g not in pair]
+    out.extend(table.get(g, g.replace("_", " ")) for g in rest)
+    return " + ".join(out) if out else default
+
+
 def _goal_label(goal_str: str) -> str:
-    return GOAL_LABELS.get(goal_str or "", (goal_str or "your goal").replace("_", " "))
+    return _goal_words(goal_str, GOAL_LABELS, "your goal")
+
+
+def _goal_phrase(goal_str: str) -> str:
+    return _goal_words(goal_str, GOAL_PHRASES, "general fitness")
 
 
 def _determine_coaching_branch(user) -> str:
@@ -978,7 +1003,7 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         if user.sleep_time:
             bits.append(f"down by {_clock(user.sleep_time)}")
         parts.append(" ".join(bits))
-    parts.append(GOAL_PHRASES.get(user.goal, (user.goal or "general fitness").replace("_", " ")))
+    parts.append(_goal_phrase(user.goal))
     if not nutrition_only:
         try:
             from workouts.routine import describe_routine
@@ -1432,6 +1457,154 @@ def _maybe_auto_fill_no_training(user, message: str) -> None:
             break
 
 
+# ─── Burst / continuation guard ───────────────────────────────────────────────
+# Live 2026-10-05 (user 48): "Lwk a combo of both" / "I'm either walking somewhere or in
+# my room" 7s apart → two turns → "do u cook in ur room or dining hall" asked at :48 AND
+# :59. Same for "cooked how" (×2). The second turn's inbound had already been SEEN by the
+# first reply (history is read at generation time), or added nothing — either way it is
+# a continuation of their thought, not a fresh answer, and the question that is out there
+# stands. Code decides; the model is told to react in one line or say nothing.
+FOLLOWUP_MESSAGE_TYPE = "onboarding_followup"   # not counted as an intake turn (_coach_turns)
+
+
+def _continuation_state(user_id: int, found_any: dict, incoming_message: str = "") -> tuple[bool, str | None, str]:
+    """(is_continuation, prev_coach_body, why). why = 'covered' when their latest message
+    was stored BEFORE the coach's last line went out — that reply was generated with it in
+    history, so it has been seen (and the question in it stands). A message that arrived
+    after the coach's line is a real reply, however short, and gets a normal turn. Any
+    fact the covered message carried was already extracted and stored by the caller."""
+    if not config.ONBOARDING_CONTINUATION_GUARD_ENABLED:
+        return False, None, ""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        last_out = (session.query(Message)
+                    .filter(Message.user_id == user_id, Message.direction == "out")
+                    .order_by(Message.created_at.desc(), Message.id.desc()).first())
+        last_in = (session.query(Message)
+                   .filter(Message.user_id == user_id, Message.direction == "in")
+                   .order_by(Message.created_at.desc(), Message.id.desc()).first())
+        if not last_out or not last_out.created_at:
+            return False, None, ""
+        prev = last_out.body
+        out_at = last_out.created_at
+        # The stored latest inbound must BE the message being processed (the webhook stores
+        # before buffering; a flush's combined body ends with the newest text) — otherwise
+        # this is a turn with no stored inbound (tests, replays) and the guard stays out.
+        if (last_in is not None and last_in.created_at and last_in.created_at <= out_at
+                and (last_in.body or "").strip() and (incoming_message or "").strip().endswith((last_in.body or "").strip())):
+            return True, prev, "covered"
+        return False, prev, ""
+    finally:
+        session.close()
+
+
+def _build_continuation_reply(user, incoming_message: str, system_prompt: str, prev_coach: str | None) -> str:
+    instruction = (
+        f"{user.name} just added to what they were saying: \"{incoming_message}\"\n\n"
+        f"You already replied to their previous text a moment ago"
+        + (f" — your line was: \"{prev_coach}\"" if prev_coach else "")
+        + ". That question (if you asked one) STANDS; they haven't answered it yet. Do NOT ask "
+        "anything this message — not that question again, not a rephrasing of it, not a new one. "
+        "Either react to the new bit in ONE short line (no question, no greeting), or, if there is "
+        "nothing worth adding, reply with exactly [silent]. One line at most."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
+# ─── Wake/sleep: take the estimate, never ask a third time ────────────────────
+_WAKE_ASK_RE = re.compile(r"\b(sleep|sleeping|asleep|wake|waking|get up|getting up|crash|bed|bedtime|up at|up til|up until|"
+                          r"schedule|nocturnal|night owl|late)\b", re.I)
+_QUALITATIVE_RE = re.compile(
+    r"\b(yeah|yea|yep|yes|ya|yup|like that|pretty much|basically|kinda|kind of|sorta|sort of|hella|late|"
+    r"cooked|nocturnal|random|all over|whenever|depends|idk|dunno|not sure|no idea|varies)\b", re.I)
+_LATE_WORDS_RE = re.compile(r"\b(late|cooked|nocturnal|night owl|all[- ]?nighter|3 ?am|4 ?am|2 ?am|noon)\b", re.I)
+_PROPOSED_AMPM_RE = re.compile(r"(?<![\d:])(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.I)
+_PROPOSED_UP_RE = re.compile(r"\bup\s+(?:at|by|around|like|til|until)\s+(\d{1,2})(?::(\d{2}))?\b(?!\s*(?:am|pm))", re.I)
+_PROPOSED_WORDS_RE = re.compile(r"\b(noon|midnight)\b", re.I)
+LATE_DEFAULT = ("11:00", "02:00")     # (wake, sleep) for "late / cooked / nocturnal"
+PLAIN_DEFAULT = ("08:00", "23:00")
+
+
+def _wake_sleep_asks(user_id: int) -> int:
+    """How many coach onboarding lines so far were about wake/sleep."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        rows = (session.query(Message.body)
+                .filter(Message.user_id == user_id, Message.direction == "out",
+                        Message.message_type.in_(("onboarding", BIG_ASK_MESSAGE_TYPE, FOLLOWUP_MESSAGE_TYPE))).all())
+        return sum(1 for (b,) in rows if b and _WAKE_ASK_RE.search(b))
+    finally:
+        session.close()
+
+
+def _times_proposed(coach_text: str) -> tuple[str | None, str | None]:
+    """(wake, sleep) HH:MM the coach's own question floated: "like 3am and up at 11 or
+    all over the place" → ("11:00", "03:00"); "like 3am up at noon" → ("12:00", "03:00")."""
+    t = coach_text or ""
+    wake = sleep = None
+    for m in _PROPOSED_AMPM_RE.finditer(t):
+        h, mm, ap = int(m.group(1)), m.group(2) or "00", m.group(3).lower()
+        if not (1 <= h <= 12):
+            continue
+        h24 = (h % 12) + (12 if ap == "pm" else 0)
+        if ap == "am" and h24 <= 5:          # 1–5am is a bedtime
+            sleep = sleep or f"{h24:02d}:{mm}"
+        elif 6 <= h24 <= 14:                 # 6am–2pm is a wake
+            wake = wake or f"{h24:02d}:{mm}"
+        elif h24 >= 21:                      # 9pm–midnight is a bedtime
+            sleep = sleep or f"{h24:02d}:{mm}"
+    for m in _PROPOSED_WORDS_RE.finditer(t):
+        if m.group(1).lower() == "noon":
+            wake = wake or "12:00"
+        else:
+            sleep = sleep or "00:00"
+    m = _PROPOSED_UP_RE.search(t)
+    if m and not wake:
+        h = int(m.group(1))
+        if 5 <= h <= 12:
+            wake = f"{h:02d}:{m.group(2) or '00'}"
+        elif 1 <= h <= 2:                    # "up at 1" after a late night
+            wake = f"{h + 12:02d}:{m.group(2) or '00'}"
+    return wake, sleep
+
+
+def _maybe_estimate_wake_sleep(user_row, incoming_message: str, prev_coach: str | None) -> dict | None:
+    """When wake/sleep is still unknown after extraction and the reply was qualitative
+    (no clock in it): take the coach's own proposed times if the last line floated some;
+    otherwise, once the field has been asked ONBOARDING_ESTIMATE_AFTER_ASKS times, a
+    descriptor default ("late"/"cooked" → up 11 / down 2; else up 8 / down 11). Returns the
+    fields stored, or None. Live 2026-10-05 (user 48): "yeah like staying up hella late and
+    waking up late too" → asked AGAIN; the coach had already said "like 3am and up at 11"."""
+    if not config.ONBOARDING_WAKE_SLEEP_ESTIMATE_ENABLED:
+        return None
+    if user_row.wake_time and user_row.sleep_time:
+        return None
+    msg = (incoming_message or "").strip()
+    if not msg or re.search(r"\d", msg) or not _QUALITATIVE_RE.search(msg):
+        return None
+    if not prev_coach or not _WAKE_ASK_RE.search(prev_coach):
+        return None
+    wake, sleep = _times_proposed(prev_coach)
+    source = "proposal"
+    if not (wake and sleep):
+        asks = _wake_sleep_asks(user_row.id)
+        if asks < config.ONBOARDING_ESTIMATE_AFTER_ASKS:
+            return None
+        late = bool(_LATE_WORDS_RE.search(msg) or _LATE_WORDS_RE.search(prev_coach))
+        dw, ds = LATE_DEFAULT if late else PLAIN_DEFAULT
+        wake, sleep, source = wake or dw, sleep or ds, "default"
+    data = {}
+    if not user_row.wake_time:
+        data["wake_time"] = wake
+    if not user_row.sleep_time:
+        data["sleep_time"] = sleep
+    _store_extracted_data(user_row.id, data)
+    logger.info("ONBOARDING_WAKE_SLEEP_ESTIMATED user=%s source=%s wake=%s sleep=%s", user_row.id, source, wake, sleep)
+    return data
+
+
 def handle_onboarding_reply(user, incoming_message: str) -> bool:
     """
     Called from webhook on every message while onboarding_step < 3.
@@ -1567,6 +1740,21 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     except Exception as e:  # noqa: BLE001 — never block the reply on it
         logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
 
+    # Wake/sleep: a qualitative answer to a wake/sleep ask takes the coach's proposed
+    # times (or, after enough asks, a descriptor default) instead of a third ask.
+    estimated = None
+    try:
+        estimated = _maybe_estimate_wake_sleep(user_row, incoming_message, prev_coach)
+        if estimated:
+            found_any = dict(found_any, **estimated)
+            session = get_session()
+            try:
+                user_row = session.get(UserModel, user.id)
+            finally:
+                session.close()
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("ONBOARDING_WAKE_SLEEP_ESTIMATE_FAILED user=%s err=%s", user_row.id, e)
+
     missing_after = _get_missing_fields(user_row)
     system_prompt = _build_system_prompt(user_row)
 
@@ -1614,6 +1802,16 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     # two-field bundle are kept for when a list is the right move — see
     # _intake_mode(): they asked for it, the conversation has run long with most
     # fields unknown, or one/two are left to close out.
+    is_cont, prev_body, why = _continuation_state(user_row.id, found_any, incoming_message)
+    if is_cont:
+        text = _build_continuation_reply(user_row, incoming_message, system_prompt, prev_body)
+        if not text or text.strip().lower() in ("[silent]", "silent"):
+            logger.info("ONBOARDING_CONTINUATION user=%s why=%s sent=silent", user_row.id, why)
+            return False
+        send_sms(user_row.phone, text, user_id=user_row.id, message_type=FOLLOWUP_MESSAGE_TYPE)
+        logger.info("ONBOARDING_CONTINUATION user=%s why=%s sent=line", user_row.id, why)
+        return False
+
     mode = _intake_mode(incoming_message, missing_after, _coach_turns(user_row.id),
                         big_ask_sent=_big_ask_sent(user_row.id))
     out_type = "onboarding"

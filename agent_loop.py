@@ -176,6 +176,33 @@ def _is_late_hour(user, *, now: datetime = None, session=None) -> bool:
         return False
 
 
+def _new_here_block(user, *, now: datetime | None = None) -> str | None:
+    """The orientation block for a user who finished setup within
+    NEW_USER_ORIENTATION_HOURS. None once they've been around (or before setup)."""
+    if (getattr(user, "onboarding_step", 0) or 0) < 3:
+        return None
+    created = getattr(user, "created_at", None)
+    if not created:
+        return None
+    ref = now or datetime.now(timezone.utc)
+    ref = ref.astimezone(timezone.utc).replace(tzinfo=None) if ref.tzinfo else ref   # naive UTC, like the column
+    created = created.replace(tzinfo=None) if created.tzinfo else created
+    hours = (ref - created).total_seconds() / 3600.0
+    if hours < 0 or hours > config.NEW_USER_ORIENTATION_HOURS:
+        return None
+    h = int(hours)
+    age = "under an hour" if h < 1 else f"~{h}h"
+    return (
+        f"## NEW HERE (finished setup {age} ago)\n"
+        "They may not know what to do with you yet. When they ask \"what now\" / \"so what do i do\" / "
+        "\"ok?\" or seem lost, give the short orientation in 1–2 lines, in your voice: text or pic what "
+        "u eat and it's logged against ur targets; say when ur heading to the gym (or \"starting push\") "
+        "and the card shows up; a morning rundown lands when u wake; calendar / watch connect offers "
+        "come over the next day. Never answer \"nothing til ur at the gym\" — food and the day are "
+        "yours too. Don't repeat the orientation once they've started doing things."
+    )
+
+
 def build_loop_context(user, session) -> str:
     """The VOLATILE per-user block, injected AFTER the cached voice prefix.
 
@@ -218,6 +245,14 @@ def build_loop_context(user, session) -> str:
             parts.append(_lb)
     except Exception as e:  # noqa: BLE001 — never break a turn over a hint
         logger.warning("LESSONS_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
+    # 1c. NEW HERE — the first hours after setup. Live 2026-10-05 (user 48, from zero):
+    # "So what now" ×3 → "nothing til ur at the gym. wanna lock the squat number" — the
+    # product collapsed to workouts for someone who had just been told it logs food and
+    # reads his calendar. The block names what to say to "what now".
+    nh = _new_here_block(user)
+    if nh:
+        parts.append(nh)
 
     # 2. Typed-column profile (source of truth for body/diet/targets).
     if user.profile_summary:

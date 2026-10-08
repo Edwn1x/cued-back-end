@@ -215,6 +215,21 @@ def _band(env, default):
         lo, hi = [int(x) for x in default.split(",")]
         return (lo, hi)
 ONBOARDING_BUFFER_S = _band("ONBOARDING_BUFFER_S", "5,8")
+# Onboarding burst guard (live 2026-10-05, user 48: two texts 7s apart → two turns →
+# the cooking question asked twice, 11s apart; same again for "cooked how"). A turn whose
+# inbound was stored BEFORE the coach's last line went out has already been seen by that
+# reply (history is read at generation time): it is a continuation — react in one line
+# or stay silent, never ask (and never re-ask the question that is out there).
+ONBOARDING_CONTINUATION_GUARD_ENABLED = os.getenv("ONBOARDING_CONTINUATION_GUARD_ENABLED", "true").lower() == "true"
+# Wake/sleep estimate: a qualitative answer to a wake/sleep ask that PROPOSED times
+# ("like 3am and up at 11?" → "yeah hella late") takes the proposal; after
+# ONBOARDING_ESTIMATE_AFTER_ASKS asks with no clock, a descriptor default lands instead
+# of a third ask (live 2026-10-05: asked 3×). The coach can correct it later.
+ONBOARDING_WAKE_SLEEP_ESTIMATE_ENABLED = os.getenv("ONBOARDING_WAKE_SLEEP_ESTIMATE_ENABLED", "true").lower() == "true"
+ONBOARDING_ESTIMATE_AFTER_ASKS = int(os.getenv("ONBOARDING_ESTIMATE_AFTER_ASKS", "2"))
+# NEW HERE block in the coach loop for the first hours after setup: what to say to "so
+# what now" (live 2026-10-05: "nothing til ur at the gym").
+NEW_USER_ORIENTATION_HOURS = float(os.getenv("NEW_USER_ORIENTATION_HOURS", "48"))
 REPLY_BUFFER_S = _band("REPLY_BUFFER_S", "10,15")
 PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
 # Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
