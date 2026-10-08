@@ -877,6 +877,15 @@ def _week_ask_block(user, combined_body: str, session) -> str:
     )
 
 
+# A written-out workout plan: three or more lines like "1. incline db press - 3x10" /
+# "- cable row 3 x 12". Only the shape; the nudge below checks the rest.
+_PLAN_LINE_RE = re.compile(r"^\s*(?:\d+[.)]|[-•*])\s*[^\n]{2,70}?\b\d{1,2}\s*[x×]\s*\d{1,3}\b", re.I | re.M)
+
+
+def _looks_like_plan(text: str) -> bool:
+    return bool(text) and len(_PLAN_LINE_RE.findall(text)) >= 3
+
+
 _GYM_RE = re.compile(r"\b(gym|rsf|weight ?room|lift(?:ing)?|workout|train(?:ing)?|push|pull|legs|bench|squat|crowded|busy|packed|line)\b", re.I)
 
 
@@ -1426,6 +1435,30 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             else:
                 logger.warning("AGENT_LOOP_NARRATION_DROPPED user=%s iter=%d text=%r", user.id, i, text[:80])
                 return ""
+        # Re-card nudge: a plan typed out while a card is open belongs ON the card. ONE
+        # forced follow-up (live 2026-10-08 02:14: six-move plan as text, "tap sets on the
+        # card" with the default card still showing; rebuilt only after "send it as a card").
+        if (config.PLAN_TEXT_RECARD_NUDGE_ENABLED and text and tools and _looks_like_plan(text)
+                and not state.get("recard_nudged")):
+            from agent_tools import turn_called
+            try:
+                from workouts.session_ops import active_session_id
+                open_id = active_session_id(user.id)
+            except Exception:  # noqa: BLE001
+                open_id = None
+            if open_id and not turn_called(user.id, "start_workout_session"):
+                state["recard_nudged"] = True
+                logger.info("AGENT_LOOP_RECARD_NUDGE user=%s session=%s", user.id, open_id)
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": (
+                    "[code check — NOT from the user, do not answer it: you wrote today's exercises out as "
+                    f"text while their workout card (session #{open_id}) is open — the card is where the plan "
+                    "lives. Put it ON the card NOW: call start_workout_session with `exercises` = that list "
+                    "(name / sets / reps, weight where you stated one) and template_key = the day; a one-off "
+                    "plan (other gym, limited equipment, deload) is NOT saved as their routine, so do not "
+                    "call save_routine for it. If the card has logged sets, reset_workout_session first. Then "
+                    "reply with ONE short line (no re-listing — the card shows it).]")})
+                continue
         # Write-back guard (honesty invariant, code side). usda_food_lookup named rows
         # that are ALREADY LOGGED (turn state: pending_writeback); if the reply quotes a
         # macro number and none of those rows was edited, the correction exists only

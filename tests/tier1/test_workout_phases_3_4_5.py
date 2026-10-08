@@ -384,3 +384,100 @@ def test_silent_sentinel_after_the_start_tool_sends_nothing(db, imessage_on, sid
     driver.send(user, "starting push")
     assert sidecar_ok == ["legs day. starting u at 155 on squat — first card, weights are off what u told me. tap a set and change the number if it's off, i'll remember."]
     assert "[silent]" not in "".join(sidecar_ok)
+
+
+# ─── one-off plan (not their routine) + the re-card nudge (live 2026-10-08 02:14, user 48) ───
+
+PLAN_TEXT = ("cable machine + db up to 50, that's a full day\n\ntry this:\n1. incline db press - 3x10\n"
+             "2. db shoulder press - 3x10\n3. one-arm cable row - 3x12 each\n4. pull ups - 3x8\n\ntap sets on the card as u go")
+ONE_OFF = [{"name": "incline db press", "sets": 3, "reps": 10, "weight": 50},
+           {"name": "db shoulder press", "sets": 3, "reps": 10},
+           {"name": "one-arm cable row", "sets": 3, "reps": 12, "weight": 80},
+           {"name": "pull ups", "sets": 3, "reps": 8}]
+
+
+def _expected_slugs():
+    """Known movements map to the library slug (so the load is calibrated); unknown ones are
+    slugified from the name (pull ups → pull_ups)."""
+    from workouts.templates import slug_for_name
+    import re
+    return [slug_for_name(e["name"]) or re.sub(r"[^a-z0-9]+", "_", e["name"].lower()).strip("_") for e in ONE_OFF]
+
+
+def test_one_off_templates_shape_rows():
+    from workouts.start import one_off_templates
+    t = one_off_templates(ONE_OFF + [{"sets": 3}, "junk", {"name": "", "reps": 5}])
+    assert [x.slug for x in t] == _expected_slugs() and t[0].slug == "incline_db_press" and t[3].slug == "pull_ups"
+    assert t[0].default_weight == 50 and t[0].sets == 3 and t[0].reps == 10
+    assert t[3].default_weight == 0.0 and t[3].rep_step == 2 and t[3].plate_step == 0.0     # bodyweight, reps progress
+    assert one_off_templates([]) == []
+
+
+def test_one_off_start_builds_from_the_list_and_saves_nothing(db, imessage_on, sidecar_ok, card_ok):
+    from workouts.start import start_workout_session
+    from models import get_session, User
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    r = start_workout_session(user.id, "upper", one_off=ONE_OFF)
+    assert r["one_off"] is True and r["used_default"] is False and r["template_key"] == "upper" and r["sets"] == 12
+    rows = _sets(db, r["session_id"])
+    assert [x[0] for x in rows][:3] == ["incline_db_press"] * 3 and {x[0] for x in rows} == set(_expected_slugs())
+    s = get_session()
+    try:
+        assert s.get(User, user.id).custom_templates in (None, {})          # nothing saved as their routine
+    finally:
+        s.close()
+    with pytest.raises(ValueError):
+        start_workout_session(user.id, "upper", one_off=[{"sets": 3}])     # no usable exercise
+
+
+def test_handler_one_off_replaces_the_untouched_default_card_and_says_not_saved(db, imessage_on, sidecar_ok, card_ok):
+    from agent_tools import handle_start_workout_session
+    from models import get_session, WorkoutSession
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    old = _open_push(db, user)                                              # the generic card, untouched
+    out = handle_start_workout_session(user.id, {"template_key": "upper", "exercises": ONE_OFF})
+    assert out.startswith("ok: upper session #") and "from your one-off list — NOT saved as their routine" in out
+    assert out.endswith("Reply with exactly [silent].") and "STARTING DEFAULT" not in out
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, old).status == "abandoned"
+        new = s.query(WorkoutSession).filter_by(user_id=user.id, status="active").one()
+        assert {x.exercise for x in new.sets} == set(_expected_slugs())
+    finally:
+        s.close()
+    assert handle_start_workout_session(user.id, {"exercises": "nope"}).startswith("error: exercises must be a list")
+
+
+def test_recard_nudge_puts_a_text_plan_on_the_open_card(db, imessage_on, sidecar_ok, card_ok, anthropic_stub):
+    import agent_loop
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = _open_push(db, user)
+    seen = []
+
+    def _h(kw):
+        seen.append(kw["messages"][-1]["content"])
+        return PLAN_TEXT if len(seen) == 1 else "card's up, tap as u go"
+    anthropic_stub.reply_with(_h)
+    out = agent_loop.run_agent_loop(user, "they just have this equipment", "freeform")
+    assert out == "card's up, tap as u go"
+    assert len(seen) == 2 and "Put it ON the card NOW" in str(seen[1]) and f"session #{sid}" in str(seen[1])
+    assert "do not call save_routine" in str(seen[1])
+
+
+def test_recard_nudge_is_skipped_without_an_open_card_or_after_the_start_tool(db, imessage_on, sidecar_ok, card_ok, anthropic_stub):
+    import agent_loop
+    from tests._fake_anthropic import ToolUse
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    anthropic_stub.reply_with(lambda kw: PLAN_TEXT)                         # no session open → plan text is fine
+    assert agent_loop.run_agent_loop(user, "give me an upper day idea for later", "freeform") == PLAN_TEXT
+    _open_push(db, user)
+    calls = []
+
+    def _h(kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return ToolUse("start_workout_session", {"template_key": "upper", "exercises": ONE_OFF})
+        return PLAN_TEXT                                                     # the tool ran this turn → no nudge
+    anthropic_stub.reply_with(_h)
+    assert agent_loop.run_agent_loop(user, "they just have this equipment", "freeform") == PLAN_TEXT
+    assert len(calls) == 2

@@ -228,6 +228,11 @@ AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 # text ends in a short direct paragraph, send just that instead of a retry. Off → the
 # pre-existing nudge-once-then-drop path, byte-identical.
 NARRATION_SALVAGE_ENABLED = os.getenv("NARRATION_SALVAGE_ENABLED", "true").lower() == "true"
+# A plan written as TEXT while a card is open → one forced follow-up to put it ON the card
+# (start_workout_session with exercises=). Live 2026-10-08 02:14 (user 48, friend's gym): the
+# coach typed a six-move plan and said "tap sets on the card" while the card still held the
+# default exercises; the card was only rebuilt after "send it as a card then?".
+PLAN_TEXT_RECARD_NUDGE_ENABLED = os.getenv("PLAN_TEXT_RECARD_NUDGE_ENABLED", "true").lower() == "true"
 # The lowercase friend voice, in code (voice_norm.lowercase_lead): sentence-initial
 # capitals and the pronoun I are lowered on every coach reply. Live 2026-10-05/06 (user 48):
 # "What", "Nice. go film it", "Yeah, you're at 980 for the day, 35g protein."
