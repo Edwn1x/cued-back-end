@@ -201,7 +201,10 @@ def test_trained_users_first_card_asks_for_their_numbers_first(db, monkeypatch):
     # The answer sends the parked day's card IN CODE (live: the model saved anchors and
     # said "got it" without calling the start tool again).
     out = handle_set_lift_anchors(user.id, {"lifts": [{"exercise": "bench", "weight": 185, "reps": 5}]})
-    assert out.startswith("ok: saved bench press 185×5") and "push session #" in out and out.endswith("Reply with exactly [silent].")
+    # ANGEL has no saved push routine → the result flags the generic day instead of [silent]
+    # (the same sentence the start tool uses), so the coach says "those are defaults".
+    assert out.startswith("ok: saved bench press 185×5") and "push session #" in out
+    assert "STARTING DEFAULT exercises" in out and "[silent]" not in out.split("Don't")[0]
     assert sent[0].startswith("push day. starting u at 185 on bench press — first card, weights are off what u told me")
     assert "bench press · 185 × 5 × 4" in sent
     # a second start replaces the empty session rather than re-asking or dead-ending
@@ -343,3 +346,82 @@ def test_capabilities_registry_knows_the_tool():
     from capabilities import CAPABILITIES
     tools = {t for c in CAPABILITIES for t in c.tools}
     assert "set_lift_anchors" in tools
+
+
+# ─── the first-card ask's ANSWER, as people actually phrase it (2026-10-05, user 48) ───
+
+FOUNDER_ANSWER = ("My all time bench pr on flat bench was 185lb for 1. But I can do like 135 for 10 lwk\n"
+                  "Squat, lwk I’m stuck between 135 and 150")
+
+
+def test_loose_parse_reads_a_pr_a_can_do_and_a_range():
+    """The live answer that read as NOTHING (so the turn fell to the model and the card
+    lost its setup mode): a PR clause (1 rep), a bare 'can do' load that belongs to the
+    lift just named, and a range that collapses to its midpoint."""
+    from workouts.calibrate import parse_stated_anchors
+    assert parse_stated_anchors(FOUNDER_ANSWER, loose=True) == [
+        {"exercise": "bench", "weight": 185, "reps": 1},
+        {"exercise": "bench", "weight": 135, "reps": 10},     # last wins in set_anchors → the working number
+        {"exercise": "Squat", "weight": 145},
+    ]
+    # strict (onboarding capture of any message) stays precision-biased
+    assert parse_stated_anchors(FOUNDER_ANSWER) == [{"exercise": "bench", "weight": 185, "reps": 1}]
+
+
+@pytest.mark.parametrize("text, expect", [
+    ("my bench max is 185", [{"exercise": "bench", "weight": 185, "reps": 1}]),     # a max is a 1-rep number
+    ("squat 135-150", [{"exercise": "squat", "weight": 145}]),
+    ("squat somewhere from 135 to 150", [{"exercise": "squat", "weight": 145}]),
+    ("bench was 155 for 8", [{"exercise": "bench", "weight": 155, "reps": 8}]),
+    ("squat rack is open 24 hours", []),                                            # not a load
+    ("bench on tuesday at 6pm for 45 min", []),
+    ("gym at 5, class from 12-1", []),
+    ("wanna bench 225 by december", []),
+])
+def test_loose_parse_ranges_maxes_and_non_loads(text, expect):
+    from workouts.calibrate import parse_stated_anchors
+    assert parse_stated_anchors(text, loose=True) == expect
+
+
+def test_the_founders_answer_is_answered_in_code_with_the_working_numbers(db, monkeypatch):
+    from agent_tools import handle_start_workout_session
+    from workouts.calibrate import handle_pending_card_reply, anchors_of
+    from models import User
+    import workouts.start as start_mod
+    monkeypatch.setattr(start_mod, "_resolve_channel", lambda uid: "sms")
+    sent = []
+    monkeypatch.setattr(start_mod, "send_sms", lambda phone, body, **kw: sent.append(body) or {"sid": f"m{len(sent)}"})
+    u = make_user(db, **ANGEL)
+    assert handle_start_workout_session(u.id, {"template_key": "push"}).startswith("error: first card")
+    assert handle_pending_card_reply(u.id, FOUNDER_ANSWER) is True
+    db.expire_all()
+    a = anchors_of(db.get(User, u.id))
+    assert (a["bench_press"]["weight"], a["bench_press"]["reps"]) == (135, 10)
+    assert a["squat"]["weight"] == 145
+    assert sent[0].startswith("push day. starting u at 155 on bench press — first card, weights are off what u told me")
+    # ANGEL has no saved push routine → the generic day is labelled as such, in code
+    from workouts.start import defaults_note
+    assert sent[-1] == defaults_note("push")
+
+
+def test_a_saved_routine_gets_no_defaults_note_and_the_tool_stays_silent(db, monkeypatch):
+    from agent_tools import handle_start_workout_session, handle_set_lift_anchors
+    from workouts.calibrate import handle_pending_card_reply
+    from workouts.start import ROUTINE_NOTE_TYPE
+    import workouts.start as start_mod
+    monkeypatch.setattr(start_mod, "_resolve_channel", lambda uid: "sms")
+    sent = []
+    monkeypatch.setattr(start_mod, "send_sms", lambda phone, body, **kw: sent.append((body, kw.get("message_type"))) or {"sid": f"m{len(sent)}"})
+    rows = [{"slug": "bench_press", "label": "bench press", "sets": 4, "reps": 5, "default_weight": 135, "plate_step": 5},
+            {"slug": "cable_fly", "label": "cable fly", "sets": 3, "reps": 12, "default_weight": 25, "plate_step": 5}]
+    u = make_user(db, **ANGEL, custom_templates={"push": rows})
+    assert handle_start_workout_session(u.id, {"template_key": "push"}).startswith("error: first card")
+    out = handle_set_lift_anchors(u.id, {"lifts": [{"exercise": "bench", "weight": 185, "reps": 5}]})
+    assert out.endswith("Reply with exactly [silent].") and "STARTING DEFAULT" not in out
+    assert all(t != ROUTINE_NOTE_TYPE for _b, t in sent)
+    # and through the code path too
+    v = make_user(db, **dict(ANGEL, phone="+15550007777"), custom_templates={"push": rows})
+    sent.clear()
+    assert handle_start_workout_session(v.id, {"template_key": "push"}).startswith("error: first card")
+    assert handle_pending_card_reply(v.id, "bench 185 for 5") is True
+    assert all(t != ROUTINE_NOTE_TYPE for _b, t in sent)

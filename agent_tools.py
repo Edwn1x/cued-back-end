@@ -335,18 +335,23 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
     if r.get("first"):
         first = (" First card: the intro already told them the weights are a guess from their stats they can edit."
                  if r.get("estimated") else " First card: the intro already said the weights are from what they told you.")
+    base = f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first}"
     if r.get("used_default"):
         # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
         # to capture the real ones is the whole point (live incident user 31: generic pull card
         # passed off as "their card").
-        return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
-                f"NO routine on file for {r['template_key']} — these are STARTING DEFAULT exercises, not their "
-                f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
-                f"{r['template_key']} day so you can save it (save_routine). Don't call it 'their card' and don't "
-                f"reply [silent].")
-    return (f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first} "
-            f"Reply with exactly [silent].")
+        return base + " " + _defaults_instruction(r["template_key"])
+    return base + " Reply with exactly [silent]."
+
+
+def _defaults_instruction(key: str) -> str:
+    """The tool-result sentence that makes the coach flag a generic day — shared by the
+    start tool and the set_lift_anchors pending-card branch (which used to say [silent])."""
+    return (f"NO routine on file for {key} — these are STARTING DEFAULT exercises, not their "
+            f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
+            f"{key} day so you can save it (save_routine). Don't call it 'their card' and don't "
+            f"reply [silent].")
 
 
 RESET_WORKOUT_SESSION_TOOL = {
@@ -432,16 +437,23 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
     # The answer to a first-card ask: code sends the parked day's card right here.
     # Live 2026-09-23 (3/3): told "call start_workout_session now", the model replied
     # "got it" and never did.
-    from workouts.calibrate import pop_pending_card
+    from workouts.calibrate import pop_pending_card, peek_pending_setup
+    setup = peek_pending_setup(user_id)      # read BEFORE pop clears the marker
     pending = pop_pending_card(user_id)
     if pending:
         from workouts.start import start_workout_session
         try:
-            sr = start_workout_session(user_id, pending)
+            # setup= carries the onboarding mode through (live 2026-10-05, user 48: dropped
+            # here, the at-home setup card went out as a LIVE session — "start the card,
+            # tap each set as u go" to someone on his couch).
+            sr = start_workout_session(user_id, pending, setup=setup)
             how = "card" if sr["surface"] == "card" else "one message per exercise"
-            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s", user_id, pending, sr["session_id"])
-            return (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
-                    f"as a {how} ({sr['sets']} sets) starting from these numbers. Reply with exactly [silent].")
+            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s", user_id, pending, sr["session_id"], setup)
+            base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
+                    f"as a {how} ({sr['sets']} sets) starting from these numbers.")
+            if sr.get("used_default"):
+                return base + " " + _defaults_instruction(sr["template_key"])
+            return base + " Reply with exactly [silent]."
         except Exception as e:  # noqa: BLE001 — anchors are saved regardless
             logger.warning("LIFT_ANCHORS_PENDING_CARD_FAILED user=%s key=%s err=%s", user_id, pending, e)
             return f"ok: saved {saved}{rej} — but the card didn't send ({e}); call start_workout_session."
