@@ -492,6 +492,18 @@ RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
 # SEND_GYM_LINE_LINK_TOOL → gym_beats.send_line_link). The real capability behind
 # "here's the line link" so the coach never fakes the offer. Default ON.
 SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "true").lower() == "true"
+# Campus libraries (integrations/campus_libraries.py): bookable study rooms from the
+# UC Berkeley LibCal grid (Moffitt first) + every library's hours/feature tags from
+# lib.berkeley.edu/hours. CAMPUS_LIBRARIES_ENABLED gates every fetch + the weekly room
+# directory refresh; FIND_STUDY_SPACE_TOOL_ENABLED offers the coach find_study_space +
+# send_study_room_link (the booking link as its own bubble — booking needs CalNet).
+# Both default OFF. Unofficial endpoints: TTL caches, 5 failures → stop for the day,
+# every failure fails open to an honest "couldn't reach it".
+CAMPUS_LIBRARIES_ENABLED = os.getenv("CAMPUS_LIBRARIES_ENABLED", "false").lower() == "true"
+FIND_STUDY_SPACE_TOOL_ENABLED = os.getenv("FIND_STUDY_SPACE_TOOL_ENABLED", "false").lower() == "true"
+CAMPUS_LIBRARIES_TIMEOUT_S = float(os.getenv("CAMPUS_LIBRARIES_TIMEOUT_S", "10"))
+CAMPUS_LIBRARIES_GRID_TTL_S = int(os.getenv("CAMPUS_LIBRARIES_GRID_TTL_S", "900"))       # 15 min
+CAMPUS_LIBRARIES_HOURS_TTL_S = int(os.getenv("CAMPUS_LIBRARIES_HOURS_TTL_S", "21600"))   # 6 h
 # Below this occupancy a proactive gym beat may call the weight room quiet enough for
 # a quick session. Sits below the light/busy midpoint so ~45% (the "light" band tops
 # out at 49%) is NEVER called "dead" (2026-09-26 incident: a "gym's dead, quick pull?"

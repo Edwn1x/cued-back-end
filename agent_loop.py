@@ -1285,6 +1285,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # heading-out flow sends) so the coach never fakes 'here's the line link'.
         from agent_tools import SEND_GYM_LINE_LINK_TOOL
         tools.append(SEND_GYM_LINE_LINK_TOOL)
+    if config.FIND_STUDY_SPACE_TOOL_ENABLED:
+        # Campus libraries: bookable study rooms (LibCal grid) + library hours/tags, and
+        # the booking link as its own bubble (needs CalNet — we never book for them).
+        from agent_tools import FIND_STUDY_SPACE_TOOL, SEND_STUDY_ROOM_LINK_TOOL
+        tools.extend([FIND_STUDY_SPACE_TOOL, SEND_STUDY_ROOM_LINK_TOOL])
     if config.STAT_CARD_TOOL_ENABLED:
         # rsf / macros / week picture cards (stat_cards.py), queued on the turn and sent
         # by app.py right after the reply text.

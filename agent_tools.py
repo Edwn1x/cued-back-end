@@ -3555,6 +3555,165 @@ def handle_send_gym_line_link(user_id: int, tool_input: dict, *, message_id=None
     return send_line_link(user_id)
 
 
+FIND_STUDY_SPACE_TOOL = {
+    "name": "find_study_space",
+    "description": (
+        "Find somewhere to study from LIVE campus data: bookable study rooms free at "
+        "Moffitt (the library's real booking grid — room, capacity, free window) plus which "
+        "campus libraries are open at that time and till when, with their features (snacks "
+        "allowed, tech lending, research help). Call it for ANY 'where should i study', "
+        "'need a room for N', 'what's open late / right now / tonight', 'where can i eat "
+        "while i study' — never answer those from memory. `date` = YYYY-MM-DD (default "
+        "today), `start` = HH:MM 24h Berkeley time (default now), `duration_min` = how long "
+        "they need (default 60), `group_size` = people (default 1), `need` = one of "
+        "snacks | tech | research | late | any. Times are Berkeley local. The result names "
+        "each room's eid — to text them the booking link call send_study_room_link with "
+        "it. Booking needs THEIR CalNet login; you can't book. There is NO crowd data for "
+        "libraries — never say how full one is. If it says it couldn't reach a system, say "
+        "so; don't guess rooms or hours."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "YYYY-MM-DD (Berkeley local); default today"},
+            "start": {"type": "string", "description": "HH:MM 24h Berkeley local; default now"},
+            "duration_min": {"type": "integer", "description": "minutes they need (default 60)"},
+            "group_size": {"type": "integer", "description": "people the room must seat (default 1)"},
+            "need": {"type": "string", "enum": ["snacks", "tech", "research", "late", "any"],
+                     "description": "a feature filter for the open-libraries list"},
+        },
+    },
+}
+
+
+SEND_STUDY_ROOM_LINK_TOOL = {
+    "name": "send_study_room_link",
+    "description": (
+        "Text the user the booking link for ONE study room, as its own bubble — the real "
+        "capability behind 'want the link?'. `eid` = the room id from a find_study_space "
+        "result in THIS conversation (never a number from memory). Fire it the moment you "
+        "say 'here's the link' / they say 'send it'; your reply is the sentence around the "
+        "link, never the URL. The link opens the library's own page: they sign in with "
+        "CalNet and pick the hour — you cannot book or confirm it for them. If this tool "
+        "isn't available you CANNOT send a room link — say so, don't pretend."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"eid": {"type": "integer", "description": "room id from find_study_space"}},
+        "required": ["eid"],
+    },
+}
+
+
+def _sleep_window_note(user, start_local) -> str:
+    """One line when the requested window sits inside the user's usual sleep hours — the
+    data for the voice.md sleep check, computed in code so the model can't skip it."""
+    try:
+        sh, sm = [int(x) for x in (getattr(user, "sleep_time", None) or "23:00").split(":")[:2]]
+        wh, wm = [int(x) for x in (getattr(user, "wake_time", None) or "07:00").split(":")[:2]]
+    except (TypeError, ValueError):
+        return ""
+    m = start_local.hour * 60 + start_local.minute
+    sleep_m, wake_m = sh * 60 + sm, wh * 60 + wm
+    asleep = (sleep_m <= m or m < wake_m) if sleep_m > wake_m else (sleep_m <= m < wake_m)
+    if not asleep:
+        return ""
+    return (f"\nnote: {start_local.strftime('%-I:%M%p').lower()} is inside their usual sleep hours "
+            f"(bed {sh:02d}:{sm:02d}, up {wh:02d}:{wm:02d}) — weigh sleep before pointing them at a room.")
+
+
+def handle_find_study_space(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Read-only: Moffitt rooms free for the window (LibCal grid) + the study libraries open
+    then (hours page), each half failing open to an honest line. Campus-local times."""
+    if not config.FIND_STUDY_SPACE_TOOL_ENABLED:
+        return "error: find_study_space is not enabled"
+    from datetime import datetime as _dt, timedelta as _td
+    from integrations import campus_libraries as cl
+    from models import get_session, User
+
+    ti = tool_input or {}
+    now = cl._now_local()
+    day = now.date()
+    if ti.get("date"):
+        try:
+            day = _dt.strptime(str(ti["date"]).strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return "error: date must be YYYY-MM-DD"
+    if day < now.date():
+        return "error: that date is in the past"
+    start = _dt.combine(day, now.time()) if day == now.date() else _dt.combine(day, _dt.min.time())
+    if ti.get("start"):
+        try:
+            hh, mm = [int(x) for x in str(ti["start"]).strip().split(":")[:2]]
+            start = _dt.combine(day, _dt.min.time()) + _td(hours=hh, minutes=mm)
+        except (TypeError, ValueError):
+            return "error: start must be HH:MM (24h)"
+    if start < now:
+        start = now
+    try:
+        duration = max(30, min(int(ti.get("duration_min") or 60), 12 * 60))
+    except (TypeError, ValueError):
+        duration = 60
+    try:
+        group = max(1, min(int(ti.get("group_size") or 1), 12))
+    except (TypeError, ValueError):
+        group = 1
+    need = str(ti.get("need") or "any").strip().lower()
+    if need not in cl.NEED_TAGS:
+        need = "any"
+
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+    finally:
+        session.close()
+
+    runs = cl.open_runs(cl.ROOM_LIDS[0], day, start=start, min_minutes=duration, min_capacity=group, now=now)
+    at = start.replace(minute=0, second=0, microsecond=0) + (_td(hours=1) if start.minute else _td())
+    libs = cl.open_libraries(day, at, need=need)
+    if runs is None and libs is None:
+        return ("error: couldn't reach the library systems right now (booking grid + hours page both "
+                "down) — tell them you can't check, don't guess a room or an hour")
+
+    lines = []
+    if runs is None:
+        lines.append("rooms: couldn't read the Moffitt booking grid right now (down, or that day is "
+                     "outside the booking window) — don't guess a room")
+    elif not runs and not cl.fetch_grid(cl.ROOM_LIDS[0], day):
+        # an empty grid (cached, no second request) = the day isn't bookable yet — LibCal
+        # opens rooms a couple of weeks ahead — not "every room is taken"
+        lines.append(f"rooms: the Moffitt booking grid has no slots for {day.strftime('%a %b %-d')} yet "
+                     "(outside the booking window — rooms open up about two weeks ahead); don't say they're full")
+    elif not runs:
+        lines.append(f"rooms: nothing at Moffitt free for {duration} min from {cl._clock(start)}"
+                     + (f" that fits {group}" if group > 1 else "") + " — offer a shorter window or another time")
+    else:
+        lines.append(cl.format_runs(runs, day=day, today=now.date()))
+    if libs is None:
+        lines.append("libraries: couldn't pull the hours page right now — don't quote hours from memory")
+    else:
+        lines.append(cl.format_open(libs, at_local=at) + (f" [need={need}]" if need != "any" else ""))
+    out = "ok: " + "\n".join(lines)
+    out += ("\n(times are Berkeley local; booking needs their CalNet login — to text a room's link call "
+            "send_study_room_link with its eid; no crowd data exists for libraries, don't guess how full)")
+    out += _sleep_window_note(user, start)
+    logger.info("FIND_STUDY_SPACE user=%s day=%s start=%s dur=%s group=%s need=%s rooms=%s libs=%s",
+                user_id, day, start.strftime("%H:%M"), duration, group, need,
+                None if runs is None else len(runs), None if libs is None else len(libs))
+    return out
+
+
+def handle_send_study_room_link(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    if not config.FIND_STUDY_SPACE_TOOL_ENABLED:
+        return "error: send_study_room_link is not enabled"
+    from integrations.campus_libraries import send_room_link
+    try:
+        eid = int((tool_input or {}).get("eid"))
+    except (TypeError, ValueError):
+        return "error: eid must be a room id from a find_study_space result"
+    return send_room_link(user_id, eid)
+
+
 SEND_STAT_CARD_TOOL = {
     "name": "send_stat_card",
     "description": (
@@ -3813,6 +3972,8 @@ _HANDLERS = {
     "create_calendar_event": handle_create_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
+    "find_study_space": handle_find_study_space,
+    "send_study_room_link": handle_send_study_room_link,
     "send_stat_card": handle_send_stat_card,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
@@ -3857,7 +4018,7 @@ _HANDLERS = {
 # routines/links — counts as a write, so a turn that changed anything is never muted.
 READ_ONLY_TOOLS = frozenset({
     "get_weather", "lookup_events", "schedule_rundown", "get_dining_menu",
-    "match_meal_history", "match_dining_item", "usda_food_lookup",
+    "match_meal_history", "match_dining_item", "usda_food_lookup", "find_study_space",
     "react_to_message", "reply_in_thread",
 })
 
