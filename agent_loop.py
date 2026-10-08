@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import anthropic
 import config
@@ -847,6 +847,74 @@ _WEEK_ASK_RE = re.compile(
     re.I)
 
 
+# An academic task they mention (quiz, readings, hw, pset…) — the thing the coach tends to
+# pin to the wrong course when none is named.
+_ACADEMIC_TASK_RE = re.compile(
+    r"\b(quiz(?:zes)?|exam|midterm|final|readings?|homework|hw\d*|pset\d*|problem\s*set|essay|paper|"
+    r"lab\s*report|project|warm-?ups?|assignment|study(?:ing)?|review\s+session)\b", re.I)
+# A course named outright: "cs70", "data c104", "engin 183", "61c", "math 54", "ochem", "stat 20"
+_COURSE_TOKEN_RE = re.compile(
+    r"\b(?:[a-z]{2,8}\s?c?\d{1,3}[a-z]?\b|\d{2,3}[a-z]\b|o-?chem|physics|chem(?:istry)?|bio(?:logy)?|"
+    r"calc(?:ulus)?|econ(?:omics)?|stats?\b|linear\s+algebra)", re.I)
+_CLASS_KIND_RE = re.compile(r"\b(discussion|disc|section|lecture|lab|seminar|recitation)\b", re.I)
+_CLASS_TITLE_RE = re.compile(r"\b(lecture|discussion|section|lab|seminar|recitation)\b", re.I)
+
+
+def _which_class_block(user, text: str, session, *, now: datetime = None) -> str | None:
+    """They named an academic task but not its course → this week's classes from the
+    calendar, plus the code's own match when they pointed at a kind of class ("discussion
+    today" → the one discussion on today's calendar). Tells the coach to pair the task
+    with THAT, or ask — never with another course's item. None when it doesn't apply.
+    Read-only, fail-open."""
+    if not config.ACADEMIC_COURSE_MATCH_ENABLED or not text or session is None:
+        return None
+    try:
+        if not _ACADEMIC_TASK_RE.search(text) or _COURSE_TOKEN_RE.search(text):
+            return None
+        from schedule import collect_rundown, _fmt_span, _tz, _ref_local
+        from timefmt import to_local
+        local = _ref_local(user, now)
+        tz = _tz(user)
+        day0 = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        lo = day0.astimezone(timezone.utc).replace(tzinfo=None)
+        hi = (day0 + timedelta(days=7)).astimezone(timezone.utc).replace(tzinfo=None)
+        # class-titled events, INCLUDING a section the radar also reads as a quiz day
+        # ("cs70 Discussion (friday = quiz)") — it is still the class they may point at
+        events = [e for e in collect_rundown(user.id, lo=lo, hi=hi, now=now, session=session)
+                  if _CLASS_TITLE_RE.search(e.title or "")]
+        if not events:
+            return None
+        today = local.date()
+        kinds = {k.lower() for k in _CLASS_KIND_RE.findall(text)}
+        kinds = {"discussion" if k in ("disc", "section", "recitation") else k for k in kinds}
+        says_today = bool(re.search(r"\b(today|tonight|this morning|this afternoon|rn|right now)\b", text, re.I))
+        match = None
+        if kinds:
+            cands = [e for e in events if any(k in (e.title or "").lower() or (k == "discussion" and "section" in (e.title or "").lower()) for k in kinds)]
+            if says_today:
+                cands = [e for e in cands if to_local(e.start, user).date() == today]
+            if cands:
+                match = sorted(cands, key=lambda e: e.start)[0]
+        lines = []
+        for e in sorted(events, key=lambda e: e.start)[:14]:
+            d = to_local(e.start, user)
+            lines.append(f"- {d.strftime('%a')}{' (today)' if d.date() == today else ''} {_fmt_span(user, e)} — {e.title}")
+        head = "## WHICH CLASS? (they named a task but not the course)\n"
+        if match:
+            head += (f"Code match: they pointed at a {', '.join(sorted(kinds))}{' today' if says_today else ''} and the "
+                     f"calendar has exactly that: {match.title} ({to_local(match.start, user).strftime('%a')} "
+                     f"{_fmt_span(user, match)}). Treat the task as belonging to THAT course unless they say otherwise.\n")
+        else:
+            head += ("No course named and nothing they said pins it to one of these — ask which class in one short "
+                     "line if it matters to the reply, or stay neutral.\n")
+        head += ("Never pair the task with a DIFFERENT course's calendar item (live: 'weekly warmup quiz' readings "
+                 "were pinned to the CS70 quiz; they were for the Data C104 discussion). Their classes this week:\n")
+        return head + "\n".join(lines)
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("WHICH_CLASS_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+
+
 def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
@@ -1085,6 +1153,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # and relayed, instead of hoping the model calls schedule_rundown (live 2026-10-06
         # 05:44: "Send me my week" → two deadlines, ten classes missing).
         context += _week_ask_block(user, combined_body, session)
+        # An academic task without a course → this week's classes + the code's own match.
+        _wc = _which_class_block(user, combined_body, session)
+        if _wc:
+            context += "\n\n" + _wc
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):

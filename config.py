@@ -326,6 +326,12 @@ SCHEDULE_RUNDOWN_ENABLED = os.getenv("SCHEDULE_RUNDOWN_ENABLED", "true").lower()
 # call schedule_rundown. Live 2026-10-06 05:44 (user 48): "Send me my week" → only the two
 # deadlines, while the events table held 10 classes/meetings that week.
 WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED = os.getenv("WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED", "true").lower() == "true"
+# WHICH CLASS?: an academic task mentioned WITHOUT a course ("readings for the weekly warmup
+# quiz") gets a context block with this week's classes and the code's own match when they
+# pointed at one ("discussion today" → the one discussion on today's calendar). Live
+# 2026-10-08 (user 48): the warmup-quiz readings were pinned to the CS70 Friday quiz; they
+# were for the Data C104 discussion that was on the calendar at 12:30 the same day.
+ACADEMIC_COURSE_MATCH_ENABLED = os.getenv("ACADEMIC_COURSE_MATCH_ENABLED", "true").lower() == "true"
 SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
 # Message-length guard for very large calendars: cap the *routine one-off* events listed
 # per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
