@@ -487,6 +487,10 @@ SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "
 # out at 49%) is NEVER called "dead" (2026-09-26 incident: a "gym's dead, quick pull?"
 # beat fired at 45%). Labels: dead <25 · light <50 · busy <75 · packed <95 · line ≥95.
 GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
+# No "gym's dead, quick push?" inside the last hour before RSF closes: the closing-hour
+# emptying (Sun 2026-10-05 22:25→22:55 PT: 59→0%) read as "dead" at 22:51 for a 23:00 close
+# — users 42 and 47 got a nudge nobody could act on. Line beats are unaffected.
+GYM_DEAD_MIN_MINUTES_TO_CLOSE = int(os.getenv("GYM_DEAD_MIN_MINUTES_TO_CLOSE", "60"))
 
 # ─── Integrations (OAuth: Google Calendar, Strava, bCourses) ──────────────────
 # Shared plumbing (integrations/ package). Every flag defaults OFF; the whole
