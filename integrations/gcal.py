@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import requests
 
@@ -199,7 +199,10 @@ def list_events(access_token: str, calendar_id: str, *, sync_token: str | None =
                 params["timeMax"] = time_max
         if page:
             params["pageToken"] = page
-        r = requests.get(f"{CAL_API}/calendars/{calendar_id}/events",
+        # quote(): a calendar id can carry '#' (en.usa#holiday@group.v.calendar.google.com,
+        # contacts birthdays, week numbers) — unquoted, the '#' became a URL fragment and the
+        # request went to /calendars/en.usa → 403 on every tick (live, user 48).
+        r = requests.get(f"{CAL_API}/calendars/{quote(calendar_id, safe='')}/events",
                          headers={"Authorization": f"Bearer {access_token}"},
                          params=params, timeout=_timeout())
         if r.status_code == 410:

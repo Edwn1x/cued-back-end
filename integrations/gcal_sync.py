@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 import config
 from models import get_session, User, Integration
 from integrations import base, gcal
-from events import upsert_external_event, delete_external_event
+import time
+
+from events import upsert_external_events, delete_external_event
 
 logger = logging.getLogger("cued.integrations.gcal_sync")
 
@@ -105,7 +107,8 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
     now = datetime.now(timezone.utc)
     time_min = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     time_max = (now + timedelta(days=SYNC_HORIZON_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    upserted = deleted = 0
+    upserted = deleted = unchanged = 0
+    t0 = time.monotonic()
 
     for cal in cals:
         cid = cal.get("id")
@@ -123,6 +126,7 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
             logger.warning("GCAL_CAL_SYNC_FAILED user=%s cal=%s err=%s", user_id, cid, e)
             continue
 
+        batch: list[dict] = []
         for ge in gevents:
             ext = _external_id(cid, ge)
             if ge.get("status") == "cancelled":
@@ -138,10 +142,12 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
                 continue
             if end_utc and (end_utc - start_utc) > timedelta(hours=MAX_EVENT_HOURS):
                 continue
-            upsert_external_event(user_id, source=SOURCE, external_id=ext,
-                                  title=ge.get("summary") or "(busy)",
-                                  occurred_at=start_utc, ends_at=end_utc, all_day=all_day)
-            upserted += 1
+            batch.append({"external_id": ext, "title": ge.get("summary") or "(busy)",
+                          "occurred_at": start_utc, "ends_at": end_utc, "all_day": all_day})
+        # One session + one commit per calendar; rows that didn't change aren't rewritten.
+        c = upsert_external_events(user_id, source=SOURCE, rows=batch)
+        upserted += c["inserted"] + c["updated"]
+        unchanged += c["unchanged"]
         if next_sync:
             sync_state[cid] = next_sync
 
@@ -156,8 +162,9 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
             session.commit()
     finally:
         session.close()
-    logger.info("GCAL_SYNC user=%s row=%s upserted=%s deleted=%s", user_id, integration_id, upserted, deleted)
-    return {"upserted": upserted, "deleted": deleted}
+    logger.info("GCAL_SYNC user=%s row=%s upserted=%s unchanged=%s deleted=%s took=%.1fs",
+                user_id, integration_id, upserted, unchanged, deleted, time.monotonic() - t0)
+    return {"upserted": upserted, "deleted": deleted, "unchanged": unchanged}
 
 
 def sync_all() -> int:
