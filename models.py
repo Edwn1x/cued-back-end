@@ -421,8 +421,9 @@ class PantryItem(Base):
     unit = Column(String(20))
     est_grams = Column(Float)
     protein_per_100g = Column(Float)
+    kcal_per_100g = Column(Float)                      # from a stated/estimated total ÷ est_grams (stock_pantry)
     added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    source = Column(String(10))                        # receipt | text
+    source = Column(String(10))                        # receipt | text | photo
     depleted_at = Column(DateTime)
 
 

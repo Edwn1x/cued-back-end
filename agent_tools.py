@@ -3228,6 +3228,62 @@ def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
     return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
 
 
+STOCK_PANTRY_TOOL = {
+    "name": "stock_pantry",
+    "description": (
+        "Save food they HAVE but have NOT eaten — a package, groceries, meal prep, a nutrition "
+        "label, in a photo or text with nothing said about eating it ('about to cook these', or "
+        "just a pic of the steak in its tray). Call this INSTEAD of log_meal (today's totals are "
+        "for food actually eaten) and instead of remember. One entry per item: `label` (what it "
+        "is, as they'd say it), `est_grams` (read the package weight; 1 lb = 454 g), `qty`/`unit` "
+        "if useful, and YOUR estimate for the WHOLE item as `calories` and `protein_g` (what "
+        "you'd tell them it is if they ate all of it). It lands in the PANTRY block with an "
+        "'(… if eaten)' figure, so when they say 'ate the whole thing' you log_meal from that "
+        "number and manage_log delete the pantry row — no re-estimating, no asking again. Your "
+        "reply still says the estimate and 'lmk when u eat it'. Not for a meal they ate (log_meal) "
+        "and not for a menu (save_menu)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "est_grams": {"type": "number"},
+                        "qty": {"type": "number"},
+                        "unit": {"type": "string"},
+                        "calories": {"type": "number", "description": "estimate for the whole item"},
+                        "protein_g": {"type": "number", "description": "estimate for the whole item"},
+                    },
+                    "required": ["label"],
+                },
+            },
+        },
+        "required": ["items"],
+    },
+}
+
+
+def handle_stock_pantry(user_id: int, tool_input: dict, *, message_type=None, message_id=None) -> str:
+    """Food on hand, not eaten → pantry rows carrying the estimate (receipts.stock_items)."""
+    items = (tool_input or {}).get("items")
+    if not isinstance(items, list) or not items:
+        return "error: items must be a non-empty list of {label, est_grams, calories, protein_g, …}"
+    from receipts import stock_items
+    st = _TURN_STATE.get(user_id) or {}
+    source = "photo" if st.get("has_image") else "text"
+    r = stock_items(user_id, items, source=source)
+    if not r["written"]:
+        return "error: no usable items — each needs at least a `label`"
+    rej = f" (skipped: {', '.join(r['rejected'])})" if r["rejected"] else ""
+    return (f"ok: on hand, not eaten — {', '.join(r['written'])}{rej}. It's in PANTRY with an 'if eaten' "
+            "estimate; when they eat it, log_meal from that number and manage_log delete the pantry row. "
+            "Reply with the estimate and 'lmk when u eat it' — don't say it's logged.")
+
+
 GET_WEATHER_TOOL = {
     "name": "get_weather",
     "description": (
@@ -3989,6 +4045,7 @@ _HANDLERS = {
     "send_stat_card": handle_send_stat_card,
     "set_day_reset": handle_set_day_reset,
     "save_menu": handle_save_menu,
+    "stock_pantry": handle_stock_pantry,
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
     "schedule_task": handle_schedule_task,
