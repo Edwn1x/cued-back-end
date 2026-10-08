@@ -49,9 +49,11 @@ OFFER_GCAL_LINK = ("want me on ur google calendar? i plan ur workouts around ur 
                    "tap to connect, or ignore this and i won't bring it up again")
 OFFER_GCAL_ASK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
                   "if yes, which google account is it on")
-OFFER_HEALTH_LINK = ("u mentioned ur {device}. want me reading it? sleep, steps and heart rate, so i go "
+# "u mentioned ur fitbit" asserted a chat mention that never happened: the device comes
+# from the signup form's apps field (live 2026-10-07, user 48). Say where it came from.
+OFFER_HEALTH_LINK = ("u put a {device} on ur signup. want me reading it? sleep, steps and heart rate, so i go "
                      "easier on a 5h night. tap to connect")
-OFFER_HEALTH_ASK = ("u mentioned ur {device}. want me reading it? sleep, steps and heart rate, so i go "
+OFFER_HEALTH_ASK = ("u put a {device} on ur signup. want me reading it? sleep, steps and heart rate, so i go "
                     "easier on a 5h night. if yes, which google account is it on")
 OFFER_BCOURSES = ("if u want ur bcourses due dates on my radar: in bcourses go to calendar, then 'calendar feed' "
                   "(bottom right), and paste me that link. i'll track them from there")
