@@ -834,6 +834,49 @@ def _join_text(content) -> str:
     ).strip()
 
 
+# A schedule question, asked outright. Pre-building the rundown for these (below) is what
+# makes "send me my week" complete every time — the tool stays for everything else.
+_WEEK_ASK_RE = re.compile(
+    r"\b(?:my|this|next|the|ur|your)\s+week\b"
+    r"|\brest\s+of\s+(?:the|my|this)\s+week\b"
+    r"|\bweek\s+look\b"
+    r"|\bwhat(?:'?s|\s+is|\s+do\s+i\s+(?:have|got))\b[^.?!\n]{0,40}\b(?:due|coming\s+up|on\s+(?:my\s+)?(?:calendar|schedule)|"
+    r"tomorrow|today|tonight|(?:mon|tues?|wednes|thurs?|fri|satur|sun)(?:day)?)\b"
+    r"|\bwhat(?:'?s|\s+is)\s+(?:on\s+)?(?:the\s+)?schedule\b"
+    r"|\banything\s+due\b|\bwhat'?s\s+due\b",
+    re.I)
+
+
+def _week_asked(text: str) -> bool:
+    return bool(text and _WEEK_ASK_RE.search(text))
+
+
+def _week_ask_block(user, combined_body: str, session) -> str:
+    """The code-built rundown for an outright schedule question, as a context block the
+    model relays. '' when it isn't one, the flag is off, or the builder returns nothing."""
+    if not (config.WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED and config.SCHEDULE_RUNDOWN_ENABLED):
+        return ""
+    if not _week_asked(combined_body):
+        return ""
+    try:
+        from schedule import build_rundown
+        text = build_rundown(user.id, combined_body, session=session)
+    except Exception as e:  # noqa: BLE001 — never break a turn over a hint
+        logger.warning("WEEK_ASK_RUNDOWN_FAILED user=%s err=%s", user.id, e)
+        return ""
+    if not (text or "").strip():
+        return ""
+    logger.info("WEEK_ASK_RUNDOWN_PREBUILT user=%s chars=%d", user.id, len(text))
+    return (
+        "\n\n## SCHEDULE RUNDOWN (built in code for THIS question — relay it, don't rebuild it)\n"
+        "They just asked about their schedule. This is the complete rundown for the window they "
+        "named: every day, every class/meeting/event, every deadline. Relay ALL of it in your voice — "
+        "do NOT trim it to deadlines or to the first few days, do NOT call schedule_rundown again, "
+        "and never say \"that's it\" / \"that's the week\" unless this is all of it. Lightly reword "
+        "the opening line if you like; keep every day and every item.\n" + text
+    )
+
+
 _GYM_RE = re.compile(r"\b(gym|rsf|weight ?room|lift(?:ing)?|workout|train(?:ing)?|push|pull|legs|bench|squat|crowded|busy|packed|line)\b", re.I)
 
 
@@ -1038,6 +1081,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     session = get_session()
     try:
         context = build_loop_context(user, session)
+        # A schedule question asked outright → the complete rundown is built in code now
+        # and relayed, instead of hoping the model calls schedule_rundown (live 2026-10-06
+        # 05:44: "Send me my week" → two deadlines, ten classes missing).
+        context += _week_ask_block(user, combined_body, session)
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):

@@ -320,6 +320,12 @@ LOOKUP_EVENTS_MAX_DAYS = int(os.getenv("LOOKUP_EVENTS_MAX_DAYS", "120"))
 # deadlines — is computed in code and relayed as finished text, so the model can't
 # truncate the week and drop a Friday deadline (live 2026-09-28, user 31). Read-only.
 SCHEDULE_RUNDOWN_ENABLED = os.getenv("SCHEDULE_RUNDOWN_ENABLED", "true").lower() == "true"
+# When the inbound IS a schedule question ("what's my week", "rest of the week", "what do i
+# have friday", "what's due"), the rundown is built in code BEFORE the model turn and rides
+# the context — the answer's completeness no longer depends on the model remembering to
+# call schedule_rundown. Live 2026-10-06 05:44 (user 48): "Send me my week" → only the two
+# deadlines, while the events table held 10 classes/meetings that week.
+WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED = os.getenv("WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED", "true").lower() == "true"
 SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
 # Message-length guard for very large calendars: cap the *routine one-off* events listed
 # per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
