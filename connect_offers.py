@@ -386,7 +386,7 @@ def first_offer_candidates(session, user, *, offers: dict | None = None, state: 
     if config.BCOURSES_ENABLED and is_student(user) and "bcourses" not in offers \
             and _row(session, user.id, "bcourses") is None:
         out.append(("offer_text", "bcourses", OFFER_BCOURSES))
-    if config.GOOGLE_HEALTH_ENABLED and has_wearable(user):
+    if config.GOOGLE_HEALTH_ENABLED and getattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False) and has_wearable(user):
         d = device_label(user)
         a = google_offer("google_health", OFFER_HEALTH_LINK.format(device=d), OFFER_HEALTH_ASK.format(device=d))
         if a:

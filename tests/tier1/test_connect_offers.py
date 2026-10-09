@@ -209,7 +209,9 @@ def test_first_offer_carries_the_link_when_allowlisted_or_published(db, sms_capt
     assert sweep(_now()) == 1 and _bodies(sms_capture)[0] == OFFER_GCAL_LINK
 
 
-def test_offers_are_a_day_apart_and_follow_the_profile(db, sms_capture):
+def test_offers_are_a_day_apart_and_follow_the_profile(db, sms_capture, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)   # wearable offers wait for Google's API approval
     from connect_offers import sweep, OFFER_GCAL_ASK, OFFER_BCOURSES, OFFER_HEALTH_ASK
     u = _onboarded(db, occupation="student", existing_tools="pixel watch, strava")
     t0 = _now()

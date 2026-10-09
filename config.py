@@ -810,9 +810,14 @@ CARD_SETUP_ENABLED = os.getenv("CARD_SETUP_ENABLED", "false").lower() == "true"
 SETUP_SEQUENCE_ENABLED = os.getenv("SETUP_SEQUENCE_ENABLED", "true").lower() == "true"
 SETUP_WINDOW_HOURS = int(os.getenv("SETUP_WINDOW_HOURS", "48"))
 SETUP_STEP_QUIET_MINUTES = int(os.getenv("SETUP_STEP_QUIET_MINUTES", "20"))
-# The water offer is in the rundown now ("nice to have"); the separate yes/no bubble waits
-# until day two so day one isn't a pile of asks (founder's run: offer at 00:34, unanswered).
-WATER_OFFER_MIN_HOURS_ONBOARDED = int(os.getenv("WATER_OFFER_MIN_HOURS_ONBOARDED", "20"))
+# The water yes/no is a SETUP STEP (founder 2026-10-09: "quick yes or no, before the card"):
+# setup_sequence sends it after the connect offers and before the first card. The hold-off
+# below is a knob for existing users only (0 = none).
+WATER_OFFER_MIN_HOURS_ONBOARDED = int(os.getenv("WATER_OFFER_MIN_HOURS_ONBOARDED", "0"))
+# The wearable (Fitbit / Pixel Watch via Google Health) is NOT offered proactively until
+# Google approves the API (founder 2026-10-09). Existing connections keep working
+# (GOOGLE_HEALTH_ENABLED); this gates only the first offer and the rundown line.
+GOOGLE_HEALTH_OFFER_ENABLED = os.getenv("GOOGLE_HEALTH_OFFER_ENABLED", "false").lower() == "true"
 
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
 # avoid ACCIDENTAL opt-outs losing a user: the trigger is "STOP" or "UNSUBSCRIBE" as the

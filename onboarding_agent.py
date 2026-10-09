@@ -1943,8 +1943,8 @@ def _finalize_onboarding_profile(user_row):
 def _complete_onboarding(user, incoming_message: str, *, early: bool = False) -> bool:
     """Finalize onboarding: bound any self-stated targets, compute the rest, store
     confirmed decisions, send the summary (code-authored, every number real) and the
-    rundown. The first card comes LAST in the setup sequence (setup_sequence.py) —
-    right now only when `early` (they asked for a workout) or the sequence is off."""
+    rundown. Then setup_sequence.py: the connect offers, the water yes/no, and the first
+    card LAST — right now only when `early` (they asked for a workout) or the sequence is off."""
     from models import get_session, User as UserModel, Message
 
     clamp_note = _reconcile_user_targets(user.id)   # "staying under 2000 cals" said mid-chat → bounded
