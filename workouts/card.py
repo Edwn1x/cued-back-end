@@ -21,11 +21,11 @@ from workouts.templates import day_label
 logger = logging.getLogger("cued.workouts")
 
 TEMPLATE_INTRO = {
-    "push": "bench, then the usual",
-    "pull": "deadlift, then the usual",
-    "legs": "squat, then the usual",
-    "upper": "bench and rows, then the usual",
-    "lower": "squat, then the usual",
+    "push": "bench first",
+    "pull": "deadlift first",
+    "legs": "squat first",
+    "upper": "bench and rows first",
+    "lower": "squat first",
     "full_body": "squat, bench, rows",
 }
 
@@ -45,8 +45,9 @@ def card_layout(state: dict) -> dict:
         sub = f"{done}/{total} sets — tap to log" if bodyweight else f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
         lead = next((e for e in state["exercises"]), None)
-        first = f"{len(lead['sets'])} sets {lead['label']}" if lead else key
-        sub = f"{first}, then the usual — tap to start"
+        n = len(state["exercises"])
+        first = (f"{lead['label']} first, {n} exercises" if lead and n > 1 else (lead['label'] if lead else key))
+        sub = f"{first} — tap to start"
     return {"caption": caption, "subcaption": sub, "summary": f"{key} day"}
 
 
