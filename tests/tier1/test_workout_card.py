@@ -33,7 +33,7 @@ def test_card_layout_follows_the_session():
     on the phone ('push · mon7,085 lb')."""
     from workouts.card import card_layout
     assert card_layout(_state(0, 13, 0, "planned")) == {
-        "caption": "push · wed", "subcaption": "tap to start", "summary": "push day"}
+        "caption": "push · wed", "subcaption": "bench press — tap to start", "summary": "push day"}
     assert card_layout(_state(3, 13, 1935)) == {
         "caption": "push · wed", "subcaption": "3/13 sets · 1,935 lb — tap to log", "summary": "push day"}
     assert card_layout(_state(13, 13, 8040, "done"))["subcaption"] == "done · 8,040 lb — tap for the log"
