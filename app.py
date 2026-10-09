@@ -599,19 +599,8 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
 # ─── Buffered Message Processor ─────────────────────
 def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
     """Best-effort tapback on the user's newest iMessage (their PR text)."""
-    try:
-        from sms import react_to_message
-        session = get_session()
-        try:
-            m = (session.query(Message.provider_sid)
-                 .filter(Message.user_id == user_id, Message.direction == "in", Message.channel == "imessage",
-                         Message.provider_sid.isnot(None)).order_by(Message.id.desc()).first())
-        finally:
-            session.close()
-        if m and m[0]:
-            react_to_message(user_id, m[0], emoji)
-    except Exception as e:  # noqa: BLE001
-        logger.info("REACT_LATEST_SKIPPED user=%s err=%s", user_id, e)
+    from sms import react_to_latest_inbound
+    react_to_latest_inbound(user_id, emoji)
 
 
 # Phase 6: the single agent loop is the sole responder. When it fails or the lever is
@@ -620,8 +609,10 @@ SAFE_GLITCH_REPLY = "sorry, glitched for a sec — say that again?"
 
 
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None,
-                             images: list = None):
-    """Called by the message buffer after the delay expires. Processes the combined message and sends a response."""
+                             images: list = None, continuation: bool = False):
+    """Called by the message buffer after the delay expires. Processes the combined message and sends a response.
+    `continuation`: this text landed while the previous turn was still being answered (or seconds after) —
+    the onboarding path treats it as more of the same thought, not a fresh prompt."""
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
@@ -759,7 +750,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         if (user.onboarding_step or 0) < 3:
             from onboarding_agent import coach_turn_text, latest_message_id
             before_id = latest_message_id(user.id)
-            handle_onboarding_reply(user, combined_body)
+            handle_onboarding_reply(user, combined_body, continuation=continuation)
             # Onboarding turns are FULL of durable life facts (their classes, where
             # they eat, gear, year) and until 2026-09-11 none of it reached memory —
             # this branch returned before the post-reply extraction below. Run the

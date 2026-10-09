@@ -551,6 +551,9 @@ MIGRATIONS = [
     "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(32)",
     "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS stale_would_skip BOOLEAN DEFAULT FALSE",
     "ALTER TABLE heartbeat_ticks ADD COLUMN IF NOT EXISTS recheck_at TIMESTAMP",
+    # Onboarding restructure PR 1 (2026-10-09): wake/sleep pinned by code from a vague
+    # answer is a stated guess — the summary says so and the coach can fix it later.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS sleep_estimated BOOLEAN DEFAULT FALSE",
 ]
 
 def wait_for_db(retries=10, delay=3):

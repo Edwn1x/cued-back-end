@@ -245,7 +245,7 @@ def test_big_ask_is_marked_counted_and_not_repeated(db, anthropic_stub, sms_capt
 
     onboarding_agent.handle_onboarding_reply(user, "haha yeah")
     assert "drop the basics in ONE text" in seen[-1]
-    assert "not a stock line" in seen[-1] and "don't re-ask it" in seen[-1]
+    assert "plain phrasings" in seen[-1] and "don't re-ask it" in seen[-1]
     assert "alr real talk, just send me the basics" not in seen[-1]  # no hard-coded opener
     db.expire_all()
     types = [m.message_type for m in db.query(Message).filter_by(user_id=user.id, direction="out").order_by(Message.id)]

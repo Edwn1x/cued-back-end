@@ -150,7 +150,7 @@ def _get_missing_fields(user) -> list:
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
     if not user.occupation:
-        missing.append(("occupation", "what they do — student, desk job, physical work, etc."))
+        missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so ('im assuming ur a student here? what major, and any part time job'); if they're working, at another school, or not a student, take it in stride and go from there"))
     if not user.activity_level or user.activity_level == "lightly_active":
         missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
     if user.avg_steps is None:
@@ -164,12 +164,12 @@ def _get_missing_fields(user) -> list:
         # full_body). Ask for the grouping when the label leaves it open.
         if (user.current_split in ("bro_split", "bro", "custom") and not (getattr(user, "split_days", None) or [])
                 and len(getattr(user, "custom_templates", None) or {}) < 2):
-            missing.append(("split_days", "which days they group together and in what order — e.g. chest+bis / back+tris / legs+shoulders, or chest / back / shoulders / arms / legs"))
+            missing.append(("split_days", "which days they hit what — plain words: 'what do u hit each day' (chest+bis / back+tris / legs+shoulders, or chest / back / shoulders / arms / legs)"))
         if user.current_split is None:
             if user.experience == "none":
                 _auto_fill_current_split_none(user)
             else:
-                missing.append(("current_split", "whether they already have a workout routine they follow — ask neutrally: 'Do you already have a routine, or do you want me to build one?' If they have one, ask what the split is (PPL, upper/lower, full body, bro split, etc.)"))
+                missing.append(("current_split", "what split they run — ask neutrally: 'u already got a routine or want me to build one'; if they have one: 'what split u run and which days u hit what' (ppl, upper/lower, full body, bro split)"))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     # Known once EITHER typed column is filled: a person who names what they won't
@@ -181,7 +181,7 @@ def _get_missing_fields(user) -> list:
     if not nutrition_only and user.injuries is None:
         missing.append(("injuries", "any injuries or physical limitations"))
     if not user.wake_time or not user.sleep_time:
-        missing.append(("wake_sleep", "when they typically wake up and go to bed"))
+        missing.append(("wake_sleep", "roughly when they're up and when they crash — ask ONCE, as a rough range ('roughly when r u up and when do u crash'); a vague answer ('late', 'all over the place') is final: code pins an estimate and you say it"))
     if user.existing_tools is None:
         missing.append(("existing_tools", "fitness apps or wearables they currently use"))
 
@@ -318,8 +318,10 @@ def _build_system_prompt(user) -> str:
         (f"Their own daily targets: {user.calorie_target or '?'} cal / {user.protein_target or '?'}g protein"
          if getattr(user, "targets_source", None) == "user" and (user.calorie_target or user.protein_target) else None),
         f"Injuries: {user.injuries}" if user.injuries else None,
-        f"Wake time: {user.wake_time}" if user.wake_time else None,
-        f"Sleep time: {user.sleep_time}" if user.sleep_time else None,
+        (f"Wake time: {user.wake_time}" + (" (your estimate from a vague answer — a guess they can fix, never ask again)"
+                                             if getattr(user, "sleep_estimated", False) else "")) if user.wake_time else None,
+        (f"Sleep time: {user.sleep_time}" + (" (your estimate)" if getattr(user, "sleep_estimated", False) else ""))
+        if user.sleep_time else None,
         f"Existing tools: {user.existing_tools}" if user.existing_tools else None,
     ]
     profile = "\n".join(p for p in profile_parts if p)
@@ -379,21 +381,31 @@ the time of day; read it here.
 {history_block}
 
 ## HOW THIS FIRST CONVERSATION WORKS
-- You just met. You're getting to know a new friend, and along the way you'll end up
-  knowing the things above. The intake isn't a form; it's stuff you learn by caring
-  about their actual day.
+- This is the setup. You said so in your first text: a few texts to get to know them,
+  then you run them through how you work, then their first workout. Every reply moves
+  the setup one step — the step is whatever's at the top of STILL UNKNOWN that the
+  conversation gives you a reason to ask about.
 - Every reply engages the specific thing they just said FIRST — the class, the place,
   the food, the feeling. Have a take on it. Be curious about it.
-- Then, ONLY if what they said gives you a natural reason, ask about ONE thing from
-  STILL UNKNOWN — the way a friend asks it, for a reason. "you got food at the house or
-  is it dining hall today" is the food question; "you gonna hit the gym after or is
-  today a wash" gets training days and time. If there's no natural reason, don't force
-  one — just be the friend. The next message will give you one.
-- At most ONE question per message — one thing asked, or none. A second question
-  joined onto the first ("— and speaking of, …", "also …", "oh and …") is still a second
-  question even with one question mark: pick ONE, drop the other. Never a list of
-  questions. Never "a few things I need from you." Never a numbered or comma-separated
-  set of things to answer.
+- Then ask about ONE thing from STILL UNKNOWN, the way a friend asks it, for a reason.
+  A question that isn't on STILL UNKNOWN is a wasted text: don't ask about their
+  cooking, their day, their plans unless the answer tells you one of those things.
+  No natural reason this turn → no question. The next message will give you one.
+- Assume what's safe to assume, and SAY the assumption. A number texting cued is a
+  Berkeley student: "im assuming ur a student here? what major, and any part time job"
+  — not "student or working". If they're working, at another school, or not a student,
+  take it in stride and go from there. A vague sleep answer ("hella late") is roughly
+  2am/11am: say the guess, say they can fix it, move on. A stated guess beats a third
+  question.
+- One question by default. Two only when they're about the SAME thing and joined the
+  way a person would ("…and which days u hit what"). Never two unrelated questions in
+  one text; never a question glued on without "and"/"also". Never a list of questions.
+  Never "a few things I need from you."
+- Be concrete. "real meals or quick stuff" means nothing — every person reads it
+  differently. Ask the actual thing: "u cooking most nights or is it dining hall".
+- Never ask the same thing twice. If THE CONVERSATION SO FAR shows you already asked
+  it and they answered vaguely, that's your answer: estimate, say so, move on. Sleep
+  especially: ONE ask, as a rough range, then code pins an estimate.
 - If they NAMED something specific — a class, a campus place, a restaurant, an event —
   look it up (web_search) before you reply and use ONE detail from what you find, in
   your own words, no links. A course number ("70", "cs70", "61b", "data 8") or a campus
@@ -973,11 +985,12 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
             parts.append(f"training {days.replace(',', '/')}{when}")
     if user.wake_time or user.sleep_time:
         bits = []
+        guess = bool(getattr(user, "sleep_estimated", False))
         if user.wake_time:
-            bits.append(f"up at {_clock(user.wake_time)}")
+            bits.append(f"up {'around' if guess else 'at'} {_clock(user.wake_time)}")
         if user.sleep_time:
-            bits.append(f"down by {_clock(user.sleep_time)}")
-        parts.append(" ".join(bits))
+            bits.append(f"down {'around' if guess else 'by'} {_clock(user.sleep_time)}")
+        parts.append(" ".join(bits) + (" (my guess, fix it anytime)" if guess else ""))
     parts.append(GOAL_PHRASES.get(user.goal, (user.goal or "general fitness").replace("_", " ")))
     if not nutrition_only:
         try:
@@ -1008,24 +1021,48 @@ _NOT_DONE_LINE = ("You are NOT done getting to know them yet — never say you'r
                   "closes only when nothing is still unknown, and code decides that, not you. ")
 
 
+SKIP_SENTINEL = "[skip]"   # a continuation turn that needs no reply → code reacts 👍 instead
+
+
 def _build_friend_reply(user, incoming_message: str, system_prompt: str,
-                        missing_fields: list) -> str:
+                        missing_fields: list, *, assumption_note: str | None = None,
+                        continuation_prev: str | None = None) -> str:
     """The onboarding reply: engage the specific thing they said; if there's a
     natural reason, weave in ONE question from STILL UNKNOWN. This replaces both
     the eight-question big ask and the two-field gap bundling — a friend never
-    sends either."""
+    sends either.
+
+    assumption_note — code just pinned an estimate (sleep) from a vague answer; the
+    reply states the guess in one clause and does not ask about it again.
+    continuation_prev — this text landed while the previous reply was going out: it's
+    more of the same thought, the previous reply already asked its question, and the
+    model may answer with SKIP_SENTINEL (code reacts 👍)."""
     unknown = ", ".join(f[1].split(" — ")[0] for f in missing_fields) or "nothing"
+    if continuation_prev:
+        instruction = (
+            f"{user.name} sent this RIGHT AFTER their previous text — they hadn't seen your last "
+            f"reply yet, so it's more of the same thought, not an answer to you:\n\n"
+            f"\"{incoming_message}\"\n\n"
+            f"Your last reply already went: \"{continuation_prev}\". Its question is still on the "
+            f"floor — do NOT ask it again in other words, and do not ask anything new. If the new "
+            f"text changes nothing, output exactly {SKIP_SENTINEL} and nothing else. If it adds "
+            f"something worth a word (a correction, a joke, an answer to your question after all), "
+            f"reply in ONE short sentence with no question. {_NOT_DONE_LINE}"
+        )
+        return _generate(system_prompt, instruction, user_id=user.id)
     instruction = (
         f"{user.name} just texted you: \"{incoming_message}\"\n\n"
         f"Reply as the friend. React to the specific thing they said — have a take, be "
         f"curious about it. If they named a class (a course number always counts), a campus "
         f"place, a restaurant, or an event, search it first and use one detail from this "
-        f"semester. If (and only if) what they said gives "
+        f"semester. "
+        + (f"{assumption_note} " if assumption_note else "")
+        + f"If (and only if) what they said gives "
         f"you a natural reason, work in ONE question that would tell you one of these you "
-        f"still don't know: {unknown}. If there's no natural reason, don't force one. One "
-        f"message, one paragraph, no greeting, ONE question at most — pick it before you "
-        f"write, and don't join a second one on with 'and speaking of' / 'also' / 'oh and'. "
-        f"Never a second paragraph, never a visible edit. {_NOT_DONE_LINE}"
+        f"still don't know: {unknown}. Nothing else is worth a question. If there's no natural "
+        f"reason, don't force one. One message, one paragraph, no greeting, ONE question at most "
+        f"— pick it before you write; a second question only if it's the same topic and joined "
+        f"with 'and'. Never a second paragraph, never a visible edit. {_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1104,22 +1141,61 @@ def _intake_mode(incoming_message: str, missing_fields: list, turns: int,
     return "friend"
 
 
+# How each still-unknown thing is asked in plain words (founder, 2026-10-09: "what days u
+# group together and in what order" is the split question asked confusingly). The big
+# ask and the bundle name these; the friend reply gets the longer hint.
+PLAIN_ASKS = {
+    "height_weight": "ur height and weight",
+    "occupation": "what u do (im assuming student here — what major, any part time job)",
+    "activity_level": "how much ur on ur feet outside the gym",
+    "avg_steps": "roughly how many steps u get in a day",
+    "workout_days": "how many days a week u can train",
+    "workout_time": "what time of day u usually train",
+    "current_split": "what split u run and which days u hit what",
+    "split_days": "what u hit each day",
+    "cooking_situation": "if u cook most nights or it's dining hall",
+    "diet": "anything u don't eat",
+    "injuries": "anything that hurts or u gotta work around",
+    "wake_sleep": "roughly when ur up and when u crash",
+    "existing_tools": "any fitness apps or a watch u already use",
+}
+# The gym bits go together in the big ask; the rest are "day" bits; sleep is never in it
+# (asked once, on its own, as a rough range — a list answer is where "cooked" comes from).
+_BIG_ASK_GYM = ("current_split", "split_days", "workout_days", "workout_time", "injuries")
+_BIG_ASK_NEVER = ("wake_sleep",)
+
+
+def _plain(field: tuple) -> str:
+    return PLAIN_ASKS.get(field[0], field[1].split(" — ")[0])
+
+
 def _build_big_ask_message(user, incoming_message: str, system_prompt: str, missing_fields: list) -> str:
     """The one-text ask for everything still unknown — used only when _intake_mode
     says it's appropriate (they asked for it, or the conversation has run long).
-    Same friend voice: react to what they said first, then one natural ask."""
-    fields_hint = ", ".join(f[1].split(" — ")[0] for f in missing_fields)
+    Same friend voice: react to what they said first, then one natural ask. Gym
+    things are asked together in plain words; steps and the rest come after, as
+    their own clause; sleep is never on the list."""
+    asked = [f for f in missing_fields if f[0] not in _BIG_ASK_NEVER]
+    gym = [_plain(f) for f in asked if f[0] in _BIG_ASK_GYM]
+    day = [_plain(f) for f in asked if f[0] not in _BIG_ASK_GYM]
+    parts = []
+    if gym:
+        parts.append("about the gym: " + ", ".join(gym))
+    if day:
+        parts.append("and separately: " + ", ".join(day))
+    fields_hint = "; ".join(parts) or "nothing"
     instruction = (
         f"{user.name} just texted you: \"{incoming_message}\"\n\n"
         f"STEP 1 (required): react to the specific thing they said, like a friend. If they "
         f"asked what you need, that's your cue — no apology, no preamble.\n\n"
-        f"STEP 2: ask them to drop the basics in ONE text: {fields_hint}. Frame it the way "
-        f"a friend would, in your own words — not a stock line. Name what to cover in plain "
-        f"words, not a numbered list. ONLY the things listed here: anything they already told "
-        f"you is not on this list, so don't re-ask it. If THE CONVERSATION SO FAR shows you "
-        f"already asked for 'the basics' once, do not reopen with that same line — just name "
-        f"the specific bits still missing. 3-4 sentences max. No greeting. "
-        f"This is the ONE time a list of things is okay; make it feel like one ask. {_NOT_DONE_LINE}"
+        f"STEP 2: ask them to drop the basics in ONE text — {fields_hint}. Use these exact "
+        f"plain phrasings or plainer; the gym things in one breath, the other things in their "
+        f"own clause (steps are not a gym question). Not a numbered list. ONLY the things listed "
+        f"here: anything they already told you is not on this list, so don't re-ask it. If THE "
+        f"CONVERSATION SO FAR shows you already asked for 'the basics' once, do not reopen with "
+        f"that same line — just name the specific bits still missing. 3-4 sentences max. No "
+        f"greeting. This is the ONE time a list of things is okay; make it feel like one ask. "
+        f"{_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1127,8 +1203,7 @@ def _build_big_ask_message(user, incoming_message: str, system_prompt: str, miss
 def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, system_prompt: str) -> str:
     """Close out the last one or two unknowns in a single natural ask — used only
     when _intake_mode says so (late in the conversation, or they asked)."""
-    gap_descriptions = [f[1].split(" — ")[0] for f in missing_fields[:2]]
-    gaps_str = " and ".join(gap_descriptions)
+    gaps_str = " and ".join(_plain(f) for f in missing_fields[:2])
     instruction = (
         f"{user.name} just texted you: \"{incoming_message}\"\n\n"
         f"STEP 1: react to what they said like a friend (answer any question fully).\n"
@@ -1228,6 +1303,98 @@ def parse_stats(message: str) -> dict:
 # They want the workout. With the card-critical fields in, that completes onboarding
 # right then (the rest is learned during coaching); without them, the reply asks for
 # exactly those — the friend's one list, and never a fake card.
+# ─── Sleep: asked once; a vague answer becomes a stated estimate ─────────────
+# Founder's own run (2026-10-05, msgs 5799-5805): "sleep schedule is cooked" → three
+# clarifiers before the coach gave up and guessed. The guess was right the first time.
+_SLEEP_ASK_RE = re.compile(r"\b(wake|up at|sleep|bed|crash|schedule|nocturnal|night owl)\b", re.I)
+_SLEEP_TOPIC_RE = re.compile(r"\b(sleep|schedule|wake|bed|crash|up (?:late|early|at))\b", re.I)
+_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|nocturnal|night owl|3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
+_SLEEP_EARLY_RE = re.compile(r"\b(early|early bird|before (?:7|8)|up at (?:6|7))\b", re.I)
+_SLEEP_VAGUE_RE = re.compile(
+    r"\b(cooked|all over|random|inconsistent|varies|depends|no schedule|whenever|messed up|"
+    r"fucked|trash|bad|terrible|nonexistent|late|early|night owl|nocturnal|sleep in|stay(?:ing)? up)\b", re.I)
+SLEEP_ESTIMATES = {"late": ("11:00", "02:00"), "early": ("07:00", "23:00"), "random": ("09:00", "01:00")}
+
+
+def classify_sleep_answer(message: str, prev_coach: str | None) -> str | None:
+    """'late' | 'early' | 'random' when `message` is a qualitative sleep answer (no clock
+    times in it, and either the coach just asked about sleep or the text is about
+    sleep), else None. Pure."""
+    m = message or ""
+    if re.search(r"\b\d{1,2}(:\d\d)?\s*(am|pm)?\b", m) and re.search(r"\b(am|pm|:\d\d)\b", m, re.I):
+        return None                                   # it has a clock time: the extractor's job
+    asked = bool(prev_coach and _SLEEP_ASK_RE.search(prev_coach))
+    on_topic = bool(_SLEEP_TOPIC_RE.search(m))
+    if not (asked or on_topic) or not _SLEEP_VAGUE_RE.search(m):
+        return None
+    if _SLEEP_LATE_RE.search(m):
+        return "late"
+    if _SLEEP_EARLY_RE.search(m):
+        return "early"
+    return "random"
+
+
+def pin_sleep_estimate(user_id: int, kind: str) -> tuple[str, str] | None:
+    """Store the estimate for `kind` on the user (wake_time/sleep_time + sleep_estimated)
+    when neither time is set. Returns (wake, sleep) when pinned."""
+    from models import get_session, User as UserModel
+    wake, sleep = SLEEP_ESTIMATES[kind]
+    session = get_session()
+    try:
+        row = session.get(UserModel, user_id)
+        if not row or row.wake_time or row.sleep_time:
+            return None
+        row.wake_time, row.sleep_time, row.sleep_estimated = wake, sleep, True
+        session.commit()
+    finally:
+        session.close()
+    logger.info("ONBOARDING_SLEEP_ESTIMATED user=%s kind=%s wake=%s sleep=%s", user_id, kind, wake, sleep)
+    return wake, sleep
+
+
+def _assumption_note(wake: str, sleep: str) -> str:
+    return (f"They just gave a vague sleep answer, so code pinned a guess: up around {_clock(wake)}, "
+            f"down around {_clock(sleep)}. Say that guess in ONE clause, as a friend would "
+            f"('ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it anytime'), "
+            f"and do NOT ask about sleep again — not even as an echo ('cooked how,'): their vague "
+            f"answer is the answer.")
+
+
+# ─── Continuation turns: the question that already went is not asked twice ────
+_Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|any|got|wyd|wya|whats|when's)\b", re.I)
+
+
+def _question_part(text: str) -> str:
+    """The question in a coach text: the sentences with a '?' or a question lead
+    ("do u…", "what…", "u cooking or…"); '' when it asks nothing. Pure."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text or "") if p.strip()]
+    qs = [p for p in parts if "?" in p or _Q_LEAD_RE.match(p) or re.search(r"\bor\b", p)]
+    return " ".join(qs)
+
+
+def is_duplicate_question(reply: str, prev: str, threshold: float | None = None) -> bool:
+    """True when `reply` asks (near enough) what `prev` already asked. A reply that
+    asks nothing is never a duplicate question. Pure."""
+    if not reply or not prev:
+        return False
+    from sms import _norm_body, _similarity
+    thr = config.ONBOARDING_DUP_QUESTION_THRESHOLD if threshold is None else threshold
+    a, b = _norm_body(_question_part(reply)), _norm_body(_question_part(prev))
+    if not a or not b:
+        return False
+    score = _similarity(a, b)
+    logger.debug("ONBOARDING_DUP_QUESTION_SCORE score=%.2f a=%r b=%r", score, a[:80], b[:80])
+    return score >= thr
+
+
+def _react_thumbs(user_id: int) -> None:
+    try:
+        from sms import react_to_latest_inbound
+        react_to_latest_inbound(user_id, "like")
+    except Exception as e:  # noqa: BLE001
+        logger.info("ONBOARDING_REACT_SKIPPED user=%s err=%s", user_id, e)
+
+
 _WANTS_WORKOUT = re.compile(
     r"\b(work ?out|card|plan|routine|program|exercises?|leg day|push day|pull day|arm day|chest day|"
     r"back day|lift(?:ing)?|train(?:ing)? (?:now|today|rn)|what should i do|at (?:the )?(?:rsf|gym))\b",
@@ -1263,16 +1430,23 @@ def _build_card_ask(user, incoming_message: str, system_prompt: str, card_missin
     return _generate(system_prompt, instruction, user_id=user.id)
 
 
-def _build_completion_reaction(user, incoming_message: str, system_prompt: str, *, early: bool) -> str:
+def _build_completion_reaction(user, incoming_message: str, system_prompt: str, *, early: bool,
+                               assumption_note: str | None = None) -> str:
     """The friend's bubble right before the code summary closes onboarding: react to /
-    answer what they said, no question, no numbers (the summary has the numbers)."""
+    answer what they said, no question, no numbers (the summary has the numbers).
+    assumption_note — the last answer was a vague sleep answer and code pinned a guess:
+    the bubble says the guess (live 2026-10-09 tier-2: without it the model asked
+    "cooked how" one more time, right before the summary that already had the guess)."""
     instruction = (
         f"{user.name} just texted you: \"{incoming_message}\"\n\n"
         f"Reply as the friend in ONE short bubble, 1-2 sentences: react to the specific thing "
-        f"they said, or answer their question, fully. Code is about to send their numbers and "
+        f"they said, or answer their question, fully. "
+        + (f"{assumption_note} That clause IS the bubble — the summary right after repeats the "
+           f"guess, so nothing to ask. " if assumption_note else "")
+        + f"Code is about to send their numbers and "
         f"then their first workout card right after your bubble"
         + (" (they asked for it — say it's coming, one clause)" if early else "")
-        + ". So: no question, no numbers, no summary, no 'locked in'. No greeting."
+        + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting."
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1432,7 +1606,7 @@ def _maybe_auto_fill_no_training(user, message: str) -> None:
             break
 
 
-def handle_onboarding_reply(user, incoming_message: str) -> bool:
+def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool = False) -> bool:
     """
     Called from webhook on every message while onboarding_step < 3.
 
@@ -1445,6 +1619,11 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
                message, then the first card.
       step 3 — complete (set by _complete_onboarding).
 
+    continuation — the text landed while the previous reply was still going out (or
+    seconds after): more of the same thought. Data is stored as usual; the reply is
+    the continuation mode of the friend reply (may be nothing + a 👍), and a reply
+    whose question repeats the one just sent is suppressed.
+
     Returns True if onboarding is now complete.
     """
     from models import get_session, User as UserModel
@@ -1456,6 +1635,7 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             return False
     finally:
         session.close()
+    continuation = bool(continuation and config.ONBOARDING_CONTINUATION_FOLD_ENABLED)
 
     # Record time-to-first-reply for A/B analysis
     if not user_row.first_reply_at:
@@ -1515,6 +1695,20 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
             user_row = session.get(UserModel, user.id)
         finally:
             session.close()
+
+    # A vague sleep answer is final: pin an estimate, say it, never ask again.
+    assumption_note = None
+    if (config.ONBOARDING_SLEEP_ESTIMATE_ENABLED and not (user_row.wake_time or user_row.sleep_time)):
+        kind = classify_sleep_answer(incoming_message, prev_coach)
+        if kind:
+            pinned = pin_sleep_estimate(user_row.id, kind)
+            if pinned:
+                assumption_note = _assumption_note(*pinned)
+                session = get_session()
+                try:
+                    user_row = session.get(UserModel, user.id)
+                finally:
+                    session.close()
 
     # A pasted routine (several "3x10" lines) becomes their own card templates — the
     # extractor only keeps "ppl"; the exercises would be lost once history scrolls.
@@ -1590,7 +1784,8 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     if not missing_after or early:
         if not _is_bare_answer(incoming_message, code_found) or wants_workout:
             try:
-                text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early)
+                text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early,
+                                                  assumption_note=assumption_note)
             except Exception as e:  # noqa: BLE001 — the summary still goes out
                 logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
                 text = ""
@@ -1617,16 +1812,32 @@ def handle_onboarding_reply(user, incoming_message: str) -> bool:
     mode = _intake_mode(incoming_message, missing_after, _coach_turns(user_row.id),
                         big_ask_sent=_big_ask_sent(user_row.id))
     out_type = "onboarding"
+    remaining_names = [f[0] for f in missing_after]
+    if continuation and prev_coach and not assumption_note:
+        # More of the same thought: the previous reply's question is still on the floor.
+        mode = "continuation"
+        text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after,
+                                   continuation_prev=prev_coach)
+        if not text or SKIP_SENTINEL in text.strip().lower() or is_duplicate_question(text, prev_coach):
+            reason = "skip" if (not text or SKIP_SENTINEL in (text or "").lower()) else "dup_question"
+            logger.info("ONBOARDING_CONTINUATION_SUPPRESSED user=%s reason=%s reply=%r still_unknown=%s",
+                        user_row.id, reason, (text or "")[:120], remaining_names)
+            _react_thumbs(user_row.id)
+            return False
+        send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
+        logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}")
+        return False
     if mode == "big_ask":
         text = _build_big_ask_message(user_row, incoming_message, system_prompt, missing_after)
         out_type = BIG_ASK_MESSAGE_TYPE
     elif mode == "bundle":
         text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
     else:
-        text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after)
+        text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after,
+                                   assumption_note=assumption_note)
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
-    remaining_names = [f[0] for f in missing_after]
-    logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}")
+    logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
+                f"{' sleep_estimated=True' if assumption_note else ''}")
     return False
 
 
