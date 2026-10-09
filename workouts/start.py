@@ -87,12 +87,9 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
                else "first card, weights are off what u told me")
         return (f"{day_label(key)} day. starting u at {_fmt(w)} on {lead['label']} — {src}. "
                 f"tap a set and change the number if it's off, i'll remember.")
-    # Founder 2026-10-09: "3 sets bench press, then the usual" — "the usual" means nothing
-    # to the person reading it. Say what's on the card: the lead and how many exercises.
-    n = len(ws_state_exercises or [])
-    lead_txt = (f"{lead['label']} first, {n} exercises" if lead and n > 1
-                else (f"{lead['label']}" if lead else key))
-    return f"{day_label(key)} day. {lead_txt}. tap as u go, or text me what u hit"
+    # Founder 2026-10-09: "3 sets bench press, then the usual" meant nothing to the reader,
+    # and a description of the card isn't needed either — the card is right below.
+    return "here it is, lmk if u want me to change anything"
 
 
 ROUTINE_NOTE_TYPE = "routine_capture_offer"

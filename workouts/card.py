@@ -44,10 +44,7 @@ def card_layout(state: dict) -> dict:
     elif done:
         sub = f"{done}/{total} sets — tap to log" if bodyweight else f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
-        lead = next((e for e in state["exercises"]), None)
-        n = len(state["exercises"])
-        first = (f"{lead['label']} first, {n} exercises" if lead and n > 1 else (lead['label'] if lead else key))
-        sub = f"{first} — tap to start"
+        sub = "tap to start"
     return {"caption": caption, "subcaption": sub, "summary": f"{key} day"}
 
 
