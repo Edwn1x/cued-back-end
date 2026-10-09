@@ -169,6 +169,8 @@ def test_read_client_raises_typed_error_with_status(monkeypatch):
 
 
 def test_connect_tool_accepts_google_health_and_gates_on_flag(db, monkeypatch, sms_capture):
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "GOOGLE_HEALTH_OFFER_ENABLED", True)   # the wearable link waits for Google's approval (onboarding restructure)
     from agent_tools import handle_send_connect_link, SEND_CONNECT_LINK_TOOL
     from integrations import base
     from tests.factories import make_user
