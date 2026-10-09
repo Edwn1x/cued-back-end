@@ -87,8 +87,9 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
                else "first card, weights are off what u told me")
         return (f"{day_label(key)} day. starting u at {_fmt(w)} on {lead['label']} — {src}. "
                 f"tap a set and change the number if it's off, i'll remember.")
-    lead_txt = f"{len(lead['sets'])} sets {lead['label']}" if lead else key
-    return f"{day_label(key)} day. {lead_txt}, then the usual. tap as you go — text me if a set goes different."
+    # Founder 2026-10-09: "3 sets bench press, then the usual" meant nothing to the reader,
+    # and a description of the card isn't needed either — the card is right below.
+    return "here it is, lmk if u want me to change anything"
 
 
 ROUTINE_NOTE_TYPE = "routine_capture_offer"
@@ -330,7 +331,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
             logger.warning("WORKOUT_CARD_REFUSED user=%s session=%s err=%s — %s", user_id, ws.id, e,
                            "setup: one line, no exercise texts" if setup else "per-exercise messages instead")
         if surface == "card":
-            card_setup.send_breakdown_if_due(user_id, phone)   # the tour, once ever
+            card_setup.send_breakdown_if_due(user_id, phone, setup=setup)   # the tour offer, once ever
     if surface == "messages":
         if setup:
             from workouts import card_setup

@@ -176,10 +176,11 @@ def test_summary_shows_experience_and_the_routine(db):
                 wake_time="13:00", sleep_time="04:00", activity_level="moderately active", avg_steps=6500)
     u = make_user(db, **base, experience="beginner", custom_templates={"push": [{"slug": "a", "label": "a", "sets": 3, "reps": 10, "default_weight": 40}]})
     s = onboarding_agent._build_confirmation_summary(u)
-    assert s.startswith("ok so 5'8 160, training mon/tue/wed/thu/fri/sat afternoons, up at 1 down by 4, cutting, ur own routine's on ur cards. ")
+    assert s.startswith("ok so far this is what i have: ur 5'8 160, training mon/tue/wed/thu/fri/sat in the afternoons, "
+                        "up at 1 down by 4, tryna lose fat, ur own routine's on ur cards\n---\n"), s
     v = make_user(db, **base, experience=None, custom_templates=None)
     s2 = onboarding_agent._build_confirmation_summary(v)
-    assert "cutting" in s2 and "routine" not in s2
+    assert "tryna lose fat" in s2 and "routine" not in s2
 
 
 def test_store_accepts_stated_experience_and_goal_only_from_valid_values(db):

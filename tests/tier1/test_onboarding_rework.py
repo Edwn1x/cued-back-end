@@ -50,8 +50,9 @@ def test_hook_says_what_happens_next(db, sms_capture, quiet_completion):
     import onboarding_agent as oa
     u = make_user(db, name="Celestia", onboarding_step=0, goal="muscle_building", experience="none", **INTAKE)
     assert oa.send_onboarding_hook(u.id, reason="signup") is True
-    assert _bodies(sms_capture) == ["hey Celestia, it's cued. ur in. gonna get to know u a bit over the next few texts, "
-                                    "then ur first workout. how's ur day going"]
+    assert _bodies(sms_capture) == ["hey Celestia, it's cued. ur in. quick setup before i can actually help: gonna get to "
+                                    "know u a bit over the next few texts, then run u through everything i can do. "
+                                    "how's ur day going"]
     row = _row(db, u.id)
     assert row.onboarding_step == 1 and row.onboarding_hook_template == "hook_setup"
     assert oa.send_onboarding_hook(u.id, reason="signup") is False and len(sms_capture) == 1   # idempotent
@@ -62,7 +63,7 @@ def test_activation_hook_says_the_spot_opened(db, sms_capture, quiet_completion)
     import onboarding_agent as oa
     u = make_user(db, name="Sarah", onboarding_step=0, goal="fat_loss", **INTAKE)
     oa.send_onboarding_hook(u.id, reason="waitlist_activate")
-    assert _bodies(sms_capture)[0].startswith("hey Sarah, it's cued. ur spot's open. gonna get to know u")
+    assert _bodies(sms_capture)[0].startswith("hey Sarah, it's cued. ur spot's open. quick setup before i can actually help")
 
 
 # ── 2. stats in code ─────────────────────────────────────────────────────────
@@ -160,8 +161,8 @@ def test_celestias_messages_now_end_in_a_workout(db, anthropic_stub, sms_capture
     assert oa.handle_onboarding_reply(_row(db, user.id), "Send me the workout card") is True
     b = _bodies(sms_capture)
     assert b[0] == "ur already there, love that" and "they asked for it" in gen[-1]
-    assert b[1].startswith("ok so 5'6 110, training mon/tue/thu, building muscle. "), b[1]
-    assert re.search(r" \d{4} cal, \d{2,3}g protein a day\. say if anything's off$", b[1]), b[1]
+    assert b[1] == "ok so far this is what i have: ur 5'6 110, training mon/tue/thu, tryna build muscle", b[1]
+    assert re.search(r"^im thinking \d{4} cal and \d{2,3}g protein a day\. ", b[2]) and oa.SUMMARY_CLOSER in b[2], b[2]
     row = _row(db, user.id)
     assert row.onboarding_step == 3 and row.coaching_branch == "training_nutrition" and row.calorie_target
 
@@ -188,7 +189,8 @@ def test_bare_last_answer_gets_only_the_summary(db, anthropic_stub, sms_capture,
     anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else (_ for _ in ()).throw(AssertionError("no bubble")))
     assert oa.handle_onboarding_reply(user, "no injuries") is True
     b = _bodies(sms_capture)
-    assert len(b) == 1 and b[0].startswith("ok so 5'6 120, training 3 days a week evenings, up at 9:30 down by 12, building muscle. ")
+    assert len(b) == 2 and b[0] == ("ok so far this is what i have: ur 5'6 120, training 3 days a week in the evenings, "
+                                    "up at 9:30 down by 12, tryna build muscle"), b
 
 
 def test_completion_reaction_failure_never_blocks_the_summary(db, anthropic_stub, sms_capture, quiet_completion):
@@ -199,7 +201,7 @@ def test_completion_reaction_failure_never_blocks_the_summary(db, anthropic_stub
                        wake_time="09:30", sleep_time="00:00", existing_tools="none")
     anthropic_stub.reply_with(lambda kw: '{"injuries": "none"}' if _is_extract(kw) else (_ for _ in ()).throw(RuntimeError("api down")))
     assert oa.handle_onboarding_reply(user, "nah nothing hurts, why do u ask?") is True
-    assert len(sms_capture) == 1 and sms_capture[0][1].startswith("ok so ")
+    assert len(sms_capture) == 2 and sms_capture[0][1].startswith("ok so far")
 
 
 def test_completion_logs_turns_minutes_and_what_is_learned_later(db, anthropic_stub, sms_capture, quiet_completion, caplog):

@@ -16,9 +16,9 @@ Three code-sent pieces, each once, all flag-gated (CARD_SETUP_ENABLED):
     happens at home and the numbers get checked before workout time. If nothing is
     known about their lifts, the first-card ask goes first (code-sent, by level) and
     the answer sends the card through the existing pending-card pre-pass.
-  - BREAKDOWN: after the first card lands — what the blocks / rows / numbers are, how
-    to tap, fix, add, swap and finish, and why it matters (next week's numbers come
-    from what they actually lifted). users.card_explained_at.
+  - BREAKDOWN: after the first card lands — ONE line offering the walkthrough (the tour
+    itself is hidden; the coach gives it in TOUR's words only if they ask), plus what
+    happens next at setup. users.card_explained_at.
 
 SMS users see none of this (no extension, per-exercise texts as before).
 """
@@ -34,16 +34,27 @@ logger = logging.getLogger("cued.card_setup")
 
 MESSAGE_TYPE = "card_setup"
 
+# Founder 2026-10-09 (change 11): GamePigeon by name for anyone who's played iMessage
+# games; the install is the tap on the card itself (there is no store link).
 EXTENSION_INTRO = (
-    "last thing. ur workouts show up right here as a card u tap as u go",
-    "it runs on a small imessage extension, same kind of thing as gamepigeon. one tap to add, "
-    "nothing on ur home screen, and u never leave messages for any of it",
+    "last thing: ur workouts show up right here as a card u tap as u go",
+    "if ur familiar with imessage games, yk gamepigeon. we got a similar extension. one tap to add, "
+    "nothing on ur home screen, and u never leave messages for any of it. tap the card below to add it",
 )
 # Founder (2026-09-24): the browser link (PR #113) is offered ONLY when they push back on
 # installing — never up front. The framing is a confident ask; the model holds the link.
 EXTENSION_REMINDER = "heads up, the card needs that imessage extension (like gamepigeon, one tap to add)"
-BREAKDOWN = (
-    "quick tour: each block is an exercise, each row is a set, weight × reps",
+# The tour is HIDDEN (founder 2026-10-09: the setup thread was too long on a phone). After
+# the first card, ONE line offers it; the coach explains in TOUR's words only if they ask
+# (context_line hands it over). At setup a second line says what happens next, because
+# "So what now" ×2 is what the founder's own run ended on.
+TOUR_OFFER = "lmk if the layout's confusing or u want me to walk u through it"
+SETUP_NEXT = ("nothing to do rn — when ur heading to the gym just say so and this card's ready. "
+              "til then, text me what u eat")
+BREAKDOWN = (TOUR_OFFER,)                       # after a first card at gym time
+BREAKDOWN_SETUP = (TOUR_OFFER, SETUP_NEXT)      # after the setup card, at home
+TOUR = (
+    "each block is an exercise, each row is a set, weight × reps",
     "tap a row when u finish the set. number off? tap it, fix it, save. + set adds one, swap changes the exercise",
     "slide the bar at the bottom when ur done and i log the whole thing. that's how next week's "
     "numbers come from what u actually lifted, not guesses",
@@ -102,19 +113,20 @@ def send_extension_intro_if_due(user_id: int, phone: str) -> list[str]:
     return lines
 
 
-def send_breakdown_if_due(user_id: int, phone: str) -> list[str]:
-    """After the first card lands: the tour, once ever."""
+def send_breakdown_if_due(user_id: int, phone: str, *, setup: bool = False) -> list[str]:
+    """After the first card lands: the one-line tour OFFER, once ever (+ what's next at setup)."""
     if not enabled():
         return []
     u = _user(user_id)
     if u is None or getattr(u, "card_explained_at", None):
         return []
     from sms import send_sms
-    for line in BREAKDOWN:
+    lines = BREAKDOWN_SETUP if setup else BREAKDOWN
+    for line in lines:
         send_sms(phone, line, user_id=user_id, message_type=MESSAGE_TYPE)
     _stamp(user_id, "card_explained_at")
-    logger.info("CARD_SETUP_BREAKDOWN_SENT user=%s", user_id)
-    return list(BREAKDOWN)
+    logger.info("CARD_SETUP_BREAKDOWN_SENT user=%s setup=%s", user_id, setup)
+    return list(lines)
 
 
 def context_line(user) -> str | None:
@@ -128,7 +140,22 @@ def context_line(user) -> str | None:
                 "set_card_delivery mode='card' switches back to the tappable in-thread card if they ask.")
     if not getattr(user, "card_setup_at", None):
         return None
+    tour_note = ("\nHOW THE CARD WORKS — they were offered a walkthrough, not given one. ONLY if they ask "
+                 "(confusing / how does it work / what do the numbers mean), explain in these words, "
+                 "2-3 short bubbles, nothing else: " + " | ".join(TOUR))
+    setup_note = ""
+    if _has_planned_setup_card(getattr(user, "id", None)):
+        setup_note = ("\ntheir first card is a SETUP card for their NEXT session — planned, not started; they're at "
+                      "home and that is exactly right. Never tell them to start it now, never treat it as a workout "
+                      "in progress. There is NOTHING to clear, cancel, or take back and nothing to apologize for: "
+                      "never say 'cleared it', 'my bad', or 'sorry' about the card — 'not going to the gym rn' is "
+                      "fine, the card just waits ('that's just sitting ready for later'). 'so what now' = nothing "
+                      "til they lift: when they say they're heading in, that card is the one they use (say so). "
+                      "Til then it's food and questions.")
     if getattr(user, "card_opened_at", None):
+        return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
+                "'won't open' now is a real glitch: say to try the tap again, and offer to take their sets by text."
+                + tour_note + setup_note)
         return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
                 "'won't open' now is a real glitch: say to try the tap again, and offer to take their sets by text.")
     return ("## WORKOUT CARD\nsent, NEVER opened on their phone — the iMessage extension isn't added yet. "
@@ -136,7 +163,28 @@ def context_line(user) -> str | None:
             "the one-tap add (like GamePigeon), nothing on their home screen, they stay in Messages. Say that "
             "once. Do NOT offer the browser link unprompted — only if they push back on installing (don't want "
             "it, won't, 'can't i just…', ask for a link) → set_card_delivery mode='link'. Never troubleshoot "
-            "(no 'are u on iphone', no 'restart messages' — the card only reaches iPhones).")
+            "(no 'are u on iphone', no 'restart messages' — the card only reaches iPhones)."
+            + tour_note + setup_note)
+
+
+def _has_planned_setup_card(user_id) -> bool:
+    """A planned (never started) session with no logged sets = the setup card, waiting."""
+    if not user_id:
+        return False
+    try:
+        from models import get_session, WorkoutSession
+        from workouts.session_ops import has_logged_sets
+        s = get_session()
+        try:
+            ws = (s.query(WorkoutSession)
+                  .filter(WorkoutSession.user_id == user_id, WorkoutSession.status == "planned")
+                  .order_by(WorkoutSession.id.desc()).first())
+            return bool(ws) and not has_logged_sets(s, ws.id)
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        logger.info("CARD_SETUP_PLANNED_CHECK_FAILED user=%s err=%s", user_id, e)
+        return False
 
 
 def ask_text(user) -> str:

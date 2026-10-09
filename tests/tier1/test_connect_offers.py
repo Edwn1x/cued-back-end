@@ -87,7 +87,9 @@ def test_allowlist_state_matrix(db, monkeypatch):
     assert allowlist_state(_onboarded(db)) == "ok"
 
 
-def test_send_connect_link_refuses_google_until_allowlisted(db, sms_capture):
+def test_send_connect_link_refuses_google_until_allowlisted(db, sms_capture, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)   # the wearable link waits for Google's approval
     from agent_tools import handle_send_connect_link, handle_set_google_account
     u = _onboarded(db)
     r = handle_send_connect_link(u.id, {"provider": "gcal"})
@@ -209,7 +211,9 @@ def test_first_offer_carries_the_link_when_allowlisted_or_published(db, sms_capt
     assert sweep(_now()) == 1 and _bodies(sms_capture)[0] == OFFER_GCAL_LINK
 
 
-def test_offers_are_a_day_apart_and_follow_the_profile(db, sms_capture):
+def test_offers_are_a_day_apart_and_follow_the_profile(db, sms_capture, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)   # wearable offers wait for Google's API approval
     from connect_offers import sweep, OFFER_GCAL_ASK, OFFER_BCOURSES, OFFER_HEALTH_ASK
     u = _onboarded(db, occupation="student", existing_tools="pixel watch, strava")
     t0 = _now()
@@ -293,6 +297,8 @@ def test_columns_are_migrated():
 
 
 def test_integrations_block_states_absence_and_outranks_memory(monkeypatch):
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "GOOGLE_HEALTH_OFFER_ENABLED", True)
     """Live 2026-10-02 (founder, mid demo): the coaching summary said 'Connected feeds:
     Google Calendar…' while the row had been removed; the block listed only what WAS
     connected, so the model said 'yeah i can see it' and argued when corrected."""

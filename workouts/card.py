@@ -21,11 +21,11 @@ from workouts.templates import day_label
 logger = logging.getLogger("cued.workouts")
 
 TEMPLATE_INTRO = {
-    "push": "bench, then the usual",
-    "pull": "deadlift, then the usual",
-    "legs": "squat, then the usual",
-    "upper": "bench and rows, then the usual",
-    "lower": "squat, then the usual",
+    "push": "bench first",
+    "pull": "deadlift first",
+    "legs": "squat first",
+    "upper": "bench and rows first",
+    "lower": "squat first",
     "full_body": "squat, bench, rows",
 }
 
@@ -44,9 +44,10 @@ def card_layout(state: dict) -> dict:
     elif done:
         sub = f"{done}/{total} sets — tap to log" if bodyweight else f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
+        # The lead exercise stays on the bubble (its alternatives label is the one place
+        # the options show); nothing else — "then the usual" and counts are gone.
         lead = next((e for e in state["exercises"]), None)
-        first = f"{len(lead['sets'])} sets {lead['label']}" if lead else key
-        sub = f"{first}, then the usual — tap to start"
+        sub = f"{lead['label']} — tap to start" if lead else "tap to start"
     return {"caption": caption, "subcaption": sub, "summary": f"{key} day"}
 
 

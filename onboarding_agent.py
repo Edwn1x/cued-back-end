@@ -93,13 +93,16 @@ CARD_CRITICAL = {"height_weight", "workout_days", "injuries", "split_days"}
 # a low-effort question. The old A/B openers ("did you know the average person sets
 # the same goal 3 years in a row…") read as a finished setup — user 47 thought she
 # was live and texted "can I get a workout card?" five times.
+# Founder 2026-10-09: say it's a setup, and that the features walkthrough comes after —
+# the card is no longer promised here (it comes last, see setup_sequence.py).
 HOOK_TEMPLATES = [
     {"id": "hook_setup",
-     "text": "hey {name}, it's cued. ur in. gonna get to know u a bit over the next few texts, "
-             "then ur first workout. how's ur day going"},
+     "text": "hey {name}, it's cued. ur in. quick setup before i can actually help: gonna get to know u "
+             "a bit over the next few texts, then run u through everything i can do. how's ur day going"},
 ]
-HOOK_ACTIVATED_TEXT = ("hey {name}, it's cued. ur spot's open. gonna get to know u a bit over the next "
-                       "few texts, then ur first workout. how's ur day going")
+HOOK_ACTIVATED_TEXT = ("hey {name}, it's cued. ur spot's open. quick setup before i can actually help: gonna get "
+                       "to know u a bit over the next few texts, then run u through everything i can do. "
+                       "how's ur day going")
 
 GOAL_LABELS = {
     "fat_loss": "losing fat",
@@ -802,8 +805,8 @@ def _send_capability_rundown(user_row, system_prompt: str) -> bool:
         "something like 'oh and quick rundown of how i work'. Use ONLY what's below; do not "
         "mention anything else you can do. No bullet points, no numbered list, no headers, "
         "no bold — plain sentences, 4 to 6 short lines total, their words. Do not repeat "
-        "the targets (they just got them). End with their profile link on its own short line, "
-        f"exactly this URL and nothing else about it: {profile_url(user_row)} . No question at the end.\n\n"
+        "the targets (they just got them) and do not send any link — their profile link already "
+        "went with the numbers. No question at the end.\n\n"
         f"{ctx}"
     )
     if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
@@ -955,14 +958,52 @@ def _clock(hhmm: str | None) -> str:
     return f"{h}" if mm == "00" else f"{h}:{mm}"
 
 
+GOAL_VERBS = {
+    "fat_loss": "lose fat",
+    "muscle_building": "build muscle",
+    "strength": "get stronger",
+    "general_fitness": "get healthier",
+    "endurance": "build endurance",
+}
+
+
+def _goal_clause(goal: str | None) -> str:
+    """'tryna lose fat while building muscle and getting stronger' from the signup enum.
+    Live 2026-10-05 (user 48): the raw "fat loss,muscle building,strength" leaked into
+    the summary. One goal → 'tryna build muscle'; two or more → first + 'while' + the
+    rest in -ing form."""
+    parts = [g.strip() for g in (goal or "").replace(" ", "_").split(",") if g.strip()]
+    verbs = [GOAL_VERBS.get(g, g.replace("_", " ")) for g in parts] or ["get healthier"]
+    if len(verbs) == 1:
+        return f"tryna {verbs[0]}"
+    ing = {"lose fat": "losing fat", "build muscle": "building muscle", "get stronger": "getting stronger",
+           "get healthier": "getting healthier", "build endurance": "building endurance"}
+    rest = [ing.get(v, v) for v in verbs[1:]]
+    tail = rest[0] if len(rest) == 1 else ", ".join(rest[:-1]) + " and " + rest[-1]
+    return f"tryna {verbs[0]} while {tail}"
+
+
+SUMMARY_CLOSER = "lmk if anything seems off or confusing, or if u wanna know how i got the numbers"
+
+
 def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
-    """The one bubble that closes onboarding, in the friend's voice — identity.md's own
-    example: "ok so 5'0 137, training evenings, up at 8:30 down by 11:30 … 1450 cal,
-    137g protein". Code-authored: every number here is real (live, user 27: the model
-    wrote "2300 cal and 150g protein" — numbers it cannot set). States only what they
-    gave — a fact they didn't give is a trust break ("20 years old" recited when age
-    was never asked). Wake/sleep stay in on purpose: a swapped 2am bedtime (user 27)
-    is only catchable here. Ends "say if anything's off" — corrections go to the coach."""
+    """The two bubbles that close onboarding (founder copy, 2026-10-09), code-authored so
+    every number is real (live, user 27: the model wrote "2300 cal and 150g protein" —
+    numbers it cannot set):
+
+      ok so far this is what i have: ur 5'6 139, training 4 days a week in the evenings,
+      up at 12 down by 3, tryna lose fat while building muscle and getting stronger
+      ---
+      im thinking 2450 cal and 139g protein a day. we run this for the first few weeks
+      and adjust off how ur feeling and whether ur making progress. lmk if anything
+      seems off or confusing, or if u wanna know how i got the numbers
+      <profile link>
+
+    States only what they gave — a fact they didn't give is a trust break ("20 years
+    old" recited when age was never asked). Wake/sleep stay in on purpose: a swapped 2am
+    bedtime (user 27) is only catchable here; a code-pinned estimate reads as a guess.
+    The closer is "seems off or confusing" (founder): they can't know what's wrong, they
+    can know what's confusing. The profile link rides with the summary (not the rundown)."""
     targets = calculate_targets(user)
     nutrition_only = _is_nutrition_only(user)
 
@@ -971,14 +1012,15 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         who.append(f"{user.height_ft}'{user.height_in or 0}")
     if user.weight_lbs:
         who.append(f"{int(user.weight_lbs)}")
-    parts = [" ".join(who)] if who else []
+    parts = [("ur " + " ".join(who))] if who else []
     if not nutrition_only and user.workout_days:
         days = str(user.workout_days).strip()
         when = ""
         wt = (user.workout_time or "").strip().lower()
         if wt:
-            when = {"08:00": " mornings", "14:00": " afternoons", "18:00": " evenings",
-                    "morning": " mornings", "afternoon": " afternoons", "evening": " evenings"}.get(wt, f" at {_clock(wt)}")
+            when = {"08:00": " in the mornings", "14:00": " in the afternoons", "18:00": " in the evenings",
+                    "morning": " in the mornings", "afternoon": " in the afternoons",
+                    "evening": " in the evenings"}.get(wt, f" at {_clock(wt)}")
         if days.replace("-", "").replace("+", "").isdigit():
             parts.append(f"training {days} days a week{when}")
         else:
@@ -991,7 +1033,7 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         if user.sleep_time:
             bits.append(f"down {'around' if guess else 'by'} {_clock(user.sleep_time)}")
         parts.append(" ".join(bits) + (" (my guess, fix it anytime)" if guess else ""))
-    parts.append(GOAL_PHRASES.get(user.goal, (user.goal or "general fitness").replace("_", " ")))
+    parts.append(_goal_clause(user.goal))
     if not nutrition_only:
         try:
             from workouts.routine import describe_routine
@@ -1001,16 +1043,24 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
                 parts.append("split is " + " / ".join(_day_label(d) for d in user.split_days))
         except Exception:  # noqa: BLE001
             pass
-    first = "ok so " + ", ".join(p for p in parts if p)
+    first = "ok so far this is what i have: " + ", ".join(p for p in parts if p)
 
     if clamp_note:
-        targets_bit = f"{clamp_note}. so {user.calorie_target} cal, {user.protein_target}g protein a day"
+        numbers = f"{clamp_note}. so {user.calorie_target} cal and {user.protein_target}g protein a day"
     elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
-        targets_bit = (f"{user.calorie_target} cal, {user.protein_target}g protein a day, ur pick "
-                       f"(i'd have said {targets['calories']}/{targets['protein']}g)")
+        numbers = (f"{user.calorie_target} cal and {user.protein_target}g protein a day, ur pick "
+                   f"(i'd have said {targets['calories']}/{targets['protein']}g)")
     else:
-        targets_bit = f"{targets['calories']} cal, {targets['protein']}g protein a day"
-    return f"{first}. {targets_bit}. say if anything's off"
+        numbers = f"im thinking {targets['calories']} cal and {targets['protein']}g protein a day"
+    second = (f"{numbers}. we run this for the first few weeks and adjust off how ur feeling and whether "
+              f"ur making progress. {SUMMARY_CLOSER}")
+    try:
+        link = profile_url(user)
+    except Exception:  # noqa: BLE001
+        link = ""
+    if link:
+        second += f"\n{link}"
+    return f"{first}\n---\n{second}"
 
 
 # Live 2026-09-22 (user 42): with `diet` still unknown the bundle reply ended "i think
@@ -1443,12 +1493,19 @@ def _build_completion_reaction(user, incoming_message: str, system_prompt: str, 
         f"they said, or answer their question, fully. "
         + (f"{assumption_note} That clause IS the bubble — the summary right after repeats the "
            f"guess, so nothing to ask. " if assumption_note else "")
-        + f"Code is about to send their numbers and "
-        f"then their first workout card right after your bubble"
-        + (" (they asked for it — say it's coming, one clause)" if early else "")
-        + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting."
+        + f"Code is about to send their numbers right after your bubble"
+        + (", then their first workout card (they asked for it — say it's coming, one clause)" if early else "")
+        + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting. "
+        "Output the bubble text only — no notes to yourself, no restating these instructions, no draft."
     )
-    return _generate(system_prompt, instruction, user_id=user.id)
+    text = _generate(system_prompt, instruction, user_id=user.id)
+    # ONE bubble. Live 2026-10-09 (tier-2): the model sent a note to itself as a first
+    # bubble ("…night owl schedule. React, no question.") and the real line second.
+    parts = [p.strip() for p in re.split(r"\n\s*---\s*\n|\n\s*\n", text or "") if p.strip()]
+    if len(parts) > 1:
+        logger.info("ONBOARDING_COMPLETION_MULTI_BUBBLE user=%s kept_last dropped=%r", user.id, parts[:-1])
+        text = parts[-1]
+    return text
 
 
 def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
@@ -1794,7 +1851,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         if early:
             logger.info("ONBOARDING_EARLY_EXIT user=%s wants_workout=True learned_later=%s",
                         user_row.id, [f[0] for f in missing_after])
-        return _complete_onboarding(user_row, incoming_message)
+        return _complete_onboarding(user_row, incoming_message, early=early)
 
     # ── They want the workout but the card can't be built yet → ask for exactly that ──
     if wants_workout and card_missing:
@@ -1883,10 +1940,11 @@ def _finalize_onboarding_profile(user_row):
                 pass
 
 
-def _complete_onboarding(user, incoming_message: str) -> bool:
+def _complete_onboarding(user, incoming_message: str, *, early: bool = False) -> bool:
     """Finalize onboarding: bound any self-stated targets, compute the rest, store
-    confirmed decisions, send the ONE summary bubble (code-authored, every number
-    real), then the first card (card setup) and the rundown."""
+    confirmed decisions, send the summary (code-authored, every number real) and the
+    rundown. Then setup_sequence.py: the connect offers, the water yes/no, and the first
+    card LAST — right now only when `early` (they asked for a workout) or the sequence is off."""
     from models import get_session, User as UserModel, Message
 
     clamp_note = _reconcile_user_targets(user.id)   # "staying under 2000 cals" said mid-chat → bounded
@@ -1914,6 +1972,7 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
         user_row.confirmed_goal_priority = targets.get("goal_label", user_row.goal)
         user_row.coaching_branch = _determine_coaching_branch(user_row)
         user_row.onboarding_step = 3  # complete
+        user_row.onboarding_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Copy profile fields to confirmed counterparts
         _finalize_onboarding_profile(user_row)
@@ -1946,12 +2005,15 @@ def _complete_onboarding(user, incoming_message: str) -> bool:
     # (~HEARTBEAT_ACTIVE_CONVO_MINUTES after the conversation goes quiet): one
     # code-answered question on the floor at a time. Flag off → the water offer at
     # kickoff as before (water_offer.py, one line, once, answered in code).
-    if config.CARD_SETUP_ENABLED:
+    card_now = config.CARD_SETUP_ENABLED and (early or not config.SETUP_SEQUENCE_ENABLED)
+    if card_now:
         try:
             from workouts.card_setup import run_onboarding_setup
-            logger.info("CARD_SETUP_KICKOFF user=%s result=%s", user.id, run_onboarding_setup(user.id))
+            logger.info("CARD_SETUP_KICKOFF user=%s early=%s result=%s", user.id, early, run_onboarding_setup(user.id))
         except Exception as e:  # noqa: BLE001
             logger.warning("CARD_SETUP_KICKOFF_FAILED user=%s err=%s", user.id, e)
+    elif config.CARD_SETUP_ENABLED:
+        logger.info("CARD_SETUP_DEFERRED user=%s — last step of the setup sequence", user.id)
     elif config.WATER_OFFER_ENABLED:
         try:
             from water_offer import send_offer as _water_offer
