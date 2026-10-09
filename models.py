@@ -42,6 +42,7 @@ class User(Base):
     wake_time_alt = Column(String(10), default=None)  # HH:MM — secondary wake time (e.g. 12:00 on off days)
     wake_days_alt = Column(String(50), default=None)  # comma-separated days that use wake_time_alt (e.g. "mon,wed,fri")
     sleep_time = Column(String(500), default=None)  # HH:MM, or a phrase (prod width 500)
+    sleep_estimated = Column(Boolean, default=False)  # wake/sleep pinned by code from a vague answer ("hella late") — a stated guess, not their words
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
     workout_time = Column(String(50), default=None)  # HH:MM or "afternoon, varies 14:00-16:00…" (prod width 50)

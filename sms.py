@@ -222,6 +222,24 @@ def split_message(body: str) -> list[str]:
 TAPBACKS = {"love": "❤️", "like": "👍", "dislike": "👎", "laugh": "😂", "emphasize": "‼️", "question": "❓"}
 
 
+def react_to_latest_inbound(user_id: int, emoji: str) -> bool:
+    """Best-effort tapback on the user's newest iMessage (their last text). False when
+    there is no iMessage inbound to react to or the reaction failed."""
+    try:
+        session = get_session()
+        try:
+            m = (session.query(Message.provider_sid)
+                 .filter(Message.user_id == user_id, Message.direction == "in", Message.channel == "imessage",
+                         Message.provider_sid.isnot(None)).order_by(Message.id.desc()).first())
+        finally:
+            session.close()
+        if m and m[0]:
+            return react_to_message(user_id, m[0], emoji)
+    except Exception as e:  # noqa: BLE001
+        logger.info("REACT_LATEST_SKIPPED user=%s err=%s", user_id, e)
+    return False
+
+
 def react_to_message(user_id: int, provider_sid: str, emoji: str) -> bool:
     """Tapback on one of the user's iMessages (by the Photon id stored on its row).
     Logs its own outbound row with message_type="reaction" so the history window

@@ -1031,6 +1031,21 @@ INBOUND_FOLD_PHOTO_INTO_PENDING_TEXT = os.getenv("INBOUND_FOLD_PHOTO_INTO_PENDIN
 OUTBOUND_RESTATEMENT_GUARD_ENABLED = os.getenv("OUTBOUND_RESTATEMENT_GUARD_ENABLED", "true").lower() == "true"
 OUTBOUND_RESTATEMENT_WINDOW_S = int(os.getenv("OUTBOUND_RESTATEMENT_WINDOW_S", "180"))
 OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD = float(os.getenv("OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD", "0.6"))
+# Onboarding continuation fold (2026-10-09, founder's own run msgs 5783-5786 / 5797-5801):
+# people text in 2-3 rapid bursts; the second text lands while the first turn is still
+# generating (or seconds after it flushed) and becomes its own turn → the coach asks the
+# same question twice. The buffer marks such a turn `continuation=True` and waits for the
+# in-flight turn to finish; the onboarding path then (a) tells the model the previous
+# reply already went and it may answer with nothing, and (b) suppresses a reply whose
+# question near-duplicates the one just sent (a 👍 tapback goes instead).
+ONBOARDING_CONTINUATION_FOLD_ENABLED = os.getenv("ONBOARDING_CONTINUATION_FOLD_ENABLED", "true").lower() == "true"
+ONBOARDING_DUP_QUESTION_THRESHOLD = float(os.getenv("ONBOARDING_DUP_QUESTION_THRESHOLD", "0.45"))
+ONBOARDING_DUP_QUESTION_WINDOW_S = int(os.getenv("ONBOARDING_DUP_QUESTION_WINDOW_S", "180"))
+BUFFER_INFLIGHT_WAIT_S = float(os.getenv("BUFFER_INFLIGHT_WAIT_S", "90"))
+# Sleep: asked ONCE as a rough range; a qualitative answer ("hella late", "all over the
+# place") pins an estimate in code, the reply says the assumption, and the field never
+# blocks completion. Measured sleep (wearable) overrides it later.
+ONBOARDING_SLEEP_ESTIMATE_ENABLED = os.getenv("ONBOARDING_SLEEP_ESTIMATE_ENABLED", "true").lower() == "true"
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

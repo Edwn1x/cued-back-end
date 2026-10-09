@@ -85,7 +85,7 @@ def test_onboarding_prompt_lists_unknowns_and_forbids_the_list(db):
     assert "STILL UNKNOWN" in sp
     assert "height and weight" not in sp.split("STILL UNKNOWN", 1)[1]  # already known
     assert "food situation" in sp                                       # still unknown
-    assert "At most ONE question per message" in sp
+    assert "One question by default" in sp and "Never ask the same thing twice" in sp
     assert "## RIGHT NOW" in sp and "in Berkeley" in sp
     import re as _re
     assert _re.search(r"It's \w+day, \w{3} \d{1,2}, 20\d\d, \d{1,2}:\d\d[ap]m in Berkeley", sp), \
@@ -455,7 +455,7 @@ def test_two_left_after_real_conversation_bundles(db, anthropic_stub, sms_captur
     onboarding_agent.handle_onboarding_reply(user, "yeah that's about it")
 
     ins = seen["instruction"]
-    assert "last thing" in ins and "any injuries" in ins and "fitness apps" in ins
+    assert "last thing" in ins and "anything that hurts" in ins and "fitness apps or a watch" in ins
     assert "ONE text" not in ins
 
 

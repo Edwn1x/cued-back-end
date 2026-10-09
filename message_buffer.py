@@ -24,6 +24,14 @@ _lock = threading.Lock()
 # after a flush (the timer-vs-append race) can be spotted and logged.
 _last_flush = {}
 
+# phone -> threading.Event that is SET while a flushed turn is still being processed
+# (the model call, the send). A text that lands in that window is a CONTINUATION of
+# the thought the coach is already answering (founder, live 2026-10-05: "Lwk a combo
+# of both" / "I'm either walking somewhere or in my room", 2 texts → 2 replies asking
+# the same thing). Its turn is marked continuation=True and its flush waits for the
+# in-flight turn to finish so history is in order when the model sees it.
+_in_flight: dict = {}
+
 # Delay range in seconds (randomized to feel human)
 MIN_DELAY = 90
 MAX_DELAY = 150
@@ -87,10 +95,15 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
             # dedup layer (sms._is_duplicate_send) is what stops the user from
             # seeing two near-identical replies for the split thought.
             last = _last_flush.get(phone)
-            if last is not None and (time.monotonic() - last) < config.BUFFER_JOIN_WINDOW_S:
+            late = last is not None and (time.monotonic() - last) < config.BUFFER_JOIN_WINDOW_S
+            busy = _in_flight.get(phone)
+            in_flight = bool(busy is not None and not busy.is_set())
+            if late:
                 logger.warning(
                     "BUFFER_LATE_APPEND phone=%s within=%.2fs of last flush — new turn; "
                     "outbound dedup guards the reply", phone, time.monotonic() - last)
+            continuation = bool(getattr(config, "ONBOARDING_CONTINUATION_FOLD_ENABLED", True)
+                                and not has_image and (late or in_flight))
             _buffers[phone] = {
                 "messages": [{
                     "body": body,
@@ -100,7 +113,10 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                     "received_at": datetime.now(timezone.utc).isoformat(),
                 }],
                 "user_id": user_id,
+                "continuation": continuation,
             }
+            if continuation:
+                logger.info("BUFFER_CONTINUATION phone=%s in_flight=%s late=%s", phone, in_flight, late)
             logger.info(f"New buffer created for {phone}")
 
         # Start a new timer, tagged with a unique token. The token is how a flush
@@ -115,6 +131,15 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
         _buffers[phone]["timer"] = timer
         timer.start()
         logger.info(f"Timer set for {phone}: {delay}s")
+
+
+def _takes_continuation(fn) -> bool:
+    try:
+        import inspect
+        params = inspect.signature(fn).parameters
+        return "continuation" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        return False
 
 
 def _flush_buffer(phone: str, process_callback, token=None):
@@ -139,9 +164,19 @@ def _flush_buffer(phone: str, process_callback, token=None):
 
         buffer_data = _buffers.pop(phone)
         _last_flush[phone] = time.monotonic()
+        prior = _in_flight.get(phone)
+        done = threading.Event()
+        _in_flight[phone] = done
 
     messages = buffer_data["messages"]
     user_id = buffer_data["user_id"]
+    continuation = bool(buffer_data.get("continuation"))
+
+    # A continuation waits for the turn it continues (bounded): the model must see the
+    # reply that already went, in order, or it answers the same thing again.
+    if continuation and prior is not None and not prior.is_set():
+        waited = prior.wait(getattr(config, "BUFFER_INFLIGHT_WAIT_S", 90))
+        logger.info("BUFFER_CONTINUATION_WAITED phone=%s finished=%s", phone, waited)
 
     # Combine all message bodies into one input
     combined_body = "\n".join(m["body"] for m in messages if m["body"])
@@ -169,12 +204,24 @@ def _flush_buffer(phone: str, process_callback, token=None):
 
     logger.info(f"Flushing buffer for {phone}: {len(messages)} messages combined -> '{combined_body[:80]}...' images={len(images)}")
 
-    # Call the processing function
+    # Call the processing function. `continuation` is passed only when True and the
+    # callback takes it (test callbacks and older signatures don't).
     if process_callback:
         try:
-            process_callback(user_id, combined_body, message_type, image_url, images=images)
+            extra = {"continuation": True} if (continuation and _takes_continuation(process_callback)) else {}
+            process_callback(user_id, combined_body, message_type, image_url, images=images, **extra)
         except Exception as e:
             logger.error(f"Error processing buffered messages for {phone}: {e}", exc_info=True)
+        finally:
+            done.set()
+            with _lock:
+                if _in_flight.get(phone) is done:
+                    _in_flight.pop(phone, None)
+    else:
+        done.set()
+        with _lock:
+            if _in_flight.get(phone) is done:
+                _in_flight.pop(phone, None)
 
 
 def cancel_buffer(phone: str):
