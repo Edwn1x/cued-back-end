@@ -556,6 +556,8 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS sleep_estimated BOOLEAN DEFAULT FALSE",
     # Onboarding restructure PR 2 (2026-10-09): the setup sequence keys off completion time.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMP",
+    # Onboarding restructure PR 4 (2026-10-09): per-day / multi-select training times.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS workout_times JSON",
 ]
 
 def wait_for_db(retries=10, delay=3):
