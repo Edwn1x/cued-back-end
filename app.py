@@ -809,6 +809,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             from agent_tools import flush_stat_cards
             flush_stat_cards(user.id, turn)
 
+        # Setup sequence (setup_sequence.py): while they're engaged in the hours after
+        # onboarding, the next owed setup step (a connect offer, then the first card)
+        # follows the coach's reply — one step per text, only once the previous step was
+        # answered. Best-effort; never blocks the turn.
+        if not loop_raised:
+            try:
+                from setup_sequence import on_inbound as _setup_on_inbound
+                _setup_on_inbound(user.id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("SETUP_SEQUENCE_INBOUND_FAILED user=%s err=%s", user.id, e)
+
         # Detect end-of-workout signals and clear session state
         end_signals = ["done", "finished", "that's it", "thats it", "heading out", "heading home", "leaving gym", "left the gym"]
         if any(sig in combined_body.lower() for sig in end_signals):

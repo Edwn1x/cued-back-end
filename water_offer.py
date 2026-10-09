@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import timedelta, datetime, timezone
 
 import config
 
@@ -67,6 +67,12 @@ def eligible(user) -> bool:
     if (getattr(user, "waitlist_status", None) or "") == "pending":
         return False
     if config.STOP_OPTOUT_ENABLED and getattr(user, "opted_out", False):
+        return False
+    # Not on day one: the rundown already names water reminders (founder 2026-10-09);
+    # the yes/no bubble waits WATER_OFFER_MIN_HOURS_ONBOARDED after completion.
+    done_at = getattr(user, "onboarding_completed_at", None)
+    min_h = getattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 0)
+    if done_at and min_h and (_naive_utcnow() - done_at) < timedelta(hours=min_h):
         return False
     return True
 

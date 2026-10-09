@@ -34,10 +34,12 @@ logger = logging.getLogger("cued.card_setup")
 
 MESSAGE_TYPE = "card_setup"
 
+# Founder 2026-10-09 (change 11): GamePigeon by name for anyone who's played iMessage
+# games; the install is the tap on the card itself (there is no store link).
 EXTENSION_INTRO = (
-    "last thing. ur workouts show up right here as a card u tap as u go",
-    "it runs on a small imessage extension, same kind of thing as gamepigeon. one tap to add, "
-    "nothing on ur home screen, and u never leave messages for any of it",
+    "last thing: ur workouts show up right here as a card u tap as u go",
+    "if ur familiar with imessage games, yk gamepigeon. we got a similar extension. one tap to add, "
+    "nothing on ur home screen, and u never leave messages for any of it. tap the card below to add it",
 )
 # Founder (2026-09-24): the browser link (PR #113) is offered ONLY when they push back on
 # installing — never up front. The framing is a confident ask; the model holds the link.
@@ -47,6 +49,10 @@ BREAKDOWN = (
     "tap a row when u finish the set. number off? tap it, fix it, save. + set adds one, swap changes the exercise",
     "slide the bar at the bottom when ur done and i log the whole thing. that's how next week's "
     "numbers come from what u actually lifted, not guesses",
+    # Founder's run (2026-10-05): "So what now" ×2 after the tour, then the coach said
+    # "start the card" to someone at home. The setup ends by saying what happens next.
+    "that's the whole setup. nothing to do rn — when ur heading to the gym just say so and this card's "
+    "ready. til then, text me what u eat",
 )
 ASK_TRAINED = "before i build ur first card, what do u bench and squat for like 5?"
 ASK_NEW = ("before i build ur first card, got any number at all? heaviest u've benched or squatted, "
@@ -128,7 +134,16 @@ def context_line(user) -> str | None:
                 "set_card_delivery mode='card' switches back to the tappable in-thread card if they ask.")
     if not getattr(user, "card_setup_at", None):
         return None
+    setup_note = ""
+    if _has_planned_setup_card(getattr(user, "id", None)):
+        setup_note = ("\ntheir first card is a SETUP card for their NEXT session — planned, not started; they're at "
+                      "home. Never tell them to start it now, never treat it as a workout in progress, never "
+                      "'clear' it. 'so what now' = nothing til they lift: when they say they're heading in, that "
+                      "card is the one they use (say so). Til then it's food and questions.")
     if getattr(user, "card_opened_at", None):
+        return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
+                "'won't open' now is a real glitch: say to try the tap again, and offer to take their sets by text."
+                + setup_note)
         return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
                 "'won't open' now is a real glitch: say to try the tap again, and offer to take their sets by text.")
     return ("## WORKOUT CARD\nsent, NEVER opened on their phone — the iMessage extension isn't added yet. "
@@ -136,7 +151,28 @@ def context_line(user) -> str | None:
             "the one-tap add (like GamePigeon), nothing on their home screen, they stay in Messages. Say that "
             "once. Do NOT offer the browser link unprompted — only if they push back on installing (don't want "
             "it, won't, 'can't i just…', ask for a link) → set_card_delivery mode='link'. Never troubleshoot "
-            "(no 'are u on iphone', no 'restart messages' — the card only reaches iPhones).")
+            "(no 'are u on iphone', no 'restart messages' — the card only reaches iPhones)."
+            + setup_note)
+
+
+def _has_planned_setup_card(user_id) -> bool:
+    """A planned (never started) session with no logged sets = the setup card, waiting."""
+    if not user_id:
+        return False
+    try:
+        from models import get_session, WorkoutSession
+        from workouts.session_ops import has_logged_sets
+        s = get_session()
+        try:
+            ws = (s.query(WorkoutSession)
+                  .filter(WorkoutSession.user_id == user_id, WorkoutSession.status == "planned")
+                  .order_by(WorkoutSession.id.desc()).first())
+            return bool(ws) and not has_logged_sets(s, ws.id)
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        logger.info("CARD_SETUP_PLANNED_CHECK_FAILED user=%s err=%s", user_id, e)
+        return False
 
 
 def ask_text(user) -> str:

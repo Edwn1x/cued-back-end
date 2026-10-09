@@ -554,6 +554,8 @@ MIGRATIONS = [
     # Onboarding restructure PR 1 (2026-10-09): wake/sleep pinned by code from a vague
     # answer is a stated guess — the summary says so and the coach can fix it later.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS sleep_estimated BOOLEAN DEFAULT FALSE",
+    # Onboarding restructure PR 2 (2026-10-09): the setup sequence keys off completion time.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMP",
 ]
 
 def wait_for_db(retries=10, delay=3):

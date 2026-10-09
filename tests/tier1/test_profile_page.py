@@ -100,8 +100,8 @@ def test_profile_endpoint_rejects_bad_tokens(db, client):
 
 
 def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch):
-    """_complete_onboarding hands the model the profile link (in the rundown bubble —
-    the summary is code's) — it must be the token link, never the phone-keyed one."""
+    """The profile link rides with the code summary (PR 2 of the 2026-10-09 restructure),
+    not the rundown instruction — and it must be the token link, never the phone-keyed one."""
     import onboarding_agent
     from profile_page import profile_token
     user = make_user(db, name="Nau", phone="+12094205037", onboarding_step=2,
@@ -115,13 +115,15 @@ def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch
             seen["instruction"] = instruction
         return "oh and quick rundown."
 
+    sent = []
     monkeypatch.setattr(onboarding_agent, "_generate", fake_generate)
-    monkeypatch.setattr(onboarding_agent, "send_sms", lambda *a, **k: None)
+    monkeypatch.setattr(onboarding_agent, "send_sms", lambda phone, body, **k: sent.append(body))
     monkeypatch.setattr(onboarding_agent.config, "ONBOARDING_RUNDOWN_DELAY_S", 0)
     monkeypatch.setattr(onboarding_agent.config, "ONBOARDING_RUNDOWN_ENABLED", True)
     onboarding_agent._complete_onboarding(user, "yes")
-    assert f"?t={profile_token(user.id)}" in seen["instruction"]
-    assert "?phone=" not in seen["instruction"]
+    summary = sent[0]
+    assert f"?t={profile_token(user.id)}" in summary and "?phone=" not in summary
+    assert "?t=" not in seen["instruction"] and "do not send any link" in seen["instruction"]
 
 
 def test_admin_user_page_shows_the_profile_link(db, client):

@@ -1,0 +1,164 @@
+"""
+Setup sequence — what happens after the summary (founder, 2026-10-09).
+
+The founder's own run (user 48, 2026-10-05) ended onboarding with three bubbles in one
+second (summary, "what do u bench", the rundown), then seven more and a workout card at
+11:46pm, then "So what now" twice and the coach saying "start the card" to someone at
+home. The order is now:
+
+  summary (+ profile link) → rundown            immediately, at completion (onboarding_agent)
+  → connect offers: calendar, bcourses, wearable one step at a time (connect_offers)
+  → the first card: extension pitch, lift ask / card, tour     LAST (workouts/card_setup)
+
+One step at a time: the next step goes when the previous one was ANSWERED (an inbound
+after it) or the conversation went quiet for SETUP_STEP_QUIET_MINUTES. Two triggers:
+  - on_inbound(user_id): right after the coach's reply to their text, while engaged.
+  - sweep(): every 10 min inside the heartbeat's guardrails (quiet hours, active
+    conversation, budget), for the died-down case. The sweep sends only the card —
+    connect_offers.sweep already sends the offers under the same guardrails.
+A workout ask at any point sends the card right then (the onboarding early exit, or the
+start tool), which simply marks the card step done. Everything is once-only by the
+existing ledgers (users.connect_offers, users.card_setup_at); nothing here repeats.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone, timedelta
+
+import config
+
+logger = logging.getLogger("cued.setup_sequence")
+
+# Outbound types that are setup steps: the anchor for "was the previous step answered".
+STEP_TYPES = ("connect_offer", "connect_link", "card_setup", "workout_intro", "workout_card")
+
+
+def _naive_utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def enabled() -> bool:
+    return bool(getattr(config, "SETUP_SEQUENCE_ENABLED", True))
+
+
+def _card_due(session, user) -> bool:
+    if not (config.CARD_SETUP_ENABLED and config.START_WORKOUT_TOOL_ENABLED):
+        return False
+    if getattr(user, "card_setup_at", None):
+        return False
+    from sms import _resolve_channel
+    if _resolve_channel(user.id) != "imessage":
+        return False
+    from workouts.session_ops import active_session_id
+    return active_session_id(user.id) is None
+
+
+def _previous_step_settled(session, user, now: datetime) -> bool:
+    """The last setup step (or the completion itself) has an inbound after it, or is
+    older than SETUP_STEP_QUIET_MINUTES."""
+    from models import Message
+    anchor = getattr(user, "onboarding_completed_at", None)
+    last_step = (session.query(Message.created_at)
+                 .filter(Message.user_id == user.id, Message.direction == "out",
+                         Message.message_type.in_(STEP_TYPES))
+                 .order_by(Message.id.desc()).first())
+    if last_step and last_step[0] and (anchor is None or last_step[0] > anchor):
+        anchor = last_step[0]
+    if anchor is None:
+        return True
+    if now - anchor >= timedelta(minutes=getattr(config, "SETUP_STEP_QUIET_MINUTES", 20)):
+        return True
+    answered = (session.query(Message.id)
+                .filter(Message.user_id == user.id, Message.direction == "in",
+                        Message.created_at > anchor).first())
+    return answered is not None
+
+
+def next_step(session, user, now: datetime | None = None) -> str | None:
+    """'connect' | 'card' | None — the one thing setup still owes this user, when the
+    previous step is settled. Pure read."""
+    if not enabled():
+        return None
+    now = now or _naive_utcnow()
+    if (user.onboarding_step or 0) < 3 or not user.active:
+        return None
+    if config.STOP_OPTOUT_ENABLED and getattr(user, "opted_out", False):
+        return None
+    from connect_offers import in_setup_window, first_offer_candidates
+    if not in_setup_window(user, now):
+        return None
+    if not _previous_step_settled(session, user, now):
+        return None
+    if first_offer_candidates(session, user):
+        return "connect"
+    if _card_due(session, user):
+        return "card"
+    return None
+
+
+def run_step(user_id: int, step: str, now: datetime | None = None, *, trigger: str) -> str:
+    """Send one step. Returns what happened (for the log)."""
+    now = now or _naive_utcnow()
+    if step == "connect":
+        from connect_offers import offer_now
+        provider = offer_now(user_id, now, min_gap=timedelta(0))
+        result = f"connect:{provider}" if provider else "connect:none"
+    elif step == "card":
+        from workouts.card_setup import run_onboarding_setup
+        result = f"card:{run_onboarding_setup(user_id)}"
+    else:
+        result = "noop"
+    logger.info("SETUP_STEP user=%s step=%s trigger=%s result=%s", user_id, step, trigger, result)
+    return result
+
+
+def on_inbound(user_id: int) -> str | None:
+    """After the coach's reply to their text: advance one step if one is owed. Never
+    raises; never blocks the turn."""
+    try:
+        from models import get_session, User
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            step = next_step(session, u) if u else None
+        finally:
+            session.close()
+        if not step:
+            return None
+        return run_step(user_id, step, trigger="inbound")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SETUP_SEQUENCE_INBOUND_FAILED user=%s err=%s", user_id, e)
+        return None
+
+
+def sweep(now: datetime | None = None) -> int:
+    """The died-down path for the CARD step: every 10 min, inside the heartbeat's
+    guardrails. (connect_offers.sweep covers the offers under the same guardrails.)"""
+    if not (enabled() and config.CARD_SETUP_ENABLED):
+        return 0
+    now = now or _naive_utcnow()
+    from models import get_session, User
+    from heartbeat import guardrail_reason
+    session = get_session()
+    todo = []
+    try:
+        since = now - timedelta(hours=getattr(config, "SETUP_WINDOW_HOURS", 48))
+        users = (session.query(User)
+                 .filter(User.active.is_(True), User.onboarding_step >= 3,
+                         User.card_setup_at.is_(None), User.onboarding_completed_at >= since).all())
+        for u in users:
+            if guardrail_reason(u, session, now=now):
+                continue
+            if next_step(session, u, now) == "card":
+                todo.append(u.id)
+    finally:
+        session.close()
+    sent = 0
+    for uid in todo:
+        try:
+            run_step(uid, "card", now, trigger="sweep")
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SETUP_SEQUENCE_SWEEP_FAILED user=%s err=%s", uid, e)
+    return sent

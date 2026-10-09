@@ -105,7 +105,7 @@ def test_summary_bounds_self_stated_targets_in_band_stand_out_of_band_clamp(db):
     assert (u.calorie_target, u.protein_target, u.targets_source) == (2000, 155, "user")
     assert u.calorie_target_computed == computed["calories"]
     s = onboarding_agent._build_confirmation_summary(u)
-    assert "2000 cal, 155g protein a day, ur pick" in s and f"(i'd have said {computed['calories']}/" in s
+    assert "2000 cal and 155g protein a day, ur pick" in s and f"(i'd have said {computed['calories']}/" in s
 
     # Way out of band → nearest end of the band is written and the summary says so.
     v = make_user(db, **ALEX, phone="+15550000004", onboarding_step=2, diet="omnivore",
@@ -115,7 +115,7 @@ def test_summary_bounds_self_stated_targets_in_band_stand_out_of_band_clamp(db):
     assert v.calorie_target == lo and v.protein_target == 155 and v.targets_source == "user"
     assert note and "u said 1000 cal" in note and f"{lo} cal is as low as i'll go" in note
     s2 = onboarding_agent._build_confirmation_summary(v, clamp_note=note)
-    assert "u said 1000 cal" in s2 and f"so {lo} cal, 155g protein a day" in s2 and s2.endswith("say if anything's off")
+    assert "u said 1000 cal" in s2 and f"so {lo} cal and 155g protein a day" in s2 and onboarding_agent.SUMMARY_CLOSER in s2
 
 
 def test_last_field_landing_reconciles_targets_before_the_summary(db, anthropic_stub, sms_capture, monkeypatch):
@@ -135,7 +135,7 @@ def test_last_field_landing_reconciles_targets_before_the_summary(db, anthropic_
     anthropic_stub.reply_with(_handler)
     assert onboarding_agent.handle_onboarding_reply(user, "I don't eat mushrooms tofu and raw fish") is True
     bodies = [b for _p, b in sms_capture]
-    assert bodies[0].startswith("noted, no mushrooms") and "2000 cal, 155g protein a day, ur pick" in bodies[1], bodies
+    assert bodies[0].startswith("noted, no mushrooms") and "2000 cal and 155g protein a day, ur pick" in bodies[2], bodies
     db.expire_all(); u = db.get(User, user.id)
     assert u.restrictions == "won't eat mushrooms; won't eat tofu; won't eat raw fish"
     assert u.calorie_target_computed and u.targets_source == "user" and u.onboarding_step == 3

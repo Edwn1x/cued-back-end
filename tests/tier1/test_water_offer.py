@@ -171,6 +171,7 @@ def test_kickoff_sends_the_offer_after_the_rundown(db, offer_on, sms_capture, an
     import onboarding_agent as oa
     from water_offer import OFFER_TEXT
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
+    monkeypatch.setattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 0)   # day-one hold off (see test_setup_sequence)
     anthropic_stub.reply_with(lambda kw: "locked in. lets go")
     u = make_user(db, onboarding_step=2, calorie_target=None, protein_target=None)
     oa._complete_onboarding(_u(u.id), "yes")

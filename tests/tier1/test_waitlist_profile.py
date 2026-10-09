@@ -332,7 +332,7 @@ def test_activation_after_opt_in_goes_blue_first_try(db, client, imessage_on, si
     assert u.waitlist_status is None and u.activated_at is not None and u.onboarding_step == 1
     rows = _outbound(db, u.id)
     assert [(m.channel, m.message_type, m.delivery_status) for m in rows] == [("imessage", "onboarding", "sent")]
-    assert rows[0].body.startswith("hey Nate, it's cued. ur spot's open. gonna get to know u a bit")
+    assert rows[0].body.startswith("hey Nate, it's cued. ur spot's open. quick setup before i can actually help")
     assert sms_capture == [] and "redirect" not in rows[0].body, "no link needed — they already texted the line"
 
 
