@@ -97,3 +97,33 @@ def test_completion_bubble_and_rundown(db, sms_capture, monkeypatch, i):
     assert profile_url(u) in sent[2]
     rundown = sent[3]
     assert rundown.lower().startswith("oh and") and "http" not in rundown and "?" not in rundown.rstrip()[-1:], rundown
+
+
+TOUR_RE = re.compile(r"\b(block|row|tap|set|weight|reps|slide|bar)\b", re.I)
+
+
+@pytest.mark.parametrize("i", range(3))
+def test_tour_is_given_only_when_asked(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
+    """The tour is hidden behind one offer line; 'how does this card work' gets it (blocks,
+    rows, tap, the bar) and a plain 'ok cool' after the card does not."""
+    u = _setup_user(db, monkeypatch)
+    asked = _run(u.id, "wait how does this card work, what do i tap")
+    print(f"\n[tour asked {i}] {asked!r}")
+    assert len(TOUR_RE.findall(asked)) >= 3 and re.search(r"\b(row|block)\b", asked, re.I), asked
+    v = _setup_user(db, monkeypatch)
+    quiet = _run(v.id, "ok cool")
+    print(f"\n[tour not asked {i}] {quiet!r}")
+    assert not re.search(r"each (block|row)|slide the bar", quiet, re.I), quiet
+
+
+@pytest.mark.parametrize("i", range(3))
+def test_fitbit_ask_says_not_live_yet_and_screenshots_work(db, imessage_on, sidecar_ok, card_ok, monkeypatch, i):
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", True)
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False)
+    u = make_user(db, **ANGEL, existing_tools="fitbit")
+    reply = _run(u.id, "can i connect my fitbit")
+    print(f"\n[fitbit {i}] {reply!r}")
+    low = reply.lower()
+    assert re.search(r"not (live|ready|up|there) yet|isn'?t live|soon|waiting on google|google.*(approv|sign.?off)|can'?t (do that|connect) (it |that )?yet", low), reply
+    assert re.search(r"screenshot|tell me|text me|send me", low), reply
+    assert "http" not in low and "app.cued.fit" not in low, reply
