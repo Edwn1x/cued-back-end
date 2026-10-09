@@ -791,32 +791,23 @@ def _store_extracted_data(user_id: int, data: dict):
         session.close()
 
 
-def _send_capability_rundown(user_row, system_prompt: str) -> bool:
-    """The 'oh and quick rundown of how i work' bubble. Content comes from the
-    registry (only what's ON for this user, ranked by their profile); the model
-    writes it in the friend's voice. Six lines max, no list formatting."""
+def _send_capability_rundown(user_row, system_prompt: str | None = None) -> bool:
+    """The 'oh and a quick rundown of how i work' bubbles — code-authored from the
+    registry (capabilities.build_rundown): numbered headline sections with one line
+    per thing, only what's ON for this user, two bubbles, the obstacle line last. The
+    founder's draft (2026-10-09) replaced the model-written paragraph, where features
+    got lost. Everything with no section is revealed by the coach in the moment."""
     if not config.ONBOARDING_RUNDOWN_ENABLED:
         return False
-    from capabilities import rundown_context
-    ctx = rundown_context(user_row)
-    instruction = (
-        "You just sent the 'locked in' message. Now send ONE more bubble, a beat later, "
-        "that tells them how to actually use you — like a friend adding 'oh and'. Open with "
-        "something like 'oh and quick rundown of how i work'. Use ONLY what's below; do not "
-        "mention anything else you can do. No bullet points, no numbered list, no headers, "
-        "no bold — plain sentences, 4 to 6 short lines total, their words. Do not repeat "
-        "the targets (they just got them) and do not send any link — their profile link already "
-        "went with the numbers. No question at the end.\n\n"
-        f"{ctx}"
-    )
+    from capabilities import build_rundown
+    text = build_rundown(user_row)
+    if not text:
+        return False
     if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
         import time
         time.sleep(config.ONBOARDING_RUNDOWN_DELAY_S)
-    text = _generate(system_prompt, instruction, user_id=user_row.id)
-    if not text:
-        return False
     send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-    logger.info("ONBOARDING_RUNDOWN_SENT user=%s chars=%d", user_row.id, len(text))
+    logger.info("ONBOARDING_RUNDOWN_SENT user=%s chars=%d bubbles=%d", user_row.id, len(text), text.count("---") + 1)
     return True
 
 

@@ -44,6 +44,14 @@ class Capability:
     used: Callable | None = None
     # A hint for the reveal moment (voice.md): when to bring it up.
     reveal_when: str = ""
+    # The rundown tier (founder, 2026-10-09). section = one of RUNDOWN_SECTIONS' keys and
+    # rundown = the one sub-line under that headline, in the friend's voice. None = SHOW,
+    # don't tell: the coach reveals it at the moment reveal_when describes, never in the
+    # rundown. rundown_if = an extra gate beyond enabled (e.g. only if they named an app).
+    section: str | None = None
+    rundown: str | None = None
+    rundown_if: Callable = lambda user: True
+    rundown_order: int = 50          # lower first within a section (founder: hydration before "any reminder")
 
 
 def _has(user, attr):
@@ -116,6 +124,20 @@ def _menu_saved(session, user):
     return bool(getattr(user, "saved_menus", None))
 
 
+_FOOD_APPS = ("myfitnesspal", "mfp", "mynetdiary", "lose it", "loseit", "cronometer", "macrofactor", "noom")
+
+
+def _names_a_food_app(user) -> bool:
+    if getattr(user, "food_logger", None):
+        return True
+    tools = (getattr(user, "existing_tools", None) or "").lower()
+    return any(a in tools for a in _FOOD_APPS)
+
+
+def _is_student(user) -> bool:
+    return "student" in (getattr(user, "occupation", None) or "").lower() or bool(getattr(user, "year", None))
+
+
 CAPABILITIES: list[Capability] = [
     Capability(
         id="log_meals",
@@ -166,6 +188,7 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 9 if "dining" in (getattr(u, "cooking_situation", "") or "").lower() else 3,
         used=None,
         reveal_when="they mention a dining hall or ask what to eat on campus",
+        section="food", rundown="i know all the dining hall macros, just ask about any of them",
     ),
     Capability(
         id="saved_menus",
@@ -186,6 +209,7 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 7 if "cook" in (getattr(u, "cooking_situation", "") or "").lower() else 4,
         used=lambda session, u: session.query(__import__("models").PantryItem.id).filter_by(user_id=u.id).first() is not None,
         reveal_when="they mention groceries, a store run, or not knowing what to cook",
+        section="food", rundown="a pic of a grocery receipt and i know what u got at home",
     ),
     Capability(
         id="cook_from_fridge",
@@ -206,6 +230,7 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 6,
         used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="gym_line_d1").first() is not None,
         reveal_when="they complain the gym's packed or ask about the crowd",
+        section="campus", rundown="i know how full rsf is at any given time, and when it's packed i send u the line link",
     ),
     Capability(
         id="study_rooms",
@@ -216,6 +241,7 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 7 if (getattr(u, "occupation", "") or "").lower().startswith("student") else 3,
         used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="study_room_link").first() is not None,
         reveal_when="they mention studying, a group project, a midterm coming up, or ask where to go / what's open",
+        section="campus", rundown="i can find empty library rooms to book for study sessions",
     ),
     Capability(
         id="stat_cards",
@@ -228,6 +254,7 @@ CAPABILITIES: list[Capability] = [
             __import__("models").Message.user_id == u.id,
             __import__("models").Message.message_type.like("stat_card_%")).first() is not None,
         reveal_when="they ask how packed the gym is, how today's numbers look, or what their week looks like",
+        section="workouts", rundown="ask 'how am i doing today' and i drop a quick card in the chat",
     ),
     Capability(
         id="campus_lookup",
@@ -258,6 +285,7 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=_reminders_set,
         reveal_when="they mention forgetting things, or a fixed daily/weekly slot they want held",
+        section="extras", rundown="any reminder u want, just say 'remind me…' and it shows up on time",
     ),
     Capability(
         id="water_reminders",
@@ -268,6 +296,8 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 8 if getattr(u, "water_offer_status", None) in (None, "lapsed") else 3,
         used=_interval_reminder_set,
         reveal_when="they mention headaches, low energy, or forgetting to drink",
+        section="extras", rundown="hydration: say 'remind me to drink water' and i nudge u every couple hours while ur up",
+        rundown_order=10,
     ),
     Capability(
         id="checkin_level",
@@ -317,7 +347,7 @@ CAPABILITIES: list[Capability] = [
         enabled=lambda u: config.LOG_WEIGHT_TOOL_ENABLED and not getattr(u, "weigh_in_opt_out", False),
         relevance=lambda u: 7 if _goal_has(u, "fat_loss", "muscle") else 4,
         used=lambda session, u: _weighed_in(session, u),
-        reveal_when="they mention the scale, their weight, or ask if the numbers are right",
+        reveal_when="never on day one and never as a pitch — after their first week, on a quiet morning, ask once for a weigh-in; or when they mention the scale or ask if the numbers are right",
     ),
     Capability(
         id="fix_a_log",
@@ -380,6 +410,8 @@ CAPABILITIES: list[Capability] = [
         relevance=lambda u: 9 if getattr(u, "food_logger", None) else 3,
         used=_app_meals_logged,
         reveal_when="they mention another food app, or ask to connect one",
+        section="food", rundown="still logging in another app? screenshot ur diary and i take the numbers as printed",
+        rundown_if=lambda u: _names_a_food_app(u),
     ),
     Capability(
         id="food_logger_state",
@@ -411,7 +443,7 @@ CAPABILITIES: list[Capability] = [
         enabled=lambda u: config.WEATHER_ENABLED,
         relevance=lambda u: 4,
         used=lambda session, u: getattr(u, "weather_place", None) is not None,
-        reveal_when="they ask about the weather, mention rain/cold/heat, travel, or say where they are",
+        reveal_when="never as a pitch — the morning brief shows it; answer when they ask about the weather, rain/cold/heat, travel, or say where they are",
     ),
     Capability(
         id="tasks",
@@ -446,6 +478,110 @@ OBSTACLE_LINES = {
     "motivation": "you said motivation is the hard part — i'll be the reason you show up on the off days",
     "injuries": "you said injuries are the hard part — i'll work around them, not through them",
 }
+
+
+# ─── The rundown (founder, 2026-10-09): numbered, tiered, two bubbles ────────────
+# Headline sections in order with their fixed lines; capabilities with section= add one
+# sub-line each when enabled (and rundown_if). A section appears only when its gate
+# capability is enabled (or any of its sub-lines is). Everything with section=None is
+# SHOW, don't tell. Weather is deliberately absent: the morning brief shows it.
+RUNDOWN_INTRO = "oh and a quick rundown of how i work"
+
+
+def _food_lines(user):
+    return ["tell me what u ate (food scale = even better)", "or a pic of the plate"]
+
+
+def _workout_lines(user):
+    return ["say 'starting workout'",
+            "a card shows up and u check off each set, like a checklist",
+            "or just text me what u hit and i log it that way"]
+
+
+def _connect_title(user):
+    bc = config.BCOURSES_ENABLED and _is_student(user)
+    return "i can connect to ur calendar and bcourses" if bc else "i can connect to ur google calendar"
+
+
+def _connect_lines(user):
+    bc = config.BCOURSES_ENABLED and _is_student(user)
+    out = ["just tell me u want to connect it" + (" (both, or either)" if bc else ""),
+           "i plan workouts around ur schedule"]
+    if bc:
+        out.append("remind u of due dates and meetings")
+    if _is_student(user):
+        out.append("help u plan around midterms and study sessions")
+    try:
+        from connect_offers import has_wearable, device_label
+        # The wearable line waits for Google's API approval (GOOGLE_HEALTH_OFFER_ENABLED).
+        if config.GOOGLE_HEALTH_ENABLED and getattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False) and has_wearable(user):
+            out.append(f"and ur {device_label(user)}: sleep, steps, heart rate, so i plan around how ur recovering")
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _extras_tail(user):
+    tools = (getattr(user, "existing_tools", None) or "").strip().lower()
+    if tools and tools != "none":
+        return ["and feel free to share anything from apps u already use, screenshots work"]
+    return []
+
+
+RUNDOWN_SECTIONS = [
+    # key, title, fixed lines, gate capability ids (section shows if ANY is enabled), tail lines
+    ("food", lambda u: "i track ur calories", _food_lines, ("log_meals",), lambda u: []),
+    ("workouts", lambda u: "i track ur workouts and weights at the gym", _workout_lines, ("log_workouts",), lambda u: []),
+    ("connect", _connect_title, _connect_lines, ("connect_accounts",), lambda u: []),
+    ("campus", lambda u: "rsf, libraries, and study rooms", lambda u: [], (), lambda u: []),
+    ("extras", lambda u: "and lastly, nice to haves", lambda u: [], (), _extras_tail),
+]
+
+
+def rundown_sections(user) -> list[tuple[str, str, list[str]]]:
+    """[(key, title, lines)] for this user — only sections with something true in them."""
+    enabled = {c.id: c for c in available(user)}
+    out = []
+    for key, title, fixed, gates, tail in RUNDOWN_SECTIONS:
+        gate_ok = any(g in enabled for g in gates) if gates else False
+        if gates and not gate_ok:
+            continue
+        subs = []
+        for i, c in enumerate(CAPABILITIES):
+            if c.section != key or not c.rundown or c.id not in enabled:
+                continue
+            try:
+                if not c.rundown_if(user):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            subs.append((c.rundown_order, i, c.rundown))
+        if not gates and not subs:
+            continue          # a sub-line-only section with nothing enabled (the tail never stands alone)
+        lines = list(fixed(user)) + [t for _o, _i, t in sorted(subs)] + list(tail(user))
+        if not lines:
+            continue
+        out.append((key, title(user), lines))
+    return out
+
+
+def build_rundown(user) -> str:
+    """The two rundown bubbles (joined with `---`), code-authored. Numbered sections,
+    one dash line each thing; the first two sections in bubble one, the rest in bubble
+    two, the obstacle line last. '' when nothing is enabled."""
+    sections = rundown_sections(user)
+    if not sections:
+        return ""
+    blocks = []
+    for n, (_key, title, lines) in enumerate(sections, 1):
+        blocks.append("\n".join([f"{n}. {title}"] + [f"- {ln}" for ln in lines]))
+    first = "\n".join([RUNDOWN_INTRO] + blocks[:2])
+    rest = blocks[2:]
+    ob = OBSTACLE_LINES.get((getattr(user, "biggest_obstacle", "") or "").strip().lower())
+    if rest:
+        second = "\n".join(rest + ([ob] if ob else []))
+        return f"{first}\n---\n{second}"
+    return first + (f"\n{ob}" if ob else "")
 
 
 def available(user) -> list[Capability]:

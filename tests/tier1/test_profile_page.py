@@ -123,7 +123,8 @@ def test_kickoff_instruction_uses_the_token_link(db, anthropic_stub, monkeypatch
     onboarding_agent._complete_onboarding(user, "yes")
     summary = sent[0]
     assert f"?t={profile_token(user.id)}" in summary and "?phone=" not in summary
-    assert "?t=" not in seen["instruction"] and "do not send any link" in seen["instruction"]
+    assert "instruction" not in seen, "the rundown is code's now — no model call for it"
+    assert all("?t=" not in b for b in sent[1:]), sent   # the rundown bubbles carry no link
 
 
 def test_admin_user_page_shows_the_profile_link(db, client):
