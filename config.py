@@ -800,6 +800,19 @@ WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true
 # the water offer leaves the kickoff and arrives via its sweep (~30 min after the
 # conversation goes quiet) so only one code-answered question holds the floor.
 CARD_SETUP_ENABLED = os.getenv("CARD_SETUP_ENABLED", "false").lower() == "true"
+# Setup sequence (setup_sequence.py, founder 2026-10-09): after the summary and the rundown,
+# the rest of setup goes out ONE step at a time — the connect offers (calendar, bcourses,
+# wearable) first, the first card LAST — each step when the previous one was answered or
+# the conversation went quiet for SETUP_STEP_QUIET_MINUTES; on their next text while
+# engaged, or from the 10-min sweep inside the heartbeat's guardrails. Inside
+# SETUP_WINDOW_HOURS of completion the connect offers don't wait a day. A workout ask at
+# any point sends the card right then (the onboarding early exit / the start tool).
+SETUP_SEQUENCE_ENABLED = os.getenv("SETUP_SEQUENCE_ENABLED", "true").lower() == "true"
+SETUP_WINDOW_HOURS = int(os.getenv("SETUP_WINDOW_HOURS", "48"))
+SETUP_STEP_QUIET_MINUTES = int(os.getenv("SETUP_STEP_QUIET_MINUTES", "20"))
+# The water offer is in the rundown now ("nice to have"); the separate yes/no bubble waits
+# until day two so day one isn't a pile of asks (founder's run: offer at 00:34, unanswered).
+WATER_OFFER_MIN_HOURS_ONBOARDED = int(os.getenv("WATER_OFFER_MIN_HOURS_ONBOARDED", "20"))
 
 # STOP opt-out (iMessage — SMS is Twilio/carrier-handled). Deliberately high-friction to
 # avoid ACCIDENTAL opt-outs losing a user: the trigger is "STOP" or "UNSUBSCRIBE" as the

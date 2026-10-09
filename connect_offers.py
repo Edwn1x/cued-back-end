@@ -293,7 +293,7 @@ def _eligible(user) -> bool:
     return True
 
 
-def _action_for(session, user, now: datetime) -> tuple[str, str, str | None] | None:
+def _action_for(session, user, now: datetime, *, min_gap: timedelta | None = None) -> tuple[str, str, str | None] | None:
     """→ (kind, provider, text) for the ONE thing to send this user now, or None.
     kind: 'reconnect' | 'allowlisted' | 'offer_link' | 'offer_ask' | 'offer_text'."""
     # 1. a Google connection died → one nudge per revoke (every account's row)
@@ -323,15 +323,52 @@ def _action_for(session, user, now: datetime) -> tuple[str, str, str | None] | N
                 if r is None or r.status not in ("connected", "pending"):
                     return ("allowlisted", provider, ALLOWLISTED_LINE[provider].format(device=device_label(user)))
 
-    # 3. the first offers — one per provider, a day apart, once ever
+    # 3. the first offers — one per provider, once ever. A day in and a day apart, EXCEPT
+    # inside the setup window right after onboarding (setup_sequence.py, founder
+    # 2026-10-09): there they are the next steps of setup, paced by the sequence.
     if not config.CONNECT_OFFER_ENABLED:
         return None
+    if not _first_offer_gates_ok(user, now, min_gap=min_gap):
+        return None
+    cands = first_offer_candidates(session, user, offers=offers, state=state)
+    return cands[0] if cands else None
+
+
+def in_setup_window(user, now: datetime | None = None) -> bool:
+    """Inside SETUP_WINDOW_HOURS of onboarding completion (and the sequence is on)."""
+    if not getattr(config, "SETUP_SEQUENCE_ENABLED", True):
+        return False
+    done = getattr(user, "onboarding_completed_at", None)
+    if not done:
+        return False
+    now = now or _naive_utcnow()
+    return now - done < timedelta(hours=getattr(config, "SETUP_WINDOW_HOURS", 48))
+
+
+def _first_offer_gates_ok(user, now: datetime, *, min_gap: timedelta | None = None) -> bool:
+    window = in_setup_window(user, now)
     since = getattr(user, "activated_at", None) or user.created_at
-    if since and now - since < timedelta(days=MIN_DAYS_ONBOARDED):
-        return None
+    if not window and since and now - since < timedelta(days=MIN_DAYS_ONBOARDED):
+        return False
     last = _last_offer_at(user)
-    if last and now - last < timedelta(hours=OFFER_GAP_HOURS):
-        return None
+    if last:
+        gap = (min_gap if min_gap is not None else
+               (timedelta(minutes=getattr(config, "SETUP_STEP_QUIET_MINUTES", 20)) if window
+                else timedelta(hours=OFFER_GAP_HOURS)))
+        if now - last < gap:
+            return False
+    return True
+
+
+def first_offer_candidates(session, user, *, offers: dict | None = None, state: str | None = None) -> list:
+    """Every first offer still owed to this user, in order (gcal → bcourses → wearable),
+    ignoring the time gates. [] when nothing is left — the setup sequence's cue that
+    the card can go."""
+    if not config.CONNECT_OFFER_ENABLED:
+        return []
+    offers = _offers(user) if offers is None else offers
+    state = allowlist_state(user, session) if state is None else state
+    out = []
 
     def google_offer(provider, link_text, ask_text):
         if provider in offers or _row(session, user.id, provider) is not None:
@@ -345,16 +382,74 @@ def _action_for(session, user, now: datetime) -> tuple[str, str, str | None] | N
     if config.GCAL_ENABLED:
         a = google_offer("gcal", OFFER_GCAL_LINK, OFFER_GCAL_ASK)
         if a:
-            return a
+            out.append(a)
     if config.BCOURSES_ENABLED and is_student(user) and "bcourses" not in offers \
             and _row(session, user.id, "bcourses") is None:
-        return ("offer_text", "bcourses", OFFER_BCOURSES)
+        out.append(("offer_text", "bcourses", OFFER_BCOURSES))
     if config.GOOGLE_HEALTH_ENABLED and has_wearable(user):
         d = device_label(user)
         a = google_offer("google_health", OFFER_HEALTH_LINK.format(device=d), OFFER_HEALTH_ASK.format(device=d))
         if a:
-            return a
-    return None
+            out.append(a)
+    return out
+
+
+def _commit_action(session, u, action, now: datetime) -> None:
+    """Mark the once-only ledger BEFORE sending so a send-side retry can't double-send."""
+    kind, provider, _text = action
+    if kind == "reconnect":
+        from integrations.base import rows_for
+        for r in rows_for(session, u.id, provider):
+            if r.status != "revoked":
+                continue
+            meta = dict(r.meta or {})
+            if _parse_iso(meta.get("reconnect_nudged_at")) and \
+                    _parse_iso(meta.get("reconnect_nudged_at")) >= (_parse_iso(meta.get("revoked_at")) or r.updated_at):
+                continue
+            meta["reconnect_nudged_at"] = now.isoformat()
+            r.meta = meta
+            break
+        _mark(session, u, f"{provider}_reconnect", now)   # counts toward the one-a-day gap
+    elif kind == "allowlisted":
+        _mark(session, u, f"{provider}_link", now)
+    else:
+        _mark(session, u, provider, now)
+    session.commit()
+
+
+def _send_action(uid: int, kind: str, provider: str, text: str | None, phone: str) -> None:
+    from sms import send_sms
+    if kind in ("reconnect", "allowlisted", "offer_link"):
+        send_link(uid, provider, text, source=kind)
+    else:
+        send_sms(phone, text, user_id=uid, message_type=MESSAGE_TYPE)
+        logger.info("CONNECT_OFFER_SENT user=%s provider=%s kind=%s", uid, provider, kind)
+
+
+def offer_now(user_id: int, now: datetime | None = None, *, min_gap: timedelta | None = None) -> str | None:
+    """The setup sequence's call: send this user's ONE next action right now (no
+    heartbeat guardrails — they just texted). Returns the provider sent, else None."""
+    now = now or _naive_utcnow()
+    from models import get_session, User
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u or not _eligible(u):
+            return None
+        action = _action_for(session, u, now, min_gap=min_gap)
+        if not action:
+            return None
+        _commit_action(session, u, action, now)
+        kind, provider, text = action
+        phone = u.phone
+    finally:
+        session.close()
+    try:
+        _send_action(user_id, kind, provider, text, phone)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("CONNECT_OFFER_FAILED user=%s provider=%s kind=%s err=%s", user_id, provider, kind, e)
+        return None
+    return provider
 
 
 def sweep(now: datetime | None = None) -> int:
@@ -381,36 +476,14 @@ def sweep(now: datetime | None = None) -> int:
             if not action:
                 continue
             kind, provider, text = action
-            # mark BEFORE sending so a send-side retry can't double-send
-            if kind == "reconnect":
-                from integrations.base import rows_for
-                for r in rows_for(session, u.id, provider):
-                    if r.status != "revoked":
-                        continue
-                    meta = dict(r.meta or {})
-                    if _parse_iso(meta.get("reconnect_nudged_at")) and \
-                            _parse_iso(meta.get("reconnect_nudged_at")) >= (_parse_iso(meta.get("revoked_at")) or r.updated_at):
-                        continue
-                    meta["reconnect_nudged_at"] = now.isoformat()
-                    r.meta = meta
-                    break
-                _mark(session, u, f"{provider}_reconnect", now)   # counts toward the one-a-day gap
-            elif kind == "allowlisted":
-                _mark(session, u, f"{provider}_link", now)
-            else:
-                _mark(session, u, provider, now)
-            session.commit()
+            _commit_action(session, u, action, now)
             todo.append((u.id, kind, provider, text, u.phone))
     finally:
         session.close()
     sent = 0
     for uid, kind, provider, text, phone in todo:
         try:
-            if kind in ("reconnect", "allowlisted", "offer_link"):
-                send_link(uid, provider, text, source=kind)
-            else:
-                send_sms(phone, text, user_id=uid, message_type=MESSAGE_TYPE)
-                logger.info("CONNECT_OFFER_SENT user=%s provider=%s kind=%s", uid, provider, kind)
+            _send_action(uid, kind, provider, text, phone)
             sent += 1
         except Exception as e:  # noqa: BLE001 — one bad user must not stop the sweep
             logger.warning("CONNECT_OFFER_FAILED user=%s provider=%s kind=%s err=%s", uid, provider, kind, e)

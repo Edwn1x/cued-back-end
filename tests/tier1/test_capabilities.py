@@ -128,12 +128,13 @@ def test_completion_sends_the_rundown_as_a_second_bubble(db, all_on, anthropic_s
 
     assert onboarding_agent.handle_onboarding_reply(user, "sounds good") is True
     bodies = [b for _, b in sms_capture]
-    assert len(bodies) == 3, bodies                     # the friend's reaction, the code summary, the rundown
-    assert bodies[0].startswith("locked in") and bodies[1].startswith("ok so 5'6 139") and bodies[2].startswith("oh and quick rundown")
+    assert len(bodies) == 4, bodies                     # the friend's reaction, the code summary (2 bubbles), the rundown
+    assert bodies[0].startswith("locked in") and bodies[1].startswith("ok so far this is what i have: ur 5'6 139") \
+        and bodies[3].startswith("oh and quick rundown")
     rundown_ins = next(i for i in seen if "quick rundown" in i)
     assert "LEAD WITH" in rundown_ins and "No bullet points" in rundown_ins
     from profile_page import profile_url
-    assert profile_url(user) in rundown_ins            # the link rides on the rundown now
+    assert profile_url(user) not in rundown_ins and profile_url(user) in bodies[2]   # the link rides with the numbers
     assert len(seen) == 2, "the summary is code's — the model writes the reaction and the rundown"
 
 
@@ -150,7 +151,7 @@ def test_rundown_flag_off_sends_only_the_kickoff(db, all_on, anthropic_stub, sms
         s.close()
     anthropic_stub.reply_with(lambda kw: "{}" if _is_field_extract(kw) else "locked in")
     assert onboarding_agent.handle_onboarding_reply(user, "sounds good") is True
-    assert len(sms_capture) == 2 and sms_capture[1][1].startswith("ok so ")   # reaction + summary, no rundown
+    assert len(sms_capture) == 3 and sms_capture[1][1].startswith("ok so far")   # reaction + summary (2), no rundown
 
 
 # ─── contextual reveals in the coach loop ───────────────────────────────────

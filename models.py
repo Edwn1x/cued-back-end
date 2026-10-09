@@ -139,6 +139,9 @@ class User(Base):
     # Card setup (workouts/card_setup.py): when the extension framing was sent, when the
     # card page was first fetched (= the extension is installed), when the tour was sent.
     card_setup_at = Column(DateTime, default=None)
+    # Setup sequence (setup_sequence.py): when onboarding completed (the summary went out).
+    # The connect offers and the first card follow from here, in order, one at a time.
+    onboarding_completed_at = Column(DateTime, default=None)
     card_opened_at = Column(DateTime, default=None)
     card_explained_at = Column(DateTime, default=None)
     # Layered wake model (wake_model.py): stamped (naive UTC) on EVERY inbound text or

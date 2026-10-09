@@ -28,6 +28,10 @@ def setup_on(monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
     for f in ("WATER_OFFER_ENABLED", "WATER_REMINDERS_ENABLED", "REMINDERS_ENABLED"):
         monkeypatch.setattr(config, f, True)
+    # The kickoff path: card at completion. With the setup sequence ON the card comes LAST
+    # (test_setup_sequence.py); here it's off so the step itself is under test.
+    monkeypatch.setattr(config, "SETUP_SEQUENCE_ENABLED", False)
+    monkeypatch.setattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 0)
 
 
 @pytest.fixture
@@ -100,12 +104,12 @@ def test_completion_sends_framing_first_card_and_tour_and_defers_water(db, setup
     oa._complete_onboarding(_u(u.id), "yes")
 
     bodies = sidecar_ok
-    assert bodies[0].startswith("ok so ") and bodies[0].endswith("say if anything's off"), bodies[0]   # the code summary
-    assert bodies[1:3] == list(EXTENSION_INTRO)
-    intro = bodies[3]
+    assert bodies[0].startswith("ok so far this is what i have: ") and bodies[1].startswith("im thinking "), bodies[:2]   # the code summary, two bubbles
+    assert bodies[2:4] == list(EXTENSION_INTRO)
+    intro = bodies[4]
     assert intro.startswith("here's ur first card") and "tap it now so ur set for 6pm" in intro, intro
     assert re.search(r"starting u at \d+ on bench press — weights are off what u told me", intro), intro
-    assert bodies[4:7] == list(BREAKDOWN)
+    assert bodies[5:9] == list(BREAKDOWN)
     assert OFFER_TEXT not in bodies                       # water waits for its sweep
     assert len(card_ok["sent"]) == 1 and card_ok["sent"][0]["caption"].startswith("push")
     row = _u(u.id)
@@ -122,16 +126,16 @@ def test_no_lifts_asks_first_and_the_answer_sends_the_setup_card(db, setup_on, s
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db, experience="beginner", lift_anchors=None)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok[0].startswith("ok so ") and sidecar_ok[1:] == [ASK_NEW], sidecar_ok
+    assert sidecar_ok[0].startswith("ok so far") and sidecar_ok[2:] == [ASK_NEW], sidecar_ok
     assert card_ok["sent"] == []
     assert peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
 
     assert handle_pending_card_reply(u.id, "bench 65 for 5") is True
-    bodies = sidecar_ok[2:]
+    bodies = sidecar_ok[3:]
     assert bodies[:2] == list(EXTENSION_INTRO)
     assert bodies[2].startswith("here's ur first card") and re.search(r"starting u at \d+ on bench press", bodies[2]), bodies[2]
     assert "weights are off what u told me" in bodies[2]
-    assert bodies[3:6] == list(BREAKDOWN)
+    assert bodies[3:7] == list(BREAKDOWN)
     assert len(card_ok["sent"]) == 1
     assert peek_pending_card(u.id) is None
 
@@ -214,7 +218,7 @@ def test_sms_user_gets_no_setup_and_water_waits_for_the_sweep(db, setup_on, sms_
     u = _imsg_user(db, preferred_channel="sms")
     oa._complete_onboarding(_u(u.id), "yes")
     bodies = [b for _p, b in sms_capture]
-    assert len(bodies) == 1 and bodies[0].startswith("ok so "), bodies
+    assert len(bodies) == 2 and bodies[0].startswith("ok so far"), bodies
     assert OFFER_TEXT not in bodies and card_ok["sent"] == []
     assert _u(u.id).card_setup_at is None
 
@@ -227,7 +231,7 @@ def test_flag_off_keeps_the_kickoff_water_offer(db, setup_on, sidecar_ok, card_o
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok[0].startswith("ok so ") and sidecar_ok[1:] == [OFFER_TEXT], sidecar_ok
+    assert sidecar_ok[0].startswith("ok so far") and sidecar_ok[2:] == [OFFER_TEXT], sidecar_ok
     assert card_ok["sent"] == []
 
 
@@ -323,7 +327,7 @@ def test_link_preferring_user_gets_the_tour_but_no_extension_talk_and_no_opened_
     assert r["surface"] == "card" and card_ok["sent"] == []                    # went as a link, not a bubble
     assert not any(b in EXTENSION_INTRO or b == EXTENSION_REMINDER for b in sidecar_ok), sidecar_ok
     assert any("card.html" in b or "/card/" in b for b in sidecar_ok), sidecar_ok
-    assert sidecar_ok[-3:] == list(BREAKDOWN)
+    assert sidecar_ok[-4:] == list(BREAKDOWN)
     tok = card_token(u.id, r["session_id"])
     assert client.get("/card/api/session", headers={"Authorization": f"Bearer {tok}"}).status_code == 200
     assert _u(u.id).card_opened_at is None
@@ -367,13 +371,13 @@ def test_set_lift_anchors_keeps_the_setup_card_in_setup_mode(db, setup_on, sidec
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db, experience="intermediate", lift_anchors=None)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok[1] == ASK_TRAINED and peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
+    assert sidecar_ok[2] == ASK_TRAINED and peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
 
     out = handle_set_lift_anchors(u.id, {"lifts": [{"exercise": "bench", "weight": 135, "reps": 10}]})
-    bodies = sidecar_ok[2:]
+    bodies = sidecar_ok[3:]
     assert bodies[:2] == list(EXTENSION_INTRO)
     assert bodies[2].startswith("here's ur first card") and "tap it now" in bodies[2], bodies[2]
-    assert bodies[3:6] == list(BREAKDOWN)
+    assert bodies[3:7] == list(BREAKDOWN)
     assert _sessions(u.id)[-1][1] == "planned"                      # setup card: planned, not active
     assert peek_pending_card(u.id) is None
     # no saved push routine → the tool result makes the coach flag the defaults (not [silent])
@@ -389,13 +393,13 @@ def test_code_sent_setup_cards_label_a_generic_day_after_the_tour(db, setup_on, 
     # kickoff with anchors already on file → card straight away, then the note
     u = _imsg_user(db)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok[4:7] == list(BREAKDOWN) and sidecar_ok[7] == defaults_note("push"), sidecar_ok
+    assert sidecar_ok[5:9] == list(BREAKDOWN) and sidecar_ok[9] == defaults_note("push"), sidecar_ok
     # the ask → code-answered → card → tour → the note
     sidecar_ok.clear()
     v = _imsg_user(db, experience="beginner", lift_anchors=None, phone="+15550003333")
     oa._complete_onboarding(_u(v.id), "yes")
     assert handle_pending_card_reply(v.id, "bench 65 for 5") is True
-    assert sidecar_ok[-1] == defaults_note("push") and sidecar_ok[-4:-1] == list(BREAKDOWN)
+    assert sidecar_ok[-1] == defaults_note("push") and sidecar_ok[-5:-1] == list(BREAKDOWN)
 
 
 def test_a_saved_routine_gets_no_note_at_setup(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):

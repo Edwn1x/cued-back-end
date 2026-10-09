@@ -97,6 +97,20 @@ def start_scheduler():
             max_instances=1,
         )
 
+    # Setup sequence (setup_sequence.sweep): the first card as the LAST setup step once
+    # the connect offers are through and the conversation went quiet — every 10 min,
+    # inside the heartbeat's guardrails.
+    if config.CARD_SETUP_ENABLED and getattr(config, "SETUP_SEQUENCE_ENABLED", True):
+        from setup_sequence import sweep as setup_sequence_sweep
+        scheduler.add_job(
+            setup_sequence_sweep,
+            trigger=_IT(minutes=10),
+            id="setup_sequence_sweep",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
     # Connecting integrations proactively (connect_offers.sweep): the first offers a day
     # into coaching, the allowlist follow-through, and the reconnect nudge when a Google
     # token dies — every 10 min, inside the heartbeat's guardrails, one action per user.

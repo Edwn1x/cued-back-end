@@ -280,8 +280,8 @@ def test_last_field_landing_completes_with_the_summary_in_the_same_message(db, a
     assert done is True
     bodies = [b for _p, b in sms_capture]
     assert len(bodies) >= 1, bodies
-    assert bodies[0].startswith("ok so 5'10 170, training 4 days a week at 5, up at 8 down by 12, building muscle. "), bodies[0]
-    assert bodies[0].endswith("say if anything's off") and "sound right" not in bodies[0].lower()
+    assert bodies[0] == "ok so far this is what i have: ur 5'10 170, training 4 days a week at 5, up at 8 down by 12, tryna build muscle", bodies[0]
+    assert onboarding_agent.SUMMARY_CLOSER in bodies[1] and "sound right" not in bodies[1].lower()
     db.expire_all()
     u = db.get(User, user.id)
     assert u.onboarding_step == 3 and u.injuries == "none" and u.calorie_target
@@ -308,7 +308,7 @@ def test_asking_for_a_workout_with_the_basics_in_completes_early(db, anthropic_s
     assert done is True
     bodies = [b for _p, b in sms_capture]
     assert bodies[0] == "ok ur already there, love that. numbers then ur card"
-    assert bodies[1].startswith("ok so 5'6 110, training mon/tue/thu, building muscle. ")
+    assert bodies[1] == "ok so far this is what i have: ur 5'6 110, training mon/tue/thu, tryna build muscle"
     assert "they asked for it" in seen["instruction"] and "no numbers" in seen["instruction"]
     db.expire_all()
     assert db.get(User, user.id).onboarding_step == 3
@@ -516,7 +516,7 @@ def test_summary_shows_wake_and_sleep_so_a_swap_can_be_caught(db):
                        goal="fat_loss,muscle_building")
     summary = onboarding_agent._build_confirmation_summary(user)
     assert "up at 12 down by 3" in summary
-    assert summary.rstrip().endswith("say if anything's off")
+    assert onboarding_agent.SUMMARY_CLOSER in summary and "tryna lose fat while building muscle" in summary
 
 
 def test_extractor_prompt_states_the_late_schedule_rule(db, anthropic_stub):
@@ -566,8 +566,9 @@ def test_everything_known_completes_with_code_numbers_and_answers_their_question
     assert done is True
     bodies = [b for _p, b in sms_capture]
     assert bodies[0] == "because recomp math, u hold weight and swap it"
-    assert bodies[1] == ("ok so 5'6 139, training 4 days a week afternoons, up at 12 down by 3, recomp. "
-                         "2450 cal, 139g protein a day. say if anything's off"), bodies[1]
+    assert bodies[1] == ("ok so far this is what i have: ur 5'6 139, training 4 days a week in the afternoons, "
+                         "up at 12 down by 3, tryna lose fat while building muscle"), bodies[1]
+    assert bodies[2].startswith("im thinking 2450 cal and 139g protein a day. we run this for the first few weeks"), bodies[2]
     assert "answer their question, fully" in seen["instruction"] and "no numbers" in seen["instruction"]
     db.expire_all()
     u = db.get(User, user.id)
@@ -779,6 +780,7 @@ def test_recap_uses_int_weight_and_omits_age_when_absent(db):
     u = _new_signup(db, onboarding_step=2, height_ft=5, height_in=0, weight_lbs=137.0, age=None,
                     goal="fat_loss", workout_days="5", workout_time="evening")
     recap = _build_confirmation_summary(u)
-    assert recap.startswith("ok so 5'0 137, training 5 days a week evenings, cutting. ") and "137.0" not in recap
+    assert recap.startswith("ok so far this is what i have: ur 5'0 137, training 5 days a week in the evenings, tryna lose fat") and "137.0" not in recap
     assert "years old" not in recap and "None" not in recap
-    assert recap.endswith("say if anything's off")
+    from onboarding_agent import SUMMARY_CLOSER
+    assert SUMMARY_CLOSER in recap and "\n---\n" in recap
