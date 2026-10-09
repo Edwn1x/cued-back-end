@@ -30,14 +30,15 @@ def seq_on(monkeypatch):
               "GCAL_ENABLED", "BCOURSES_ENABLED", "WATER_OFFER_ENABLED", "WATER_REMINDERS_ENABLED",
               "REMINDERS_ENABLED"):
         monkeypatch.setattr(config, f, True)
-    monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", False)
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", True)
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False)
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
     monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
     monkeypatch.setattr(config, "SIDECAR_URL", "http://sidecar.test:8080")
     monkeypatch.setattr(config, "INTERNAL_SHARED_SECRET", "s3cret-internal")
     monkeypatch.setattr(config, "SETUP_STEP_QUIET_MINUTES", 20)
     monkeypatch.setattr(config, "SETUP_WINDOW_HOURS", 48)
-    monkeypatch.setattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 20)
+    monkeypatch.setattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 0)
     monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
     monkeypatch.setattr(config, "HEARTBEAT_STANDING_QUIET_ENABLED", False)
 
@@ -115,9 +116,10 @@ def test_on_inbound_walks_offers_then_the_card_one_step_per_text(db, seq_on, sid
     import onboarding_agent as oa
     import setup_sequence as ss
     from connect_offers import OFFER_GCAL_ASK, OFFER_BCOURSES
+    from water_offer import OFFER_TEXT
     from workouts.card_setup import EXTENSION_INTRO, BREAKDOWN
     anthropic_stub.reply_with(lambda kw: "locked in")
-    u = _user(db)
+    u = _user(db, existing_tools="fitbit")
     oa._complete_onboarding(_u(u.id), "yes")
     sidecar_ok.clear()
 
@@ -129,13 +131,17 @@ def test_on_inbound_walks_offers_then_the_card_one_step_per_text(db, seq_on, sid
     assert ss.on_inbound(u.id) == "connect:bcourses" and sidecar_ok[-1] == OFFER_BCOURSES
     assert ss.on_inbound(u.id) is None
     _inbound(u.id, "ok will do")
+    assert ss.on_inbound(u.id) == "water:sent" and sidecar_ok[-1] == OFFER_TEXT, "the quick yes/no, before the card"
+    assert _u(u.id).water_offer_status == "offered"
+    assert ss.on_inbound(u.id) is None
+    _inbound(u.id, "yes")
     r = ss.on_inbound(u.id)
     assert r == "card:sent", r
-    assert sidecar_ok[2:4] == list(EXTENSION_INTRO) and sidecar_ok[-5:-1] == list(BREAKDOWN)
+    assert sidecar_ok[3:5] == list(EXTENSION_INTRO) and sidecar_ok[-5:-1] == list(BREAKDOWN)
     assert len(card_ok["sent"]) == 1 and _u(u.id).card_setup_at
     _inbound(u.id, "nice")
     assert ss.on_inbound(u.id) is None, "setup is done — nothing repeats"
-    assert sorted(_u(u.id).connect_offers) == ["bcourses", "gcal"]
+    assert sorted(_u(u.id).connect_offers) == ["bcourses", "gcal"], "no wearable offer until Google approves the API"
 
 
 def test_a_quiet_twenty_minutes_also_settles_a_step(db, seq_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
@@ -163,11 +169,16 @@ def test_sweep_sends_the_card_only_when_the_offers_are_done_and_it_is_quiet(db, 
     oa._complete_onboarding(_u(u.id), "yes")
     sidecar_ok.clear()
     assert ss.sweep() == 0, "offers still owed — the card waits"
-    monkeypatch.setattr(config, "CONNECT_OFFER_ENABLED", False)       # nothing to offer → card is next
+    monkeypatch.setattr(config, "CONNECT_OFFER_ENABLED", False)       # nothing to offer → water is next
     assert ss.sweep() == 0, "but the summary just went out — not quiet yet"
     _backdate(u.id, 25)
+    from water_offer import OFFER_TEXT
+    assert ss.sweep() == 1 and sidecar_ok == [OFFER_TEXT], "water before the card"
+    assert ss.sweep() == 0, "the water ask is unanswered: the card waits (the heartbeat's anti-stack gate)"
+    _inbound(u.id, "yes")                # answered — and then the conversation goes quiet again
+    _backdate(u.id, 35)
     assert ss.sweep() == 1
-    assert sidecar_ok[:2] == list(EXTENSION_INTRO) and len(card_ok["sent"]) == 1
+    assert sidecar_ok[1:3] == list(EXTENSION_INTRO) and len(card_ok["sent"]) == 1
     assert ss.sweep() == 0, "once"
 
 
@@ -211,12 +222,26 @@ def test_setup_window_waives_the_day_wait_but_not_for_old_users(db, seq_on, sms_
 
 # ── water waits for day two ───────────────────────────────────────────────────
 
-def test_water_offer_waits_until_day_two(db, seq_on):
+def test_water_is_a_setup_step_not_a_day_two_thing(db, seq_on, monkeypatch):
     from water_offer import eligible
     today = make_user(db, onboarding_completed_at=_now() - timedelta(hours=2))
-    tomorrow = make_user(db, onboarding_completed_at=_now() - timedelta(hours=21))
-    legacy = make_user(db, onboarding_completed_at=None)
-    assert eligible(today) is False and eligible(tomorrow) is True and eligible(legacy) is True
+    assert eligible(today) is True
+    monkeypatch.setattr(config, "WATER_OFFER_MIN_HOURS_ONBOARDED", 20)     # the knob still works for existing users
+    assert eligible(today) is False and eligible(make_user(db, onboarding_completed_at=None)) is True
+
+
+def test_no_wearable_offer_until_google_approves(db, seq_on, monkeypatch):
+    from connect_offers import first_offer_candidates
+    from models import get_session, User
+    u = make_user(db, occupation="student", existing_tools="pixel watch", onboarding_completed_at=_now(),
+                  connect_offers={"gcal": _now().isoformat(), "bcourses": _now().isoformat()})
+    s = get_session()
+    try:
+        assert first_offer_candidates(s, s.get(User, u.id)) == []
+        monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)
+        assert [c[1] for c in first_offer_candidates(s, s.get(User, u.id))] == ["google_health"]
+    finally:
+        s.close()
 
 
 # ── the coach knows a planned setup card is not a session ─────────────────────

@@ -7,7 +7,9 @@ second (summary, "what do u bench", the rundown), then seven more and a workout 
 home. The order is now:
 
   summary (+ profile link) → rundown            immediately, at completion (onboarding_agent)
-  → connect offers: calendar, bcourses, wearable one step at a time (connect_offers)
+  → connect offers: calendar, bcourses, one step at a time (connect_offers; the wearable
+    waits for Google's API approval — GOOGLE_HEALTH_OFFER_ENABLED)
+  → the water yes/no (water_offer) — quick, code-answered (founder: before the card)
   → the first card: extension pitch, lift ask / card, tour     LAST (workouts/card_setup)
 
 One step at a time: the next step goes when the previous one was ANSWERED (an inbound
@@ -31,7 +33,7 @@ import config
 logger = logging.getLogger("cued.setup_sequence")
 
 # Outbound types that are setup steps: the anchor for "was the previous step answered".
-STEP_TYPES = ("connect_offer", "connect_link", "card_setup", "workout_intro", "workout_card")
+STEP_TYPES = ("connect_offer", "connect_link", "water_offer", "card_setup", "workout_intro", "workout_card")
 
 
 def _naive_utcnow() -> datetime:
@@ -52,6 +54,14 @@ def _card_due(session, user) -> bool:
         return False
     from workouts.session_ops import active_session_id
     return active_session_id(user.id) is None
+
+
+def _water_due(session, user) -> bool:
+    try:
+        from water_offer import eligible, _has_interval_reminder
+        return eligible(user) and not _has_interval_reminder(session, user.id)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _previous_step_settled(session, user, now: datetime) -> bool:
@@ -92,6 +102,8 @@ def next_step(session, user, now: datetime | None = None) -> str | None:
         return None
     if first_offer_candidates(session, user):
         return "connect"
+    if _water_due(session, user):
+        return "water"
     if _card_due(session, user):
         return "card"
     return None
@@ -104,6 +116,9 @@ def run_step(user_id: int, step: str, now: datetime | None = None, *, trigger: s
         from connect_offers import offer_now
         provider = offer_now(user_id, now, min_gap=timedelta(0))
         result = f"connect:{provider}" if provider else "connect:none"
+    elif step == "water":
+        from water_offer import send_offer
+        result = f"water:{'sent' if send_offer(user_id, source='setup') else 'skipped'}"
     elif step == "card":
         from workouts.card_setup import run_onboarding_setup
         result = f"card:{run_onboarding_setup(user_id)}"
@@ -133,8 +148,10 @@ def on_inbound(user_id: int) -> str | None:
 
 
 def sweep(now: datetime | None = None) -> int:
-    """The died-down path for the CARD step: every 10 min, inside the heartbeat's
-    guardrails. (connect_offers.sweep covers the offers under the same guardrails.)"""
+    """The died-down path for the WATER and CARD steps: every 10 min, inside the
+    heartbeat's guardrails. (connect_offers.sweep covers the offers under the same
+    guardrails; water_offer.sweep also sends water on its own — same gates, same order,
+    because the card never goes before the water answer is in.)"""
     if not (enabled() and config.CARD_SETUP_ENABLED):
         return 0
     now = now or _naive_utcnow()
@@ -150,14 +167,15 @@ def sweep(now: datetime | None = None) -> int:
         for u in users:
             if guardrail_reason(u, session, now=now):
                 continue
-            if next_step(session, u, now) == "card":
-                todo.append(u.id)
+            step = next_step(session, u, now)
+            if step in ("water", "card"):
+                todo.append((u.id, step))
     finally:
         session.close()
     sent = 0
-    for uid in todo:
+    for uid, step in todo:
         try:
-            run_step(uid, "card", now, trigger="sweep")
+            run_step(uid, step, now, trigger="sweep")
             sent += 1
         except Exception as e:  # noqa: BLE001
             logger.warning("SETUP_SEQUENCE_SWEEP_FAILED user=%s err=%s", uid, e)
