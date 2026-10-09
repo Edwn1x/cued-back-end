@@ -274,3 +274,98 @@ def test_move_intent_regex_covers_the_incident_phrasings():
         assert _MOVE_INTENT_RE.search(p), p
     for n in ("yogurt", "here is my lunch", "chicken and rice", "add this to my log"):
         assert not _MOVE_INTENT_RE.search(n), n
+
+
+# ─── a day-move that changes nothing says so (live 2026-10-09 02:23, user 48) ────────
+
+def _two_am_rows(db, monkeypatch):
+    """A 4am-day user (bed ~3am) with two rows logged at 2am local 'today' — which already
+    count for YESTERDAY's nutrition day. 'Switch that all to yesterday' has nothing to move."""
+    from tests.factories import make_user
+    from models import get_session, Meal
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "MEAL_DAY_MOVE_ENABLED", True)
+    monkeypatch.setattr(config, "NUTRITION_DAY_AUTO_RESET_ENABLED", True)
+    user = make_user(db, sleep_time="03:00", wake_time="12:00")
+    tz = ZoneInfo("America/Los_Angeles")
+    now_local = datetime.now(timezone.utc).astimezone(tz)
+    two_am = now_local.replace(hour=2, minute=0, second=0, microsecond=0)
+    if now_local.hour < 4:
+        pass                                # it IS the small hours: 2am today is in yesterday's window
+    eaten = two_am.astimezone(timezone.utc).replace(tzinfo=None)
+    s = get_session()
+    try:
+        a = Meal(user_id=user.id, description="dominos pepperoni, 4 slices", calories=840, protein_g=36,
+                 eaten_at=eaten, source="text", log_type="user_reported", meal_group_id="g1")
+        b = Meal(user_id=user.id, description="dominos cheese, 5 slices", calories=1000, protein_g=40,
+                 eaten_at=eaten, source="text", log_type="user_reported", meal_group_id="g1")
+        s.add_all([a, b]); s.commit(); ids = (a.id, b.id)
+    finally:
+        s.close()
+    return user, ids, (two_am - timedelta(days=1)).date(), eaten
+
+
+def test_move_to_a_day_the_rows_already_count_for_is_an_honest_noop_group(db, monkeypatch):
+    from agent_tools import handle_manage_log
+    from models import get_session, Meal
+    monkeypatch.setattr(config, "MEAL_GROUP_ENABLED", True)
+    user, (a, b), yesterday, eaten = _two_am_rows(db, monkeypatch)
+    out = handle_manage_log(user.id, {"entity": "meal", "action": "edit", "id": a, "scope": "meal",
+                                      "fields": {"date": "yesterday"}})
+    assert out.startswith("ok: NO CHANGE NEEDED"), out
+    assert f"already count for {yesterday.isoformat()}" in out and "4am→4am" in out
+    assert "nothing was moved" in out and "don't say today is back to 0" in out
+    assert "ok: moved" not in out
+    s = get_session()
+    try:
+        rows = {m.id: m for m in s.query(Meal).filter(Meal.id.in_([a, b])).all()}
+        assert rows[a].eaten_at == eaten and rows[b].eaten_at == eaten      # untouched
+        assert not (rows[a].edits or []) and not (rows[b].edits or [])        # no phantom audit entry
+    finally:
+        s.close()
+
+
+def test_move_to_a_day_the_row_already_counts_for_is_an_honest_noop_single(db, monkeypatch):
+    from agent_tools import handle_manage_log
+    from models import get_session, Meal
+    user, (a, _b), yesterday, eaten = _two_am_rows(db, monkeypatch)
+    out = handle_manage_log(user.id, {"entity": "meal", "action": "edit", "id": a, "scope": "item",
+                                      "fields": {"date": "yesterday"}})
+    assert out.startswith("ok: edited meal") and "(no change: already on that day)" in out
+    assert "NO CHANGE NEEDED" in out and "nothing was moved" in out
+    s = get_session()
+    try:
+        assert s.get(Meal, a).eaten_at == eaten
+    finally:
+        s.close()
+
+
+def test_a_daytime_row_moved_to_yesterday_still_moves(db, monkeypatch):
+    """The honest no-op only fires when the rows are already in the target window."""
+    from tests.factories import make_user
+    from agent_tools import handle_manage_log
+    from models import get_session, Meal
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "MEAL_DAY_MOVE_ENABLED", True)
+    user = make_user(db, sleep_time="03:00")
+    tz = ZoneInfo("America/Los_Angeles")
+    noon = datetime.now(timezone.utc).astimezone(tz).replace(hour=13, minute=0, second=0, microsecond=0)
+    if datetime.now(timezone.utc).astimezone(tz).hour < 4:
+        import pytest; pytest.skip("small hours: 'today 1pm' is in the future on a 4am day")
+    eaten = noon.astimezone(timezone.utc).replace(tzinfo=None)
+    s = get_session()
+    try:
+        m = Meal(user_id=user.id, description="burrito", calories=700, protein_g=30, eaten_at=eaten,
+                 source="text", log_type="user_reported")
+        s.add(m); s.commit(); mid = m.id
+    finally:
+        s.close()
+    out = handle_manage_log(user.id, {"entity": "meal", "action": "edit", "id": mid, "fields": {"date": "yesterday"}})
+    assert out.startswith("ok: edited meal") and "NO CHANGE NEEDED" not in out
+    s = get_session()
+    try:
+        assert s.get(Meal, mid).eaten_at != eaten
+    finally:
+        s.close()
