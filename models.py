@@ -46,6 +46,7 @@ class User(Base):
     sleep_quality = Column(String(20))  # great, okay, poor, terrible
     stress_level = Column(String(20))  # low, moderate, high, very_high
     workout_time = Column(String(50), default=None)  # HH:MM or "afternoon, varies 14:00-16:00…" (prod width 50)
+    workout_times = Column(JSON, default=None)  # {"slots": [HH:MM,…]} or {"by_day": {"mon": HH:MM,…}} (training_time.py); workout_time stays the primary
     workout_days = Column(String(100))  # comma-separated: mon,tue,wed,etc.
     height_ft = Column(Integer)
     height_in = Column(Integer)

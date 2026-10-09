@@ -62,7 +62,8 @@ def planned_today(user, session, now_local) -> bool:
 
 def session_within(user, hours: float, now_local) -> bool:
     """Their usual lift time is within the next `hours` (and not passed)."""
-    t = user.confirmed_workout_time or user.workout_time
+    from training_time import slot_for
+    t = slot_for(user, DAYS[now_local.weekday()])
     if not t or not re.match(r"^\d{1,2}:\d{2}$", t):
         return False
     h, m = map(int, t.split(":"))
