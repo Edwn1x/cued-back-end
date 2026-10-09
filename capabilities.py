@@ -513,7 +513,8 @@ def _connect_lines(user):
         out.append("help u plan around midterms and study sessions")
     try:
         from connect_offers import has_wearable, device_label
-        if config.GOOGLE_HEALTH_ENABLED and has_wearable(user):
+        # The wearable line waits for Google's API approval (GOOGLE_HEALTH_OFFER_ENABLED).
+        if config.GOOGLE_HEALTH_ENABLED and getattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False) and has_wearable(user):
             out.append(f"and ur {device_label(user)}: sleep, steps, heart rate, so i plan around how ur recovering")
     except Exception:  # noqa: BLE001
         pass

@@ -47,7 +47,7 @@ def test_the_founders_structure_for_a_berkeley_student(all_on):
     assert "2. i track ur workouts and weights at the gym\n- say 'starting workout'\n- a card shows up" in b1
     assert b2.startswith("3. i can connect to ur calendar and bcourses\n- just tell me u want to connect it (both, or either)")
     assert "- remind u of due dates and meetings\n- help u plan around midterms and study sessions" in b2
-    assert "- and ur fitbit: sleep, steps, heart rate" in b2
+    assert "fitbit" not in b2, "no wearable line until Google approves the API (GOOGLE_HEALTH_OFFER_ENABLED)"
     assert "4. rsf, libraries, and study rooms\n- i know how full rsf is" in b2 and "empty library rooms" in b2
     assert "5. and lastly, nice to haves\n- hydration: say 'remind me to drink water'" in b2, "hydration first"
     assert "- any reminder u want" in b2 and "share anything from apps u already use" in b2
@@ -57,6 +57,11 @@ def test_the_founders_structure_for_a_berkeley_student(all_on):
     for word in ("weigh in", "weighed", "weather", "jacket", "fix it", "roll your day", "chill with the texts",
                  "15%", "syllabus", "find out and text you", "http"):
         assert word not in low, word
+
+
+def test_wearable_line_appears_once_google_approves(all_on, monkeypatch):
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)
+    assert "- and ur fitbit: sleep, steps, heart rate" in build_rundown(_edwin())
 
 
 def test_non_student_without_apps_gets_the_smaller_version(all_on):
