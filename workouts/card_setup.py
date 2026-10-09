@@ -137,9 +137,12 @@ def context_line(user) -> str | None:
     setup_note = ""
     if _has_planned_setup_card(getattr(user, "id", None)):
         setup_note = ("\ntheir first card is a SETUP card for their NEXT session — planned, not started; they're at "
-                      "home. Never tell them to start it now, never treat it as a workout in progress, never "
-                      "'clear' it. 'so what now' = nothing til they lift: when they say they're heading in, that "
-                      "card is the one they use (say so). Til then it's food and questions.")
+                      "home and that is exactly right. Never tell them to start it now, never treat it as a workout "
+                      "in progress. There is NOTHING to clear, cancel, or take back and nothing to apologize for: "
+                      "never say 'cleared it', 'my bad', or 'sorry' about the card — 'not going to the gym rn' is "
+                      "fine, the card just waits ('that's just sitting ready for later'). 'so what now' = nothing "
+                      "til they lift: when they say they're heading in, that card is the one they use (say so). "
+                      "Til then it's food and questions.")
     if getattr(user, "card_opened_at", None):
         return ("## WORKOUT CARD\nthey've opened a card before — the iMessage extension is installed. "
                 "'won't open' now is a real glitch: say to try the tap again, and offer to take their sets by text."

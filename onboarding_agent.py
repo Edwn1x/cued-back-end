@@ -1495,9 +1495,17 @@ def _build_completion_reaction(user, incoming_message: str, system_prompt: str, 
            f"guess, so nothing to ask. " if assumption_note else "")
         + f"Code is about to send their numbers right after your bubble"
         + (", then their first workout card (they asked for it — say it's coming, one clause)" if early else "")
-        + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting."
+        + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting. "
+        "Output the bubble text only — no notes to yourself, no restating these instructions, no draft."
     )
-    return _generate(system_prompt, instruction, user_id=user.id)
+    text = _generate(system_prompt, instruction, user_id=user.id)
+    # ONE bubble. Live 2026-10-09 (tier-2): the model sent a note to itself as a first
+    # bubble ("…night owl schedule. React, no question.") and the real line second.
+    parts = [p.strip() for p in re.split(r"\n\s*---\s*\n|\n\s*\n", text or "") if p.strip()]
+    if len(parts) > 1:
+        logger.info("ONBOARDING_COMPLETION_MULTI_BUBBLE user=%s kept_last dropped=%r", user.id, parts[:-1])
+        text = parts[-1]
+    return text
 
 
 def send_onboarding_hook(user_id: int, *, reason: str = "signup") -> bool:
