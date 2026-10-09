@@ -292,7 +292,7 @@ def test_second_card_uses_the_usual_intro(db, monkeypatch):
     finally:
         s.close()
     r2 = start_workout_session(user.id, "push")
-    assert r2["first"] is False and sent[-5] == "here it is, lmk if u want me to change anything"
+    assert r2["first"] is False and sent[-5].startswith("here it is, lmk if u want me to change anything")   # SMS adds its 👍 hint
 
 
 def test_pending_card_reply_is_answered_in_code(db, monkeypatch):
