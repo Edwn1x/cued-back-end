@@ -168,8 +168,8 @@ def integrations_block(user, status: str | None, google_line: str | None) -> str
             continue
         if key == "google_health" and not getattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False):
             lines.append("google_health: NOT live yet — google's approval is pending. Never offer or send the "
-                         "fitbit / watch link; if they bring it up say it's coming (no date). A screenshot or "
-                         "typed sleep / steps is fine to use right now")
+                         "fitbit / watch link; if they bring it up say it's coming, nothing about when. A "
+                         "screenshot or typed sleep / steps is fine to use right now")
             continue
         lines.append(f"{key}: NOT connected ({label})")
     out = "## INTEGRATIONS (code's list — the ONLY truth about what's connected; a memory or " \

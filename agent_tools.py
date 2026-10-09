@@ -3453,8 +3453,8 @@ def handle_send_connect_link(user_id: int, tool_input: dict, *, message_id=None)
         return f"error: {provider} is not enabled"
     if provider == "google_health" and not getattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False):
         return ("error: the fitbit / watch connection isn't live yet (google's approval is pending) — say "
-                "that in one clause, no date promised, and that a screenshot or just telling u sleep / steps "
-                "works for now. Don't send a link")
+                "that in one clause and that a screenshot or just telling u sleep / steps works for now. "
+                "Don't send a link, don't talk about dates")
 
     from integrations import base
 
