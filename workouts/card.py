@@ -44,7 +44,10 @@ def card_layout(state: dict) -> dict:
     elif done:
         sub = f"{done}/{total} sets — tap to log" if bodyweight else f"{done}/{total} sets · {vol:,} lb — tap to log"
     else:
-        sub = "tap to start"
+        # The lead exercise stays on the bubble (its alternatives label is the one place
+        # the options show); nothing else — "then the usual" and counts are gone.
+        lead = next((e for e in state["exercises"]), None)
+        sub = f"{lead['label']} — tap to start" if lead else "tap to start"
     return {"caption": caption, "subcaption": sub, "summary": f"{key} day"}
 
 
