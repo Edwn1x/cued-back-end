@@ -128,14 +128,16 @@ def test_completion_sends_the_rundown_as_a_second_bubble(db, all_on, anthropic_s
 
     assert onboarding_agent.handle_onboarding_reply(user, "sounds good") is True
     bodies = [b for _, b in sms_capture]
-    assert len(bodies) == 4, bodies                     # the friend's reaction, the code summary (2 bubbles), the rundown
-    assert bodies[0].startswith("locked in") and bodies[1].startswith("ok so far this is what i have: ur 5'6 139") \
-        and bodies[3].startswith("oh and quick rundown")
-    rundown_ins = next(i for i in seen if "quick rundown" in i)
-    assert "LEAD WITH" in rundown_ins and "No bullet points" in rundown_ins
+    assert len(bodies) in (4, 5), bodies                # reaction, the code summary (2 bubbles), the code rundown (1-2 bubbles)
+    assert bodies[0].startswith("locked in") and bodies[1].startswith("ok so far this is what i have: ur 5'6 139")
+    assert bodies[3].startswith("oh and a quick rundown of how i work\n1. i track ur calories\n- tell me what u ate")
+    rundown = "\n".join(bodies[3:])
+    # (the SMS path normalizes the em dash, so match either side of it)
+    assert "you said staying consistent is the hard part" in rundown and \
+        rundown.rstrip().endswith("that's where i'll be on you most"), bodies[3:]
     from profile_page import profile_url
-    assert profile_url(user) not in rundown_ins and profile_url(user) in bodies[2]   # the link rides with the numbers
-    assert len(seen) == 2, "the summary is code's — the model writes the reaction and the rundown"
+    assert profile_url(user) in bodies[2] and "http" not in rundown   # the link rides with the numbers only
+    assert len(seen) == 1, "the summary and the rundown are code's — the model writes only the reaction"
 
 
 def test_rundown_flag_off_sends_only_the_kickoff(db, all_on, anthropic_stub, sms_capture, monkeypatch):
