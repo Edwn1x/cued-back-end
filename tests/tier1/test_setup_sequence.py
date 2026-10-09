@@ -100,11 +100,11 @@ def test_completion_sends_the_two_bubble_summary_and_defers_the_card(db, seq_on,
 
 def test_a_workout_ask_still_gets_the_card_right_then(db, seq_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
     import onboarding_agent as oa
-    from workouts.card_setup import EXTENSION_INTRO, BREAKDOWN
+    from workouts.card_setup import EXTENSION_INTRO, BREAKDOWN_SETUP
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _user(db)
     oa._complete_onboarding(_u(u.id), "send me the workout", early=True)
-    assert sidecar_ok[2:4] == list(EXTENSION_INTRO) and sidecar_ok[-5:-1] == list(BREAKDOWN)
+    assert sidecar_ok[2:4] == list(EXTENSION_INTRO) and sidecar_ok[-3:-1] == list(BREAKDOWN_SETUP)
     assert sidecar_ok[-1].startswith("one thing — those are starter push day exercises")   # the defaults note
     assert len(card_ok["sent"]) == 1 and _u(u.id).card_setup_at
 
@@ -117,7 +117,7 @@ def test_on_inbound_walks_offers_then_the_card_one_step_per_text(db, seq_on, sid
     import setup_sequence as ss
     from connect_offers import OFFER_GCAL_ASK, OFFER_BCOURSES
     from water_offer import OFFER_TEXT
-    from workouts.card_setup import EXTENSION_INTRO, BREAKDOWN
+    from workouts.card_setup import EXTENSION_INTRO, BREAKDOWN_SETUP
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _user(db, existing_tools="fitbit")
     oa._complete_onboarding(_u(u.id), "yes")
@@ -137,7 +137,7 @@ def test_on_inbound_walks_offers_then_the_card_one_step_per_text(db, seq_on, sid
     _inbound(u.id, "yes")
     r = ss.on_inbound(u.id)
     assert r == "card:sent", r
-    assert sidecar_ok[3:5] == list(EXTENSION_INTRO) and sidecar_ok[-5:-1] == list(BREAKDOWN)
+    assert sidecar_ok[3:5] == list(EXTENSION_INTRO) and sidecar_ok[-3:-1] == list(BREAKDOWN_SETUP)
     assert len(card_ok["sent"]) == 1 and _u(u.id).card_setup_at
     _inbound(u.id, "nice")
     assert ss.on_inbound(u.id) is None, "setup is done — nothing repeats"
@@ -230,6 +230,18 @@ def test_water_is_a_setup_step_not_a_day_two_thing(db, seq_on, monkeypatch):
     assert eligible(today) is False and eligible(make_user(db, onboarding_completed_at=None)) is True
 
 
+def test_reactive_fitbit_link_and_block_say_not_live_yet(db, seq_on, monkeypatch):
+    from agent_tools import handle_send_connect_link
+    from connect_offers import integrations_block
+    u = make_user(db)
+    r = handle_send_connect_link(u.id, {"provider": "google_health"})
+    assert r.startswith("error:") and "isn't live yet" in r and "screenshot" in r
+    block = integrations_block(u, None, None)
+    assert "google_health: NOT live yet" in block and "screenshot" in block
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)
+    assert "NOT live yet" not in integrations_block(u, None, None)
+
+
 def test_no_wearable_offer_until_google_approves(db, seq_on, monkeypatch):
     from connect_offers import first_offer_candidates
     from models import get_session, User
@@ -255,6 +267,8 @@ def test_context_line_says_the_setup_card_is_not_a_session(db, seq_on, sidecar_o
     oa._complete_onboarding(_u(u.id), "yes", early=True)
     ctx = context_line(_u(u.id)) or ""
     assert "SETUP card" in ctx and "Never tell them to start it now" in ctx and "'so what now'" in ctx
+    from workouts.card_setup import TOUR
+    assert "HOW THE CARD WORKS" in ctx and "ONLY if they ask" in ctx and TOUR[0] in ctx, "the tour lives in context, on ask"
     start_workout_session(u.id)                       # heading in: the planned card becomes the live one
     assert "SETUP card" not in (context_line(_u(u.id)) or "")
 
@@ -281,8 +295,10 @@ def test_hook_promises_the_setup_and_the_walkthrough_not_the_card():
 
 
 def test_the_tour_ends_by_saying_what_happens_next():
-    from workouts.card_setup import BREAKDOWN, EXTENSION_INTRO
-    assert BREAKDOWN[-1].startswith("that's the whole setup. nothing to do rn")
+    from workouts.card_setup import BREAKDOWN, BREAKDOWN_SETUP, TOUR, TOUR_OFFER, EXTENSION_INTRO
+    assert BREAKDOWN == (TOUR_OFFER,) and BREAKDOWN_SETUP[0] == TOUR_OFFER, "the tour is hidden: one offer line"
+    assert TOUR_OFFER.startswith("lmk if the layout's confusing") and BREAKDOWN_SETUP[-1].startswith("nothing to do rn")
+    assert len(TOUR) == 3 and "slide the bar" in TOUR[-1]
     assert "gamepigeon" in EXTENSION_INTRO[1] and EXTENSION_INTRO[1].endswith("tap the card below to add it")
 
 

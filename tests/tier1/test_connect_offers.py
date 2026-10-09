@@ -87,7 +87,9 @@ def test_allowlist_state_matrix(db, monkeypatch):
     assert allowlist_state(_onboarded(db)) == "ok"
 
 
-def test_send_connect_link_refuses_google_until_allowlisted(db, sms_capture):
+def test_send_connect_link_refuses_google_until_allowlisted(db, sms_capture, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", True)   # the wearable link waits for Google's approval
     from agent_tools import handle_send_connect_link, handle_set_google_account
     u = _onboarded(db)
     r = handle_send_connect_link(u.id, {"provider": "gcal"})
@@ -295,6 +297,8 @@ def test_columns_are_migrated():
 
 
 def test_integrations_block_states_absence_and_outranks_memory(monkeypatch):
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "GOOGLE_HEALTH_OFFER_ENABLED", True)
     """Live 2026-10-02 (founder, mid demo): the coaching summary said 'Connected feeds:
     Google Calendar…' while the row had been removed; the block listed only what WAS
     connected, so the model said 'yeah i can see it' and argued when corrected."""
