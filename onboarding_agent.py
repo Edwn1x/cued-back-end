@@ -311,7 +311,8 @@ def _build_system_prompt(user) -> str:
         f"Activity: {user.activity_level}" if user.activity_level else None,
         f"Avg steps: {user.avg_steps}" if user.avg_steps else None,
         f"Workout days: {user.workout_days}" if user.workout_days else None,
-        f"Workout time: {user.workout_time}" if user.workout_time else None,
+        (f"Workout time: {__import__('training_time').describe(user) or user.workout_time}"
+         if (user.workout_time or getattr(user, "workout_times", None)) else None),
         f"Current split: {user.current_split}" if user.current_split else None,
         (f"Their days, in order: " + " → ".join(_day_label(d) for d in user.split_days)
          if getattr(user, "split_days", None) else None),
@@ -1017,7 +1018,10 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         days = str(user.workout_days).strip()
         when = ""
         wt = (user.workout_time or "").strip().lower()
-        if wt:
+        if getattr(user, "workout_times", None):
+            from training_time import describe
+            when = ", " + describe(user)          # "mornings mon/wed, evenings tue/thu" / "mornings or evenings"
+        elif wt:
             when = {"08:00": " in the mornings", "14:00": " in the afternoons", "18:00": " in the evenings",
                     "morning": " in the mornings", "afternoon": " in the afternoons",
                     "evening": " in the evenings"}.get(wt, f" at {_clock(wt)}")

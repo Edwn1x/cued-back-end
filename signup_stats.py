@@ -17,6 +17,8 @@ Accepted keys (any subset):
   weight_kg | weight_lbs                    → weight_lbs
   workout_days   1–7, or a list/csv of day names ("Mon,Wed,Fri")   → workout_days
   workout_time   morning | afternoon | evening | HH:MM              → workout_time
+                 or a LIST of those (multi-select) / a day→time MAP  → workout_time (primary) + workout_times
+  workout_times  same as workout_time, under its own key
   injuries       free text; present-but-empty means "none"          → injuries
   diet           omnivore | vegetarian | vegan | pescatarian | keto | halal | kosher | none(→omnivore)
   restrictions   free text (allergies, won't-eat); list or csv       → restrictions
@@ -118,16 +120,17 @@ def stats_from_form(data: dict) -> tuple[dict, str | None]:
                 return {}, "Those training days don't look right."
             cols["workout_days"] = ",".join(dict.fromkeys(keys))
 
-    if _present(data, "workout_time"):
-        t = str(data["workout_time"]).strip().lower()
-        if t in _TIME_WORDS:
-            cols["workout_time"] = _TIME_WORDS[t]
-        else:
-            import re
-            m = re.fullmatch(r"(\d{1,2}):(\d{2})", t)
-            if not m or not (0 <= int(m.group(1)) <= 23 and 0 <= int(m.group(2)) <= 59):
-                return {}, "That training time doesn't look right."
-            cols["workout_time"] = f"{int(m.group(1)):02d}:{m.group(2)}"
+    # One value, a list (multi-select), or a day → time map (founder 2026-10-09: different
+    # days, different preferences). `workout_times` is the same thing under its own key.
+    raw_time = data.get("workout_times") if _present(data, "workout_times") else data.get("workout_time")
+    if raw_time is not None and raw_time != "" and raw_time != [] and raw_time != {}:
+        from training_time import parse_form_value
+        parsed = parse_form_value(raw_time)
+        if not parsed:
+            return {}, "That training time doesn't look right."
+        cols["workout_time"], structure = parsed
+        if structure:
+            cols["workout_times"] = structure
 
     if "injuries" in data and data["injuries"] is not None:
         inj = str(data["injuries"]).strip()
