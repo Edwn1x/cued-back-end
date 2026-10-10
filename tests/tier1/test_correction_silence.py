@@ -33,11 +33,11 @@ def test_silent_reply_to_a_correction_is_nudged_into_one_owning_line(db, anthrop
 
     def _h(kw):
         seen.append(kw["messages"][-1]["content"])
-        return "[silent]" if len(seen) == 1 else "my bad, project 2b due today, it's on ur calendar now"
+        return "[silent]" if len(seen) == 1 else "my bad, project 2b due today, it's on my radar now"
     anthropic_stub.reply_with(_h)
     with caplog.at_level(logging.WARNING, logger="cued.agent_loop"):
         out = agent_loop.run_agent_loop(u, BURST, "freeform")
-    assert out == "my bad, project 2b due today, it's on ur calendar now"
+    assert out == "my bad, project 2b due today, it's on my radar now"
     assert len(seen) == 2 and "answered with silence" in str(seen[1]) and "owns it plainly" in str(seen[1])
     assert "AGENT_LOOP_CORRECTION_SILENCE_NUDGE" in caplog.text
 
