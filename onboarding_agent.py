@@ -822,8 +822,9 @@ def _send_capability_rundown(user_row, system_prompt: str | None = None) -> bool
     got lost. Everything with no section is revealed by the coach in the moment."""
     if not config.ONBOARDING_RUNDOWN_ENABLED:
         return False
-    from capabilities import build_rundown
-    text = build_rundown(user_row)
+    from capabilities import build_rundown, build_short_rundown
+    short = getattr(config, "ONBOARDING_RUNDOWN_STYLE", "short") != "tiered"
+    text = build_short_rundown(user_row) if short else build_rundown(user_row)
     if not text:
         return False
     if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
@@ -998,10 +999,14 @@ def _goal_clause(goal: str | None) -> str:
 
 
 SUMMARY_CLOSER = "lmk if anything seems off or confusing, or if u wanna know how i got the numbers"
+SUMMARY_CLOSER_SHORT = "anything off or confusing, say so"   # the one-bubble summary (founder, 2026-10-10)
 
 
 def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
-    """The two bubbles that close onboarding (founder copy, 2026-10-09), code-authored so
+    """The summary that closes onboarding, code-authored so every number is real. Since
+    2026-10-10 (ONBOARDING_SUMMARY_ONE_BUBBLE) it is ONE bubble: the facts, "so 2450 cal and
+    141g protein a day to start, we adjust in a few weeks", the short closer, the link.
+    Flag off → the two bubbles below (founder copy, 2026-10-09), code-authored so
     every number is real (live, user 27: the model wrote "2300 cal and 150g protein" —
     numbers it cannot set):
 
@@ -1062,6 +1067,22 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
             pass
     first = "ok so far this is what i have: " + ", ".join(p for p in parts if p)
 
+    try:
+        link = profile_url(user)
+    except Exception:  # noqa: BLE001
+        link = ""
+    if getattr(config, "ONBOARDING_SUMMARY_ONE_BUBBLE", True):
+        # ONE bubble (founder, 2026-10-10): the facts, the numbers, the short closer, the link.
+        if clamp_note:
+            numbers = f"{clamp_note}. so {user.calorie_target} cal and {user.protein_target}g protein a day to start"
+        elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
+            numbers = (f"{user.calorie_target} cal and {user.protein_target}g protein a day to start, ur pick "
+                       f"(i'd have said {targets['calories']}/{targets['protein']}g)")
+        else:
+            numbers = f"so {targets['calories']} cal and {targets['protein']}g protein a day to start"
+        one = f"{first}. {numbers}, we adjust in a few weeks. {SUMMARY_CLOSER_SHORT}"
+        return one + (f"\n{link}" if link else "")
+
     if clamp_note:
         numbers = f"{clamp_note}. so {user.calorie_target} cal and {user.protein_target}g protein a day"
     elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
@@ -1071,10 +1092,6 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         numbers = f"im thinking {targets['calories']} cal and {targets['protein']}g protein a day"
     second = (f"{numbers}. we run this for the first few weeks and adjust off how ur feeling and whether "
               f"ur making progress. {SUMMARY_CLOSER}")
-    try:
-        link = profile_url(user)
-    except Exception:  # noqa: BLE001
-        link = ""
     if link:
         second += f"\n{link}"
     return f"{first}\n---\n{second}"

@@ -410,3 +410,12 @@ def test_a_saved_routine_gets_no_note_at_setup(db, setup_on, sidecar_ok, card_ok
     u = _imsg_user(db, custom_templates={"push": rows})
     oa._complete_onboarding(_u(u.id), "yes")
     assert defaults_note("push") not in sidecar_ok
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_shape(monkeypatch):
+    """These tests pin the 2026-10-09 shape (two-bubble summary + tiered rundown), still
+    supported behind the flags; the 2026-10-10 one-bubble shape is tests/tier1/test_short_completion.py."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
+    monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")
