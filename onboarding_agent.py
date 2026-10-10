@@ -475,6 +475,28 @@ def _last_coach_message(user_id: int) -> str | None:
         session.close()
 
 
+def _unanswered_burst(user_id: int, limit: int = 6) -> str:
+    """Every inbound text since the coach's last outbound, oldest first, joined with
+    newlines — the whole thought on the floor, not just the text this turn was flushed
+    for. Live 2026-10-10 (user 49): "No I mean like 10k daily" / "And idk my sleep
+    schedule is cooked" / "Like look at the time rn" arrived in 18s; the first turn
+    answered all three (the model reads the thread) but the code sleep classifier only
+    read the first. '' when nothing is stored (tests calling the handler directly)."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        last_out = (session.query(Message.id)
+                    .filter(Message.user_id == user_id, Message.direction == "out")
+                    .order_by(Message.id.desc()).first())
+        q = session.query(Message.body).filter(Message.user_id == user_id, Message.direction == "in")
+        if last_out:
+            q = q.filter(Message.id > last_out[0])
+        rows = q.order_by(Message.id.desc()).limit(limit).all()
+    finally:
+        session.close()
+    return "\n".join((r[0] or "").strip() for r in reversed(rows) if (r[0] or "").strip())
+
+
 def _extract_data_from_message(user_message: str, user, last_asked_field: str = None,
                                last_coach_message: str = None) -> dict:
     """
@@ -1069,6 +1091,12 @@ _NOT_DONE_LINE = ("You are NOT done getting to know them yet — never say you'r
 SKIP_SENTINEL = "[skip]"   # a continuation turn that needs no reply → code reacts 👍 instead
 
 
+# The model never pins sleep itself (live 2026-10-10: it pegged "up 11, down 3" a turn
+# before code pinned 11/2 — two guesses in the thread). Code pins; the reply says it.
+_NO_SLEEP_GUESS_LINE = ("Never invent wake/sleep clock times yourself: a vague sleep answer gets a "
+                        "code-pinned guess, and you'll be handed the exact clause to say.")
+
+
 def _build_friend_reply(user, incoming_message: str, system_prompt: str,
                         missing_fields: list, *, assumption_note: str | None = None,
                         continuation_prev: str | None = None) -> str:
@@ -1107,7 +1135,8 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"still don't know: {unknown}. Nothing else is worth a question. If there's no natural "
         f"reason, don't force one. One message, one paragraph, no greeting, ONE question at most "
         f"— pick it before you write; a second question only if it's the same topic and joined "
-        f"with 'and'. Never a second paragraph, never a visible edit. {_NOT_DONE_LINE}"
+        f"with 'and'. Never a second paragraph, never a visible edit. {_NO_SLEEP_GUESS_LINE} "
+        f"{_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1254,7 +1283,7 @@ def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, sys
         f"STEP 1: react to what they said like a friend (answer any question fully).\n"
         f"STEP 2: you're basically done getting to know them — ask about {gaps_str} in one "
         f"short, natural line ('last thing' energy), both in one breath if there are two. "
-        f"Not a form. 1-2 sentences. No greeting. {_NOT_DONE_LINE}"
+        f"Not a form. 1-2 sentences. No greeting. {_NO_SLEEP_GUESS_LINE} {_NOT_DONE_LINE}"
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -1807,7 +1836,12 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # A vague sleep answer is final: pin an estimate, say it, never ask again.
     assumption_note = None
     if (config.ONBOARDING_SLEEP_ESTIMATE_ENABLED and not (user_row.wake_time or user_row.sleep_time)):
-        kind = classify_sleep_answer(incoming_message, prev_coach)
+        sleep_text = incoming_message
+        if getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True):
+            burst = _unanswered_burst(user_row.id)
+            if burst and burst != incoming_message:
+                sleep_text = burst               # the held texts of a burst count too
+        kind = classify_sleep_answer(sleep_text, prev_coach)
         if kind:
             pinned = pin_sleep_estimate(user_row.id, kind)
             if pinned:
@@ -1890,7 +1924,15 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     card_missing = [f for f in missing_after if f[0] in CARD_CRITICAL]
     early = bool(missing_after) and wants_workout and not card_missing
     if not missing_after or early:
-        if not _is_bare_answer(incoming_message, code_found) or wants_workout:
+        # A continuation turn (the text landed while the previous reply was going out)
+        # that completes onboarding: the previous reply was the reaction — a second
+        # bubble restates it (live 2026-10-10: "yeah cs sleep is always cooked lol. ima
+        # just peg u at…" twice, 13s apart, with different numbers). Summary only.
+        quiet = bool(continuation and prev_coach and getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True))
+        if quiet:
+            logger.info("ONBOARDING_CONTINUATION_COMPLETION user=%s reaction=skipped prev=%r",
+                        user_row.id, (prev_coach or "")[:80])
+        if not quiet and (not _is_bare_answer(incoming_message, code_found) or wants_workout):
             try:
                 text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early,
                                                   assumption_note=assumption_note)

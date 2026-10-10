@@ -774,7 +774,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         if config.SINGLE_AGENT_LOOP_ENABLED:
             try:
                 response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
-                                               image_data_list=images)
+                                               image_data_list=images, continuation=continuation)
             except Exception as e:
                 loop_raised = True
                 logger.error("AGENT_LOOP_FAILED user=%s text=%r err=%s",
