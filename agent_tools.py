@@ -1852,6 +1852,22 @@ def _moved_eaten_at(old: datetime, tz: ZoneInfo, new_day, user=None) -> datetime
     return same_clock
 
 
+def _already_on_day_note(user, new_day, tz: ZoneInfo) -> str:
+    """The sentence for a day-move that changes nothing: the rows already count for that
+    day because the user's nutrition day doesn't roll at midnight. Live 2026-10-09 02:23
+    (user 48, day rolls at 4am): "switch that all to yesterday" for food logged at 2am →
+    nothing to move (it was already Thursday's), but the reply said "moved it all to
+    yesterday / today's back to 0" — both false."""
+    from timefmt import day_reset_hour, resolve_tz
+    h = day_reset_hour(user)
+    now_local = datetime.now(timezone.utc).astimezone(resolve_tz(user))
+    lab = "midnight" if h == 0 else f"{h}am"
+    return (f"NO CHANGE NEEDED: these rows already count for {new_day.isoformat()} ({new_day.strftime('%A')}) — "
+            f"their nutrition day runs {lab}→{lab}, so right now ({now_local.strftime('%-I:%M%p').lower()} on "
+            f"{now_local.strftime('%A')}) is still {new_day.strftime('%A')}'s day. Say exactly that: nothing was "
+            f"moved, {new_day.strftime('%A')}'s total is unchanged, and don't say today is back to 0.")
+
+
 def _apply_meal_day_move(row, tz: ZoneInfo, new_day, user=None) -> str:
     """Move a meal row's eaten_at to `new_day` — a day move, not a time move (clock rules in
     _moved_eaten_at). Appends the change to the row's audit and returns the new day iso."""
@@ -2033,8 +2049,19 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
             except ValueError:
                 return "error: date must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
             mover = session.get(User, user_id)
+            before = {int(r.id): getattr(r, "eaten_at", None) for r in targets}
             for r in targets:
                 _apply_meal_day_move(r, tz, new_day, user=mover)
+            unchanged = all(getattr(r, "eaten_at", None) == before[int(r.id)] for r in targets)
+            if unchanged:
+                # Nothing to move: the rows already sit inside the target day's window (a
+                # shifted day_reset_hour). Keep the audit clean and say so honestly.
+                session.rollback()
+                ids = [int(r.id) for r in targets]
+                day = _affected_days_suffix(user_id, [new_day])
+                logger.info("MANAGE_LOG user=%s move meal group ids=%s -> %s NOOP (already on that day)",
+                            user_id, ids, new_day.isoformat())
+                return f"ok: {_already_on_day_note(mover, new_day, tz)}" + day
             session.commit()
             recompute_daily_totals(user_id)
             for r in targets:
@@ -2052,6 +2079,7 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         # claims to have always held its new value). Recompute totals, never patch a delta.
         spec = _EDIT_FIELDS.get(entity, {})
         applied, audit, tz_str = {}, list(row.edits or []), None
+        noop_note = None
         from_app = _canon_app(tool_input.get("from_app")) if entity == "meal" else None
         old_cal = getattr(row, "calories", None)
         # A day move (event_date) must land BEFORE a time move (event_time) in the
@@ -2116,7 +2144,13 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                 except ValueError:
                     return f"error: {mfield} must be a local date like 'YYYY-MM-DD', 'today', or 'yesterday'"
                 old = getattr(row, column, None) or _naive_utcnow()
-                newcol = _moved_eaten_at(old, tz, new_day, session.get(User, user_id))
+                _mover = session.get(User, user_id)
+                newcol = _moved_eaten_at(old, tz, new_day, _mover)
+                if newcol == old:
+                    # already inside that day's window (shifted rollover) — no edit, say so
+                    applied[mfield] = f"{new_day.isoformat()} (no change: already on that day)"
+                    noop_note = _already_on_day_note(_mover, new_day, tz)
+                    continue
                 audit.append({"at": _naive_utcnow().isoformat(), "field": mfield,
                               "old": _ser(old), "new": _ser(newcol)})
                 setattr(row, column, newcol)
@@ -2217,6 +2251,8 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
         if from_app and config.FOOD_LOGGER_BRIDGE_ENABLED:
             from food_logger import app_write_side_effects
             app_write_side_effects(user_id, app=from_app)
+        if noop_note:
+            return f"ok: edited {entity} id={entry_id} ({applied}). {noop_note}" + day + parity
         return f"ok: edited {entity} id={entry_id} ({applied})" + day + parity
     finally:
         session.close()
