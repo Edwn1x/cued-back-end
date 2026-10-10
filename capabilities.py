@@ -565,6 +565,33 @@ def rundown_sections(user) -> list[tuple[str, str, list[str]]]:
     return out
 
 
+SHORT_RUNDOWN_INTRO = "quick version: "
+SHORT_RUNDOWN_CLOSER = "ask me anything, no dumb questions"
+
+
+def build_short_rundown(user) -> str:
+    """ONE bubble (founder, 2026-10-10): the three things that matter, then the obstacle
+    line. 'quick version: text me what u eat or send a pic, say 'starting workout' for a
+    card, and i can hook into ur calendar + bcourses. you said …'. Everything the tiered
+    rundown listed under those (dining macros, receipts, the rsf line, library rooms,
+    reminders, screenshots) is revealed in the moment — every such capability has a
+    reveal_when. '' when nothing is enabled."""
+    enabled = {c.id for c in available(user)}
+    clauses = []
+    if "log_meals" in enabled:
+        clauses.append("text me what u eat or send a pic")
+    if "log_workouts" in enabled:
+        clauses.append("say 'starting workout' for a card")
+    if "connect_accounts" in enabled:
+        bc = config.BCOURSES_ENABLED and _is_student(user)
+        clauses.append("i can hook into ur calendar" + (" + bcourses" if bc else ""))
+    if not clauses:
+        return ""
+    body = clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + ", and " + clauses[-1]
+    ob = OBSTACLE_LINES.get((getattr(user, "biggest_obstacle", "") or "").strip().lower())
+    return f"{SHORT_RUNDOWN_INTRO}{body}. {ob or SHORT_RUNDOWN_CLOSER}"
+
+
 def build_rundown(user) -> str:
     """The two rundown bubbles (joined with `---`), code-authored. Numbered sections,
     one dash line each thing; the first two sections in bubble one, the rest in bubble

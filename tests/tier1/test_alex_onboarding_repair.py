@@ -324,3 +324,12 @@ def test_onboarding_system_prompt_is_split_for_caching(db, anthropic_stub, sms_c
     onboarding_agent.handle_onboarding_reply(user, "hey")
     gen = [c for c in anthropic_stub.calls if not _is_extract(c)][-1]
     assert isinstance(gen["system"], list) and gen["system"][0].get("cache_control")
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_shape(monkeypatch):
+    """These tests pin the 2026-10-09 shape (two-bubble summary + tiered rundown), still
+    supported behind the flags; the 2026-10-10 one-bubble shape is tests/tier1/test_short_completion.py."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
+    monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")

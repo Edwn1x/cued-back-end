@@ -372,6 +372,15 @@ SET_TARGETS_TOOL_ENABLED = os.getenv("SET_TARGETS_TOOL_ENABLED", "true").lower()
 # capabilities.py for THIS user (top 3 + their obstacle). Never a feature list.
 ONBOARDING_RUNDOWN_ENABLED = os.getenv("ONBOARDING_RUNDOWN_ENABLED", "true").lower() == "true"
 ONBOARDING_RUNDOWN_DELAY_S = float(os.getenv("ONBOARDING_RUNDOWN_DELAY_S", "4"))
+# The completion sequence, shortened (founder, 2026-10-10 after his from-zero run: seven
+# bubbles / 2064 chars in 53s at 2:34am — "wayyyy too long and tedious"; the tiered rundown
+# was 61% of it and repeats what the setup steps are about to show one at a time).
+#   ONBOARDING_RUNDOWN_STYLE — "short": ONE bubble, the three things that matter (food, the
+#   card, the connects) + the obstacle line; everything else is revealed in the moment via
+#   the registry's reveal_when. "tiered": the 2026-10-09 numbered two-bubble version.
+#   ONBOARDING_SUMMARY_ONE_BUBBLE — the summary and the numbers in ONE bubble (+ the link).
+ONBOARDING_RUNDOWN_STYLE = os.getenv("ONBOARDING_RUNDOWN_STYLE", "short").strip().lower()
+ONBOARDING_SUMMARY_ONE_BUBBLE = os.getenv("ONBOARDING_SUMMARY_ONE_BUBBLE", "true").lower() == "true"
 # Adaptive targets (adaptive_targets.py): log_weight tool + daily cycle sweep.
 LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() == "true"
 # Lets the coach shift a user's nutrition-day rollover hour when they explicitly ask
