@@ -16,8 +16,10 @@ One step at a time: the next step goes when the previous one was ANSWERED (an in
 after it) or the conversation went quiet for SETUP_STEP_QUIET_MINUTES. Two triggers:
   - on_inbound(user_id): right after the coach's reply to their text, while engaged.
   - sweep(): every 10 min inside the heartbeat's guardrails (quiet hours, active
-    conversation, budget), for the died-down case. The sweep sends only the card —
-    connect_offers.sweep already sends the offers under the same guardrails.
+    conversation, budget), for the died-down case. Inside the setup window THIS sweep
+    is the only sender (connect, water, card — one per tick): live 2026-10-10 11:19
+    (user 49) connect_offers.sweep and water_offer.sweep fired in the same tick, water
+    landing 5s before the calendar offer. Those sweeps skip users `owns()` is true for.
 A workout ask at any point sends the card right then (the onboarding early exit, or the
 start tool), which simply marks the card step done. Everything is once-only by the
 existing ledgers (users.connect_offers, users.card_setup_at); nothing here repeats.
@@ -44,6 +46,20 @@ def enabled() -> bool:
     return bool(getattr(config, "SETUP_SEQUENCE_ENABLED", True))
 
 
+def owns(user, now: datetime | None = None) -> bool:
+    """True while the setup sequence is the only thing allowed to send setup steps to
+    this user: the sequence is on, its sweep is registered (CARD_SETUP_ENABLED), they're
+    inside the setup window, and the card (the last step) hasn't gone. water_offer.sweep
+    and connect_offers.sweep skip these users; on_inbound/sweep here send one step at a
+    time in the decided order (offers → water → card)."""
+    if not (enabled() and config.CARD_SETUP_ENABLED):
+        return False
+    if getattr(user, "card_setup_at", None):
+        return False
+    from connect_offers import in_setup_window
+    return in_setup_window(user, now or _naive_utcnow())
+
+
 def _card_due(session, user) -> bool:
     if not (config.CARD_SETUP_ENABLED and config.START_WORKOUT_TOOL_ENABLED):
         return False
@@ -53,7 +69,13 @@ def _card_due(session, user) -> bool:
     if _resolve_channel(user.id) != "imessage":
         return False
     from workouts.session_ops import active_session_id
-    return active_session_id(user.id) is None
+    if active_session_id(user.id) is not None:
+        return False
+    # The first-card ASK is on the floor (no anchors → "what do u bench and squat for like
+    # 5?"): its answer sends the card (calibrate.handle_pending_card_reply). Asked ONCE —
+    # live 2026-10-10 12:09 and 12:39 (user 49) the quiet-settle rule re-asked it verbatim.
+    from workouts.calibrate import peek_pending_setup
+    return not peek_pending_setup(user.id)
 
 
 def _water_due(session, user) -> bool:
@@ -148,10 +170,10 @@ def on_inbound(user_id: int) -> str | None:
 
 
 def sweep(now: datetime | None = None) -> int:
-    """The died-down path for the WATER and CARD steps: every 10 min, inside the
-    heartbeat's guardrails. (connect_offers.sweep covers the offers under the same
-    guardrails; water_offer.sweep also sends water on its own — same gates, same order,
-    because the card never goes before the water answer is in.)"""
+    """The died-down path: every 10 min, inside the heartbeat's guardrails, ONE step per
+    user per tick in the decided order — connect offer(s), then water, then the card.
+    Inside the setup window this is the only sender (see owns()); connect_offers.sweep
+    and water_offer.sweep take over again once the window closes or the card went."""
     if not (enabled() and config.CARD_SETUP_ENABLED):
         return 0
     now = now or _naive_utcnow()
@@ -168,7 +190,7 @@ def sweep(now: datetime | None = None) -> int:
             if guardrail_reason(u, session, now=now):
                 continue
             step = next_step(session, u, now)
-            if step in ("water", "card"):
+            if step in ("connect", "water", "card"):
                 todo.append((u.id, step))
     finally:
         session.close()

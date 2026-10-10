@@ -131,6 +131,12 @@ def sweep(now: datetime | None = None) -> int:
             reason = guardrail_reason(u, session, now=now)
             if reason:
                 continue
+            try:
+                from setup_sequence import owns as _setup_owns
+                if _setup_owns(u, now):
+                    continue           # a setup step — setup_sequence sends it, after the offers
+            except Exception:  # noqa: BLE001
+                pass
             todo.append(u.id)
     finally:
         session.close()
