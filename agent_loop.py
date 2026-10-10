@@ -1001,6 +1001,10 @@ def _deliverable_block(user, text: str, session, *, now: datetime = None) -> str
                if when_said else
                "They didn't say when: ask \"when's it due?\" in ONE short line (and log_event it the moment they "
                "answer). ")
+            + "log_event writes YOUR radar (the briefing, the week rundown, the deadline radar) — NOT their Google "
+              "Calendar. Say \"it's on my radar\" / \"logged it on my side\", never \"it's on ur calendar\" unless "
+              "create_calendar_event actually ran with their yes. If they'd want it on their Google Calendar too, "
+              "offer that in the same line (one tap-free yes → create_calendar_event). "
             + "Never answer a later \"anything left today?\" as if this doesn't exist (live: \"nothing left today tho "
               "right?\" → \"I literally told you earlier\")."
         )
@@ -1703,8 +1707,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                     "[code check — NOT from the user, do not answer it: they named a deliverable "
                     f"(\"{_dn.get('what')}\") with a day, nothing on their calendar matches it, and your reply "
                     "didn't save it. Call log_event NOW (description = the deliverable + course, date = the day "
-                    "they said, starts_at only if they gave a time), then send your reply. Without the write it "
-                    "is gone next turn.]")})
+                    "they said, starts_at only if they gave a time), then send your reply. That write is YOUR "
+                    "radar, not their Google Calendar — say 'on my radar', not 'on ur calendar' (offer the Google "
+                    "add if they'd want it). Without the write it is gone next turn.]")})
                 continue
         # Write-back guard (honesty invariant, code side). usda_food_lookup named rows
         # that are ALREADY LOGGED (turn state: pending_writeback); if the reply quotes a

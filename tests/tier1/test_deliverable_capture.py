@@ -132,3 +132,39 @@ def test_no_nudge_without_a_day_or_after_a_write(db, anthropic_stub, monkeypatch
     anthropic_stub.reply_with(_h)
     assert agent_loop.run_agent_loop(u, "gotta submit my lab report tonight", "freeform") == "logged it"
     assert len(calls) == 2                                   # tool + reply, no nudge turn
+
+
+
+def test_the_write_is_a_real_row_on_cueds_radar_not_a_claim(db, anthropic_stub, monkeypatch):
+    """The founder asked: is it actually adding it, or just saying so? The nudge makes the model
+    call log_event; that call writes an Event (source='model') that the briefing / week rundown /
+    deadline radar read. It is NOT a Google Calendar write — the block says so."""
+    import agent_loop, config
+    from tests._fake_anthropic import ToolUse
+    from models import get_session, Event
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(config, "LOG_EVENT_TOOL_ENABLED", True)
+    u = make_user(db)
+    calls = []
+
+    def _h(kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return "head down then"                                  # skipped the write → nudge
+        if len(calls) == 2:
+            return ToolUse("log_event", {"description": "cs61c lab report", "date": "today"})
+        return "my bad — lab report due today, it's on my radar now"
+    anthropic_stub.reply_with(_h)
+    out = agent_loop.run_agent_loop(u, "gotta submit my lab report tonight", "freeform")
+    assert out == "my bad — lab report due today, it's on my radar now"
+    s = get_session()
+    try:
+        rows = s.query(Event).filter(Event.user_id == u.id, Event.source == "model").all()
+        assert len(rows) == 1 and "cs61c lab report" in (rows[0].raw_text or "")
+        today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/Los_Angeles")).date()
+        assert rows[0].occurred_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Los_Angeles")).date() == today
+    finally:
+        s.close()
+    seen = _seen(anthropic_stub.calls)
+    assert "NOT their Google Calendar" in seen and "never \"it's on ur calendar\"" in seen
