@@ -979,6 +979,10 @@ _ACK_PHRASES = frozenset({
 def is_closing_acknowledgment(body: str) -> bool:
     """True when the body is *exclusively* ack tokens. Token-based, not
     prefix-based — 'ok can you help' must NOT suppress."""
+    # "Ok?" / "cool?" is a prompt for more, not a closing ack (live 2026-10-05, user 48:
+    # "Ok?" got a 👍 and nothing else while he was asking what to do next).
+    if body.strip().endswith("?"):
+        return False
     b = body.lower().strip().rstrip(".!?").strip()
     if not b:
         return False

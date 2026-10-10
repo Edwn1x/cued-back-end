@@ -659,6 +659,9 @@ LATE_HOUR_SLEEP_FIRST_ENABLED = os.getenv("LATE_HOUR_SLEEP_FIRST_ENABLED", "true
 # midnight and it's 9pm → their bed hour, build_loop_context says so; the LATE block still
 # takes over once it actually is past their bedtime. Fail-open.
 EVENING_NOT_LATE_SIGNAL_ENABLED = os.getenv("EVENING_NOT_LATE_SIGNAL_ENABLED", "true").lower() == "true"
+# NEW HERE block in the coach loop for the first hours after setup: what to say to "so
+# what now" (live 2026-10-05, user 48: "nothing til ur at the gym").
+NEW_USER_ORIENTATION_HOURS = float(os.getenv("NEW_USER_ORIENTATION_HOURS", "48"))
 # UP SINCE: once today's wake is KNOWN (watch sleep end / first activity), the context says
 # they're up and that any "go sleep" earlier in the thread was last night. Live 2026-10-08
 # 12:33 PT (user 48, in class, 44 min after a measured 11:50 wake): "but that's later. go
