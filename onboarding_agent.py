@@ -1417,9 +1417,36 @@ def _question_part(text: str) -> str:
     return " ".join(qs)
 
 
+# What a question is ABOUT, by intake field. Live 2026-10-10 (user 49): "u cooking most nights
+# or mostly dining hall" (02:29:07) and "u cooking in ur room or hitting the dining hall most
+# days" (02:29:32) are the same ask with 0.45-threshold text similarity below the bar — the
+# topic, not the wording, is what must not repeat.
+_QUESTION_TOPICS = {
+    "cooking_situation": r"\b(cook(ing|s)?|dining hall|meal plan|food|eat(ing)? out|groceries)\b",
+    "avg_steps": r"\b(steps?|step count|health app|how much (u|you) walk)\b",
+    "activity_level": r"\b(walking|sitting|on (ur|your) feet|active|around campus|desk)\b",
+    "wake_sleep": r"\b(sleep|wake|waking|bed|bedtime|up at|up til|schedule)\b",
+    "injuries": r"\b(injur\w*|hurt|pain|bugging|work around|limitations?)\b",
+    "split": r"\b(split|routine|ppl|push.?pull|upper.?lower|bro split|what (u|you) (hit|run)|which days|each day)\b",
+    "workout_days_time": r"\b(days a week|how many days|what time|when (u|you) (train|lift|go))\b",
+    "diet": r"\b(vegetarian|vegan|allerg\w*|restriction|halal|kosher|diet)\b",
+    "existing_tools": r"\b(apps?|watch|fitbit|strava|garmin|track(ing)?|wearable)\b",
+    "occupation": r"\b(student|major|work(ing)?|job)\b",
+}
+_QUESTION_TOPIC_RES = {k: re.compile(v, re.I) for k, v in _QUESTION_TOPICS.items()}
+
+
+def question_topics(text: str) -> set[str]:
+    """The intake fields a coach text's QUESTION part is about (empty when it asks nothing)."""
+    q = _question_part(text)
+    if not q:
+        return set()
+    return {k for k, rx in _QUESTION_TOPIC_RES.items() if rx.search(q)}
+
+
 def is_duplicate_question(reply: str, prev: str, threshold: float | None = None) -> bool:
-    """True when `reply` asks (near enough) what `prev` already asked. A reply that
-    asks nothing is never a duplicate question. Pure."""
+    """True when `reply` asks what `prev` already asked — the same TOPIC (intake field), or
+    near enough in wording. A reply that asks nothing is never a duplicate question. Pure."""
     if not reply or not prev:
         return False
     from sms import _norm_body, _similarity
@@ -1427,9 +1454,38 @@ def is_duplicate_question(reply: str, prev: str, threshold: float | None = None)
     a, b = _norm_body(_question_part(reply)), _norm_body(_question_part(prev))
     if not a or not b:
         return False
+    shared = question_topics(reply) & question_topics(prev)
+    if shared:
+        logger.debug("ONBOARDING_DUP_QUESTION_TOPIC topics=%s", sorted(shared))
+        return True
     score = _similarity(a, b)
     logger.debug("ONBOARDING_DUP_QUESTION_SCORE score=%.2f a=%r b=%r", score, a[:80], b[:80])
     return score >= thr
+
+
+def strip_questions(text: str) -> str:
+    """The coach text with its question sentences removed (the reaction stays); '' when
+    the whole text was the question."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text or "") if p.strip()]
+    keep = [p for p in parts if not ("?" in p or _Q_LEAD_RE.match(p) or re.search(r"\bor\b", p))]
+    # a trailing "so food —" style lead-in is part of the question
+    keep = [p for p in keep if not re.match(r"^(so|and|anyway|also|oh and)\b[^.!?]{0,12}[—:-]\s*$", p, re.I)]
+    return " ".join(keep).strip()
+
+
+def _last_coach_message_age_s(user_id: int) -> float | None:
+    """Seconds since the coach's most recent outbound (None when there is none)."""
+    from models import get_session, Message
+    session = get_session()
+    try:
+        row = (session.query(Message.created_at)
+               .filter(Message.user_id == user_id, Message.direction == "out")
+               .order_by(Message.created_at.desc(), Message.id.desc()).first())
+        if not row or not row[0]:
+            return None
+        return (datetime.now(timezone.utc).replace(tzinfo=None) - row[0]).total_seconds()
+    finally:
+        session.close()
 
 
 def _react_thumbs(user_id: int) -> None:
@@ -1887,6 +1943,21 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     else:
         text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after,
                                    assumption_note=assumption_note)
+    # Repeat-question guard for NORMAL turns too: a text that landed seconds after the coach's
+    # question (not folded as a continuation) must not get that question again. Live
+    # 2026-10-10 02:29 (user 49): the big ask asked food; 25s later a friend reply asked food
+    # again. Keep the reaction, drop the question; nothing left → 👍.
+    if (mode != "big_ask" and prev_coach and text and is_duplicate_question(text, prev_coach)):
+        age = _last_coach_message_age_s(user_row.id)
+        if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:
+            kept = strip_questions(text)
+            logger.info("ONBOARDING_REPEAT_QUESTION_SUPPRESSED user=%s age_s=%d kept=%r dropped=%r",
+                        user_row.id, age, kept[:80], text[:120])
+            if kept:
+                send_sms(user_row.phone, kept, user_id=user_row.id, message_type=out_type)
+            else:
+                _react_thumbs(user_row.id)
+            return False
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
     logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
                 f"{' sleep_estimated=True' if assumption_note else ''}")
