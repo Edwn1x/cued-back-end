@@ -1034,6 +1034,18 @@ OUTBOUND_NEAR_DEDUP_THRESHOLD = float(os.getenv("OUTBOUND_NEAR_DEDUP_THRESHOLD",
 # candidate for the timer-vs-append race; logged for observability. The actual
 # absorption is done by the per-timer token guard in message_buffer._flush_buffer.
 BUFFER_JOIN_WINDOW_S = float(os.getenv("BUFFER_JOIN_WINDOW_S", "2.0"))
+# The inbound buffer is in-memory. Live 2026-10-08 13:44 PT (user 48): a photo landed 2 min
+# before a deploy swapped the container; its 45–60s timer died with the process and the turn
+# vanished (inbound row stored, no reply, image bytes gone). Two layers:
+#   • SIGTERM drain — pending buffers are flushed synchronously before the process exits;
+#   • inbound_pending markers — a row per pending turn, cleared at flush; on boot, a marker
+#     older than INBOUND_RECOVERY_MIN_AGE_S is an orphan: a TEXT turn is replayed from the
+#     stored inbound rows, a PHOTO turn gets one honest "send it again" line (the bytes never
+#     persist). Markers older than INBOUND_RECOVERY_MAX_AGE_MIN are dropped.
+INBOUND_DRAIN_ON_SIGTERM_ENABLED = os.getenv("INBOUND_DRAIN_ON_SIGTERM_ENABLED", "true").lower() == "true"
+INBOUND_RECOVERY_ENABLED = os.getenv("INBOUND_RECOVERY_ENABLED", "true").lower() == "true"
+INBOUND_RECOVERY_MIN_AGE_S = int(os.getenv("INBOUND_RECOVERY_MIN_AGE_S", "90"))
+INBOUND_RECOVERY_MAX_AGE_MIN = int(os.getenv("INBOUND_RECOVERY_MAX_AGE_MIN", "15"))
 # Text burst + photo close together (live 2026-10-02 13:16, 2026-10-01 18:19 — 3 in
 # 24h): the photo must ride the SAME turn as the pending texts, not become a second
 # turn that restates the outcome. Layer A (message_buffer.buffer_message): a photo

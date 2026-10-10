@@ -294,6 +294,19 @@ class User(Base):
         return "\n".join(p for p in parts if p)
 
 
+class InboundPending(Base):
+    """A turn sitting in the in-memory inbound buffer, by phone. Written when the buffer
+    is armed/appended, deleted when it flushes. Survives a deploy so the next process
+    can see what the old one never finished (inbound_recovery.py)."""
+    __tablename__ = "inbound_pending"
+    phone = Column(String(20), primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    first_message_id = Column(Integer)          # the inbound Message row that armed the turn
+    has_image = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class Message(Base):
     __tablename__ = "messages"
 
