@@ -211,3 +211,12 @@ def test_web_search_tool_blocks_known_spam_hosts():
     from agent_tools import WEB_SEARCH_TOOL
     blocked = WEB_SEARCH_TOOL.get("blocked_domains") or []
     assert "phplive-aws.uccs.edu" in blocked and "sbc-hc-proxy.stanford.edu" in blocked
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_shape(monkeypatch):
+    """These tests pin the 2026-10-09 shape (two-bubble summary + tiered rundown), still
+    supported behind the flags; the 2026-10-10 one-bubble shape is tests/tier1/test_short_completion.py."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
+    monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")

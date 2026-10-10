@@ -233,3 +233,12 @@ def test_the_friend_intake_is_still_here_and_the_adjust_turn_is_gone():
         assert hasattr(oa, name), name
     assert not hasattr(oa, "_extract_target_request")
     assert oa.CARD_CRITICAL == {"height_weight", "workout_days", "injuries", "split_days"}
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_shape(monkeypatch):
+    """These tests pin the 2026-10-09 shape (two-bubble summary + tiered rundown), still
+    supported behind the flags; the 2026-10-10 one-bubble shape is tests/tier1/test_short_completion.py."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
+    monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")

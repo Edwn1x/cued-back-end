@@ -9,6 +9,7 @@ signup form (a six-day PPL later) had no place to be corrected.
 
 from __future__ import annotations
 
+import pytest
 import json
 
 from tests.factories import make_user
@@ -240,3 +241,12 @@ def test_save_routine_tool_and_loop_offering(db, driver, monkeypatch, anthropic_
 def test_voice_routes_pasted_routines_to_the_tool():
     from agent_loop import _voice_prompt
     assert "save_routine" in _voice_prompt()
+
+
+@pytest.fixture(autouse=True)
+def _legacy_completion_shape(monkeypatch):
+    """These tests pin the 2026-10-09 shape (two-bubble summary + tiered rundown), still
+    supported behind the flags; the 2026-10-10 one-bubble shape is tests/tier1/test_short_completion.py."""
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
+    monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")

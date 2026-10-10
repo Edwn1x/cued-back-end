@@ -372,6 +372,15 @@ SET_TARGETS_TOOL_ENABLED = os.getenv("SET_TARGETS_TOOL_ENABLED", "true").lower()
 # capabilities.py for THIS user (top 3 + their obstacle). Never a feature list.
 ONBOARDING_RUNDOWN_ENABLED = os.getenv("ONBOARDING_RUNDOWN_ENABLED", "true").lower() == "true"
 ONBOARDING_RUNDOWN_DELAY_S = float(os.getenv("ONBOARDING_RUNDOWN_DELAY_S", "4"))
+# The completion sequence, shortened (founder, 2026-10-10 after his from-zero run: seven
+# bubbles / 2064 chars in 53s at 2:34am — "wayyyy too long and tedious"; the tiered rundown
+# was 61% of it and repeats what the setup steps are about to show one at a time).
+#   ONBOARDING_RUNDOWN_STYLE — "short": ONE bubble, the three things that matter (food, the
+#   card, the connects) + the obstacle line; everything else is revealed in the moment via
+#   the registry's reveal_when. "tiered": the 2026-10-09 numbered two-bubble version.
+#   ONBOARDING_SUMMARY_ONE_BUBBLE — the summary and the numbers in ONE bubble (+ the link).
+ONBOARDING_RUNDOWN_STYLE = os.getenv("ONBOARDING_RUNDOWN_STYLE", "short").strip().lower()
+ONBOARDING_SUMMARY_ONE_BUBBLE = os.getenv("ONBOARDING_SUMMARY_ONE_BUBBLE", "true").lower() == "true"
 # Adaptive targets (adaptive_targets.py): log_weight tool + daily cycle sweep.
 LOG_WEIGHT_TOOL_ENABLED = os.getenv("LOG_WEIGHT_TOOL_ENABLED", "true").lower() == "true"
 # Lets the coach shift a user's nutrition-day rollover hour when they explicitly ask
@@ -1094,6 +1103,21 @@ ONBOARDING_CONTINUATION_FOLD_ENABLED = os.getenv("ONBOARDING_CONTINUATION_FOLD_E
 ONBOARDING_DUP_QUESTION_THRESHOLD = float(os.getenv("ONBOARDING_DUP_QUESTION_THRESHOLD", "0.45"))
 ONBOARDING_DUP_QUESTION_WINDOW_S = int(os.getenv("ONBOARDING_DUP_QUESTION_WINDOW_S", "180"))
 BUFFER_INFLIGHT_WAIT_S = float(os.getenv("BUFFER_INFLIGHT_WAIT_S", "90"))
+# Burst replay (live 2026-10-10 02:33, user 49): three texts in 18s. The first turn's model
+# saw all three in the thread and answered them (it even pegged sleep itself, 11/3); then
+# each held text was replayed as its own turn — a second peg with different numbers
+# (code's 11/2), and 58s later "it's late. go sleep, we can do all this tomorrow" to
+# "look at the time rn", right after the rundown said "ask me anything".
+#   ONBOARDING_BURST_SCAN_ENABLED — the code sleep classifier reads the whole unanswered
+#   burst (every inbound since the coach's last text), so the estimate is pinned and
+#   stated ONCE, by code, in the turn that answers the burst; a continuation turn that
+#   completes onboarding skips the reaction bubble (the previous reply WAS the reaction)
+#   and sends the summary only.
+#   CONTINUATION_LOOP_BLOCK_ENABLED — the coach loop learns that a turn is a continuation:
+#   a CONTINUATION block quotes the reply that already went out after this text; when it
+#   covers it, the model answers [silent] and code puts a 👍 on the text instead.
+ONBOARDING_BURST_SCAN_ENABLED = os.getenv("ONBOARDING_BURST_SCAN_ENABLED", "true").lower() == "true"
+CONTINUATION_LOOP_BLOCK_ENABLED = os.getenv("CONTINUATION_LOOP_BLOCK_ENABLED", "true").lower() == "true"
 # Sleep: asked ONCE as a rough range; a qualitative answer ("hella late", "all over the
 # place") pins an estimate in code, the reply says the assumption, and the field never
 # blocks completion. Measured sleep (wearable) overrides it later.

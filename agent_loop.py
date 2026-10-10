@@ -1103,6 +1103,37 @@ def _which_class_block(user, text: str, session, *, now: datetime = None) -> str
         return None
 
 
+CONTINUATION_HDR = "## CONTINUATION — THIS TEXT LANDED WHILE UR LAST REPLY WAS BEING WRITTEN"
+
+
+def _continuation_block(user, combined_body: str, session) -> str | None:
+    """The block for a continuation turn: what the previous reply said (it went out after
+    this text was already in the thread), and the rule — [silent] when it's covered. None
+    only on error (never breaks a turn)."""
+    try:
+        from models import Message
+        from agent_tools import REACTION_ONLY_SENTINEL
+        last_out = (session.query(Message)
+                    .filter(Message.user_id == user.id, Message.direction == "out")
+                    .order_by(Message.id.desc()).first())
+        prev = (last_out.body or "").strip().replace("\n", " / ")[:300] if last_out else ""
+        name = user.name or "they"
+        lines = [CONTINUATION_HDR,
+                 f"{name} sent this before seeing ur last reply — it's the tail of the thought u were "
+                 f"already answering, NOT a fresh prompt: \"{(combined_body or '').strip()[:300]}\""]
+        if prev:
+            lines.append(f"ur last reply went out AFTER it, with this text already in the thread: \"{prev}\"")
+        lines.append(
+            f"If that reply already covers it, or it needs no answer, reply exactly {REACTION_ONLY_SENTINEL} "
+            f"— code puts a 👍 on their text and that's the whole reply. If it adds something new (a "
+            f"correction, a question u didn't answer), answer ONLY that in one short line. Don't react to "
+            f"its mood or timing as if it just arrived, and don't restate anything u already said.")
+        return "\n".join(lines)
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("CONTINUATION_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+
+
 def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
@@ -1452,8 +1483,12 @@ _IMAGE_REGISTER_REMINDER = (
 
 
 def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict = None,
-                   message_id: str = None, image_data_list: list = None) -> str:
-    """One agentic turn → the reply text. Raises only on genuine anomalies (caller
+                   message_id: str = None, image_data_list: list = None,
+                   continuation: bool = False) -> str:
+    """One agentic turn → the reply text.
+    continuation — this text landed while the previous reply was being written (or seconds
+    after it flushed) and the buffer waited for that reply: the CONTINUATION block tells
+    the model, and a [silent] answer becomes a 👍 on the text. Raises only on genuine anomalies (caller
     falls back to legacy); truncation and the iteration bound degrade gracefully."""
     # Multi-image: the user may have sent several photos (product + its label). The
     # model sees ALL of them; image_data stays the PRIMARY (first) for the single-image
@@ -1463,6 +1498,13 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     session = get_session()
     try:
         context = build_loop_context(user, session)
+        # A continuation: the previous reply already went out AFTER this text was in the
+        # thread (live 2026-10-10 02:35: "it's late. go sleep" to a 58s-old "look at the
+        # time rn", right after the rundown). The model is told, and may stay silent.
+        if continuation and config.CONTINUATION_LOOP_BLOCK_ENABLED:
+            _cb = _continuation_block(user, combined_body, session)
+            if _cb:
+                context += "\n\n" + _cb
         # An outright ask for a stat card ("send me my macros", "how packed is rsf", "what's
         # my week look like") → the card is queued in code and sent after the reply, instead
         # of hoping the model calls send_stat_card (live 2026-10-08: two asks, no card).
@@ -1801,6 +1843,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                     "you did about it (if a tool write fixed it, say so; if one is still needed, do it first). No "
                     "excuses, no re-explaining, no [silent].]")})
                 continue
+            # A continuation the previous reply already covers: the 👍 on their text is
+            # the whole reply — code reacts (the model was told it would).
+            if continuation and config.CONTINUATION_LOOP_BLOCK_ENABLED and not state.get("reacted"):
+                try:
+                    from sms import react_to_latest_inbound
+                    if react_to_latest_inbound(user.id, "like"):
+                        state["reacted"] = True
+                except Exception as e:  # noqa: BLE001
+                    logger.info("AGENT_LOOP_CONTINUATION_REACT_FAILED user=%s err=%s", user.id, e)
+                logger.info("AGENT_LOOP_CONTINUATION_SILENT user=%s text=%r", user.id, (combined_body or "")[:80])
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
             return ""
         from agent_tools import leaked_tool_call

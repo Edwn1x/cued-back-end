@@ -249,7 +249,9 @@ def test_vague_sleep_answer_pins_an_estimate_the_reply_states_and_stops_asking(d
     assert done is True
     summary = [b for b in _bodies(sms_capture) if b.startswith("ok so")][0]
     assert "up around 11 down around 2 (my guess, fix it anytime)" in summary, summary
-    assert len(_bodies(sms_capture)) == 3, "the stated-guess bubble + the two summary bubbles, nothing else"
+    bodies = _bodies(sms_capture)
+    assert bodies[0] == "ima guess up around 11 and down by 2, fix it anytime" and bodies[1] is summary, \
+        "the stated-guess bubble, then the summary — nothing in between"
 
 
 def test_vague_sleep_answer_mid_conversation_states_the_guess_in_the_friend_reply(db, anthropic_stub, sms_capture):
