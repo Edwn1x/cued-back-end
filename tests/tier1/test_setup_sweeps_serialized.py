@@ -93,3 +93,27 @@ def test_reconnect_nudges_are_not_held_by_the_window(db, seq_on, sms_capture, mo
     sent = []
     monkeypatch.setattr(connect_offers, "_send_action", lambda uid, kind, provider, text, phone: sent.append((uid, kind)))
     assert connect_offers.sweep() == 1 and sent == [(u.id, "reconnect")]
+
+
+def test_the_first_card_ask_goes_once_not_every_twenty_quiet_minutes(db, seq_on, sidecar_ok, card_ok, sync_threads,
+                                                                      anthropic_stub, monkeypatch):
+    """Live 2026-10-10 12:09 and 12:39 (user 49): "before i build ur first card, what do u
+    bench and squat for like 5?" twice, verbatim — the ask settled after 20 quiet minutes
+    and the card step ran again. The ask is on the floor; its answer sends the card."""
+    import onboarding_agent as oa
+    import setup_sequence as ss
+    from workouts.card_setup import ask_text
+    monkeypatch.setattr(config, "CONNECT_OFFER_ENABLED", False)
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _user(db, lift_anchors=None)                      # no anchors → the ask, not the card
+    oa._complete_onboarding(_u(u.id), "yes")
+    _backdate(u.id, 35)
+    assert ss.sweep() == 1                                 # water
+    _inbound(u.id, "no")
+    _backdate(u.id, 35)
+    assert ss.sweep() == 1                                 # the card step → the ask
+    asks = [b for b in sidecar_ok if b == ask_text(_u(u.id))]
+    assert len(asks) == 1, sidecar_ok
+    _backdate(u.id, 35)                                    # 20+ quiet minutes, no answer
+    assert ss.sweep() == 0 and ss.on_inbound(u.id) is None, "asked once; the answer builds the card"
+    assert len([b for b in sidecar_ok if b == ask_text(_u(u.id))]) == 1

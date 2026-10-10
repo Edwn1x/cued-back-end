@@ -69,7 +69,13 @@ def _card_due(session, user) -> bool:
     if _resolve_channel(user.id) != "imessage":
         return False
     from workouts.session_ops import active_session_id
-    return active_session_id(user.id) is None
+    if active_session_id(user.id) is not None:
+        return False
+    # The first-card ASK is on the floor (no anchors → "what do u bench and squat for like
+    # 5?"): its answer sends the card (calibrate.handle_pending_card_reply). Asked ONCE —
+    # live 2026-10-10 12:09 and 12:39 (user 49) the quiet-settle rule re-asked it verbatim.
+    from workouts.calibrate import peek_pending_setup
+    return not peek_pending_setup(user.id)
 
 
 def _water_due(session, user) -> bool:
