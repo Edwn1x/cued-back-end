@@ -1099,6 +1099,20 @@ def _looks_like_plan(text: str) -> bool:
     return bool(text) and len(_PLAN_LINE_RE.findall(text)) >= 3
 
 
+# A correction / callout: they're telling the coach it got something wrong or forgot
+# something. Never answered with silence or a bare tapback.
+_CALLOUT_RE = re.compile(
+    r"\b(i (already )?(told|said|mentioned)( you| u)?\b|i literally\b|(second|third|3rd|fourth|4th|fifth|5th) time\b|"
+    r"you should (know|remember)\b|u should (know|remember)\b|(you|u) forgot\b|that'?s (wrong|not (right|it|what i))\b|"
+    r"(you|u)('re| are) wrong\b|why (are|did|do) (you|u)\b|(what|wym)\?? ?are you talking about|left on read|"
+    r"atp\b|smh\b|bro (what|why)\b|not what i (said|meant|asked)\b|(you|u) didn'?t (listen|read|log|save)\b|"
+    r"(you|u) (keep|always) (forgetting|asking)\b)", re.I)
+
+
+def _is_callout(text: str) -> bool:
+    return bool(text and _CALLOUT_RE.search(text))
+
+
 _GYM_RE = re.compile(r"\b(gym|rsf|weight ?room|lift(?:ing)?|workout|train(?:ing)?|push|pull|legs|bench|squat|crowded|busy|packed|line)\b", re.I)
 
 
@@ -1622,6 +1636,21 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import is_reaction_only_text, is_single_emoji_text
         state = peek_turn_state(user.id)
         if text and is_reaction_only_text(text, state.get("reacted")):
+            # Silence is not an answer to a correction. ONE forced follow-up (live
+            # 2026-10-09 20:31: "it's the third time i tell you" → a lesson was saved and
+            # nothing was sent).
+            if (config.CORRECTION_SILENCE_NUDGE_ENABLED and _is_callout(combined_body)
+                    and not state.get("correction_nudged")):
+                state["correction_nudged"] = True
+                logger.warning("AGENT_LOOP_CORRECTION_SILENCE_NUDGE user=%s iter=%d body=%r", user.id, i, combined_body[:80])
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": (
+                    "[code check — NOT from the user, do not answer it: they're correcting you / calling out "
+                    "something you missed, and you answered with silence. A tapback or nothing reads as ignoring "
+                    f"them. Send ONE short line to {user.name} that owns it plainly ('my bad, …') and says what "
+                    "you did about it (if a tool write fixed it, say so; if one is still needed, do it first). No "
+                    "excuses, no re-explaining, no [silent].]")})
+                continue
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
             return ""
         from agent_tools import leaked_tool_call

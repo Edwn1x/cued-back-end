@@ -228,6 +228,12 @@ AGENT_LOOP_MAX_TOOL_ITERS = int(os.getenv("AGENT_LOOP_MAX_TOOL_ITERS", "8"))
 # text ends in a short direct paragraph, send just that instead of a retry. Off → the
 # pre-existing nudge-once-then-drop path, byte-identical.
 NARRATION_SALVAGE_ENABLED = os.getenv("NARRATION_SALVAGE_ENABLED", "true").lower() == "true"
+# A correction / callout never gets silence: when the inbound reads as "you got this wrong /
+# i told you already" and the model answers with the reaction-only sentinel, ONE forced
+# follow-up asks for a line that owns it. Live 2026-10-09 20:31 (user 48): "You should know
+# about the project I have due today / I'm still working on it / It's the third time i tell
+# you atp" → remember(lesson) + [silent] — nothing sent.
+CORRECTION_SILENCE_NUDGE_ENABLED = os.getenv("CORRECTION_SILENCE_NUDGE_ENABLED", "true").lower() == "true"
 # A plan written as TEXT while a card is open → one forced follow-up to put it ON the card
 # (start_workout_session with exercises=). Live 2026-10-08 02:14 (user 48, friend's gym): the
 # coach typed a six-move plan and said "tap sets on the card" while the card still held the
