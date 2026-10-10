@@ -4210,6 +4210,15 @@ def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None)
     return out
 
 
+def set_turn_note(user_id: int, key: str, value) -> None:
+    """Stash a code-derived fact about THIS turn for the loop's own checks (never the model)."""
+    _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})[key] = value
+
+
+def get_turn_note(user_id: int, key: str, default=None):
+    return (_TURN_STATE.get(user_id) or {}).get(key, default)
+
+
 def turn_called(user_id: int, name: str) -> bool:
     """True once `name` was dispatched (ok or error) in the current turn."""
     return name in (_TURN_STATE.get(user_id, {}).get("called") or set())
