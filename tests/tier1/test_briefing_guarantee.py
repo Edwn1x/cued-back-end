@@ -472,3 +472,44 @@ def test_a3_anchor_fails_open_to_profile_wake(db, fix_a, wearable_on, monkeypatc
         assert heartbeat._morning_open_signal(u, s, now=_utc(7, 20)) is not None
     finally:
         s.close()
+
+
+# ─── A4: code-sent setup steps are not the morning open ───────────────────────
+# Live 2026-10-10 (user 49, day one): the 11:19 water offer + calendar offer/link (setup
+# sweeps) counted as "talked since they woke" → no briefing owed → the 11:55 tick let
+# them breathe while the sweeps kept pinging.
+
+def test_a4_setup_steps_do_not_count_as_the_morning_open(db, fix_a):
+    from heartbeat import _morning_open_signal
+    from models import Message
+    user = make_user(db, wake_time="11:00", sleep_time="02:00")
+    for i, (t, body) in enumerate([("water_offer", "one more thing: want me to ping u to drink water"),
+                                   ("connect_offer", "want me on ur google calendar?"),
+                                   ("connect_link", "https://app.cued.fit/c/gcal/x"),
+                                   ("card_setup", "before i build ur first card, what do u bench")]):
+        db.add(Message(user_id=user.id, direction="out", body=body, message_type=t,
+                       created_at=_naive(_local(11, 19 + i))))
+    db.commit()
+    s, u = _fresh(db, user)
+    try:
+        assert _morning_open_signal(u, s, now=_utc(11, 30)) is not None, "setup steps are code's, not the coach's morning line"
+    finally:
+        s.close()
+
+
+def test_a4_a_real_coach_line_or_their_text_still_counts(db, fix_a):
+    from heartbeat import _morning_open_signal
+    from models import Message
+    a = make_user(db, wake_time="11:00", sleep_time="02:00")
+    db.add(Message(user_id=a.id, direction="out", body="morning. 58° out", message_type="heartbeat",
+                   created_at=_naive(_local(11, 5))))
+    b = make_user(db, phone="+15550100042", wake_time="11:00", sleep_time="02:00")
+    db.add(Message(user_id=b.id, direction="in", body="yes", message_type="water_offer",
+                   created_at=_naive(_local(11, 21))))
+    db.commit()
+    for user in (a, b):
+        s, u = _fresh(db, user)
+        try:
+            assert _morning_open_signal(u, s, now=_utc(11, 30)) is None
+        finally:
+            s.close()

@@ -95,7 +95,12 @@ def has_unanswered_outbound(user_id: int) -> bool:
 # heartbeat is the only proactive system during burn-in; legacy briefings are
 # deliberately excluded so a legacy outbound can never wedge the heartbeat silent
 # (Item 1 point 4). Reactive replies (freeform/meal/workout/…) are never here.
-PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder", "water_offer", "task"}  # a fired reminder / the water offer counts: don't stack a nudge on it
+# A fired reminder, the water offer and the other code-sent setup steps (a connect offer +
+# its link, the first-card ask) count: don't stack a nudge on them. Live 2026-10-10 16:25
+# (user 49): "u eat yet today?" landed as the 13th unanswered proactive text in a row — the
+# most recent outbound was a card_setup ask, which this set didn't know.
+PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder", "water_offer", "task",
+                           "connect_offer", "connect_link", "card_setup"}
 
 
 def has_unanswered_proactive(user_id: int, window_minutes: int) -> bool:
