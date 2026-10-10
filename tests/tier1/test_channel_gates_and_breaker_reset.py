@@ -93,6 +93,24 @@ def test_failed_reactive_reply_after_sent_heartbeat_keeps_the_heartbeat_gate(db)
     assert has_unanswered_proactive(user.id, window_minutes=180) is True
 
 
+def test_setup_steps_count_as_unanswered_proactive(db):
+    """Live 2026-10-10 16:25 (user 49): a heartbeat "u eat yet today?" stacked on nine
+    unanswered first-card asks — the most recent outbound was card_setup, not a type
+    the gate knew. A connect offer, its link and the card ask are proactive texts."""
+    from engagement_tracker import has_unanswered_proactive
+    for t in ("card_setup", "connect_offer", "connect_link"):
+        user = make_user(db, phone=f"+1555010{abs(hash(t)) % 10000:04d}")
+        _out(db, user, minutes_ago=10, status="sent", message_type=t)
+        assert has_unanswered_proactive(user.id, window_minutes=180) is True, t
+    answered = make_user(db, phone="+15550109999")
+    _out(db, answered, minutes_ago=30, status="sent", message_type="card_setup")
+    from models import Message
+    db.add(Message(user_id=answered.id, direction="in", body="135 and 185",
+                   created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)))
+    db.commit()
+    assert has_unanswered_proactive(answered.id, window_minutes=180) is False
+
+
 # ─── breaker reset on iMessage inbound ───────────────────────────────────────
 
 def _post_inbound(client, phone, text, msg_id="photon-in-9"):
