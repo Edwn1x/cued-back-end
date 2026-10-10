@@ -902,6 +902,113 @@ _CLASS_KIND_RE = re.compile(r"\b(discussion|disc|section|lecture|lab|seminar|rec
 _CLASS_TITLE_RE = re.compile(r"\b(lecture|discussion|section|lab|seminar|recitation)\b", re.I)
 
 
+# A deliverable they name — the thing that must not vanish from the coach's head.
+_DELIVERABLE_NOUN = (r"(?:project|pset|problem\s*set|homework|hw|essay|paper|lab(?:\s*report)?|assignment|report|"
+                     r"write-?up|problem\s*\d+|p\d[ab]?|\d[ab]\b|midterm|final|quiz|exam)")
+_DELIVERABLE_RE = re.compile(
+    r"\b(?:finish|submit|turn\s+in|hand\s+in|work\s+on|get\s+(?:\w+\s+){0,3}done|haven'?t\s+(?:even\s+)?started|"
+    r"start(?:ed)?\s+(?:on\s+)?|due|complete|grind\s+(?:out\s+)?|knock\s+out|wrap\s+up|study\s+for|prep\s+for)"
+    r"\b[^.?!\n]{0,40}?\b(?P<what>(?:my|the|this|that|a|an)?\s*(?:[a-z0-9]+\s+){0,3}" + _DELIVERABLE_NOUN + r"\b[^.?!\n]{0,30})",
+    re.I)
+_DUE_WORD_RE = re.compile(r"\b(today|tonight|tmrw|tomorrow|by\s+\w+day|\w+day|this\s+week(?:end)?|by\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|"
+                          r"due\s+\w+)\b", re.I)
+_STOP = {"my", "the", "this", "that", "a", "an", "for", "on", "to", "of", "and", "i", "it", "have", "got", "need"}
+
+
+_DELIVERABLE_DUE_RE = re.compile(
+    r"\b(?P<what>(?:my|the|this|that|a|an)?\s*(?:[a-z0-9]+\s+){0,3}" + _DELIVERABLE_NOUN + r"\b[^.?!\n]{0,30})\s+(?:is\s+|'s\s+)?due\b", re.I)
+
+
+# Per-user note from the context build, read by the loop's nudge. Lives here because
+# begin_turn() resets the tool-side turn state AFTER the context is built.
+_DELIVERABLE_NOTES: dict[int, dict | None] = {}
+
+
+def _deliverable_mention(text: str) -> str | None:
+    """The deliverable phrase they named ('project 2b for 61c', 'pset 4'), or None."""
+    if not text:
+        return None
+    m = _DELIVERABLE_RE.search(text) or _DELIVERABLE_DUE_RE.search(text)
+    if not m:
+        return None
+    what = re.sub(r"\s+", " ", m.group("what")).strip(" .,")
+    return what[:80] or None
+
+
+def _deliverable_keywords(what: str) -> list[str]:
+    toks = [t for t in re.findall(r"[a-z0-9]+", (what or "").lower()) if t not in _STOP and len(t) >= 2]
+    return toks[:6]
+
+
+def _deliverable_block(user, text: str, session, *, now: datetime = None) -> str | None:
+    """They named a deliverable; if nothing on their calendar matches it, tell the coach to
+    log_event it now (or ask the due date) — a deadline they told you about has to survive
+    to tomorrow. Live 2026-10-09 (user 48): 'finish project 2b for 61c' at 2pm vanished; at
+    5:49pm the coach said 'nothing left today tho right?'. Read-only, fail-open."""
+    _DELIVERABLE_NOTES.pop(getattr(user, "id", None), None)
+    if not config.DELIVERABLE_CAPTURE_ENABLED or not text or session is None:
+        return None
+    try:
+        what = _deliverable_mention(text)
+        if not what:
+            return None
+        kws = _deliverable_keywords(what)
+        from models import Event, active
+        from events import CALENDAR_SOURCES
+        from sqlalchemy import or_
+        ref = (now or _late_clock())
+        ref = ref.astimezone(timezone.utc).replace(tzinfo=None) if ref.tzinfo else ref
+        q = (active(session, Event, user_id=user.id)
+             .filter(Event.occurred_at >= ref - timedelta(days=1), Event.occurred_at <= ref + timedelta(days=21)))
+        generic = {"project", "pset", "homework", "hw", "essay", "paper", "lab", "assignment", "report", "problem", "set"}
+        course_like = re.compile(r"^(?:\d{2,3}[a-z]?|[a-z]{1,2})$")     # 61c, cs, c104 — the course, not the item
+        class_kind = re.compile(r"\b(lecture|discussion|section|seminar|recitation)\b", re.I)
+        specific_kws = [k for k in kws if k not in generic and not course_like.match(k)]
+        hits, maybes = [], []
+        if kws:
+            conds = [Event.title.ilike(f"%{k}%") for k in kws]
+            for e in q.filter(or_(*conds)).order_by(Event.occurred_at).limit(10).all():
+                t = (e.title or "").lower()
+                if class_kind.search(t) and not re.search(r"\b(due|project|pset|hw|homework|essay|paper|quiz|exam|midterm|final)\b", t):
+                    continue                                  # a class meeting is not the deliverable
+                if any(k in t for k in specific_kws):
+                    hits.append(e)                            # shares a specific token ("2b")
+                elif any(k in t for k in kws if k in generic):
+                    maybes.append(e)                          # only the generic noun matches
+        from timefmt import resolve_tz
+        tz = resolve_tz(user)
+
+        def _line(e):
+            return f"[id {e.id}] {e.title} — {e.occurred_at.replace(tzinfo=timezone.utc).astimezone(tz).strftime('%a %b %-d %-I:%M%p').lower()}"
+        when_said = bool(_DUE_WORD_RE.search(text))
+        if hits:
+            _DELIVERABLE_NOTES[user.id] = None
+            return (f"## DELIVERABLE THEY MENTIONED: \"{what}\" — it IS on their calendar: "
+                    f"{'; '.join(_line(e) for e in hits[:3])}. Tie what they said to that item (don't re-log it); "
+                    "use its real date.")
+        if maybes:
+            _DELIVERABLE_NOTES[user.id] = None
+            return (f"## DELIVERABLE THEY MENTIONED: \"{what}\" — POSSIBLY this calendar item: "
+                    f"{'; '.join(_line(e) for e in maybes[:3])}. Confirm it's the same thing in one short line "
+                    "before you rely on its date; if it's a different one, log_event the new one (or ask when).")
+        _DELIVERABLE_NOTES[user.id] = {"what": what, "when_said": when_said}
+        return (
+            f"## DELIVERABLE NOT ON THE CALENDAR: \"{what}\"\n"
+            "Nothing matching it is on their calendar (no feed carries it). A deadline they tell you about has to "
+            "survive to tomorrow — the context won't remember it for you. "
+            + ("They said WHEN: call log_event NOW (description = the deliverable + course, date = the day they "
+               "said; starts_at only if they gave a time), then reply. "
+               if when_said else
+               "They didn't say when: ask \"when's it due?\" in ONE short line (and log_event it the moment they "
+               "answer). ")
+            + "Never answer a later \"anything left today?\" as if this doesn't exist (live: \"nothing left today tho "
+              "right?\" → \"I literally told you earlier\")."
+        )
+    except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+        logger.warning("DELIVERABLE_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+
+
 def _which_class_block(user, text: str, session, *, now: datetime = None) -> str | None:
     """They named an academic task but not its course → this week's classes from the
     calendar, plus the code's own match when they pointed at a kind of class ("discussion
@@ -1208,6 +1315,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         _wc = _which_class_block(user, combined_body, session)
         if _wc:
             context += "\n\n" + _wc
+        # A deliverable they named that no calendar carries → log it (or ask when), never forget it.
+        _dl = _deliverable_block(user, combined_body, session)
+        if _dl:
+            context += "\n\n" + _dl
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
@@ -1577,6 +1688,23 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                     "plan (other gym, limited equipment, deload) is NOT saved as their routine, so do not "
                     "call save_routine for it. If the card has logged sets, reset_workout_session first. Then "
                     "reply with ONE short line (no re-listing — the card shows it).]")})
+                continue
+        # Deliverable capture nudge: they named a deliverable AND said when, nothing on the
+        # calendar matches, and the reply didn't write it → ONE forced follow-up.
+        if (config.DELIVERABLE_CAPTURE_NUDGE_ENABLED and text and tools and not state.get("deliverable_nudged")
+                and any(t.get("name") == "log_event" for t in tools)):
+            from agent_tools import turn_called
+            _dn = _DELIVERABLE_NOTES.get(user.id)
+            if (_dn and _dn.get("when_said") and not any(turn_called(user.id, t) for t in ("log_event", "schedule_task", "remember"))):
+                state["deliverable_nudged"] = True
+                logger.info("AGENT_LOOP_DELIVERABLE_NUDGE user=%s what=%r", user.id, _dn.get("what"))
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": (
+                    "[code check — NOT from the user, do not answer it: they named a deliverable "
+                    f"(\"{_dn.get('what')}\") with a day, nothing on their calendar matches it, and your reply "
+                    "didn't save it. Call log_event NOW (description = the deliverable + course, date = the day "
+                    "they said, starts_at only if they gave a time), then send your reply. Without the write it "
+                    "is gone next turn.]")})
                 continue
         # Write-back guard (honesty invariant, code side). usda_food_lookup named rows
         # that are ALREADY LOGGED (turn state: pending_writeback); if the reply quotes a

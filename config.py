@@ -337,6 +337,14 @@ WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED = os.getenv("WEEK_ASK_RUNDOWN_IN_CONTEXT_ENA
 # 2026-10-08 (user 48): the warmup-quiz readings were pinned to the CS70 Friday quiz; they
 # were for the Data C104 discussion that was on the calendar at 12:30 the same day.
 ACADEMIC_COURSE_MATCH_ENABLED = os.getenv("ACADEMIC_COURSE_MATCH_ENABLED", "true").lower() == "true"
+# DELIVERABLE CAPTURE: a deliverable they name ("finish project 2b for 61c", "pset due
+# friday", "haven't started the essay") that matches nothing on their calendar gets a
+# context block telling the coach to log_event it (or ask the due date), and ONE forced
+# follow-up if the reply skips the write when they said WHEN. Live 2026-10-09 (user 48):
+# "finish project 2b for 61c" at 2pm vanished; at 5:49pm the coach said "nothing left
+# today tho right?" — "I literally told you earlier".
+DELIVERABLE_CAPTURE_ENABLED = os.getenv("DELIVERABLE_CAPTURE_ENABLED", "true").lower() == "true"
+DELIVERABLE_CAPTURE_NUDGE_ENABLED = os.getenv("DELIVERABLE_CAPTURE_NUDGE_ENABLED", "true").lower() == "true"
 SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
 # Message-length guard for very large calendars: cap the *routine one-off* events listed
 # per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
