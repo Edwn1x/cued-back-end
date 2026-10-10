@@ -75,12 +75,26 @@ def test_week_question_carries_the_full_rundown_in_context(db, anthropic_stub, m
     _event(u.id, "CS 70 Lecture", tomorrow)
     _event(u.id, "ENGIN 183 Seminar", tomorrow.replace(hour=18), 2)
     _event(u.id, "due: Homework 4 [CS70]", tomorrow.replace(hour=16), source="bcourses")
+    # With the week card going out (code-queued on this ask), the rundown rides as the
+    # model's reference: one line + the card, not a day-by-day relay.
+    anthropic_stub.reply_with(lambda kw: "here's ur week")
+    agent_loop.run_agent_loop(u, "What's my week look like", "freeform")
+    seen = _seen_text(anthropic_stub.calls)
+    assert "## SCHEDULE RUNDOWN (built in code; the WEEK CARD is going out after your reply)" in seen
+    assert "CS 70 Lecture" in seen and "ENGIN 183 Seminar" in seen and "Homework 4" in seen
+    assert "do NOT list the days" in seen
+    from agent_tools import pop_turn_state
+    assert pop_turn_state(u.id).get("stat_cards") == ["week"]
+    # Without the card (asks in code off), the full relay is still the instruction.
+    monkeypatch.setattr(config, "STAT_CARD_ASK_IN_CODE_ENABLED", False)
+    anthropic_stub.calls.clear()
     anthropic_stub.reply_with(lambda kw: "here's ur week")
     agent_loop.run_agent_loop(u, "What's my week look like", "freeform")
     seen = _seen_text(anthropic_stub.calls)
     assert "## SCHEDULE RUNDOWN (built in code for THIS question" in seen
     assert "CS 70 Lecture" in seen and "ENGIN 183 Seminar" in seen and "Homework 4" in seen
     assert "do NOT trim it to deadlines" in seen
+    assert pop_turn_state(u.id).get("stat_cards") in (None, [])
 
 
 def test_non_schedule_turns_and_flag_off_add_nothing(db, anthropic_stub, monkeypatch):
