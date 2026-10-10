@@ -961,9 +961,11 @@ def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
 
-def _week_ask_block(user, combined_body: str, session) -> str:
+def _week_ask_block(user, combined_body: str, session, *, card_queued: bool = False) -> str:
     """The code-built rundown for an outright schedule question, as a context block the
-    model relays. '' when it isn't one, the flag is off, or the builder returns nothing."""
+    model relays. '' when it isn't one, the flag is off, or the builder returns nothing.
+    card_queued=True: the week stat card is going out after the reply, so the rundown
+    rides as the model's reference, not as the thing to relay (one line + the card)."""
     if not (config.WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED and config.SCHEDULE_RUNDOWN_ENABLED):
         return ""
     if not _week_asked(combined_body):
@@ -976,7 +978,18 @@ def _week_ask_block(user, combined_body: str, session) -> str:
         return ""
     if not (text or "").strip():
         return ""
-    logger.info("WEEK_ASK_RUNDOWN_PREBUILT user=%s chars=%d", user.id, len(text))
+    logger.info("WEEK_ASK_RUNDOWN_PREBUILT user=%s chars=%d card=%s", user.id, len(text), card_queued)
+    if card_queued:
+        return (
+            "\n\n## SCHEDULE RUNDOWN (built in code; the WEEK CARD is going out after your reply)\n"
+            "They asked about their week and the week card — a 5-day grid of their deadlines/exams "
+            "and planned lift days — goes out right after your reply. So do NOT list the days: the "
+            "card has them. Your reply is one or two short bubbles around it — call out the one or "
+            "two items that matter (a midterm, a quiz, a packed day) and point at the card ('tues is "
+            "the one'). Don't call schedule_rundown or send_stat_card again. The full rundown is "
+            "below so you know what's on it — use it to pick the callout, not to relay. If they ask "
+            "for the day-by-day or their classes after, THEN relay it all.\n" + text
+        )
     return (
         "\n\n## SCHEDULE RUNDOWN (built in code for THIS question — relay it, don't rebuild it)\n"
         "They just asked about their schedule. This is the complete rundown for the window they "
@@ -984,6 +997,96 @@ def _week_ask_block(user, combined_body: str, session) -> str:
         "do NOT trim it to deadlines or to the first few days, do NOT call schedule_rundown again, "
         "and never say \"that's it\" / \"that's the week\" unless this is all of it. Lightly reword "
         "the opening line if you like; keep every day and every item.\n" + text
+    )
+
+
+# An outright ask for one of the three stat cards. Live 2026-10-08 (user 48): "Ok send me
+# my macros" → text, no card (the model ended the turn without a tool call); "What's my
+# week look like" → a text re-list, no card. The send_stat_card tool existed; the model
+# didn't reach for it. Now the ask itself queues the card in code (same guards as the tool:
+# availability, the 20-min repeat window) and the model is told it's going out. The tool
+# stays for everything these miss.
+_STAT_CARD_ASK_RES = (
+    ("rsf", re.compile(
+        r"\b(?:how(?:'?s| is)?\s+(?:packed|busy|full|crowded|dead|empty)\s+(?:is\s+)?(?:the\s+)?(?:rsf|gym)\b"
+        r"|(?:is|how'?s)\s+(?:the\s+)?(?:rsf|gym)\s+(?:packed|busy|dead|empty|crowded|full|looking|rn|right\s+now)\b"
+        r"|\b(?:rsf|gym)\s+(?:capacity|crowd|occupancy|right\s+now|rn)\b"
+        r"|\bsend\s+(?:me\s+)?(?:the\s+)?(?:rsf|gym)\s+(?:card|capacity|meter|numbers?)\b"
+        r"|\brsf\s+card\b)", re.I)),
+    ("macros", re.compile(
+        r"\b(?:send\s+(?:me\s+)?(?:my\s+)?(?:macros|macro\s+card|numbers\s+(?:for\s+)?today)\b"
+        r"|\bmy\s+macros\b|\bmacros\s+(?:today|so\s+far|rn|right\s+now|card)\b|\bmacros\?"
+        r"|\bhow\s+am\s+i\s+doing\s+today\b"
+        r"|\bhow(?:'?s|\s+is)\s+(?:my|today'?s)\s+(?:day|intake|eating|food|numbers|protein|cals?|calories)\b"
+        r"|\bwhere\s+(?:am\s+i|i'?m)\s+(?:at\s+)?(?:today|on\s+(?:protein|cals?|calories))\b"
+        r"|\bwhat'?s\s+left\s+(?:today|to\s+eat|on\s+(?:protein|cals?|calories))\b"
+        r"|\b(?:protein|cals?|calories)\s+(?:so\s+far|today|left)\b"
+        r"|\bhow\s+(?:much|many)\s+(?:protein|cals?|calories|grams)\s+(?:have\s+i|did\s+i|do\s+i\s+have|so\s+far|left)\b)", re.I)),
+    ("week", re.compile(
+        r"\b(?:send\s+(?:me\s+)?(?:my\s+)?week(?:\s+card)?\b"
+        r"|(?:what(?:'?s|\s+does|\s+is)\s+)?(?:my|this|the|ur|your)\s+week\s+(?:look|looking)\b"
+        r"|\bwhat'?s\s+(?:my|this|the)\s+week\b"
+        r"|\brest\s+of\s+(?:the|my|this)\s+week\b"
+        r"|\b(?:so\s+)?cooked\s+this\s+week\b"
+        r"|\bwhat'?s\s+(?:coming|due)\s+(?:up\s+)?(?:this|next)\s+week\b"
+        r"|\bweek\s+card\b)", re.I)),
+)
+
+
+def _stat_card_asked(text: str) -> str | None:
+    """The card kind an inbound asks for outright, or None."""
+    if not text:
+        return None
+    for kind, rx in _STAT_CARD_ASK_RES:
+        if rx.search(text):
+            return kind
+    return None
+
+
+def _stat_card_ask(user, combined_body: str) -> tuple[str | None, str]:
+    """Decide the code-sent card for this turn: (kind to queue or None, context block).
+    Runs during context assembly, BEFORE begin_turn — so it only decides; the caller
+    queues the kind on the turn state after begin_turn. Same guards as the tool handler
+    (availability, the repeat window); an unavailable card yields a block that says so,
+    so the model answers in text and never promises a card."""
+    if not (config.STAT_CARD_ASK_IN_CODE_ENABLED and config.STAT_CARD_TOOL_ENABLED):
+        return None, ""
+    kind = _stat_card_asked(combined_body)
+    if not kind:
+        return None, ""
+    try:
+        import stat_cards
+        from agent_tools import STAT_CARD_REPEAT_MIN
+        ago = stat_cards.minutes_since_sent(user.id, kind)
+        if ago is not None and ago < STAT_CARD_REPEAT_MIN:
+            logger.info("STAT_CARD_ASK_SKIPPED user=%s kind=%s why=sent_%dm_ago", user.id, kind, int(ago))
+            return None, (
+                f"\n\n## STAT CARD\nThey asked for the {kind} card; you sent it {int(ago)} min ago and "
+                "it's still right there in the thread. Don't resend and don't call send_stat_card — "
+                "point at it or answer in text with the real numbers."
+            )
+        state = stat_cards.build_state(kind, user.id)
+    except Exception as e:  # noqa: BLE001 — a card hint must never break a turn
+        logger.warning("STAT_CARD_ASK_FAILED user=%s kind=%s err=%s", user.id, kind, e)
+        return None, ""
+    if not state.get("available"):
+        why = state.get("subcaption") or "unavailable"
+        logger.info("STAT_CARD_ASK_SKIPPED user=%s kind=%s why=%r", user.id, kind, why)
+        return None, (
+            f"\n\n## STAT CARD\nThey asked for the {kind} card but there's none right now ({why}). "
+            "No card goes out — don't call send_stat_card and never say 'here's the card'. Answer in "
+            "text, honestly, no numbers invented."
+        )
+    if kind == "week" and state.get("empty_note"):
+        logger.info("STAT_CARD_ASK_SKIPPED user=%s kind=week why=empty_grid", user.id)
+        return None, ""   # an empty grid isn't an answer; the schedule rundown block handles it
+    says = " · ".join(x for x in (state.get("headline"), state.get("subline")) if x) or state.get("subcaption") or ""
+    return kind, (
+        f"\n\n## STAT CARD (going out right after your reply — the {state['label']} card)\n"
+        f"They asked for it, so code is sending the {kind} card after your text. It shows: {says}. "
+        "Your reply is ONE short line around it — don't repeat the numbers, don't list what's on it, "
+        "don't call send_stat_card for this kind (it's already going). Never say 'here's the card'; "
+        "just talk like it's there."
     )
 
 
@@ -1200,10 +1303,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     session = get_session()
     try:
         context = build_loop_context(user, session)
+        # An outright ask for a stat card ("send me my macros", "how packed is rsf", "what's
+        # my week look like") → the card is queued in code and sent after the reply, instead
+        # of hoping the model calls send_stat_card (live 2026-10-08: two asks, no card).
+        _card_kind, _card_block = _stat_card_ask(user, combined_body)
         # A schedule question asked outright → the complete rundown is built in code now
         # and relayed, instead of hoping the model calls schedule_rundown (live 2026-10-06
-        # 05:44: "Send me my week" → two deadlines, ten classes missing).
-        context += _week_ask_block(user, combined_body, session)
+        # 05:44: "Send me my week" → two deadlines, ten classes missing). When the week
+        # CARD is going out, the rundown is the model's reference, not the thing to relay.
+        context += _week_ask_block(user, combined_body, session, card_queued=(_card_kind == "week"))
+        context += _card_block
         # An academic task without a course → this week's classes + the code's own match.
         _wc = _which_class_block(user, combined_body, session)
         if _wc:
@@ -1429,6 +1538,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.
     _st = peek_turn_state(user.id)
     _st["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
+    if _card_kind:
+        # The code-decided stat card rides the same queue the tool uses; app.py flushes it
+        # after the reply text (flush_stat_cards). A tool call for the same kind this turn
+        # gets "already going out".
+        _st.setdefault("stat_cards", []).append(_card_kind)
+        logger.info("STAT_CARD_QUEUED user=%s kind=%s source=ask", user.id, _card_kind)
     # The caption stays on the turn so the photo-reread delete guard (manage_log) can tell
     # a deliberate "delete this" from a bare re-interpreted photo (config guard).
     _st["caption"] = combined_body or ""

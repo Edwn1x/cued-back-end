@@ -565,6 +565,11 @@ STAT_CARDS_LIVE = os.getenv("STAT_CARDS_LIVE", "true").lower() == "true"
 STAT_CARDS_MODE = (os.getenv("STAT_CARDS_MODE", "") or ("image" if STAT_CARDS_LIVE else "static")).strip().lower()
 # The coach's send_stat_card tool: queues a card that goes out right after its reply.
 STAT_CARD_TOOL_ENABLED = os.getenv("STAT_CARD_TOOL_ENABLED", "true").lower() == "true"
+# An outright ask for a card ("send me my macros", "how packed is rsf", "what's my week
+# look like") queues it in CODE before the model turn (agent_loop._stat_card_ask) — live
+# 2026-10-08 the model answered two such asks in text and never called the tool. Same
+# guards as the tool (availability, repeat window); the tool stays for everything else.
+STAT_CARD_ASK_IN_CODE_ENABLED = os.getenv("STAT_CARD_ASK_IN_CODE_ENABLED", "true").lower() == "true"
 # Per-provider read/write flags.
 GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
 # OAuth callback: say "connected" (page + text) right away and pull the calendar in a
