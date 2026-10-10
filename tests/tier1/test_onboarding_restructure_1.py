@@ -332,3 +332,64 @@ def test_identity_bans_the_words_and_knows_they_are_broke():
     assert "They're broke students." in ident and "double\n  chicken bowl" in ident
     assert "Assume, then say so." in ident
     assert "lwk" in ident, "lwk stays allowed (founder 2026-10-09)"
+
+
+# ─── topic-level repeat guard (live 2026-10-10 02:29, user 49: food asked twice in 25s) ───
+
+LIVE_6209 = ("ok mix makes sense, campus has u walking more than u think. u happen to know ur daily steps — "
+             "iphone tracks it in the health app if u never checked. and food, u cooking most nights or mostly dining hall.")
+LIVE_6211 = "yeah thats real, cs semester keeps u mostly sitting lol. so food — u cooking in ur room or hitting the dining hall most days"
+
+
+def test_same_topic_is_a_duplicate_even_when_the_wording_scores_low():
+    import onboarding_agent as oa
+    assert oa.question_topics(LIVE_6209) >= {"avg_steps", "cooking_situation"}
+    assert oa.question_topics(LIVE_6211) == {"cooking_situation"}
+    assert oa.is_duplicate_question(LIVE_6211, LIVE_6209) is True
+    assert oa.is_duplicate_question("lol fair. what split u run", LIVE_6209) is False      # different topic
+    assert oa.is_duplicate_question("lol the room all day is its own sport", LIVE_6209) is False
+    assert oa.strip_questions(LIVE_6211) == "yeah thats real, cs semester keeps u mostly sitting lol."
+    assert oa.strip_questions("so food — u cooking or dining hall most days") == ""
+
+
+def test_a_normal_turn_seconds_after_the_question_keeps_the_reaction_and_drops_the_repeat(db, anthropic_stub, sms_capture, reactions, caplog):
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=141, occupation="student", current_split="ppl")
+    _coach_said(user, LIVE_6209)                      # the big ask went out seconds ago
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else LIVE_6211)
+    caplog.set_level(logging.INFO)
+    assert oa.handle_onboarding_reply(user, "Like either in my room studying or walking around if I go to class") is False
+    assert _bodies(sms_capture) == ["yeah thats real, cs semester keeps u mostly sitting lol."]
+    assert reactions == []
+    assert "ONBOARDING_REPEAT_QUESTION_SUPPRESSED" in caplog.text
+
+
+def test_a_repeat_that_is_only_the_question_becomes_a_thumbs_up(db, anthropic_stub, sms_capture, reactions):
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=141, occupation="student", current_split="ppl")
+    _coach_said(user, LIVE_6209)
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "so food — u cooking or dining hall most days")
+    oa.handle_onboarding_reply(user, "mostly in my room")
+    assert sms_capture == [] and reactions == [(user.id, "like")]
+
+
+def test_the_same_question_long_after_is_allowed(db, anthropic_stub, sms_capture, reactions, monkeypatch):
+    """Outside the window a re-ask is legitimate (they never answered)."""
+    import onboarding_agent as oa
+    from models import get_session, Message
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=141, occupation="student", current_split="ppl")
+    _coach_said(user, LIVE_6209)
+    s = get_session()
+    try:
+        from datetime import datetime, timezone, timedelta
+        for m in s.query(Message).filter_by(user_id=user.id, direction="out").all():
+            m.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=config.ONBOARDING_DUP_QUESTION_WINDOW_S + 60)
+        s.commit()
+    finally:
+        s.close()
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else LIVE_6211)
+    oa.handle_onboarding_reply(user, "mostly in my room")
+    assert [b.replace('-', '—') for b in _bodies(sms_capture)] == [LIVE_6211] and reactions == []   # outbound normalises the dash
