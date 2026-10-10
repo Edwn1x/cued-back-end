@@ -2832,13 +2832,37 @@ _PLANNING_MARKERS = tuple(re.compile(p, re.IGNORECASE | re.MULTILINE) for p in (
     r"\b(brief|short) (reply|response|ack)\b",
     r"\blet them vent\b",
     r"\bno need to (respond|reply|answer)\b",
+    # Live 2026-10-09 19:45 (user 48): '"nah i'm here" — he's deciding to stay in his room
+    # instead of walking to Moffitt. fine. no nag. quick reply.' texted verbatim: a
+    # he/she third person and a different idiom family ("no nag", "quick reply").
+    r"\bno nag(ging)?\b",
+    r"\bquick (reply|response|ack)\b",
+    r"\b(he|she)['’]?s (deciding|venting|asking|upset|frustrated|mad|pissed|just|not|about to|gonna|trying)\b",
     # Cluster-only AND allowed inside a salvaged tail: "Bad day. I'll back off." is a
     # line the coach legitimately texts; it only counts when other markers ride with it.
     r"\bi['’]?ll (just )?(back off|leave (it|them))\b",
 ))
 _BACK_OFF_MARKER = _PLANNING_MARKERS[-1]
 # A paragraph that opens by talking ABOUT the user is a note to self, never the text.
-_THIRD_PERSON_OPEN = re.compile(r"^\W*(they|them|the user|the human)\b", re.IGNORECASE)
+_THIRD_PERSON_OPEN = re.compile(r"^\W*(they|them|the user|the human|he|she|him|her)\b", re.IGNORECASE)
+# The QUOTED-LEAD shape: the real line in quotes, then a dash/colon/newline and the
+# model's notes about the user ("nah i'm here" — he's deciding to…). The line is the text;
+# everything after it is the plan.
+_QUOTED_LEAD_RE = re.compile(r'^\s*[“"](?P<line>[^“”"\n]{1,200})[”"]\s*(?:[—–-]+|:|\n)\s*(?P<rest>.+)$', re.S)
+
+
+def _quoted_lead(text: str):
+    """(line, rest) when the text is a quoted line followed by notes ABOUT the user —
+    third-person opener or a planning marker in the rest — else None."""
+    m = _QUOTED_LEAD_RE.match(text or "")
+    if not m:
+        return None
+    line, rest = m.group("line").strip(), m.group("rest").strip()
+    if not rest or not line:
+        return None
+    if _THIRD_PERSON_OPEN.match(rest) or _NARRATION_RE.search(rest) or _planning_marker_hits(rest) >= 1:
+        return line, rest
+    return None
 # The salvaged tail is a short closing line, not a second essay.
 _SALVAGE_MAX_CHARS = 200
 
@@ -2857,6 +2881,8 @@ def looks_like_narration(text: str) -> bool:
     with tools, then send the real words) and drops a repeat — never texts it."""
     t = text or ""
     if _NARRATION_RE.search(t):
+        return True
+    if _quoted_lead(t):
         return True
     return _planning_marker_hits(t) >= 2
 
@@ -2888,6 +2914,9 @@ def salvage_direct_reply(text: str):
     - the head (everything before the tail) must itself read as narration — the
       markers that flagged the text have to live there, not be spread into the tail.
     """
+    ql = _quoted_lead(text)
+    if ql and len(ql[0]) <= _SALVAGE_MAX_CHARS:
+        return ql[0]                      # the quoted line IS the message; the rest was the plan
     paras = [p.strip() for p in re.split(r"\n[ \t]*\n", (text or "").strip()) if p.strip()]
     if len(paras) < 2:
         return None

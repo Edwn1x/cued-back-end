@@ -634,3 +634,36 @@ def test_salvage_flag_off_is_the_old_nudge_then_drop_path(db, imessage_on, sidec
     assert caplog.text.count("AGENT_LOOP_NARRATION_NUDGE") == 1
     assert "AGENT_LOOP_NARRATION_DROPPED" in caplog.text
     assert "AGENT_LOOP_NARRATION_SALVAGED" not in caplog.text
+
+
+# ─── quoted-lead narration (live 2026-10-09 19:45, user 48, "Left on read?") ─────────
+
+LEAK_6156 = ('"nah i\'m here" — he\'s deciding to stay in his room instead of walking to Moffitt. '
+             'fine. no nag. quick reply.')
+
+
+def test_quoted_lead_narration_is_detected_and_the_quoted_line_is_salvaged():
+    from agent_tools import looks_like_narration, salvage_direct_reply
+    assert looks_like_narration(LEAK_6156) is True
+    assert salvage_direct_reply(LEAK_6156) == "nah i'm here"
+    # other spellings of the same shape
+    assert salvage_direct_reply('"u good?" — she\'s venting, keep it light') == "u good?"
+    assert salvage_direct_reply('"bet" — the user just confirmed. no tapback.') == "bet"
+    assert salvage_direct_reply('"on it"\nhe\'s asking for the link again, send it') == "on it"
+    # a quote that is part of the coach's own line is NOT narration
+    assert looks_like_narration('"ok" — that\'s all u got?') is False
+    assert looks_like_narration('"nah i\'m here" lol my bad, got stuck') is False
+    assert salvage_direct_reply('"ok" — that\'s all u got?') is None
+
+
+def test_6156_sends_only_the_quoted_line(db, imessage_on, sidecar, anthropic_stub, sms_capture, caplog):
+    import app
+    body = "Left on read?"
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _inbound(db, user, body, "spc-msg-lor")
+    anthropic_stub.push(LEAK_6156)
+    with caplog.at_level(logging.WARNING):
+        app.process_buffered_message(user.id, body, "freeform")
+    sends = [j for r, j in sidecar if r == "send"]
+    assert len(sends) == 1 and sends[0]["text"] == "nah i'm here"
+    assert "AGENT_LOOP_NARRATION_SALVAGED" in caplog.text
