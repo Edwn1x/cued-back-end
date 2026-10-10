@@ -337,6 +337,9 @@ WEEK_ASK_RUNDOWN_IN_CONTEXT_ENABLED = os.getenv("WEEK_ASK_RUNDOWN_IN_CONTEXT_ENA
 # 2026-10-08 (user 48): the warmup-quiz readings were pinned to the CS70 Friday quiz; they
 # were for the Data C104 discussion that was on the calendar at 12:30 the same day.
 ACADEMIC_COURSE_MATCH_ENABLED = os.getenv("ACADEMIC_COURSE_MATCH_ENABLED", "true").lower() == "true"
+# NEW HERE block in the coach loop for the first hours after setup: what to say to "so
+# what now" (live 2026-10-05, user 48: "nothing til ur at the gym").
+NEW_USER_ORIENTATION_HOURS = float(os.getenv("NEW_USER_ORIENTATION_HOURS", "48"))
 SCHEDULE_RUNDOWN_DEFAULT_DAYS = int(os.getenv("SCHEDULE_RUNDOWN_DEFAULT_DAYS", "7"))
 # Message-length guard for very large calendars: cap the *routine one-off* events listed
 # per rundown. Deadlines and recurring-class summaries are NEVER capped by this.
