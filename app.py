@@ -3659,9 +3659,18 @@ def _recover_inbound_in_background():
     import threading
 
     def _run():
+        # A marker younger than INBOUND_RECOVERY_MIN_AGE_S at boot is exactly the drained-
+        # then-killed turn (live 2026-10-09 20:30 PT: "What do you think" was 3s old when the
+        # new process looked) — it can't be told from a turn this process is about to own, so
+        # come back once it has aged instead of leaving it forever.
+        import time as _time
         try:
             from inbound_recovery import recover_orphans
-            recover_orphans(process_buffered_message)
+            for _attempt in range(3):
+                out = recover_orphans(process_buffered_message)
+                if not out.get("fresh"):
+                    break
+                _time.sleep(config.INBOUND_RECOVERY_MIN_AGE_S + 15)
         except Exception as e:  # noqa: BLE001
             logger.error("INBOUND_RECOVERY_FAILED err=%s", e, exc_info=True)
     threading.Thread(target=_run, name="inbound-recovery", daemon=True).start()
