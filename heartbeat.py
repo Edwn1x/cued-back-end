@@ -886,6 +886,12 @@ def _morning_anchor_hhmm(user, session, local, *, now=None, info=None) -> tuple[
         return wake
 
 
+# Outbound types that are code-sent setup/system steps, not the coach talking: they never
+# count as the morning open (see _morning_open_signal). Mirrors setup_sequence.STEP_TYPES.
+_CODE_STEP_TYPES = ("connect_offer", "connect_link", "water_offer", "card_setup", "workout_intro",
+                    "workout_card", "routine_capture_offer", "inbound_recovery")
+
+
 def _morning_open_signal(user, session, *, now=None, state: dict | None = None) -> str | None:
     """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after their wake (profile, alt
     honoured, pushed later by a measured wake — see _morning_anchor_hhmm) and no
@@ -920,9 +926,17 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     except Exception:  # noqa: BLE001
         pass
     since_dt = min(since_cands)
+    from sqlalchemy import or_
     from engagement_tracker import _not_reaction
+    # "Talked" = they texted, or the coach said something TO them. A code-sent setup step
+    # (the water yes/no, a connect offer + its link, the first-card ask — setup_sequence /
+    # its sweeps) is neither: live 2026-10-10 (user 49, day one) the 11:19 water offer and
+    # calendar link counted as the morning open, no briefing was ever owed, and the
+    # 11:55 tick "let them breathe" — while the sweeps kept pinging.
     talked = (session.query(Message.id)
-              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction())
+              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction(),
+                      or_(Message.direction != "out", Message.message_type.is_(None),
+                          Message.message_type.notin_(_CODE_STEP_TYPES)))
               .first())
     if talked:
         return None
