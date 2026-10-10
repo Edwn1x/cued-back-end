@@ -220,7 +220,6 @@ def _flush_buffer(phone: str, process_callback, token=None):
         done = threading.Event()
         _in_flight[phone] = done
 
-    _clear_pending(phone)        # this process owns the turn from here; no replay after a deploy
     messages = buffer_data["messages"]
     user_id = buffer_data["user_id"]
     continuation = bool(buffer_data.get("continuation"))
@@ -263,6 +262,11 @@ def _flush_buffer(phone: str, process_callback, token=None):
         try:
             extra = {"continuation": True} if (continuation and _takes_continuation(process_callback)) else {}
             process_callback(user_id, combined_body, message_type, image_url, images=images, **extra)
+            # The inbound_pending marker is cleared only once the turn COMPLETED. Live
+            # 2026-10-09 20:30 PT: the SIGTERM drain flushed "What do you think", the marker
+            # was cleared at pop, the process was killed mid-reply — and the next boot had
+            # nothing to replay. A turn that dies in the callback stays marked for it.
+            _clear_pending(phone)
         except Exception as e:
             logger.error(f"Error processing buffered messages for {phone}: {e}", exc_info=True)
         finally:
@@ -271,6 +275,7 @@ def _flush_buffer(phone: str, process_callback, token=None):
                 if _in_flight.get(phone) is done:
                     _in_flight.pop(phone, None)
     else:
+        _clear_pending(phone)        # nothing to run: the turn is consumed
         done.set()
         with _lock:
             if _in_flight.get(phone) is done:

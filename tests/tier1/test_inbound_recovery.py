@@ -170,3 +170,50 @@ def test_app_wires_the_drain_and_the_recovery():
     assert "signal.signal(signal.SIGTERM, _on_term)" in src and "drain_all(\"sigterm\")" in src
     assert "_install_shutdown_drain()" in src and "_recover_inbound_in_background()" in src
     assert "recover_orphans(process_buffered_message)" in src
+
+
+
+# ── the marker outlives a turn that dies mid-callback (live 2026-10-09 20:30 PT) ─────
+
+def test_marker_is_cleared_only_after_the_callback_completes(db):
+    u = make_user(db, phone="+15550001010")
+    _inbound(db, u, "What do you think")
+    order = []
+
+    def cb(user_id, body, message_type, image_url, images=None, **kw):
+        order.append(("during", len(_markers(db))))      # still marked while the turn runs
+    message_buffer.buffer_message(u.phone, "What do you think", u.id, "freeform", process_callback=cb, delay_override=(60, 60))
+    tok = message_buffer._buffers[u.phone]["token"]
+    message_buffer._buffers[u.phone]["timer"].cancel()
+    message_buffer._flush_buffer(u.phone, cb, tok)
+    assert order == [("during", 1)] and _markers(db) == {}
+
+
+def test_a_callback_that_dies_leaves_the_marker_for_the_next_boot(db):
+    u = make_user(db, phone="+15550001011")
+    first = _inbound(db, u, "What do you think")
+
+    def boom(user_id, body, message_type, image_url, images=None, **kw):
+        raise RuntimeError("killed mid-reply")
+    message_buffer.buffer_message(u.phone, "What do you think", u.id, "freeform", process_callback=boom, delay_override=(60, 60))
+    tok = message_buffer._buffers[u.phone]["token"]
+    message_buffer._buffers[u.phone]["timer"].cancel()
+    message_buffer._flush_buffer(u.phone, boom, tok)
+    mk = _markers(db)
+    assert u.phone in mk and mk[u.phone].first_message_id == first      # survives → replayable at boot
+
+
+def test_boot_recovery_retries_while_a_marker_is_too_fresh(monkeypatch):
+    """app._recover_inbound_in_background loops (bounded) while recover_orphans reports a
+    fresh marker, so a drained-then-killed turn is picked up once it has aged."""
+    import app, inbound_recovery, threading
+    calls = []
+    results = iter([{"replayed": 0, "photo_notes": 0, "dropped": 0, "fresh": 1},
+                    {"replayed": 1, "photo_notes": 0, "dropped": 0, "fresh": 0}])
+    monkeypatch.setattr(inbound_recovery, "recover_orphans", lambda cb: calls.append(1) or next(results))
+    monkeypatch.setattr(config, "INBOUND_RECOVERY_MIN_AGE_S", 0)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    monkeypatch.setattr(threading, "Thread", lambda target=None, name=None, daemon=None: type("T", (), {"start": lambda self: target()})())
+    app._recover_inbound_in_background()
+    assert len(calls) == 2
