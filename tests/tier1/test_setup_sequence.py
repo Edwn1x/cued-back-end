@@ -214,7 +214,9 @@ def test_setup_window_waives_the_day_wait_but_not_for_old_users(db, seq_on, sms_
                        created_at=_now() - timedelta(hours=3), onboarding_completed_at=None,
                        wake_time="00:00", sleep_time="23:59")
     assert in_setup_window(fresh) is True and in_setup_window(legacy) is False
-    assert sweep(_now()) == 1 and [b for _p, b in sms_capture] == [OFFER_GCAL_ASK]
+    from setup_sequence import sweep as setup_sweep
+    assert sweep(_now()) == 0, "inside the window the setup sequence is the sender (one step per tick, in order)"
+    assert setup_sweep(_now()) == 1 and [b for _p, b in sms_capture] == [OFFER_GCAL_ASK]
     assert "gcal" in (_u(fresh.id).connect_offers or {}) and not (_u(legacy.id).connect_offers or {})
     old = make_user(db, onboarding_completed_at=_now() - timedelta(hours=72))
     assert in_setup_window(old) is False

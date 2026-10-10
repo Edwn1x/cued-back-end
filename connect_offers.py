@@ -481,6 +481,13 @@ def sweep(now: datetime | None = None) -> int:
             if not action:
                 continue
             kind, provider, text = action
+            if kind.startswith("offer"):
+                # First offers inside the setup window are setup_sequence's to send, one
+                # step per tick in order (live 2026-10-10: this sweep and water's fired in
+                # the same tick). Reconnect / allowlisted lines still go from here.
+                from setup_sequence import owns as _setup_owns
+                if _setup_owns(u, now):
+                    continue
             _commit_action(session, u, action, now)
             todo.append((u.id, kind, provider, text, u.phone))
     finally:
