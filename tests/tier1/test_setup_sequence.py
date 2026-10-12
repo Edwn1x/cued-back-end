@@ -33,6 +33,7 @@ def seq_on(monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_HEALTH_ENABLED", True)
     monkeypatch.setattr(config, "GOOGLE_HEALTH_OFFER_ENABLED", False)
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
+    monkeypatch.setattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", False)   # the 2026-10-09 shape; directive steps: test_setup_steps_directive.py
     monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
     monkeypatch.setattr(config, "SIDECAR_URL", "http://sidecar.test:8080")
     monkeypatch.setattr(config, "INTERNAL_SHARED_SECRET", "s3cret-internal")

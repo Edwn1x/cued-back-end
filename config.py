@@ -575,6 +575,14 @@ INTEGRATIONS_BASE_URL = os.getenv("INTEGRATIONS_BASE_URL", "https://web-producti
 # pointed at this same Flask app. Empty → INTEGRATIONS_BASE_URL. Only the link moves;
 # the OAuth redirect_uri stays on INTEGRATIONS_BASE_URL, so no Google/Canvas console change.
 CONNECT_LINK_BASE_URL = os.getenv("CONNECT_LINK_BASE_URL", "")
+# The link preview picture on the connect links (founder, 2026-10-12): the "your week" card
+# art, served by this app from static/og/connect.png. Override with a full URL.
+CONNECT_OG_IMAGE_URL = os.getenv("CONNECT_OG_IMAGE_URL", "")
+# Setup steps are DIRECTIVE (founder, 2026-10-12): no separate "quick version" rundown and
+# no "want me on ur calendar? … or ignore this" offer — right after the summary the first
+# step goes out as a thing to do ("first thing: connect ur google calendar … tap this" +
+# the link), then "next:" steps one per text. Food logging rides on the summary tail.
+SETUP_STEPS_DIRECTIVE_ENABLED = os.getenv("SETUP_STEPS_DIRECTIVE_ENABLED", "true").lower() == "true"
 # Stat cards (stat_cards.py): the small fixed-height "rsf right now" / "today" / "this
 # week" bubbles. The page is server-rendered by THIS app (/card/stat/<kind>), so the
 # base is the Flask host, same as the connect links. STAT_CARDS_MODE: live = the page

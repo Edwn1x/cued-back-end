@@ -47,6 +47,13 @@ MIN_DAYS_ONBOARDED = 1
 
 OFFER_GCAL_LINK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
                    "tap to connect, or ignore this and i won't bring it up again")
+# Directive setup steps (founder, 2026-10-12): a thing to do, with its why, not an offer to
+# consider. setup_sequence prefixes the lead ("first thing:" / "next:").
+STEP_GCAL_LINK = "connect ur google calendar so i plan workouts around ur classes and catch due dates. tap this"
+STEP_GCAL_ASK = ("connect ur google calendar so i plan workouts around ur classes and catch due dates. "
+                 "which google account is it on")
+STEP_BCOURSES = ("bcourses. in bcourses go to calendar, then 'calendar feed' (bottom right), and paste me that "
+                 "link — ur due dates go on my radar")
 OFFER_GCAL_ASK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
                   "if yes, which google account is it on")
 # "u mentioned ur fitbit" asserted a chat mention that never happened: the device comes
@@ -431,9 +438,26 @@ def _send_action(uid: int, kind: str, provider: str, text: str | None, phone: st
         logger.info("CONNECT_OFFER_SENT user=%s provider=%s kind=%s", uid, provider, kind)
 
 
-def offer_now(user_id: int, now: datetime | None = None, *, min_gap: timedelta | None = None) -> str | None:
+def _directive_text(kind: str, provider: str, text: str | None, lead: str | None) -> str | None:
+    """Setup-step copy: the directive line for the first offers when the lead is given
+    (SETUP_STEPS_DIRECTIVE_ENABLED), else the text as decided."""
+    if not lead or not getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True):
+        return text
+    if kind == "offer_link" and provider == "gcal":
+        return f"{lead} {STEP_GCAL_LINK}"
+    if kind == "offer_ask" and provider == "gcal":
+        return f"{lead} {STEP_GCAL_ASK}"
+    if kind == "offer_text" and provider == "bcourses":
+        return f"{lead} {STEP_BCOURSES}"
+    return f"{lead} {text}" if text else text
+
+
+def offer_now(user_id: int, now: datetime | None = None, *, min_gap: timedelta | None = None,
+              lead: str | None = None) -> str | None:
     """The setup sequence's call: send this user's ONE next action right now (no
-    heartbeat guardrails — they just texted). Returns the provider sent, else None."""
+    heartbeat guardrails — they just texted). Returns the provider sent, else None.
+    lead — the setup step's lead ("first thing:" / "next:"): the first offers go out as
+    directive steps with it (STEP_GCAL_LINK / STEP_BCOURSES)."""
     now = now or _naive_utcnow()
     from models import get_session, User
     session = get_session()
@@ -446,6 +470,7 @@ def offer_now(user_id: int, now: datetime | None = None, *, min_gap: timedelta |
             return None
         _commit_action(session, u, action, now)
         kind, provider, text = action
+        text = _directive_text(kind, provider, text, lead)
         phone = u.phone
     finally:
         session.close()

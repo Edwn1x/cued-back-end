@@ -90,6 +90,21 @@ def connect_start(provider: str):
 
 _CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
 _OG_IMAGE = "https://cued.fit/images/og-image-cued.png"
+_OG_SIZE = (840, 1050)   # static/og/connect.png
+
+
+def _og_image() -> str:
+    """The preview picture for the connect links: CONNECT_OG_IMAGE_URL, else the "your week"
+    card art this app serves at /static/og/connect.png on CONNECT_LINK_BASE_URL (founder,
+    2026-10-12), else the site's generic og image."""
+    import config as _cfg
+    url = (getattr(_cfg, "CONNECT_OG_IMAGE_URL", "") or "").strip()
+    if url:
+        return url
+    base = (getattr(_cfg, "CONNECT_LINK_BASE_URL", "") or "").strip().rstrip("/")
+    if base:
+        return f"{base}/static/og/connect.png"
+    return _OG_IMAGE
 
 
 def _handoff_page(label: str, authorize_url: str) -> Response:
@@ -105,7 +120,9 @@ def _handoff_page(label: str, authorize_url: str) -> Response:
         f"<meta property='og:title' content='{title}'>"
         f"<meta property='og:description' content='{desc}'>"
         "<meta property='og:site_name' content='cued'>"
-        f"<meta property='og:image' content='{_OG_IMAGE}'>"
+        f"<meta property='og:image' content='{html.escape(_og_image(), quote=True)}'>"
+        f"<meta property='og:image:width' content='{_OG_SIZE[0]}'>"
+        f"<meta property='og:image:height' content='{_OG_SIZE[1]}'>"
         f"<meta http-equiv=refresh content='0;url={href}'>"
         "<style>body{font:16px -apple-system,system-ui,sans-serif;margin:14vh auto;max-width:20rem;"
         "text-align:center;color:#111;padding:0 1.5rem}h1{font-size:1.1rem;font-weight:600}"
