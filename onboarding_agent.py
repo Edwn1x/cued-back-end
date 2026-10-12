@@ -153,7 +153,7 @@ def _get_missing_fields(user) -> list:
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
     if not user.occupation:
-        missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so ('im assuming ur a student here? what major, and any part time job'); if they're working, at another school, or not a student, take it in stride and go from there"))
+        missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so, NAMING berkeley the first time ('im assuming ur a berkeley student? what major, and any part time job' — 'student here' alone cost a round trip live 2026-10-11: 'Here?'); if they're working, at another school, or not a student, take it in stride and go from there"))
     if not user.activity_level or user.activity_level == "lightly_active":
         missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
     if user.avg_steps is None:
@@ -396,7 +396,7 @@ the time of day; read it here.
   cooking, their day, their plans unless the answer tells you one of those things.
   No natural reason this turn → no question. The next message will give you one.
 - Assume what's safe to assume, and SAY the assumption. A number texting cued is a
-  Berkeley student: "im assuming ur a student here? what major, and any part time job"
+  Berkeley student: "im assuming ur a berkeley student? what major, and any part time job" (name berkeley the first time — never just "here")
   — not "student or working". If they're working, at another school, or not a student,
   take it in stride and go from there. A vague sleep answer ("hella late") is roughly
   2am/11am: say the guess, say they can fix it, move on. A stated guess beats a third
