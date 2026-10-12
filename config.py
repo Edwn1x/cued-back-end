@@ -839,6 +839,9 @@ CARD_SETUP_ENABLED = os.getenv("CARD_SETUP_ENABLED", "false").lower() == "true"
 # SETUP_WINDOW_HOURS of completion the connect offers don't wait a day. A workout ask at
 # any point sends the card right then (the onboarding early exit / the start tool).
 SETUP_SEQUENCE_ENABLED = os.getenv("SETUP_SEQUENCE_ENABLED", "true").lower() == "true"
+# The setup sweep yields while the morning briefing is still owed (live 2026-10-12, user 50
+# day two: water offer at wake+23 → proactive_stack on every tick → no briefing).
+SETUP_SEQUENCE_YIELDS_TO_BRIEFING = os.getenv("SETUP_SEQUENCE_YIELDS_TO_BRIEFING", "true").lower() == "true"
 SETUP_WINDOW_HOURS = int(os.getenv("SETUP_WINDOW_HOURS", "48"))
 SETUP_STEP_QUIET_MINUTES = int(os.getenv("SETUP_STEP_QUIET_MINUTES", "20"))
 # The water yes/no is a SETUP STEP (founder 2026-10-09: "quick yes or no, before the card"):

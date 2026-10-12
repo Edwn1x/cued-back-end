@@ -117,3 +117,28 @@ def test_the_first_card_ask_goes_once_not_every_twenty_quiet_minutes(db, seq_on,
     _backdate(u.id, 35)                                    # 20+ quiet minutes, no answer
     assert ss.sweep() == 0 and ss.on_inbound(u.id) is None, "asked once; the answer builds the card"
     assert len([b for b in sidecar_ok if b == ask_text(_u(u.id))]) == 1
+
+
+def test_sweep_yields_while_the_morning_briefing_is_owed(db, seq_on, sidecar_ok, card_ok, sync_threads,
+                                                          anthropic_stub, monkeypatch, caplog):
+    """Live 2026-10-12 (user 50, day two): the setup sweep sent the water offer at wake+23;
+    every heartbeat tick after it hit proactive_stack and the 90-min morning window closed
+    with no briefing. The briefing goes first."""
+    import logging
+    import heartbeat
+    import onboarding_agent as oa
+    import setup_sequence as ss
+    monkeypatch.setattr(config, "CONNECT_OFFER_ENABLED", False)
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _user(db)
+    oa._complete_onboarding(_u(u.id), "yes")
+    _backdate(u.id, 35)
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(heartbeat, "_morning_open_signal", lambda user, session, **kw: "MORNING OPEN owed")
+    assert ss.sweep() == 0 and "SETUP_STEP_DEFERRED" in caplog.text and "briefing_owed" in caplog.text
+    monkeypatch.setattr(heartbeat, "_morning_open_signal", lambda user, session, **kw: None)   # briefing went / window over
+    assert ss.sweep() == 1, "the step follows once the briefing is no longer owed"
+    monkeypatch.setattr(heartbeat, "_morning_open_signal", lambda user, session, **kw: "MORNING OPEN owed")
+    monkeypatch.setattr(config, "SETUP_SEQUENCE_YIELDS_TO_BRIEFING", False)
+    _inbound(u.id, "no"); _backdate(u.id, 35)
+    assert ss.sweep() == 1, "flag off → the old behaviour"

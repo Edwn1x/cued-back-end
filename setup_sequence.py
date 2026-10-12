@@ -60,6 +60,22 @@ def owns(user, now: datetime | None = None) -> bool:
     return in_setup_window(user, now or _naive_utcnow())
 
 
+def _briefing_owed(session, user, now: datetime) -> bool:
+    """True while the heartbeat still owes this user today's morning open. A setup step
+    sent now trips the anti-stack gate for 180 min and pushes the briefing out of its
+    90-min window — live 2026-10-12 (user 50, day two): water offer at wake+23 from this
+    sweep, every heartbeat tick after it 'proactive_stack', no briefing. The briefing goes
+    first; the step follows once they reply or the stack window lapses."""
+    if not getattr(config, "SETUP_SEQUENCE_YIELDS_TO_BRIEFING", True):
+        return False
+    try:
+        from heartbeat import _morning_open_signal
+        return _morning_open_signal(user, session, now=now) is not None
+    except Exception as e:  # noqa: BLE001 — never block setup on a hint
+        logger.warning("SETUP_BRIEFING_CHECK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return False
+
+
 def _card_due(session, user) -> bool:
     if not (config.CARD_SETUP_ENABLED and config.START_WORKOUT_TOOL_ENABLED):
         return False
@@ -188,6 +204,9 @@ def sweep(now: datetime | None = None) -> int:
                          User.card_setup_at.is_(None), User.onboarding_completed_at >= since).all())
         for u in users:
             if guardrail_reason(u, session, now=now):
+                continue
+            if _briefing_owed(session, u, now):
+                logger.info("SETUP_STEP_DEFERRED user=%s reason=briefing_owed", u.id)
                 continue
             step = next_step(session, u, now)
             if step in ("connect", "water", "card"):
