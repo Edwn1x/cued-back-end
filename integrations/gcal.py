@@ -83,7 +83,12 @@ class GCalProvider(Provider):
             "scope": self._requested_scope(),
             "access_type": "offline",   # get a refresh token
             "prompt": "consent",        # ensure the refresh token comes every time
-            "include_granted_scopes": "true",
+            # deliberately NO include_granted_scopes (same lesson as google_health.py): it
+            # unions this request with scopes the account granted before — a Google Health
+            # grant (restricted, unverified) turned the calendar request into Google's
+            # "401. That's an error. The server cannot process the request because it is
+            # malformed" (live 2026-10-13, founder's main personal account); the account
+            # with no prior grant got the normal consent screen. Tokens are per provider.
             "state": state,
         }
         return f"{AUTH_URL}?{urlencode(params)}"
