@@ -153,3 +153,15 @@ def test_the_prompt_says_every_reply_carries_a_question(db):
     user = _new_signup(db, onboarding_step=2)
     sp = oa._build_system_prompt(user)
     assert "EVERY reply ends with ONE question" in sp and "No natural reason this turn" not in sp
+
+
+def test_split_ask_assumes_a_routine_for_six_months_plus(db):
+    """Founder, 2026-10-13: experience "6 months - 2 years" on the signup, and the coach asked
+    "u already got a workout routine going or want me to build one?" — it should assume."""
+    import onboarding_agent as oa
+    inter = _new_signup(db, onboarding_step=2, experience="intermediate", height_ft=5, height_in=6, weight_lbs=142)
+    hint = dict(oa._get_missing_fields(inter))["current_split"]
+    assert "ASSUME they run something" in hint and "never whether" in hint and "want me to build one" not in hint
+    newer = _new_signup(db, phone="+15550100071", onboarding_step=2, experience="beginner", height_ft=5, height_in=6, weight_lbs=142)
+    hint2 = dict(oa._get_missing_fields(newer))["current_split"]
+    assert "u already got a routine or want me to build one" in hint2

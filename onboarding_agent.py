@@ -145,6 +145,19 @@ def _is_berkeley_student(user) -> bool:
     return False
 
 
+def _split_hint(user) -> str:
+    """The split ask, shaped by the signup's experience (founder, 2026-10-13: "since i put my
+    experience 6 months-2 years, it should have assumed that i already had a routine
+    going"). 6 months+ → ASSUME they run something and ask what; newer → ask whether."""
+    exp = (getattr(user, "experience", None) or "none").lower()
+    if exp in ("intermediate", "advanced"):
+        return ("what split they run — they've trained 6+ months (signup), so ASSUME they run something and "
+                "ask WHAT, never whether: 'what split u run and which days u hit what' (ppl, upper/lower, "
+                "full body, bro split). If it turns out they don't, offer to build one then")
+    return ("what split they run — ask neutrally: 'u already got a routine or want me to build one'; if they "
+            "have one: 'what split u run and which days u hit what' (ppl, upper/lower, full body, bro split)")
+
+
 def _get_missing_fields(user) -> list:
     """Return list of (field_name, question_context) for fields still null."""
     missing = []
@@ -172,7 +185,7 @@ def _get_missing_fields(user) -> list:
             if user.experience == "none":
                 _auto_fill_current_split_none(user)
             else:
-                missing.append(("current_split", "what split they run — ask neutrally: 'u already got a routine or want me to build one'; if they have one: 'what split u run and which days u hit what' (ppl, upper/lower, full body, bro split)"))
+                missing.append(("current_split", _split_hint(user)))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     # Known once EITHER typed column is filled: a person who names what they won't
