@@ -273,7 +273,7 @@ def test_vague_sleep_answer_mid_conversation_states_the_guess_in_the_friend_repl
     assert oa.handle_onboarding_reply(user, "Yeah like staying up hella late and waking up late too") is False
     row = _row(db, user.id)
     assert row.sleep_estimated is True and row.wake_time == "11:00"
-    assert "code pinned a guess: up around 11, down around 2" in seen["instruction"]
+    assert "code's default is up around 11, down around 2" in seen["instruction"]
     assert "do NOT ask about sleep again" in seen["instruction"]
     assert "wake_sleep" not in [f[0] for f in oa._get_missing_fields(row)], "it no longer blocks"
     sys_text = str(seen["system"])

@@ -50,7 +50,7 @@ def test_vague_sleep_answer_is_pinned_by_code_even_when_the_extractor_guessed_ti
     assert (row.wake_time, row.sleep_time, row.sleep_estimated) == ("11:00", "02:00", True), \
         "code's estimate, flagged as a guess — not the extractor's 12:00 as fact"
     assert "ONBOARDING_SLEEP_MODEL_GUESS_DROPPED" in caplog.text and "ONBOARDING_SLEEP_ESTIMATED" in caplog.text
-    assert "code pinned a guess: up around 11" in seen["instruction"]
+    assert "code's default is up around 11" in seen["instruction"]
     summary = [b for b in _bodies(sms_capture) if b.startswith("ok so")][0]
     assert "up around 11 down around 2 (my guess, fix it anytime)" in summary
 
@@ -189,32 +189,36 @@ def test_fucked_is_a_late_schedule():
     assert oa.classify_sleep_answer("My sleep schedule is so fucked honestly", "roughly when r u up and when do u crash?") == "late"
 
 
-def test_the_stated_sleep_guess_is_codes_numbers():
-    """Live 2026-10-13 05:04 (user 51): code pinned 09:00/01:00, the reply said "peg u at up
-    around 11, down around 2ish"."""
+def test_the_coachs_stated_guess_is_parsed_and_adopted():
+    """Founder, 2026-10-13: "why are we using the code numbers if the coach has reasoned better
+    numbers" — code pinned 09:00/01:00, the reply said "peg u at up around 11, down around 2ish":
+    the reply's pair is the estimate."""
     import onboarding_agent as oa
-    fixed = oa.enforce_sleep_clause("lol it's cs, everyone's is. ima just peg u at up around 11, down around 2ish and u can fix it whenever. u working a part time job?", "09:00", "01:00")
-    assert "up around 11" not in fixed and "2ish" not in fixed
-    assert "ima guess up around 9 and down by 1, fix it anytime" in fixed and fixed.endswith("u working a part time job?"), fixed
-    # already right → untouched; no clause at all → appended
-    ok = "ima guess up around 9 and down by 1, fix it anytime. u working a part time job?"
-    assert oa.enforce_sleep_clause(ok, "09:00", "01:00") == ok
-    assert oa.enforce_sleep_clause("lol it's cs, everyone's is.", "11:00", "02:00").endswith("ima guess up around 11 and down by 2, fix it anytime")
+    assert oa.parse_stated_sleep_guess("lol it's cs. ima just peg u at up around 11, down around 2ish and u can fix it whenever") == ("11:00", "02:00")
+    assert oa.parse_stated_sleep_guess("ima guess up around 9 and down by 1, fix it anytime") == ("09:00", "01:00")
+    assert oa.parse_stated_sleep_guess("ima guess up at 7am and down by 11, fix it anytime") == ("07:00", "23:00")
+    assert oa.parse_stated_sleep_guess("lol it's cs, everyone's is.") is None
+    # no pair stated → code's clause is appended so the guess is said once
+    out = oa.enforce_sleep_clause("lol it's cs, everyone's is.", "11:00", "02:00")
+    assert out.endswith("ima guess up around 11 and down by 2, fix it anytime")
 
 
-def test_enforced_clause_rides_the_live_reply(db, anthropic_stub, sms_capture, caplog):
+def test_the_live_reply_keeps_its_numbers_and_the_db_follows(db, anthropic_stub, sms_capture, caplog):
+    """The live 05:04 turn, replayed: "so fucked" → code's bucket; the reply states 11/2 →
+    stored 11:00/02:00 (still a guess), the text untouched, no second guess anywhere."""
     import onboarding_agent as oa
     caplog.set_level(logging.INFO)
-    user = _all_but(db, "occupation")                       # occupation + sleep missing → bundle/friend turn
+    user = _all_but(db, "occupation")
     user = _row(db, user.id)
     _coach_said(user, "roughly when r u up and when do u crash?")
     sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "lol it's cs, everyone's is. ima just peg u at up around 11, down around 2ish and u can fix it whenever. u working any part time job?")
+    reply = "lol it's cs, everyone's is. ima just peg u at up around 12, down around 3ish and u can fix it whenever. u working any part time job?"
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else reply)
     oa.handle_onboarding_reply(user, "My sleep schedule is so fucked honestly")
     row = _row(db, user.id)
-    assert (row.wake_time, row.sleep_time, row.sleep_estimated) == ("11:00", "02:00", True)   # "fucked" → late
-    sent = _bodies(sms_capture)[-1]
-    assert "ima guess up around 11 and down by 2, fix it anytime" in sent or "up around 11, down around 2ish" in sent
+    assert (row.wake_time, row.sleep_time, row.sleep_estimated) == ("12:00", "03:00", True), "the coach's pair, still a guess"
+    assert _bodies(sms_capture)[-1] == reply and "ONBOARDING_SLEEP_GUESS_ADOPTED" in caplog.text
+
 
 
 def test_real_times_replace_the_pinned_estimate(db):

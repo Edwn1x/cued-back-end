@@ -76,7 +76,7 @@ def test_sleep_classifier_reads_the_held_texts_of_the_burst(db, anthropic_stub, 
     assert (row.wake_time, row.sleep_time, row.sleep_estimated) == ("11:00", "02:00", True), \
         "the vague sleep answer was in a HELD text — code still pins it in the turn that answers the burst"
     assert done is True
-    assert "code pinned a guess: up around 11" in seen["instruction"]
+    assert "code's default is up around 11" in seen["instruction"]
     summary = [b for b in _bodies(sms_capture) if b.startswith("ok so")][0]
     assert "up around 11 down around 2 (my guess, fix it anytime)" in summary
 

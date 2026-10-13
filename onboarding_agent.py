@@ -1506,6 +1506,33 @@ def pin_sleep_estimate(user_id: int, kind: str) -> tuple[str, str] | None:
 _SLEEP_CLAUSE_RE = re.compile(r"[^.!?\n]*\b(peg|guess|up around|down around|up at|down by|wake|crash)\b[^.!?\n]*\d[^.!?\n]*[.!?]?", re.I)
 
 
+_STATED_UP_RE = re.compile(r"\bup\s+(?:around|at|by|like)?\s*(\d{1,2})(?::(\d\d))?\s*(am|pm)?(?:ish)?\b", re.I)
+_STATED_DOWN_RE = re.compile(r"\b(?:down|crash|asleep|bed)\s+(?:around|at|by|like)?\s*(\d{1,2})(?::(\d\d))?\s*(am|pm)?(?:ish)?\b", re.I)
+
+
+def parse_stated_sleep_guess(text: str) -> tuple[str, str] | None:
+    """The wake/sleep pair the coach STATED as its guess ("peg u at up around 11, down around
+    2ish") → ("11:00", "02:00"); None when the reply states no pair. am/pm by convention when
+    missing: a wake hour 1–11 is am, 12 is noon; a bed hour 0–5 is am, 6–11 is pm."""
+    up, down = _STATED_UP_RE.search(text or ""), _STATED_DOWN_RE.search(text or "")
+    if not (up and down):
+        return None
+
+    def _hhmm(m, *, wake: bool) -> str | None:
+        h, mm, ap = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        if not 0 <= h <= 12 or not 0 <= mm < 60:
+            return None
+        if ap == "pm" and h != 12:
+            h += 12
+        elif ap == "am" and h == 12:
+            h = 0
+        elif not ap and not wake and h >= 6 and h != 12:
+            h += 12              # "down by 11" is 23:00; "down around 2" is 02:00
+        return f"{h:02d}:{mm:02d}"
+    w, sl = _hhmm(up, wake=True), _hhmm(down, wake=False)
+    return (w, sl) if (w and sl) else None
+
+
 def enforce_sleep_clause(text: str, wake: str, sleep: str) -> str:
     """The stated sleep guess must be CODE's numbers. Live 2026-10-13 05:04 (user 51): code
     pinned 09:00/01:00 and the reply said "peg u at up around 11, down around 2ish" — a
@@ -1529,12 +1556,40 @@ def enforce_sleep_clause(text: str, wake: str, sleep: str) -> str:
     return out
 
 
+def _reconcile_sleep_guess(user_row, text: str) -> str:
+    """One guess in the thread, and it's the COACH's when it stated one (founder, 2026-10-13:
+    "why are we using the code numbers if the coach has reasoned better numbers" — the model
+    knows a CS student's "so fucked" means 11/2, the code bucket doesn't): the stated pair
+    becomes the stored estimate (still flagged as a guess, so the summary says so). A reply
+    that states no pair gets code's clause appended so the guess is said once."""
+    pair = parse_stated_sleep_guess(text)
+    if pair:
+        if (user_row.wake_time, user_row.sleep_time) != pair:
+            from models import get_session, User as _U
+            session = get_session()
+            try:
+                row = session.get(_U, user_row.id)
+                if row and row.sleep_estimated:
+                    row.wake_time, row.sleep_time = pair
+                    session.commit()
+                    user_row.wake_time, user_row.sleep_time = pair
+                    logger.info("ONBOARDING_SLEEP_GUESS_ADOPTED user=%s wake=%s sleep=%s", user_row.id, *pair)
+            finally:
+                session.close()
+        return text
+    fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
+    if fixed != text:
+        logger.info("ONBOARDING_SLEEP_CLAUSE_APPENDED user=%s", user_row.id)
+    return fixed
+
+
 def _assumption_note(wake: str, sleep: str) -> str:
-    return (f"They just gave a vague sleep answer, so code pinned a guess: up around {_clock(wake)}, "
-            f"down around {_clock(sleep)}. Say that guess in ONE clause, as a friend would "
-            f"('ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it anytime'), "
-            f"and do NOT ask about sleep again — not even as an echo ('cooked how,'): their vague "
-            f"answer is the answer.")
+    return (f"They just gave a vague sleep answer, so it's a GUESS now: code's default is up around "
+            f"{_clock(wake)}, down around {_clock(sleep)} — if what they said and who they are point to "
+            f"better numbers, use yours (code stores whatever pair you state). Say the guess in ONE clause, "
+            f"as a friend would ('ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it "
+            f"anytime'), and do NOT ask about sleep again — not even as an echo ('cooked how,'): their "
+            f"vague answer is the answer.")
 
 
 # ─── Continuation turns: the question that already went is not asked twice ────
@@ -2071,10 +2126,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
                 logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
                 text = ""
             if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
-                fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
-                if fixed != text:
-                    logger.info("ONBOARDING_SLEEP_CLAUSE_ENFORCED user=%s before=%r", user_row.id, text[:100])
-                    text = fixed
+                text = _reconcile_sleep_guess(user_row, text)
             if text and text.strip():
                 send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         if early:
@@ -2140,10 +2192,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # whole thing on the user): while fields are unknown, a reply must carry a question. The
     # model's reply had none → append the plain ask for the next field.
     if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
-        fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
-        if fixed != text:
-            logger.info("ONBOARDING_SLEEP_CLAUSE_ENFORCED user=%s before=%r", user_row.id, text[:100])
-            text = fixed
+        text = _reconcile_sleep_guess(user_row, text)
     if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
             and mode != "big_ask" and not _question_part(text)):
         field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
