@@ -1454,7 +1454,12 @@ def _injuries_from_memory(user) -> str | None:
 # clarifiers before the coach gave up and guessed. The guess was right the first time.
 _SLEEP_ASK_RE = re.compile(r"\b(wake|up at|sleep|bed|crash|schedule|nocturnal|night owl)\b", re.I)
 _SLEEP_TOPIC_RE = re.compile(r"\b(sleep|schedule|wake|bed|crash|up (?:late|early|at))\b", re.I)
-_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|fucked|nocturnal|night owl|3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
+# A bad schedule with no direction named IS a late one for a student ("fucked", "cooked",
+# "trash", "messed up"): the failure mode is always later, never earlier. "random" is only
+# for explicit randomness ("all over the place", "varies", "depends"). Founder, 2026-10-13:
+# the 9/1 "random" pin for "so fucked honestly" was worse than the coach's own 11/2.
+_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|fucked|trash|bad|terrible|messed up|nonexistent|nocturnal|night owl|"
+                            r"3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
 _SLEEP_EARLY_RE = re.compile(r"\b(early|early bird|before (?:7|8)|up at (?:6|7))\b", re.I)
 _SLEEP_VAGUE_RE = re.compile(
     r"\b(cooked|all over|random|inconsistent|varies|depends|no schedule|whenever|messed up|"

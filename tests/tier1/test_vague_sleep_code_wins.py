@@ -225,3 +225,19 @@ def test_real_times_replace_the_pinned_estimate(db):
     oa._store_extracted_data(user.id, {"wake_time": "12:30", "sleep_time": "03:00"})
     row = _row(db, user.id)
     assert (row.wake_time, row.sleep_time, bool(row.sleep_estimated)) == ("12:30", "03:00", False)
+
+
+@pytest.mark.parametrize("msg, want", [
+    ("My sleep schedule is so fucked honestly", "late"),
+    ("my sleep is trash", "late"),
+    ("it's pretty bad ngl", "late"),
+    ("kinda messed up", "late"),
+    ("honestly all over the place", "random"),
+    ("it varies a lot", "random"),
+    ("early, i'm up before class", "early"),
+])
+def test_a_bad_schedule_with_no_direction_is_late_not_random(msg, want):
+    """Founder, 2026-10-13: the 9/1 'random' pin for 'so fucked honestly' was worse than the
+    coach's own 11/2 guess. A bad schedule with no direction is a late one."""
+    import onboarding_agent as oa
+    assert oa.classify_sleep_answer(msg, "roughly when r u up and when do u crash?") == want
