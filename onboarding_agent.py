@@ -145,6 +145,19 @@ def _is_berkeley_student(user) -> bool:
     return False
 
 
+def _split_hint(user) -> str:
+    """The split ask, shaped by the signup's experience (founder, 2026-10-13: "since i put my
+    experience 6 months-2 years, it should have assumed that i already had a routine
+    going"). 6 months+ → ASSUME they run something and ask what; newer → ask whether."""
+    exp = (getattr(user, "experience", None) or "none").lower()
+    if exp in ("intermediate", "advanced"):
+        return ("what split they run — they've trained 6+ months (signup), so ASSUME they run something and "
+                "ask WHAT, never whether: 'what split u run and which days u hit what' (ppl, upper/lower, "
+                "full body, bro split). If it turns out they don't, offer to build one then")
+    return ("what split they run — ask neutrally: 'u already got a routine or want me to build one'; if they "
+            "have one: 'what split u run and which days u hit what' (ppl, upper/lower, full body, bro split)")
+
+
 def _get_missing_fields(user) -> list:
     """Return list of (field_name, question_context) for fields still null."""
     missing = []
@@ -172,7 +185,7 @@ def _get_missing_fields(user) -> list:
             if user.experience == "none":
                 _auto_fill_current_split_none(user)
             else:
-                missing.append(("current_split", "what split they run — ask neutrally: 'u already got a routine or want me to build one'; if they have one: 'what split u run and which days u hit what' (ppl, upper/lower, full body, bro split)"))
+                missing.append(("current_split", _split_hint(user)))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
     # Known once EITHER typed column is filled: a person who names what they won't
@@ -394,7 +407,9 @@ the time of day; read it here.
 - Then ask about ONE thing from STILL UNKNOWN, the way a friend asks it, for a reason.
   A question that isn't on STILL UNKNOWN is a wasted text: don't ask about their
   cooking, their day, their plans unless the answer tells you one of those things.
-  No natural reason this turn → no question. The next message will give you one.
+  While STILL UNKNOWN has entries, EVERY reply ends with ONE question from it — a reply
+  with no question stalls setup and puts the next move on them (founder, 2026-10-13).
+  If nothing they said leads there, ask the first one plainly.
 - Assume what's safe to assume, and SAY the assumption. A number texting cued is a
   Berkeley student: "im assuming ur a berkeley student? what major, and any part time job" (name berkeley the first time — never just "here")
   — not "student or working". If they're working, at another school, or not a student,
@@ -639,6 +654,7 @@ Examples:
 "idk" → {{all null}}
 
 Short answer rules:
+- A bare major when the coach asked their major ("Cs", "mech e", "data science") → occupation="<major> student" (live 2026-10-13: "Cs" stored nothing, and the coach was about to ask what they do again)
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
 - A warm-up or work-around they do for a joint IS the injuries answer, even with no pain named: "on leg day I warm up with leg extensions and leg curls first" → injuries="knees — warms up with leg extensions and leg curls before squatting". Not null, not "none".
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
@@ -807,6 +823,12 @@ def _store_extracted_data(user_id: int, data: dict):
                     user.targets_source = "user"
                     changed = True
 
+        # Real clock times replace a code-pinned estimate: the summary must not say "my guess"
+        # for numbers they gave (live 2026-10-13, user 51: "12-1pm / 2-5am" → still "(my guess)").
+        if any(data.get(k) for k in ("wake_time", "sleep_time")) and getattr(user, "sleep_estimated", False):
+            user.sleep_estimated = False
+            changed = True
+            logger.info("ONBOARDING_SLEEP_ESTIMATE_REPLACED user=%s", user_id)
         if changed:
             session.commit()
             logger.info(f"Stored onboarding data for {user.name}: "
@@ -1112,6 +1134,13 @@ _NOT_DONE_LINE = ("You are NOT done getting to know them yet — never say you'r
 SKIP_SENTINEL = "[skip]"   # a continuation turn that needs no reply → code reacts 👍 instead
 
 
+# Campus facts from the model's memory go stale (live 2026-10-11 AND 2026-10-13, two
+# accounts: "u basically live in soda" — CS moved; the founder corrected it both times).
+_NO_CAMPUS_FACTS_FROM_MEMORY = ("Never assert a campus-location fact from memory — which building a major lives in, "
+                                "where a department or hall is, what's new on campus: buildings move. Search it "
+                                "this semester or ask where they actually end up ('where do u end up studying').")
+
+
 # The model never pins sleep itself (live 2026-10-10: it pegged "up 11, down 3" a turn
 # before code pinned 11/2 — two guesses in the thread). Code pins; the reply says it.
 _NO_SLEEP_GUESS_LINE = ("Never invent wake/sleep clock times yourself: a vague sleep answer gets a "
@@ -1149,12 +1178,12 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"Reply as the friend. React to the specific thing they said — have a take, be "
         f"curious about it. If they named a class (a course number always counts), a campus "
         f"place, a restaurant, or an event, search it first and use one detail from this "
-        f"semester. "
+        f"semester. {_NO_CAMPUS_FACTS_FROM_MEMORY} "
         + (f"{assumption_note} " if assumption_note else "")
-        + f"If (and only if) what they said gives "
-        f"you a natural reason, work in ONE question that would tell you one of these you "
-        f"still don't know: {unknown}. Nothing else is worth a question. If there's no natural "
-        f"reason, don't force one. One message, one paragraph, no greeting, ONE question at most "
+        + f"End with ONE question that would tell you one of these you still don't know: "
+        f"{unknown} — the one that fits what they said; if nothing fits, ask the first one plainly. "
+        f"A reply with no question stalls setup and puts the next move on them. Nothing else is "
+        f"worth a question. One message, one paragraph, no greeting, ONE question at most "
         f"— pick it before you write; a second question only if it's the same topic and joined "
         f"with 'and'. Never a second paragraph, never a visible edit. {_NO_SLEEP_GUESS_LINE} "
         f"{_NOT_DONE_LINE}"
@@ -1241,7 +1270,7 @@ def _intake_mode(incoming_message: str, missing_fields: list, turns: int,
 # ask and the bundle name these; the friend reply gets the longer hint.
 PLAIN_ASKS = {
     "height_weight": "ur height and weight",
-    "occupation": "what u do (im assuming student here — what major, any part time job)",
+    "occupation": "what u do (im assuming berkeley student — what major, any part time job)",
     "activity_level": "how much ur on ur feet outside the gym",
     "avg_steps": "roughly how many steps u get in a day",
     "workout_days": "how many days a week u can train",
@@ -1425,7 +1454,12 @@ def _injuries_from_memory(user) -> str | None:
 # clarifiers before the coach gave up and guessed. The guess was right the first time.
 _SLEEP_ASK_RE = re.compile(r"\b(wake|up at|sleep|bed|crash|schedule|nocturnal|night owl)\b", re.I)
 _SLEEP_TOPIC_RE = re.compile(r"\b(sleep|schedule|wake|bed|crash|up (?:late|early|at))\b", re.I)
-_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|nocturnal|night owl|3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
+# A bad schedule with no direction named IS a late one for a student ("fucked", "cooked",
+# "trash", "messed up"): the failure mode is always later, never earlier. "random" is only
+# for explicit randomness ("all over the place", "varies", "depends"). Founder, 2026-10-13:
+# the 9/1 "random" pin for "so fucked honestly" was worse than the coach's own 11/2.
+_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|fucked|trash|bad|terrible|messed up|nonexistent|nocturnal|night owl|"
+                            r"3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
 _SLEEP_EARLY_RE = re.compile(r"\b(early|early bird|before (?:7|8)|up at (?:6|7))\b", re.I)
 _SLEEP_VAGUE_RE = re.compile(
     r"\b(cooked|all over|random|inconsistent|varies|depends|no schedule|whenever|messed up|"
@@ -1469,12 +1503,93 @@ def pin_sleep_estimate(user_id: int, kind: str) -> tuple[str, str] | None:
     return wake, sleep
 
 
+_SLEEP_CLAUSE_RE = re.compile(r"[^.!?\n]*\b(peg|guess|up around|down around|up at|down by|wake|crash)\b[^.!?\n]*\d[^.!?\n]*[.!?]?", re.I)
+
+
+_STATED_UP_RE = re.compile(r"\bup\s+(?:around|at|by|like)?\s*(\d{1,2})(?::(\d\d))?\s*(am|pm)?(?:ish)?\b", re.I)
+_STATED_DOWN_RE = re.compile(r"\b(?:down|crash|asleep|bed)\s+(?:around|at|by|like)?\s*(\d{1,2})(?::(\d\d))?\s*(am|pm)?(?:ish)?\b", re.I)
+
+
+def parse_stated_sleep_guess(text: str) -> tuple[str, str] | None:
+    """The wake/sleep pair the coach STATED as its guess ("peg u at up around 11, down around
+    2ish") → ("11:00", "02:00"); None when the reply states no pair. am/pm by convention when
+    missing: a wake hour 1–11 is am, 12 is noon; a bed hour 0–5 is am, 6–11 is pm."""
+    up, down = _STATED_UP_RE.search(text or ""), _STATED_DOWN_RE.search(text or "")
+    if not (up and down):
+        return None
+
+    def _hhmm(m, *, wake: bool) -> str | None:
+        h, mm, ap = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        if not 0 <= h <= 12 or not 0 <= mm < 60:
+            return None
+        if ap == "pm" and h != 12:
+            h += 12
+        elif ap == "am" and h == 12:
+            h = 0
+        elif not ap and not wake and h >= 6 and h != 12:
+            h += 12              # "down by 11" is 23:00; "down around 2" is 02:00
+        return f"{h:02d}:{mm:02d}"
+    w, sl = _hhmm(up, wake=True), _hhmm(down, wake=False)
+    return (w, sl) if (w and sl) else None
+
+
+def enforce_sleep_clause(text: str, wake: str, sleep: str) -> str:
+    """The stated sleep guess must be CODE's numbers. Live 2026-10-13 05:04 (user 51): code
+    pinned 09:00/01:00 and the reply said "peg u at up around 11, down around 2ish" — a
+    second guess in the thread, and the summary would contradict the bubble. A sentence
+    that states a guess with hours not matching the pinned pair is replaced by the canonical
+    clause; a reply with no such sentence gets the clause appended."""
+    canon = f"ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it anytime"
+    want = {_clock(wake).lower(), _clock(sleep).lower()}
+
+    def _hours(sentence: str) -> set:
+        return {m.lower() for m in re.findall(r"\b\d{1,2}(?::\d\d)?\s*(?:am|pm)?\b", sentence)}
+    found = False
+    out = text or ""
+    for m in list(_SLEEP_CLAUSE_RE.finditer(out)):
+        hrs = {h.replace(" ", "") for h in _hours(m.group(0))}
+        found = True
+        if hrs and not hrs <= {w.replace(" ", "") for w in want}:
+            out = out.replace(m.group(0), canon + ("." if m.group(0).rstrip().endswith((".", "!", "?")) else ""), 1)
+    if not found:
+        out = f"{out.rstrip()} {canon}".strip()
+    return out
+
+
+def _reconcile_sleep_guess(user_row, text: str) -> str:
+    """One guess in the thread, and it's the COACH's when it stated one (founder, 2026-10-13:
+    "why are we using the code numbers if the coach has reasoned better numbers" — the model
+    knows a CS student's "so fucked" means 11/2, the code bucket doesn't): the stated pair
+    becomes the stored estimate (still flagged as a guess, so the summary says so). A reply
+    that states no pair gets code's clause appended so the guess is said once."""
+    pair = parse_stated_sleep_guess(text)
+    if pair:
+        if (user_row.wake_time, user_row.sleep_time) != pair:
+            from models import get_session, User as _U
+            session = get_session()
+            try:
+                row = session.get(_U, user_row.id)
+                if row and row.sleep_estimated:
+                    row.wake_time, row.sleep_time = pair
+                    session.commit()
+                    user_row.wake_time, user_row.sleep_time = pair
+                    logger.info("ONBOARDING_SLEEP_GUESS_ADOPTED user=%s wake=%s sleep=%s", user_row.id, *pair)
+            finally:
+                session.close()
+        return text
+    fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
+    if fixed != text:
+        logger.info("ONBOARDING_SLEEP_CLAUSE_APPENDED user=%s", user_row.id)
+    return fixed
+
+
 def _assumption_note(wake: str, sleep: str) -> str:
-    return (f"They just gave a vague sleep answer, so code pinned a guess: up around {_clock(wake)}, "
-            f"down around {_clock(sleep)}. Say that guess in ONE clause, as a friend would "
-            f"('ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it anytime'), "
-            f"and do NOT ask about sleep again — not even as an echo ('cooked how,'): their vague "
-            f"answer is the answer.")
+    return (f"They just gave a vague sleep answer, so it's a GUESS now: code's default is up around "
+            f"{_clock(wake)}, down around {_clock(sleep)} — if what they said and who they are point to "
+            f"better numbers, use yours (code stores whatever pair you state). Say the guess in ONE clause, "
+            f"as a friend would ('ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it "
+            f"anytime'), and do NOT ask about sleep again — not even as an echo ('cooked how,'): their "
+            f"vague answer is the answer.")
 
 
 # ─── Continuation turns: the question that already went is not asked twice ────
@@ -1891,6 +2006,14 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         if from_mem:
             extracted["injuries"] = from_mem
             logger.info("ONBOARDING_INJURIES_FROM_MEMORY user=%s value=%r", user_row.id, from_mem[:80])
+    # A bare major answering the major question IS their occupation (live 2026-10-13, user
+    # 51: "Cs" → nothing stored → "what u do" was coming again).
+    if (not user_row.occupation and not extracted.get("occupation") and prev_coach
+            and re.search(r"\bmajor\b", prev_coach, re.I)):
+        bare = (incoming_message or "").strip().strip(".!")
+        if bare and len(bare.split()) <= 3 and not re.search(r"\d|\?", bare) and not _ALREADY_TOLD_RE.search(bare):
+            extracted["occupation"] = f"{bare.lower()} student"
+            logger.info("ONBOARDING_MAJOR_AS_OCCUPATION user=%s value=%r", user_row.id, extracted["occupation"])
     non_null = {k: v for k, v in extracted.items() if v is not None}
     found_any = dict(code_found, **non_null)
     if non_null:
@@ -2002,6 +2125,8 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             except Exception as e:  # noqa: BLE001 — the summary still goes out
                 logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
                 text = ""
+            if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+                text = _reconcile_sleep_guess(user_row, text)
             if text and text.strip():
                 send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         if early:
@@ -2063,6 +2188,17 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             else:
                 _react_thumbs(user_row.id)
             return False
+    # Backstop (founder, 2026-10-13: "cs, so ur basically living in soda." — no question, the
+    # whole thing on the user): while fields are unknown, a reply must carry a question. The
+    # model's reply had none → append the plain ask for the next field.
+    if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+        text = _reconcile_sleep_guess(user_row, text)
+    if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
+            and mode != "big_ask" and not _question_part(text)):
+        field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
+        appended = f"also, {_plain(field)}?"
+        logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
+        text = f"{text.rstrip()} {appended}"
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
     logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
                 f"{' sleep_estimated=True' if assumption_note else ''}")
