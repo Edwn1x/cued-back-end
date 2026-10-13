@@ -405,6 +405,24 @@ def test_suppressed_closing_ack_gets_a_thumbs_up_on_imessage(db, imessage_on, si
     assert db.get(User, user.id).unanswered_count == 0
 
 
+def test_suppressed_closing_ack_still_advances_the_setup_sequence(db, imessage_on, sidecar, client, anthropic_stub,
+                                                                   sms_capture, monkeypatch):
+    """Live 2026-10-11 19:22 (user 50): "Ok" right after the summary → 👍 and NO calendar
+    offer — the ack branch returned before the buffer, so the setup sequence's on_inbound
+    never ran and the offer waited for the 20-quiet-minute sweep."""
+    import setup_sequence
+    from sms import _log_message
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _log_message(user.id, "ok so far this is what i have: ur 5'6 142, training 3 days a week", "onboarding",
+                 channel="imessage", provider_sid="spc-prior2", delivery_status="sent")
+    got = []
+    monkeypatch.setattr(setup_sequence, "on_inbound", lambda uid: got.append(uid) or "connect:gcal")
+    r = _post_imessage(client, user.phone, "Ok", "spc-msg-ok2")
+    assert r.status_code == 200
+    assert [j for r_, j in sidecar if r_ == "react"] == [{"phone": user.phone, "message_id": "spc-msg-ok2", "emoji": "like"}]
+    assert got == [user.id], "the setup sequence advances on the ack"
+
+
 def test_suppressed_closing_ack_stays_silent_on_sms(db, imessage_on, sidecar, driver, sms_capture):
     from sms import _log_message
     user = make_user(db, preferred_channel="sms", onboarding_step=3)

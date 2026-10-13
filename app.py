@@ -1307,6 +1307,15 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
                 logger.warning("ACK_REACTION_FAILED user=%s err=%s", user.id, e)
         logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}"
                     + (" — 👍 tapback sent" if reacted else ""))
+        # A closing ack is still an inbound: right after the summary it is exactly the
+        # "engaged" moment the setup sequence advances on (live 2026-10-11 19:22, user 50:
+        # "Ok" → 👍 and no calendar offer — this branch returns before the buffer, so
+        # setup_sequence.on_inbound never ran and the offer waited for the sweep).
+        try:
+            from setup_sequence import on_inbound as _setup_on_inbound
+            _setup_on_inbound(user.id)
+        except Exception as e:  # noqa: BLE001 — a setup step must never break the webhook
+            logger.warning("SETUP_SEQUENCE_ACK_FAILED user=%s err=%s", user.id, e)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
     # Classify the message
