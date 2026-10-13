@@ -1624,6 +1624,14 @@ def internal_inbound():
                 touch_last_active(user.id)
             except Exception:  # noqa: BLE001
                 pass
+            # A tapback on a setup step is the answer to it: advance the sequence (live
+            # 2026-10-13: 👍 on "connected…" → nothing until his quiet hours ended).
+            if not hit:
+                try:
+                    from setup_sequence import on_reaction as _setup_on_reaction
+                    _setup_on_reaction(user.id)
+                except Exception as e:  # noqa: BLE001 — never break the webhook
+                    logger.warning("SETUP_SEQUENCE_REACTION_FAILED user=%s err=%s", user.id, e)
             return jsonify({"ok": True, "known": True, "reaction": True, "workout_hit": hit}), 200
         if not body and not files:
             return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200

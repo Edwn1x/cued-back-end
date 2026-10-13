@@ -1722,7 +1722,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # identity/voice.md; the link bubble is an allowed URL exception.
         from agent_tools import SEND_CONNECT_LINK_TOOL, SET_GOOGLE_ACCOUNT_TOOL
         tools.append(SEND_CONNECT_LINK_TOOL)
-        tools.append(SET_GOOGLE_ACCOUNT_TOOL)   # the Google account first, while OAuth is in Testing
+        if config.GOOGLE_OAUTH_TESTING_MODE:
+            # The Google account first — ONLY while OAuth is in Testing. Live 2026-10-13 (OAuth
+            # approved, testing mode off): "whats the google account ur calendar's on? i'll get
+            # it working" to a 401 report — the tool's presence was the prompt for it.
+            tools.append(SET_GOOGLE_ACCOUNT_TOOL)
     if config.SEND_GYM_LINE_LINK_TOOL_ENABLED:
         # On-demand RSF virtual-line JOIN link (the same Waitwell link the automatic
         # heading-out flow sends) so the coach never fakes 'here's the line link'.
