@@ -319,4 +319,4 @@ def test_integrations_block_states_absence_and_outranks_memory(monkeypatch):
     assert "gcal: NOT" not in b3
     # the google-account line rides along
     b4 = integrations_block(None, None, "google account: unknown — ask")
-    assert b4.rstrip().endswith("don't ask \"want the link?\" first.") and "google account: unknown" in b4
+    assert "don't ask \"want the link?\" first." in b4 and b4.rstrip().endswith("One bubble.") and "google account: unknown" in b4

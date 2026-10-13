@@ -188,6 +188,10 @@ def integrations_block(user, status: str | None, google_line: str | None) -> str
     out += ("\nIf they ask whether you can see something listed NOT connected: say no, you can't, "
             "and send the connect link in that same turn (send_connect_link) — never claim to see it, "
             "and don't ask \"want the link?\" first.")
+    out += ("\nIf they report an error on a connect link (a 401/403, 'not working', 'broken'): you don't know "
+            "our side's status — never say it's 'still being set up on our end', and don't ask which google "
+            "account it's on. Say u'll look, send a fresh link in the same turn (send_connect_link), and ask "
+            "what the error page said if it happens again. One bubble.")
     return out
 
 

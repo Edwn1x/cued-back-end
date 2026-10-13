@@ -28,6 +28,7 @@ existing ledgers (users.connect_offers, users.card_setup_at); nothing here repea
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 
 import config
@@ -211,6 +212,20 @@ def kickoff(user_id: int) -> str | None:
         return None
 
 
+_PROBLEM_RE = re.compile(r"\b(40[134]|500|error|not working|doesn'?t work|isn'?t working|broke|broken|bug|glitch|"
+                         r"failed|fail|can'?t open|won'?t open|wrong|issue)\b", re.I)
+
+
+def _last_inbound_is_a_problem_report(session, user_id: int) -> bool:
+    """Live 2026-10-13 05:13 (user 51): "I got a 401 error?" on the calendar link → the coach
+    replied, then this ran and stacked the water offer on top of an unresolved problem.
+    A problem report is not the moment to advance setup."""
+    from models import Message
+    row = (session.query(Message.body).filter(Message.user_id == user_id, Message.direction == "in")
+           .order_by(Message.id.desc()).first())
+    return bool(row and row[0] and _PROBLEM_RE.search(row[0]))
+
+
 def on_inbound(user_id: int) -> str | None:
     """After the coach's reply to their text: advance one step if one is owed. Never
     raises; never blocks the turn."""
@@ -219,6 +234,9 @@ def on_inbound(user_id: int) -> str | None:
         session = get_session()
         try:
             u = session.get(User, user_id)
+            if u and _last_inbound_is_a_problem_report(session, user_id):
+                logger.info("SETUP_STEP_DEFERRED user=%s reason=problem_report", user_id)
+                return None
             step = next_step(session, u) if u else None
         finally:
             session.close()
