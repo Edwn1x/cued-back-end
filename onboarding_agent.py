@@ -654,6 +654,7 @@ Examples:
 "idk" → {{all null}}
 
 Short answer rules:
+- A bare major when the coach asked their major ("Cs", "mech e", "data science") → occupation="<major> student" (live 2026-10-13: "Cs" stored nothing, and the coach was about to ask what they do again)
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
 - A warm-up or work-around they do for a joint IS the injuries answer, even with no pain named: "on leg day I warm up with leg extensions and leg curls first" → injuries="knees — warms up with leg extensions and leg curls before squatting". Not null, not "none".
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
@@ -1913,6 +1914,14 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         if from_mem:
             extracted["injuries"] = from_mem
             logger.info("ONBOARDING_INJURIES_FROM_MEMORY user=%s value=%r", user_row.id, from_mem[:80])
+    # A bare major answering the major question IS their occupation (live 2026-10-13, user
+    # 51: "Cs" → nothing stored → "what u do" was coming again).
+    if (not user_row.occupation and not extracted.get("occupation") and prev_coach
+            and re.search(r"\bmajor\b", prev_coach, re.I)):
+        bare = (incoming_message or "").strip().strip(".!")
+        if bare and len(bare.split()) <= 3 and not re.search(r"\d|\?", bare) and not _ALREADY_TOLD_RE.search(bare):
+            extracted["occupation"] = f"{bare.lower()} student"
+            logger.info("ONBOARDING_MAJOR_AS_OCCUPATION user=%s value=%r", user_row.id, extracted["occupation"])
     non_null = {k: v for k, v in extracted.items() if v is not None}
     found_any = dict(code_found, **non_null)
     if non_null:

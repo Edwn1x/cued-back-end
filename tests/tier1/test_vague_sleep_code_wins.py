@@ -165,3 +165,20 @@ def test_split_ask_assumes_a_routine_for_six_months_plus(db):
     newer = _new_signup(db, phone="+15550100071", onboarding_step=2, experience="beginner", height_ft=5, height_in=6, weight_lbs=142)
     hint2 = dict(oa._get_missing_fields(newer))["current_split"]
     assert "u already got a routine or want me to build one" in hint2
+
+
+def test_a_bare_major_answering_the_major_question_is_their_occupation(db, anthropic_stub, sms_capture, caplog):
+    """Live 2026-10-13 04:52 (user 51): "Cs" after "what's ur major" stored nothing; occupation
+    stayed unknown and "what u do" was coming again."""
+    import onboarding_agent as oa
+    caplog.set_level(logging.INFO)
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142)
+    _coach_said(user, "im guessing ur a berkeley student? what's ur major")
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "cs is brutal. u on ur feet much or mostly sitting?")
+    oa.handle_onboarding_reply(user, "Cs")
+    assert _row(db, user.id).occupation == "cs student" and "ONBOARDING_MAJOR_AS_OCCUPATION" in caplog.text
+    # not a major answer: a question, a number, or "already told u" leaves it alone
+    other = _new_signup(db, phone="+15550100072", onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142)
+    _coach_said(other, "what's ur major")
+    oa.handle_onboarding_reply(other, "why does that matter?")
+    assert _row(db, other.id).occupation is None
