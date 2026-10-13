@@ -1140,6 +1140,8 @@ ONBOARDING_INJURIES_FROM_MEMORY_ENABLED = os.getenv("ONBOARDING_INJURIES_FROM_ME
 # none gets the next field's plain ask appended (founder, 2026-10-13: "no question with
 # that message puts the whole thing on the user").
 ONBOARDING_ALWAYS_ASK_ENABLED = os.getenv("ONBOARDING_ALWAYS_ASK_ENABLED", "true").lower() == "true"
+# The stated sleep guess is code's numbers (live 2026-10-13: code pinned 9/1, the reply said 11/2).
+ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED = os.getenv("ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", "true").lower() == "true"
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

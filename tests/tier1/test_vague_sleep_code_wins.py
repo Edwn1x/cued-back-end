@@ -182,3 +182,46 @@ def test_a_bare_major_answering_the_major_question_is_their_occupation(db, anthr
     _coach_said(other, "what's ur major")
     oa.handle_onboarding_reply(other, "why does that matter?")
     assert _row(db, other.id).occupation is None
+
+
+def test_fucked_is_a_late_schedule():
+    import onboarding_agent as oa
+    assert oa.classify_sleep_answer("My sleep schedule is so fucked honestly", "roughly when r u up and when do u crash?") == "late"
+
+
+def test_the_stated_sleep_guess_is_codes_numbers():
+    """Live 2026-10-13 05:04 (user 51): code pinned 09:00/01:00, the reply said "peg u at up
+    around 11, down around 2ish"."""
+    import onboarding_agent as oa
+    fixed = oa.enforce_sleep_clause("lol it's cs, everyone's is. ima just peg u at up around 11, down around 2ish and u can fix it whenever. u working a part time job?", "09:00", "01:00")
+    assert "up around 11" not in fixed and "2ish" not in fixed
+    assert "ima guess up around 9 and down by 1, fix it anytime" in fixed and fixed.endswith("u working a part time job?"), fixed
+    # already right → untouched; no clause at all → appended
+    ok = "ima guess up around 9 and down by 1, fix it anytime. u working a part time job?"
+    assert oa.enforce_sleep_clause(ok, "09:00", "01:00") == ok
+    assert oa.enforce_sleep_clause("lol it's cs, everyone's is.", "11:00", "02:00").endswith("ima guess up around 11 and down by 2, fix it anytime")
+
+
+def test_enforced_clause_rides_the_live_reply(db, anthropic_stub, sms_capture, caplog):
+    import onboarding_agent as oa
+    caplog.set_level(logging.INFO)
+    user = _all_but(db, "occupation")                       # occupation + sleep missing → bundle/friend turn
+    user = _row(db, user.id)
+    _coach_said(user, "roughly when r u up and when do u crash?")
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "lol it's cs, everyone's is. ima just peg u at up around 11, down around 2ish and u can fix it whenever. u working any part time job?")
+    oa.handle_onboarding_reply(user, "My sleep schedule is so fucked honestly")
+    row = _row(db, user.id)
+    assert (row.wake_time, row.sleep_time, row.sleep_estimated) == ("11:00", "02:00", True)   # "fucked" → late
+    sent = _bodies(sms_capture)[-1]
+    assert "ima guess up around 11 and down by 2, fix it anytime" in sent or "up around 11, down around 2ish" in sent
+
+
+def test_real_times_replace_the_pinned_estimate(db):
+    """Live 2026-10-13 05:05 (user 51): "12-1pm / 2-5am" after a code-pinned guess → times updated
+    but sleep_estimated stayed True → the summary said "(my guess, fix it anytime)" for real numbers."""
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, wake_time="09:00", sleep_time="01:00", sleep_estimated=True)
+    oa._store_extracted_data(user.id, {"wake_time": "12:30", "sleep_time": "03:00"})
+    row = _row(db, user.id)
+    assert (row.wake_time, row.sleep_time, bool(row.sleep_estimated)) == ("12:30", "03:00", False)

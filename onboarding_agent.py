@@ -823,6 +823,12 @@ def _store_extracted_data(user_id: int, data: dict):
                     user.targets_source = "user"
                     changed = True
 
+        # Real clock times replace a code-pinned estimate: the summary must not say "my guess"
+        # for numbers they gave (live 2026-10-13, user 51: "12-1pm / 2-5am" → still "(my guess)").
+        if any(data.get(k) for k in ("wake_time", "sleep_time")) and getattr(user, "sleep_estimated", False):
+            user.sleep_estimated = False
+            changed = True
+            logger.info("ONBOARDING_SLEEP_ESTIMATE_REPLACED user=%s", user_id)
         if changed:
             session.commit()
             logger.info(f"Stored onboarding data for {user.name}: "
@@ -1448,7 +1454,7 @@ def _injuries_from_memory(user) -> str | None:
 # clarifiers before the coach gave up and guessed. The guess was right the first time.
 _SLEEP_ASK_RE = re.compile(r"\b(wake|up at|sleep|bed|crash|schedule|nocturnal|night owl)\b", re.I)
 _SLEEP_TOPIC_RE = re.compile(r"\b(sleep|schedule|wake|bed|crash|up (?:late|early|at))\b", re.I)
-_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|nocturnal|night owl|3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
+_SLEEP_LATE_RE = re.compile(r"\b(late|cooked|fucked|nocturnal|night owl|3 ?am|4 ?am|noon|sleep in|stay(?:ing)? up)\b", re.I)
 _SLEEP_EARLY_RE = re.compile(r"\b(early|early bird|before (?:7|8)|up at (?:6|7))\b", re.I)
 _SLEEP_VAGUE_RE = re.compile(
     r"\b(cooked|all over|random|inconsistent|varies|depends|no schedule|whenever|messed up|"
@@ -1490,6 +1496,32 @@ def pin_sleep_estimate(user_id: int, kind: str) -> tuple[str, str] | None:
         session.close()
     logger.info("ONBOARDING_SLEEP_ESTIMATED user=%s kind=%s wake=%s sleep=%s", user_id, kind, wake, sleep)
     return wake, sleep
+
+
+_SLEEP_CLAUSE_RE = re.compile(r"[^.!?\n]*\b(peg|guess|up around|down around|up at|down by|wake|crash)\b[^.!?\n]*\d[^.!?\n]*[.!?]?", re.I)
+
+
+def enforce_sleep_clause(text: str, wake: str, sleep: str) -> str:
+    """The stated sleep guess must be CODE's numbers. Live 2026-10-13 05:04 (user 51): code
+    pinned 09:00/01:00 and the reply said "peg u at up around 11, down around 2ish" — a
+    second guess in the thread, and the summary would contradict the bubble. A sentence
+    that states a guess with hours not matching the pinned pair is replaced by the canonical
+    clause; a reply with no such sentence gets the clause appended."""
+    canon = f"ima guess up around {_clock(wake)} and down by {_clock(sleep)}, fix it anytime"
+    want = {_clock(wake).lower(), _clock(sleep).lower()}
+
+    def _hours(sentence: str) -> set:
+        return {m.lower() for m in re.findall(r"\b\d{1,2}(?::\d\d)?\s*(?:am|pm)?\b", sentence)}
+    found = False
+    out = text or ""
+    for m in list(_SLEEP_CLAUSE_RE.finditer(out)):
+        hrs = {h.replace(" ", "") for h in _hours(m.group(0))}
+        found = True
+        if hrs and not hrs <= {w.replace(" ", "") for w in want}:
+            out = out.replace(m.group(0), canon + ("." if m.group(0).rstrip().endswith((".", "!", "?")) else ""), 1)
+    if not found:
+        out = f"{out.rstrip()} {canon}".strip()
+    return out
 
 
 def _assumption_note(wake: str, sleep: str) -> str:
@@ -2033,6 +2065,11 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             except Exception as e:  # noqa: BLE001 — the summary still goes out
                 logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
                 text = ""
+            if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+                fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
+                if fixed != text:
+                    logger.info("ONBOARDING_SLEEP_CLAUSE_ENFORCED user=%s before=%r", user_row.id, text[:100])
+                    text = fixed
             if text and text.strip():
                 send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         if early:
@@ -2097,6 +2134,11 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # Backstop (founder, 2026-10-13: "cs, so ur basically living in soda." — no question, the
     # whole thing on the user): while fields are unknown, a reply must carry a question. The
     # model's reply had none → append the plain ask for the next field.
+    if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+        fixed = enforce_sleep_clause(text, user_row.wake_time, user_row.sleep_time)
+        if fixed != text:
+            logger.info("ONBOARDING_SLEEP_CLAUSE_ENFORCED user=%s before=%r", user_row.id, text[:100])
+            text = fixed
     if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
             and mode != "big_ask" and not _question_part(text)):
         field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
