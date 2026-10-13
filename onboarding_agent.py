@@ -153,7 +153,7 @@ def _get_missing_fields(user) -> list:
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
     if not user.occupation:
-        missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so ('im assuming ur a student here? what major, and any part time job'); if they're working, at another school, or not a student, take it in stride and go from there"))
+        missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so, NAMING berkeley the first time ('im assuming ur a berkeley student? what major, and any part time job' — 'student here' alone cost a round trip live 2026-10-11: 'Here?'); if they're working, at another school, or not a student, take it in stride and go from there"))
     if not user.activity_level or user.activity_level == "lightly_active":
         missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
     if user.avg_steps is None:
@@ -396,7 +396,7 @@ the time of day; read it here.
   cooking, their day, their plans unless the answer tells you one of those things.
   No natural reason this turn → no question. The next message will give you one.
 - Assume what's safe to assume, and SAY the assumption. A number texting cued is a
-  Berkeley student: "im assuming ur a student here? what major, and any part time job"
+  Berkeley student: "im assuming ur a berkeley student? what major, and any part time job" (name berkeley the first time — never just "here")
   — not "student or working". If they're working, at another school, or not a student,
   take it in stride and go from there. A vague sleep answer ("hella late") is roughly
   2am/11am: say the guess, say they can fix it, move on. A stated guess beats a third
@@ -640,6 +640,7 @@ Examples:
 
 Short answer rules:
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
+- A warm-up or work-around they do for a joint IS the injuries answer, even with no pain named: "on leg day I warm up with leg extensions and leg curls first" → injuries="knees — warms up with leg extensions and leg curls before squatting". Not null, not "none".
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
 - "I don't eat X and Y" / "no X" (specific foods) → food_dislikes="X, Y" AND diet="omnivore" — dislikes are not a diet identity
 - "no allergies" → diet="omnivore"
@@ -1394,6 +1395,28 @@ def parse_stats(message: str) -> dict:
 # They want the workout. With the card-critical fields in, that completes onboarding
 # right then (the rest is learned during coaching); without them, the reply asks for
 # exactly those — the friend's one list, and never a fake card.
+_SLEEP_FIELDS = ("wake_time", "wake_time_alt", "wake_days_alt", "sleep_time")
+_ALREADY_TOLD_RE = re.compile(r"\b(already|just) (told|said|mentioned)\b|\bi (told|said) (u|you)\b", re.I)
+# A joint, or the vocabulary of working around one (live memory text: "warms up with leg
+# extensions and leg curls before squatting on leg day" names no joint).
+_JOINT_RE = re.compile(r"\b(knee|knees|shoulder|shoulders|back|hip|hips|wrist|wrists|elbow|elbows|ankle|ankles|neck|"
+                       r"leg|legs|squat|squats|squatting|warm(?:s|ing)?[ -]?ups?|work(?:s|ing)? around|brace|sleeve|wrap|"
+                       r"rehab|pre-?hab)\b", re.I)
+
+
+def _injuries_from_memory(user) -> str | None:
+    """The joint work-around they described earlier (stored as a training preference by
+    memory extraction, e.g. "warms up with leg extensions and leg curls before squatting on
+    leg day"), when they say they already told you — that IS their injuries answer."""
+    mem = getattr(user, "user_profile_memory", None) or {}
+    for cat in ("constraints", "training_preferences", "identity"):
+        for item in (mem.get(cat) or []):
+            t = (item.get("text") if isinstance(item, dict) else str(item)) or ""
+            if _JOINT_RE.search(t):
+                return t.strip()[:200]
+    return None
+
+
 # ─── Sleep: asked once; a vague answer becomes a stated estimate ─────────────
 # Founder's own run (2026-10-05, msgs 5799-5805): "sleep schedule is cooked" → three
 # clarifiers before the coach gave up and guessed. The guess was right the first time.
@@ -1840,6 +1863,31 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         extracted.pop("height_cm", None)
     if code_found.get("weight_lbs"):
         extracted.pop("weight_kg", None)
+    # A VAGUE sleep answer ("I sleep late and wake up late") is code's to pin — as an
+    # ESTIMATE (sleep_estimated=True, the summary says "my guess"). Live 2026-10-11 19:08
+    # (user 50): the extractor turned that sentence into wake 12:00 / sleep 02:00 as fact,
+    # the reply said "ima guess", and the summary would have read "up at 12 down by 2".
+    sleep_kind = None
+    if config.ONBOARDING_SLEEP_ESTIMATE_ENABLED and not (user_row.wake_time or user_row.sleep_time):
+        sleep_text = incoming_message
+        if getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True):
+            burst = _unanswered_burst(user_row.id)
+            if burst and burst != incoming_message:
+                sleep_text = burst               # the held texts of a burst count too
+        sleep_kind = classify_sleep_answer(sleep_text, prev_coach)
+        if sleep_kind and any(extracted.get(k) for k in _SLEEP_FIELDS):
+            logger.info("ONBOARDING_SLEEP_MODEL_GUESS_DROPPED user=%s kind=%s extracted=%s", user_row.id, sleep_kind,
+                        {k: extracted.get(k) for k in _SLEEP_FIELDS if extracted.get(k)})
+            for k in _SLEEP_FIELDS:
+                extracted.pop(k, None)
+    # "I already told you (about the knees)" when injuries is the open field: the answer is
+    # the joint work-around they gave earlier, already in memory (live 2026-10-11 19:07).
+    if (getattr(config, "ONBOARDING_INJURIES_FROM_MEMORY_ENABLED", True) and not user_row.injuries
+            and not extracted.get("injuries") and _ALREADY_TOLD_RE.search(incoming_message or "")):
+        from_mem = _injuries_from_memory(user_row)
+        if from_mem:
+            extracted["injuries"] = from_mem
+            logger.info("ONBOARDING_INJURIES_FROM_MEMORY user=%s value=%r", user_row.id, from_mem[:80])
     non_null = {k: v for k, v in extracted.items() if v is not None}
     found_any = dict(code_found, **non_null)
     if non_null:
@@ -1853,12 +1901,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # A vague sleep answer is final: pin an estimate, say it, never ask again.
     assumption_note = None
     if (config.ONBOARDING_SLEEP_ESTIMATE_ENABLED and not (user_row.wake_time or user_row.sleep_time)):
-        sleep_text = incoming_message
-        if getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True):
-            burst = _unanswered_burst(user_row.id)
-            if burst and burst != incoming_message:
-                sleep_text = burst               # the held texts of a burst count too
-        kind = classify_sleep_answer(sleep_text, prev_coach)
+        kind = sleep_kind
         if kind:
             pinned = pin_sleep_estimate(user_row.id, kind)
             if pinned:

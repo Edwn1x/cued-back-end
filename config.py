@@ -1122,6 +1122,9 @@ CONTINUATION_LOOP_BLOCK_ENABLED = os.getenv("CONTINUATION_LOOP_BLOCK_ENABLED", "
 # place") pins an estimate in code, the reply says the assumption, and the field never
 # blocks completion. Measured sleep (wearable) overrides it later.
 ONBOARDING_SLEEP_ESTIMATE_ENABLED = os.getenv("ONBOARDING_SLEEP_ESTIMATE_ENABLED", "true").lower() == "true"
+# "I already told you (about the knees)" when injuries is the open field → the joint
+# work-around already in memory is the answer (live 2026-10-11 19:07, user 50).
+ONBOARDING_INJURIES_FROM_MEMORY_ENABLED = os.getenv("ONBOARDING_INJURIES_FROM_MEMORY_ENABLED", "true").lower() == "true"
 # iMessage typing bubble from the moment an inbound is buffered until the reply lands
 # (typing_indicator.py). ON by default (ships on + instrumented: grep TYPING_SIGNAL);
 # reactive replies only.

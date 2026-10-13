@@ -319,7 +319,8 @@ def test_bundle_uses_the_plain_phrasings(db, anthropic_stub):
 def test_prompt_assumes_a_berkeley_student_and_only_asks_what_is_unknown(db):
     import onboarding_agent as oa
     sp = oa._build_system_prompt(_new_signup(db))
-    assert "im assuming ur a student here? what major, and any part time job" in sp
+    assert "im assuming ur a berkeley student? what major, and any part time job" in sp, "names berkeley the first time (live 2026-10-11: 'student here' → 'Here?')"
+    assert "never just \"here\"" in sp
     assert "A question that isn't on STILL UNKNOWN is a wasted text" in sp
     assert "Never ask the same thing twice" in sp and "ONE ask, as a rough range" in sp
     assert '"real meals or quick stuff" means nothing' in sp
