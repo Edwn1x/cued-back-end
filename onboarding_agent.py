@@ -1112,6 +1112,13 @@ _NOT_DONE_LINE = ("You are NOT done getting to know them yet — never say you'r
 SKIP_SENTINEL = "[skip]"   # a continuation turn that needs no reply → code reacts 👍 instead
 
 
+# Campus facts from the model's memory go stale (live 2026-10-11 AND 2026-10-13, two
+# accounts: "u basically live in soda" — CS moved; the founder corrected it both times).
+_NO_CAMPUS_FACTS_FROM_MEMORY = ("Never assert a campus-location fact from memory — which building a major lives in, "
+                                "where a department or hall is, what's new on campus: buildings move. Search it "
+                                "this semester or ask where they actually end up ('where do u end up studying').")
+
+
 # The model never pins sleep itself (live 2026-10-10: it pegged "up 11, down 3" a turn
 # before code pinned 11/2 — two guesses in the thread). Code pins; the reply says it.
 _NO_SLEEP_GUESS_LINE = ("Never invent wake/sleep clock times yourself: a vague sleep answer gets a "
@@ -1149,7 +1156,7 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"Reply as the friend. React to the specific thing they said — have a take, be "
         f"curious about it. If they named a class (a course number always counts), a campus "
         f"place, a restaurant, or an event, search it first and use one detail from this "
-        f"semester. "
+        f"semester. {_NO_CAMPUS_FACTS_FROM_MEMORY} "
         + (f"{assumption_note} " if assumption_note else "")
         + f"If (and only if) what they said gives "
         f"you a natural reason, work in ONE question that would tell you one of these you "

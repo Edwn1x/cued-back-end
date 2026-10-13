@@ -108,3 +108,15 @@ def test_extractor_is_told_a_joint_workaround_is_the_injuries_answer(db, anthrop
     oa.handle_onboarding_reply(user, "on leg day I warm up with leg extensions and leg curls first")
     blob = json.dumps([k.get("system") for k in seen] + [k["messages"] for k in seen], default=str)
     assert "A warm-up or work-around they do for a joint IS the injuries answer" in blob
+
+
+def test_the_friend_reply_is_told_not_to_assert_campus_facts_from_memory(db, anthropic_stub, sms_capture):
+    """Live 2026-10-11 and 2026-10-13 (two accounts): "u basically live in soda" — CS moved
+    buildings; the founder corrected it both times. Search it or ask, never assert."""
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142)
+    _coach_said(user, "im guessing ur a berkeley student? what's ur major")
+    seen = []
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else (seen.append(kw["messages"][0]["content"]) or "cs, nice"))
+    oa.handle_onboarding_reply(user, "Cs")
+    assert any("Never assert a campus-location fact from memory" in s for s in seen), seen
