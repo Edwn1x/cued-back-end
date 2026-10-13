@@ -793,3 +793,4 @@ def _legacy_completion_shape(monkeypatch):
     import config as _cfg
     monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
     monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")
+    monkeypatch.setattr(_cfg, "SETUP_STEPS_DIRECTIVE_ENABLED", False)

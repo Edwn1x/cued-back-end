@@ -123,9 +123,24 @@ def _previous_step_settled(session, user, now: datetime) -> bool:
     return answered is not None
 
 
-def next_step(session, user, now: datetime | None = None) -> str | None:
-    """'connect' | 'card' | None — the one thing setup still owes this user, when the
-    previous step is settled. Pure read."""
+def step_lead(session, user) -> str:
+    """The directive lead for the next step: "first thing:" until a setup step has gone out
+    since completion, then "next:". ('' when directive steps are off.)"""
+    if not getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True):
+        return ""
+    from models import Message
+    anchor = getattr(user, "onboarding_completed_at", None)
+    q = (session.query(Message.id)
+         .filter(Message.user_id == user.id, Message.direction == "out", Message.message_type.in_(STEP_TYPES)))
+    if anchor is not None:
+        q = q.filter(Message.created_at > anchor)
+    return "next:" if q.first() is not None else "first thing:"
+
+
+def next_step(session, user, now: datetime | None = None, *, require_settled: bool = True) -> str | None:
+    """'connect' | 'water' | 'card' | None — the one thing setup still owes this user, when
+    the previous step is settled (require_settled=False: right at completion, the summary
+    itself is the previous step). Pure read."""
     if not enabled():
         return None
     now = now or _naive_utcnow()
@@ -136,7 +151,7 @@ def next_step(session, user, now: datetime | None = None) -> str | None:
     from connect_offers import in_setup_window, first_offer_candidates
     if not in_setup_window(user, now):
         return None
-    if not _previous_step_settled(session, user, now):
+    if require_settled and not _previous_step_settled(session, user, now):
         return None
     if first_offer_candidates(session, user):
         return "connect"
@@ -152,7 +167,14 @@ def run_step(user_id: int, step: str, now: datetime | None = None, *, trigger: s
     now = now or _naive_utcnow()
     if step == "connect":
         from connect_offers import offer_now
-        provider = offer_now(user_id, now, min_gap=timedelta(0))
+        from models import get_session, User
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            lead = step_lead(session, u) if u else ""
+        finally:
+            session.close()
+        provider = offer_now(user_id, now, min_gap=timedelta(0), lead=lead or None)
         result = f"connect:{provider}" if provider else "connect:none"
     elif step == "water":
         from water_offer import send_offer
@@ -164,6 +186,29 @@ def run_step(user_id: int, step: str, now: datetime | None = None, *, trigger: s
         result = "noop"
     logger.info("SETUP_STEP user=%s step=%s trigger=%s result=%s", user_id, step, trigger, result)
     return result
+
+
+def kickoff(user_id: int) -> str | None:
+    """Right after the summary (founder, 2026-10-12): the first setup step goes out as a
+    thing to do — no rundown, no waiting for their next text. The summary is the previous
+    step, so settledness is not required. Never raises."""
+    if not (enabled() and getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True)):
+        return None
+    try:
+        from models import get_session, User
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            step = next_step(session, u, require_settled=False) if u else None
+        finally:
+            session.close()
+        if not step:
+            logger.info("SETUP_KICKOFF user=%s step=none", user_id)
+            return None
+        return run_step(user_id, step, trigger="completion")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SETUP_KICKOFF_FAILED user=%s err=%s", user_id, e)
+        return None
 
 
 def on_inbound(user_id: int) -> str | None:

@@ -48,7 +48,7 @@ def test_summary_is_one_bubble_with_the_numbers_and_the_link(db):
     assert head.startswith("ok so far this is what i have: ur 5'6 141, training 4 days a week in the evenings, "
                            "up around 11 down around 2 (my guess, fix it anytime), tryna lose fat")
     assert ". so " in head and " cal and " in head and "g protein a day to start, we adjust in a few weeks. " in head
-    assert head.endswith(oa.SUMMARY_CLOSER_SHORT)
+    assert head.endswith(oa.SUMMARY_CLOSER_SHORT + ". " + oa.SUMMARY_FOOD_CLAUSE), "directive steps: the food clause rides the tail"
     assert "im thinking" not in head and oa.SUMMARY_CLOSER not in head
     assert len(head) < 340, len(head)
 
@@ -111,6 +111,7 @@ def test_completion_is_summary_then_short_rundown(db, all_on, anthropic_stub, sm
     import logging
     import onboarding_agent as oa
     from profile_page import profile_url
+    monkeypatch.setattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", False)   # the rundown shape (directive steps replace it)
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_DELAY_S", 0)
     monkeypatch.setattr(config, "BCOURSES_ENABLED", True)
     caplog.set_level(logging.INFO)

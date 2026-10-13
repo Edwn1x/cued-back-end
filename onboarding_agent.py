@@ -1001,6 +1001,7 @@ def _goal_clause(goal: str | None) -> str:
 
 SUMMARY_CLOSER = "lmk if anything seems off or confusing, or if u wanna know how i got the numbers"
 SUMMARY_CLOSER_SHORT = "anything off or confusing, say so"   # the one-bubble summary (founder, 2026-10-10)
+SUMMARY_FOOD_CLAUSE = "text me what u eat or send a pic and i log it from there"   # directive steps (2026-10-12)
 
 
 def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
@@ -1082,6 +1083,8 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         else:
             numbers = f"so {targets['calories']} cal and {targets['protein']}g protein a day to start"
         one = f"{first}. {numbers}, we adjust in a few weeks. {SUMMARY_CLOSER_SHORT}"
+        if getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True):
+            one += f". {SUMMARY_FOOD_CLAUSE}"      # the rundown is gone: the core loop rides here
         return one + (f"\n{link}" if link else "")
 
     if clamp_note:
@@ -2189,12 +2192,26 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
         except Exception as e:  # noqa: BLE001
             logger.warning("WATER_OFFER_KICKOFF_FAILED user=%s err=%s", user.id, e)
 
-    # Then, a beat later: how to use me — from capabilities.py for THIS user, with
-    # the profile link. Best-effort; the summary and the card already went out.
-    try:
-        _send_capability_rundown(rundown_user, system_prompt)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
+    # Then, a beat later: either the FIRST SETUP STEP as a thing to do (founder, 2026-10-12:
+    # "first thing: connect ur google calendar … tap this" + the link — no rundown, no
+    # waiting for their next text), or the capability rundown (directive steps off).
+    directive = (getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True)
+                 and getattr(config, "SETUP_SEQUENCE_ENABLED", True) and config.CARD_SETUP_ENABLED
+                 and not early)
+    if directive:
+        try:
+            from setup_sequence import kickoff as _setup_kickoff
+            if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
+                import time
+                time.sleep(config.ONBOARDING_RUNDOWN_DELAY_S)
+            logger.info("ONBOARDING_SETUP_KICKOFF user=%s result=%s", user.id, _setup_kickoff(user.id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ONBOARDING_SETUP_KICKOFF_FAILED user=%s err=%s", user.id, e)
+    else:
+        try:
+            _send_capability_rundown(rundown_user, system_prompt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ONBOARDING_RUNDOWN_FAILED user=%s err=%s", user.id, e)
 
     # The onboarding conversation is the richest life-context the coach will ever
     # get about this person (their classes, where they eat, who they went to SF
