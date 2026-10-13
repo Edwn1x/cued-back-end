@@ -196,6 +196,7 @@ def test_continuation_with_something_new_gets_one_line(db, anthropic_stub, sms_c
 
 
 def test_continuation_flag_is_ignored_when_the_fold_is_off(db, anthropic_stub, sms_capture, monkeypatch):
+    monkeypatch.setattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", False)   # the stub's "ok" is not a question; this test is about something else
     import onboarding_agent as oa
     monkeypatch.setattr(config, "ONBOARDING_CONTINUATION_FOLD_ENABLED", False)
     user = _new_signup(db, onboarding_step=2)

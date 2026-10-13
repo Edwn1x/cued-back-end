@@ -20,6 +20,7 @@ import json
 import re
 
 import pytest
+import config
 
 from tests.factories import make_user
 from tests.tier1.test_berkeley_friend_onboarding import INTAKE, _is_extract, _new_signup
@@ -125,9 +126,10 @@ def test_extractor_metric_fields_are_converted_in_code(db, anthropic_stub):
 
 # ── 3 + 4. her actual messages, replayed ─────────────────────────────────────
 
-def test_celestias_messages_now_end_in_a_workout(db, anthropic_stub, sms_capture, quiet_completion):
+def test_celestias_messages_now_end_in_a_workout(db, anthropic_stub, sms_capture, quiet_completion, monkeypatch):
     """Live: 27 coach turns, no workout. Same three messages + 'send me the workout card' now:
     friend, friend, friend, then reaction + summary + done."""
+    monkeypatch.setattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", False)   # the stub's "ok" is not a question; this test is about something else
     import onboarding_agent as oa
     user = make_user(db, name="Celestia", onboarding_step=1, age=23, gender="female", goal="muscle_building",
                      experience="none", equipment="full_gym", **INTAKE)

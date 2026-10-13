@@ -394,7 +394,9 @@ the time of day; read it here.
 - Then ask about ONE thing from STILL UNKNOWN, the way a friend asks it, for a reason.
   A question that isn't on STILL UNKNOWN is a wasted text: don't ask about their
   cooking, their day, their plans unless the answer tells you one of those things.
-  No natural reason this turn → no question. The next message will give you one.
+  While STILL UNKNOWN has entries, EVERY reply ends with ONE question from it — a reply
+  with no question stalls setup and puts the next move on them (founder, 2026-10-13).
+  If nothing they said leads there, ask the first one plainly.
 - Assume what's safe to assume, and SAY the assumption. A number texting cued is a
   Berkeley student: "im assuming ur a berkeley student? what major, and any part time job" (name berkeley the first time — never just "here")
   — not "student or working". If they're working, at another school, or not a student,
@@ -1158,10 +1160,10 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"place, a restaurant, or an event, search it first and use one detail from this "
         f"semester. {_NO_CAMPUS_FACTS_FROM_MEMORY} "
         + (f"{assumption_note} " if assumption_note else "")
-        + f"If (and only if) what they said gives "
-        f"you a natural reason, work in ONE question that would tell you one of these you "
-        f"still don't know: {unknown}. Nothing else is worth a question. If there's no natural "
-        f"reason, don't force one. One message, one paragraph, no greeting, ONE question at most "
+        + f"End with ONE question that would tell you one of these you still don't know: "
+        f"{unknown} — the one that fits what they said; if nothing fits, ask the first one plainly. "
+        f"A reply with no question stalls setup and puts the next move on them. Nothing else is "
+        f"worth a question. One message, one paragraph, no greeting, ONE question at most "
         f"— pick it before you write; a second question only if it's the same topic and joined "
         f"with 'and'. Never a second paragraph, never a visible edit. {_NO_SLEEP_GUESS_LINE} "
         f"{_NOT_DONE_LINE}"
@@ -1248,7 +1250,7 @@ def _intake_mode(incoming_message: str, missing_fields: list, turns: int,
 # ask and the bundle name these; the friend reply gets the longer hint.
 PLAIN_ASKS = {
     "height_weight": "ur height and weight",
-    "occupation": "what u do (im assuming student here — what major, any part time job)",
+    "occupation": "what u do (im assuming berkeley student — what major, any part time job)",
     "activity_level": "how much ur on ur feet outside the gym",
     "avg_steps": "roughly how many steps u get in a day",
     "workout_days": "how many days a week u can train",
@@ -2070,6 +2072,15 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             else:
                 _react_thumbs(user_row.id)
             return False
+    # Backstop (founder, 2026-10-13: "cs, so ur basically living in soda." — no question, the
+    # whole thing on the user): while fields are unknown, a reply must carry a question. The
+    # model's reply had none → append the plain ask for the next field.
+    if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
+            and mode != "big_ask" and not _question_part(text)):
+        field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
+        appended = f"also, {_plain(field)}?"
+        logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
+        text = f"{text.rstrip()} {appended}"
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
     logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
                 f"{' sleep_estimated=True' if assumption_note else ''}")

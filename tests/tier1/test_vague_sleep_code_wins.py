@@ -120,3 +120,36 @@ def test_the_friend_reply_is_told_not_to_assert_campus_facts_from_memory(db, ant
     anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else (seen.append(kw["messages"][0]["content"]) or "cs, nice"))
     oa.handle_onboarding_reply(user, "Cs")
     assert any("Never assert a campus-location fact from memory" in s for s in seen), seen
+
+
+def test_a_reply_with_no_question_gets_the_next_fields_ask_appended(db, anthropic_stub, sms_capture, caplog):
+    """Live 2026-10-13 04:52 (user 51): "cs, so ur basically living in soda." — no question,
+    setup stalled on the user. While fields are unknown every reply carries one."""
+    import onboarding_agent as oa
+    caplog.set_level(logging.INFO)
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142, occupation="cs student")
+    _coach_said(user, "im guessing ur a berkeley student? what's ur major")
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "cs, so ur basically living in soda.")
+    oa.handle_onboarding_reply(user, "Cs")
+    sent = _bodies(sms_capture)[-1]
+    first = [f for f in oa._get_missing_fields(_row(db, user.id)) if f[0] != "wake_sleep"][0]
+    assert sent == f"cs, so ur basically living in soda. also, {oa._plain(first)}?", sent
+    assert "ONBOARDING_QUESTION_APPENDED" in caplog.text
+
+
+def test_a_reply_that_already_asks_is_left_alone(db, anthropic_stub, sms_capture):
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142, occupation="cs student")
+    _coach_said(user, "im guessing ur a berkeley student? what's ur major")
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "cs is brutal. u on ur feet much during the day or mostly sitting coding?")
+    oa.handle_onboarding_reply(user, "Cs")
+    assert _bodies(sms_capture)[-1] == "cs is brutal. u on ur feet much during the day or mostly sitting coding?"
+
+
+def test_the_prompt_says_every_reply_carries_a_question(db):
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2)
+    sp = oa._build_system_prompt(user)
+    assert "EVERY reply ends with ONE question" in sp and "No natural reason this turn" not in sp
