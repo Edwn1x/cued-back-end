@@ -226,6 +226,29 @@ def _last_inbound_is_a_problem_report(session, user_id: int) -> bool:
     return bool(row and row[0] and _PROBLEM_RE.search(row[0]))
 
 
+def on_reaction(user_id: int) -> str | None:
+    """A tapback on the coach's message is engagement too (live 2026-10-13 05:31, user 51:
+    👍 on "connected. i'll pull ur calendar in…" — then nothing, because a reaction is not a
+    Message row, so on_inbound never ran and the previous step never read as answered, and
+    the sweep sat in his quiet hours). The reaction IS the answer: advance one step."""
+    if not getattr(config, "SETUP_ADVANCES_ON_REACTION", True):
+        return None
+    try:
+        from models import get_session, User
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            step = next_step(session, u, require_settled=False) if u else None
+        finally:
+            session.close()
+        if not step:
+            return None
+        return run_step(user_id, step, trigger="reaction")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SETUP_SEQUENCE_REACTION_FAILED user=%s err=%s", user_id, e)
+        return None
+
+
 def on_inbound(user_id: int) -> str | None:
     """After the coach's reply to their text: advance one step if one is owed. Never
     raises; never blocks the turn."""

@@ -850,6 +850,9 @@ SETUP_SEQUENCE_ENABLED = os.getenv("SETUP_SEQUENCE_ENABLED", "true").lower() == 
 # The setup sweep yields while the morning briefing is still owed (live 2026-10-12, user 50
 # day two: water offer at wake+23 → proactive_stack on every tick → no briefing).
 SETUP_SEQUENCE_YIELDS_TO_BRIEFING = os.getenv("SETUP_SEQUENCE_YIELDS_TO_BRIEFING", "true").lower() == "true"
+# A tapback on the coach's message advances the setup sequence like a text would (live
+# 2026-10-13: 👍 on "connected…" → nothing until quiet hours ended).
+SETUP_ADVANCES_ON_REACTION = os.getenv("SETUP_ADVANCES_ON_REACTION", "true").lower() == "true"
 SETUP_WINDOW_HOURS = int(os.getenv("SETUP_WINDOW_HOURS", "48"))
 SETUP_STEP_QUIET_MINUTES = int(os.getenv("SETUP_STEP_QUIET_MINUTES", "20"))
 # The water yes/no is a SETUP STEP (founder 2026-10-09: "quick yes or no, before the card"):

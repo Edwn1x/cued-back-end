@@ -15,6 +15,7 @@ import config
 from tests.factories import make_user
 from tests.tier1.test_card_setup import sidecar_ok, card_ok, sync_threads, _u  # noqa: F401
 from tests.tier1.test_setup_sequence import seq_on, _user, _inbound, _backdate  # noqa: F401
+from tests.tier1.test_reactions_and_replies import imessage_on, sidecar, SECRET  # noqa: F401
 
 
 def _tool_names(anthropic_stub, db, monkeypatch, testing_mode: bool) -> list[str]:
@@ -69,3 +70,40 @@ def test_setup_sequence_does_not_advance_on_a_problem_report(db, seq_on, sidecar
     assert ss.on_inbound(u.id) is None and "SETUP_STEP_DEFERRED" in caplog.text and "problem_report" in caplog.text
     _inbound(u.id, "ok done")
     assert ss.on_inbound(u.id) is not None, "a normal reply advances as before"
+
+
+# ── a tapback on a setup step advances the sequence ─────────────────────────────
+
+def test_a_reaction_advances_the_setup_sequence_without_an_inbound_row(db, seq_on, sidecar_ok, card_ok, sync_threads,
+                                                                       anthropic_stub, caplog):
+    """Live 2026-10-13 05:31 (user 51): 👍 on "connected. i'll pull ur calendar in…" → nothing.
+    A reaction is not a Message row, so on_inbound never ran and the step never read as
+    answered; the sweep sat in his quiet hours. The tapback IS the answer."""
+    import onboarding_agent as oa
+    import setup_sequence as ss
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    caplog.set_level(logging.INFO)
+    u = _user(db)
+    oa._complete_onboarding(_u(u.id), "yes")
+    sidecar_ok.clear()
+    assert ss.on_inbound(u.id) is None, "no inbound yet → the normal path waits"
+    r = ss.on_reaction(u.id)
+    assert r and r.startswith("connect:"), r
+    assert "SETUP_STEP user=%d step=connect trigger=reaction" % u.id in caplog.text
+
+
+def test_reaction_webhook_runs_the_setup_step(db, imessage_on, sidecar, client, monkeypatch, sms_capture):
+    import json
+    import setup_sequence
+    from sms import _log_message
+    user = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _log_message(user.id, "connected. i'll pull ur calendar in and plan around it", "integration_connected",
+                 channel="imessage", provider_sid="spc-connected", delivery_status="sent")
+    got = []
+    monkeypatch.setattr(setup_sequence, "on_reaction", lambda uid: got.append(uid) or "water:sent")
+    r = client.post("/internal/inbound", data=json.dumps({
+        "phone": user.phone, "text": "", "provider_message_id": "spc-react-1", "chat_guid": "g", "service": "iMessage",
+        "line_phone": "+16282649335", "timestamp": "2026-10-13T12:31:35Z", "attachments": [],
+        "reaction": {"emoji": "👍", "target_id": "spc-connected"}}),
+        headers={"X-Internal-Secret": SECRET}, content_type="application/json")
+    assert r.status_code == 200 and got == [user.id], (r.get_json(), got)
