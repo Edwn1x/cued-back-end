@@ -185,3 +185,15 @@ def test_connect_tool_accepts_google_health_and_gates_on_flag(db, monkeypatch, s
     assert handle_send_connect_link(user.id, {"provider": "google_health"}).startswith("ok")
     assert any("/c/google_health/" in body for _p, body in sms_capture)
     assert base.pending_nonce(user.id, "google_health")
+
+
+def test_gcal_authorize_url_never_unions_prior_grants(monkeypatch):
+    """Live 2026-10-13: include_granted_scopes=true on the CALENDAR request unioned a prior
+    Google Health grant (restricted, unverified) into it → Google's "401 malformed" page for
+    that account, while an account with no prior grant got the consent screen."""
+    import config
+    from integrations.gcal import GCalProvider
+    monkeypatch.setattr(config, "GOOGLE_OAUTH_CLIENT_ID", "cid.apps.googleusercontent.com")
+    url = GCalProvider().authorize_url(state="s", redirect_uri="https://app.example/oauth/gcal/callback")
+    assert "include_granted_scopes" not in url
+    assert "access_type=offline" in url and "prompt=consent" in url and "calendar.events" in url
