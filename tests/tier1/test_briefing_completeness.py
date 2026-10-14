@@ -643,3 +643,13 @@ def test_live_1238_complete_text_logs_no_drops(db, brief_on, monkeypatch, sms_ca
         heartbeat.heartbeat_tick(user.id)
     assert sms_capture and sms_capture[0][1] == text
     assert not any("BRIEFING_DROPPED_ITEM" in r.getMessage() for r in caplog.records)
+
+
+def test_degree_sign_never_lands_in_a_course_code():
+    """Live 2026-10-14 12:49 (user 51): "70° and clear out. cs70 hw due by 4pm today" became
+    "cs70° hw due" — the signed 70 failed the lookahead and the search signed the 70 in cs70."""
+    from heartbeat import _insert_degree_sign
+    assert _insert_degree_sign("70° and clear out. cs70 hw due by 4pm today", "70") is None
+    assert _insert_degree_sign("cs70 lecture at 3:30, 70 and clear out", "70") == "cs70 lecture at 3:30, 70° and clear out"
+    assert _insert_degree_sign("cs70 hw due at 4", "70") is None, "a number glued to letters is never the temperature"
+    assert _insert_degree_sign("88 and clear out", "88") == "88° and clear out"
