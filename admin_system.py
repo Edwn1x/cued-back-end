@@ -227,6 +227,7 @@ tr.clickable{cursor:pointer}tr.clickable:hover td{background:rgba(124,110,255,.0
   <a class="nav {{ 'here' if active_nav == 'system' }}" href="/admin/system">System</a>
   <a class="nav {{ 'here' if active_nav == 'heartbeat' }}" href="/admin/heartbeat">Heartbeat</a>
   <a class="nav {{ 'here' if active_nav == 'consolidation' }}" href="/admin/consolidation">Memory Jobs</a>
+  <a class="nav {{ 'here' if active_nav == 'adoption' }}" href="/admin/adoption">Adoption</a>
   <span style="margin-left:auto;font-size:11px;color:var(--text3)">{{ rendered_at }}</span>
 </div>
 <div class="content">
@@ -788,6 +789,51 @@ def consolidation_page():
                        runs=runs_data, digests=digests_data)
     finally:
         session.close()
+
+
+# ─── /admin/adoption ────────────────────────────────────────────────────────
+
+_ADOPTION_BODY = """
+<div class="grid grid-3" style="margin-bottom:18px">
+  <div class="info-card"><h3>Activated ({{ a.days }}d)</h3><div style="font-size:26px;font-weight:600">{{ a.activated }}</div></div>
+  <div class="info-card"><h3>Completed onboarding</h3><div style="font-size:26px;font-weight:600">{{ a.completed }} <span style="font-size:13px;color:var(--text3)">({{ a.completion_rate }})</span></div></div>
+  <div class="info-card"><h3>Median onboarding length</h3><div style="font-size:26px;font-weight:600">{{ a.onboarding_minutes }}</div></div>
+</div>
+<div class="section">
+  <div class="section-title">Setup steps — offered vs accepted (activated in the last {{ a.days }} days)</div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Step</th><th>Offered</th><th>Accepted</th><th>Declined</th><th>Ignored</th><th>Rate</th><th>Median time to accept</th></tr>
+      {% for r in a.rows %}
+      <tr>
+        <td style="color:var(--text);font-weight:500">{{ r.step }}</td>
+        <td>{{ r.offered }}</td><td>{{ r.accepted }}</td><td>{{ r.declined }}</td><td>{{ r.ignored }}</td>
+        <td><span class="badge badge-{{ 'green' if r.rate not in ('—',) and (r.rate|replace('%',''))|int >= 50 else 'gray' }}">{{ r.rate }}</span></td>
+        <td>{{ r.median }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <p style="color:var(--text3);font-size:12px;margin-top:8px">Offered = the step went out (connect_offers ledger / offer message / water status / card ask). Accepted = a connected integration, a water "yes", a built card. Ignored = offered, no answer yet. Window: <a href="/admin/adoption?days=7">7d</a> · <a href="/admin/adoption?days=30">30d</a> · <a href="/admin/adoption?days=90">90d</a></p>
+</div>
+"""
+
+
+@admin_system_bp.route("/admin/adoption")
+def adoption_page():
+    from admin_adoption import adoption
+    try:
+        days = max(1, min(365, int(request.args.get("days", 30))))
+    except ValueError:
+        days = 30
+    session = get_session()
+    try:
+        a = adoption(session, days=days)
+    finally:
+        session.close()
+    return _render("adoption", "Adoption",
+                   "Are people connecting and accepting what setup proposes? Offered → accepted, per step.",
+                   _ADOPTION_BODY, a=a)
 
 
 # ─── /admin/user/<id>/debug ────────────────────────────────────────────────
