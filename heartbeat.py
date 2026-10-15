@@ -920,9 +920,10 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     except Exception:  # noqa: BLE001
         pass
     since_dt = min(since_cands)
-    from engagement_tracker import _not_reaction
+    from engagement_tracker import _not_reaction, _not_reminder
     talked = (session.query(Message.id)
-              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction())
+              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt),
+                      _not_reaction(), _not_reminder())
               .first())
     if talked:
         return None
@@ -1236,10 +1237,10 @@ def _evening_close_signal(user, session, *, now=None) -> str | None:
     five = bed.replace(hour=RHYTHM_EVENING_REF_HOUR, minute=0)
     if five >= bed:
         five -= timedelta(days=1)
-    from engagement_tracker import _not_reaction
+    from engagement_tracker import _not_reaction, _not_reminder
     out = (session.query(Message.id)
            .filter(Message.user_id == user.id, Message.direction == "out",
-                   Message.created_at >= _naive(five), _not_reaction())
+                   Message.created_at >= _naive(five), _not_reaction(), _not_reminder())
            .first())
     if out:
         return None

@@ -70,6 +70,8 @@ def reset_active_session(user_id: int) -> dict:
         ws = session.get(WorkoutSession, ws_id)
         if ws and ws.status in ("planned", "active"):
             ws.status = "abandoned"
+            ws.closed_via = "replaced"
+            ws.finished_at = _utcnow()
             session.commit()
     finally:
         session.close()
@@ -109,6 +111,55 @@ def active_session_brief(user) -> str | None:
             f"session RIGHT NOW; refer to it as {day_label(key)}, never a different day. To send a "
             f"fresh card you must clear it first with reset_workout_session (it finalizes the session "
             f"if sets are logged so nothing is lost, else clears the empty one).")
+
+
+RECENT_CLOSE_MINUTES = 45
+CLOSE_REASON = {
+    "card": "they tapped Finish on the card themselves",
+    "text": "they texted that they were done",
+    "reset": "you replaced it with a new card at their request (the logged sets were kept)",
+    "replaced": "you replaced it with a new card at their request (nothing had been logged)",
+    "stale": f"it sat idle for {ABANDON_AFTER_H}h and auto-closed",
+}
+
+
+def recent_close_brief(user, *, now=None) -> str | None:
+    """The most recently CLOSED session, when it closed in the last RECENT_CLOSE_MINUTES:
+    its type, when, HOW (closed_via) and what got logged. The coach never saw any of
+    this — live 2026-10-14 (user 53) she tapped Finish on a 3-minute pull card, asked
+    "why did my workout stop", and the coach invented a cause ("u asked for back so i
+    swapped the card") instead of the true one. Read-only; None when nothing closed
+    recently."""
+    from workouts.templates import day_label
+    now = now or _utcnow()
+    session = get_session()
+    try:
+        ws = (session.query(WorkoutSession)
+              .filter(WorkoutSession.user_id == user.id,
+                      WorkoutSession.status.in_(("done", "abandoned")),
+                      WorkoutSession.finished_at.isnot(None),
+                      WorkoutSession.finished_at >= now - timedelta(minutes=RECENT_CLOSE_MINUTES))
+              .order_by(WorkoutSession.finished_at.desc(), WorkoutSession.id.desc()).first())
+        if not ws:
+            return None
+        n = session.query(SetLog.id).filter(SetLog.session_id == ws.id, SetLog.done.is_(True)).count()
+        sid, key, via, fin, vol = ws.id, ws.template_key, ws.closed_via, ws.finished_at, ws.total_volume_lb
+    finally:
+        session.close()
+    how = CLOSE_REASON.get(via or "", "it was closed")
+    when = ""
+    try:
+        import config as _cfg
+        if getattr(_cfg, "CONTEXT_LOCAL_TIME_ENABLED", True):
+            from timefmt import render_time
+            when = f" at {render_time(fin, user, relative=False)}"
+    except Exception:  # noqa: BLE001 — a time-format hiccup must not drop the block
+        when = ""
+    logged = f"{n} set{'s' if n != 1 else ''} logged" + (f", {vol:,} lb" if vol else "")
+    return ("## LAST WORKOUT SESSION (just closed)\n"
+            f"{day_label(key)} day (session #{sid}) closed{when} — {how}; {logged}. If they ask why "
+            "it ended or stopped, THIS is the reason — say it plainly and offer a fresh card; never "
+            "guess at a different cause.")
 
 
 def _session_exercises(session, ws_id: int) -> list[tuple[str, str]]:
@@ -309,7 +360,9 @@ def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool =
         if fill_as_planned:
             for r in session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.done.is_(False)).all():
                 apply_set_update(session, ws, r, done=True, source="coach")
+        ws.closed_via = via
         uid = ws.user_id
+        session.commit()
     finally:
         session.close()
     s = finish_session(session_id)
@@ -334,7 +387,7 @@ def abandon_stale(now: datetime | None = None) -> int:
         for ws in session.query(WorkoutSession).filter(WorkoutSession.status.in_(("planned", "active"))).all():
             anchor = ws.started_at or ws.date
             if anchor and anchor < cutoff:
-                ws.status = "abandoned"; n += 1
+                ws.status = "abandoned"; ws.closed_via = "stale"; ws.finished_at = now; n += 1
                 logger.info("WORKOUT_ABANDONED user=%s session=%s started=%s", ws.user_id, ws.id, anchor)
         session.commit()
         return n

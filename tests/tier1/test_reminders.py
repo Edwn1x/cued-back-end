@@ -411,3 +411,35 @@ def test_agent_loop_context_carries_the_reminders_block(db):
     db.expire_all()
     ctx = build_loop_context(db.get(type(u), u.id), db)
     assert "## REMINDERS" in ctx and f"id={r['id']}" in ctx and "'go run' — tue/thu 7:30pm" in ctx
+
+
+def test_interval_ping_is_typed_water_reminder_and_one_offs_stay_reminder(db, monkeypatch, sms_capture, anthropic_stub):
+    """Live 2026-10-14 (user 53): her 3-hourly water pings were typed 'reminder', which the
+    heartbeat's anti-stack gate counts as an unanswered proactive nudge — so inside a
+    180-min window the heartbeat was muted for good. Interval pings get their own type;
+    the ack path, the hold TTL and the offer floor all still recognise it."""
+    import config
+    from models import Reminder
+    from reminders import create_reminder, fire_due, is_water_ack
+    from engagement_tracker import WATER_REMINDER_TYPE, PROACTIVE_MESSAGE_TYPES
+    from held_outbound import ttl_minutes
+    monkeypatch.setattr(config, "HEARTBEAT_STANDING_QUIET_ENABLED", True)
+    anthropic_stub.reply_with(lambda kw: "water break")
+    u = make_user(db, wake_time="07:00", sleep_time="23:00")
+    r = create_reminder(u.id, "drink water", None, every_hours=3, source="offer")
+    now = _utc(datetime(2026, 9, 22, 12, 0))
+    row = db.get(Reminder, r["id"]); row.fire_at = now; db.commit()
+
+    assert fire_due(now=now) == 1
+    assert _messages(db, u.id)[-1] == (WATER_REMINDER_TYPE, "water break")
+    assert WATER_REMINDER_TYPE not in PROACTIVE_MESSAGE_TYPES          # never arms the anti-stack gate
+    assert "reminder" in PROACTIVE_MESSAGE_TYPES                        # a one-off still does
+    assert is_water_ack(u.id, "drank some") is True                      # the 👍 ack path still fires
+    assert ttl_minutes(WATER_REMINDER_TYPE) == config.IMESSAGE_HOLD_PROACTIVE_MAX_AGE_MIN  # expires fast if held
+
+    one = create_reminder(u.id, "take creatine", "19:00")
+    db.expire_all()
+    one_row = db.get(Reminder, one["id"]); one_row.fire_at = now; db.commit()
+    anthropic_stub.reply_with(lambda kw: "creatine time")
+    assert fire_due(now=now) == 1
+    assert _messages(db, u.id)[-1] == ("reminder", "creatine time")

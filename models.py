@@ -489,6 +489,10 @@ class WorkoutSession(Base):
     card_message_id = Column(String(120))
     total_volume_lb = Column(Integer)
     pr_count = Column(Integer)
+    # How it left planned/active: card (Finish tap) | text ('done') | reset (replaced with
+    # a new card, sets kept) | replaced (new card, nothing logged) | stale (6h sweep).
+    # Read by session_ops.recent_close_brief so the coach can say WHY a session ended.
+    closed_via = Column(String(12))
 
     sets = relationship("SetLog", back_populates="session", order_by="SetLog.id",
                         cascade="all, delete-orphan")

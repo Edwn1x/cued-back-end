@@ -97,6 +97,24 @@ def has_unanswered_outbound(user_id: int) -> bool:
 # (Item 1 point 4). Reactive replies (freeform/meal/workout/…) are never here.
 PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder", "water_offer", "task"}  # a fired reminder / the water offer counts: don't stack a nudge on it
 
+# A standing interval ping — "drink water" every N hours (reminders.every_hours) — goes
+# out as WATER_REMINDER_TYPE and is deliberately NOT proactive here. It fires on its own
+# clock for as long as they want it and is never meant to be answered, so counting it
+# armed the anti-stack gate every time: a 3h cadence inside the 180-min window meant the
+# heartbeat never spoke (live 2026-10-13→14, users 53 + 33: zero proactive texts since
+# sign-up, every tick `guardrail:proactive_stack`). A one-off reminder they asked for
+# ("remind me at 7") still counts — the coach shouldn't pile on right after it.
+WATER_REMINDER_TYPE = "water_reminder"
+REMINDER_TYPES = ("reminder", WATER_REMINDER_TYPE)
+
+
+def _not_reminder():
+    """Filter: a fired reminder is a delivery the user scheduled, not the coach talking.
+    The morning briefing's "talked since they woke" and the evening check-in's "spoke
+    since 5pm" gates use it, so an 8am or 5pm water ping can't cancel the day's rhythm
+    (same live users: the only outbounds all day were water pings, no briefing ever)."""
+    return or_(Message.message_type.is_(None), Message.message_type.notin_(REMINDER_TYPES))
+
 
 def has_unanswered_proactive(user_id: int, window_minutes: int) -> bool:
     """Anti-STACK gate for the heartbeat: return True only when the MOST RECENT

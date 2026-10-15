@@ -473,7 +473,12 @@ def _fire_one(rid: int, now: datetime) -> bool:
                             reason, row.fire_at if row.active else None)
                 return False
         text = _compose(user, row)
-        send_sms(user.phone, text, user_id=user.id, message_type="reminder")
+        # Interval pings carry their own type so the heartbeat's anti-stack gate and the
+        # rhythm gates can tell "a water ping landed" from "the coach spoke" (engagement_
+        # tracker.WATER_REMINDER_TYPE). One-offs stay "reminder".
+        from engagement_tracker import WATER_REMINDER_TYPE
+        send_sms(user.phone, text, user_id=user.id,
+                 message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
         row.last_sent_at = now
         row.sent_count = (row.sent_count or 0) + 1
         if row.every_hours or row.recur_days:
@@ -518,7 +523,8 @@ def is_water_ack(user_id: int, body: str) -> bool:
         last_out = (session.query(Message)
                     .filter(Message.user_id == user_id, Message.direction == "out")
                     .order_by(Message.created_at.desc()).first())
-        if not last_out or not last_out.created_at or last_out.message_type != "reminder":
+        from engagement_tracker import REMINDER_TYPES
+        if not last_out or not last_out.created_at or last_out.message_type not in REMINDER_TYPES:
             return False
         age = _naive_utcnow() - last_out.created_at.replace(tzinfo=None)
         return age <= timedelta(minutes=WATER_ACK_WINDOW_MINUTES)
