@@ -1997,15 +1997,28 @@ def activate_sms():
         session.close()
 
 
-# ─── Waitlist Endpoint ──────────────────────────────────────────────────
+# ─── Site sign-up endpoint (historically the waitlist) ─────────────────────
 @app.route("/waitlist", methods=["POST"])
 @limiter.limit("3/minute;20/hour")
 def waitlist_signup():
     """
-    Public waitlist signup. JSON-only. CORS-restricted to ALLOWED_ORIGINS
-    (must be set to https://cued.fit,https://www.cued.fit in prod env).
-    Does NOT send an SMS — admin promotes from waitlist later via
-    /admin/user/<id>/activate-waitlist, which sends the first text via
+    Public sign-up from the site's chat (the "text cued" button). JSON-only.
+    CORS-restricted to ALLOWED_ORIGINS (must be set to
+    https://cued.fit,https://www.cued.fit in prod env).
+
+    2026-10-15 (LIVE_SIGNUPS_ENABLED, default on): the waitlist is over. The row is
+    created LIVE (waitlist_status None, activated_at now) and the coach's first text
+    follows /signup's iMessage-first rules: with an opt-in link the hook is deferred
+    (their "hey cued" tap sends it blue, "I don't have an iPhone" sends it by SMS,
+    the scheduler falls back to SMS + link after ONBOARDING_HOOK_FALLBACK_MINUTES);
+    without a link start_onboarding sends it now. The response carries
+    `live: true` and `hook_deferred` so the success screen can say what happens
+    next. A still-pending waitlister who signs up again is activated on the spot
+    (same hook as admin activation, "ur spot's open"); an active user gets
+    status=exists and their link back, nothing else.
+
+    Flag off (rollback): the 2026-09-19 waitlist — pending row, no text; admin
+    promotes via /admin/user/<id>/activate-waitlist, which sends the first text via
     start_onboarding.
 
     2026-09-19: the site's waitlist is the chat sign-up, so the body carries the
@@ -2093,27 +2106,46 @@ def waitlist_signup():
                 phone, existing.name, existing.email or "—",
                 name, raw_email or "—", source or "—",
             )
+            import photon
             if existing.waitlist_status == "pending":
+                if config.LIVE_SIGNUPS_ENABLED:
+                    # Live now: a leftover waitlister signing up again is asking to
+                    # start. Activate exactly like the admin button — status cleared,
+                    # activated_at stamped, hook now (blue if they ever texted the
+                    # line, else SMS + link via the consent-gate fallback). Their
+                    # profile row is still not rewritten.
+                    existing.waitlist_status = None
+                    existing.activated_at = datetime.now(timezone.utc)
+                    session.commit()
+                    start_onboarding(session.get(User, existing.id), reason="waitlist_activate")
+                    logger.info("SIGNUP_LIVE_ACTIVATED_PENDING user=%s phone=%s", existing.id, phone)
+                    return jsonify({"status": "ok", "live": True, "hook_deferred": False,
+                                    "imessage_link": None, "activated": True}), 200
                 # Still pending: hand back their opt-in link (if provisioned) so a
                 # re-submit can still open the line. The row itself is untouched.
-                import photon
                 return jsonify({"status": "exists",
                                 "message": "You're already on the waitlist.",
                                 "imessage_link": photon.imessage_link(existing.photon_user_id)}), 200
             return jsonify({"status": "exists",
-                            "message": "This number is already signed up."}), 200
+                            "message": "This number is already signed up.",
+                            "live": True,
+                            "imessage_link": photon.imessage_link(existing.photon_user_id)}), 200
 
+        live = config.LIVE_SIGNUPS_ENABLED
         user = User(
             phone=phone,
             name=name,
             email=raw_email,
             signup_source=source,
             user_timezone=timezone_str,
-            waitlist_status="pending",
-            # User.active stays True (default). The spec's request body sends
-            # active=false but it's intent-level — the frontend never reads it
+            # Live: no marker, activated the moment they sign up (activated_at is
+            # what the admin Adoption page counts). Waitlist mode: pending row.
+            # User.active stays True (default) either way. The spec's request body
+            # sends active=false but it's intent-level — the frontend never reads it
             # back. waitlist_status='pending' is the sole waitlist marker so
             # User.active can keep its eventual pause/block semantic.
+            waitlist_status=None if live else "pending",
+            activated_at=datetime.now(timezone.utc) if live else None,
             onboarding_step=0,
             full_name=full_name,
             **profile,
@@ -2122,23 +2154,41 @@ def waitlist_signup():
         session.commit()
         uid = user.id
         logger.info(
-            "WAITLIST_NEW phone=%s name=%r source=%r email=%r goal=%r experience=%r form_stats=%s",
+            "%s phone=%s name=%r source=%r email=%r goal=%r experience=%r form_stats=%s",
+            "SIGNUP_LIVE_NEW" if live else "WAITLIST_NEW",
             phone, name, source or "—", raw_email or "—", profile["goal"], profile["experience"],
             sorted(stats) or "none",
         )
         # Provision the Photon line now (flag-gated, never raises) so the success
-        # screen can offer "Text me on iMessage". No hook — that waits for the admin;
-        # a pending user's texts are held by the gate in _process_inbound. A Photon
-        # failure (cap, creds) just means no link; the row is saved either way.
+        # screen can offer "Text me on iMessage". A Photon failure (cap, creds) just
+        # means no link; the row is saved either way.
         imessage_link = None
         try:
             import photon
             if photon.provision_user(uid):
                 imessage_link = photon.imessage_link_for_user(uid)
-        except Exception as e:  # noqa: BLE001 — never block the waitlist on Photon
+        except Exception as e:  # noqa: BLE001 — never block the sign-up on Photon
             logger.warning("PHOTON_PROVISION_SKIPPED user=%s err=%s", uid, e)
-        logger.info("WAITLIST_PROVISIONED user=%s imessage_link=%s", uid, "yes" if imessage_link else "no")
-        return jsonify({"status": "ok", "imessage_link": imessage_link}), 200
+        if not live:
+            # Waitlist: no hook — that waits for the admin; a pending user's texts
+            # are held by the gate in _process_inbound.
+            logger.info("WAITLIST_PROVISIONED user=%s imessage_link=%s", uid, "yes" if imessage_link else "no")
+            return jsonify({"status": "ok", "imessage_link": imessage_link}), 200
+        # Live: the coach's first text, by /signup's iMessage-first rules. With a
+        # link the hook WAITS for their channel choice — their "hey cued" tap sends
+        # it blue (process_buffered_message), "I don't have an iPhone" sends it by
+        # SMS (/signup/channel), the scheduler falls back to SMS + link after
+        # ONBOARDING_HOOK_FALLBACK_MINUTES. Without a link there's no choice to make.
+        hook_deferred = bool(imessage_link)
+        if hook_deferred:
+            logger.info("ONBOARDING_HOOK_DEFERRED user=%s — awaiting channel choice (fallback in %s min)",
+                        uid, config.ONBOARDING_HOOK_FALLBACK_MINUTES)
+        else:
+            start_onboarding(session.get(User, uid))
+        logger.info("SIGNUP_LIVE_PROVISIONED user=%s imessage_link=%s hook_deferred=%s",
+                    uid, "yes" if imessage_link else "no", hook_deferred)
+        return jsonify({"status": "ok", "live": True, "imessage_link": imessage_link,
+                        "hook_deferred": hook_deferred}), 200
     except Exception as e:
         logger.error(f"/waitlist error: {e}", exc_info=True)
         return jsonify({"status": "error",

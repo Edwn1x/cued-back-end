@@ -1012,6 +1012,13 @@ PHOTON_PROVISIONING_ENABLED = os.getenv("PHOTON_PROVISIONING_ENABLED", "false").
 # blue text triggers the hook there) and "I don't have an iPhone" (hook by SMS).
 # If they do neither for this many minutes, the hook goes by SMS with the link.
 ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUTES", "10"))
+# Live sign-ups (founder, 2026-10-15): the site's "text cued" chat posts to /waitlist
+# (the route name is historical) and gets a LIVE account — row active, activated_at
+# stamped, and the coach's first text goes out by the same iMessage-first rules as
+# /signup (first blue text / "no iPhone" / fallback). Off → the 2026-09-19 waitlist:
+# pending row, one holding line when they text, admin activates from /admin.
+# Rollback = LIVE_SIGNUPS_ENABLED=false in Railway; nothing else changes.
+LIVE_SIGNUPS_ENABLED = os.getenv("LIVE_SIGNUPS_ENABLED", "true").lower() == "true"
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))
