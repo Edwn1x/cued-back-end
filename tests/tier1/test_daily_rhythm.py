@@ -697,3 +697,38 @@ def test_daily_rhythm_columns_are_migrated_idempotently(db):
     src = open(__import__("migrate").__file__).read()
     for col in ("checkin_level", "every_hours", "window_start", "window_end"):
         assert f"ADD COLUMN IF NOT EXISTS {col}" in src, col
+
+
+# ─── a fired reminder is not the coach talking (water pings starved the rhythm) ──
+# Live 2026-10-14 (user 53): 3-hourly water pings landed at 8am and 5pm, so "talked
+# since wake" and "spoke since 5pm" were always true — no morning open, no evening
+# close, ever. A reminder is a delivery they scheduled, not a conversation.
+
+def test_morning_open_survives_a_water_ping_after_wake(db, rhythm_on):
+    import heartbeat
+    from engagement_tracker import WATER_REMINDER_TYPE
+    s, user = _ctx_user(db, **AISLINN)
+    try:
+        _msg(s, user.id, "out", _at(*TUE, 7, 1), "drink some water", message_type=WATER_REMINDER_TYPE)
+        _msg(s, user.id, "out", _at(*TUE, 7, 2), "go run", message_type="reminder")
+        sig = heartbeat._morning_open_signal(user, s, now=_at(*TUE, 7, 20))
+        _msg(s, user.id, "out", _at(*TUE, 7, 3), "morning, how'd u sleep", message_type="heartbeat")  # the coach itself
+        assert heartbeat._morning_open_signal(user, s, now=_at(*TUE, 7, 20)) is None
+    finally:
+        s.close()
+    assert sig and sig.startswith("## MORNING OPEN"), sig
+
+
+def test_evening_close_survives_a_water_ping_after_five(db, rhythm_on):
+    import heartbeat
+    from engagement_tracker import WATER_REMINDER_TYPE
+    s, user = _ctx_user(db, **AISLINN)   # sleeps 00:00 → window 22:00–00:00
+    try:
+        _meal(s, user.id, _at(*TUE, 13, 0), cal=600, pro=45)
+        _msg(s, user.id, "out", _at(*TUE, 17, 1), "water break", message_type=WATER_REMINDER_TYPE)
+        sig = heartbeat._evening_close_signal(user, s, now=_at(*TUE, 22, 30))
+        _msg(s, user.id, "out", _at(*TUE, 18, 30), "nice session")                        # a real outbound
+        assert heartbeat._evening_close_signal(user, s, now=_at(*TUE, 22, 30)) is None
+    finally:
+        s.close()
+    assert sig and sig.startswith("## EVENING CLOSE"), sig

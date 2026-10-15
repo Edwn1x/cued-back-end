@@ -250,3 +250,100 @@ def test_context_block_absent_when_flag_off(db, imessage_on, sidecar_ok, card_ok
 def test_reset_tool_is_claimed_by_the_registry():
     from capabilities import CAPABILITIES
     assert any("reset_workout_session" in c.tools for c in CAPABILITIES)
+
+
+# ─── how a session closed: closed_via + the LAST WORKOUT SESSION brief ────────
+# Live 2026-10-14 (user 53): she tapped Finish on a 3-minute pull card, asked "why did
+# my workout stop", and the coach — which never sees how a session ended — invented a
+# cause ("u asked for back so i swapped the card"). The close reason is now recorded
+# and a just-closed session is briefed into the loop context.
+
+def test_card_finish_records_closed_via_and_the_brief_names_the_finish_tap(db, imessage_on, sidecar_ok, card_ok, sync_threads):
+    from workouts.start import start_workout_session
+    from workouts.session_ops import apply_text_update, close_session, recent_close_brief
+    from agent_loop import build_loop_context
+    from models import get_session, User, WorkoutSession
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = start_workout_session(user.id, "pull")["session_id"]
+    apply_text_update(user.id, "135 x5")
+    close_session(sid, via="card")                       # what POST /card/api/finish does
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, sid).closed_via == "card"
+    finally:
+        s.close()
+    brief = recent_close_brief(user)
+    assert brief and brief.startswith("## LAST WORKOUT SESSION (just closed)")
+    assert f"pull day (session #{sid})" in brief and "tapped Finish on the card themselves" in brief
+    assert "1 set logged" in brief and "never guess" in brief
+    # and it reaches the real loop context, so "why did my workout stop" gets the true answer.
+    s = get_session()
+    try:
+        ctx = build_loop_context(s.get(User, user.id), s)
+    finally:
+        s.close()
+    assert "## LAST WORKOUT SESSION" in ctx and "tapped Finish" in ctx
+
+
+def test_reset_paths_record_reset_or_replaced(db, imessage_on, sidecar_ok, card_ok, sync_threads):
+    from workouts.start import start_workout_session
+    from workouts.session_ops import apply_text_update, reset_active_session, recent_close_brief
+    from models import get_session, WorkoutSession
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = start_workout_session(user.id, "pull")["session_id"]
+    reset_active_session(user.id)                         # empty → abandoned
+    s = get_session()
+    try:
+        ws = s.get(WorkoutSession, sid)
+        assert ws.status == "abandoned" and ws.closed_via == "replaced" and ws.finished_at is not None
+    finally:
+        s.close()
+    assert "nothing had been logged" in recent_close_brief(user)
+    sid2 = start_workout_session(user.id, "legs")["session_id"]
+    apply_text_update(user.id, "135 x5")
+    reset_active_session(user.id)                         # logged → finalized
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, sid2).closed_via == "reset"
+    finally:
+        s.close()
+    brief = recent_close_brief(user)
+    assert f"legs day (session #{sid2})" in brief and "logged sets were kept" in brief
+
+
+def test_text_done_and_stale_sweep_record_their_reasons(db, imessage_on, sidecar_ok, card_ok, sync_threads):
+    from datetime import timedelta
+    from workouts.start import start_workout_session
+    from workouts.session_ops import apply_text_update, abandon_stale, recent_close_brief, _utcnow
+    from models import get_session, WorkoutSession
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = start_workout_session(user.id, "pull")["session_id"]
+    apply_text_update(user.id, "135 x5")
+    assert apply_text_update(user.id, "done") == ""
+    s = get_session()
+    try:
+        assert s.get(WorkoutSession, sid).closed_via == "text"
+    finally:
+        s.close()
+    assert "texted that they were done" in recent_close_brief(user)
+    sid2 = start_workout_session(user.id, "pull")["session_id"]
+    abandon_stale(now=_utcnow() + timedelta(hours=7))
+    s = get_session()
+    try:
+        ws = s.get(WorkoutSession, sid2)
+        assert ws.status == "abandoned" and ws.closed_via == "stale" and ws.finished_at is not None
+    finally:
+        s.close()
+
+
+def test_recent_close_brief_is_none_when_nothing_closed_recently(db, imessage_on, sidecar_ok, card_ok, sync_threads):
+    from datetime import timedelta
+    from workouts.start import start_workout_session
+    from workouts.session_ops import apply_text_update, close_session, recent_close_brief, _utcnow
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    assert recent_close_brief(user) is None
+    sid = start_workout_session(user.id, "pull")["session_id"]
+    apply_text_update(user.id, "135 x5")
+    close_session(sid, via="card")
+    assert recent_close_brief(user) is not None
+    assert recent_close_brief(user, now=_utcnow() + timedelta(hours=2)) is None   # an old close isn't "just closed"

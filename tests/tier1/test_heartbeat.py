@@ -803,3 +803,40 @@ def test_heartbeat_all_ticks_only_allowlisted(db, monkeypatch, sms_capture, anth
     all_ticks = _ticks(on.id)
     assert len(all_ticks) == 1 and all_ticks[0].spoke is True
     assert all(phone == on.phone for phone, _ in sms_capture)
+
+
+# ---- standing water pings must not arm the anti-stack gate --------------------
+# Live 2026-10-13→14 (users 53 + 33): "drink water" every 3h inside the 180-min stack
+# window → every tick `guardrail:proactive_stack`; the heartbeat never spoke once.
+
+def test_has_unanswered_proactive_false_for_a_standing_water_ping(db):
+    from engagement_tracker import has_unanswered_proactive, WATER_REMINDER_TYPE
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type=WATER_REMINDER_TYPE, body="drink some water")
+    assert has_unanswered_proactive(user.id, 180) is False
+
+
+def test_has_unanswered_proactive_true_for_a_one_off_reminder(db):
+    """A reminder they asked for at a time still counts — don't pile a nudge on it."""
+    from engagement_tracker import has_unanswered_proactive
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type="reminder", body="go run")
+    assert has_unanswered_proactive(user.id, 180) is True
+
+
+def test_water_ping_does_not_trip_the_stack_guardrail(db, monkeypatch, sms_capture, anthropic_stub):
+    import heartbeat
+    from engagement_tracker import WATER_REMINDER_TYPE
+    from tests.factories import make_user
+
+    user = make_user(db)
+    _allow(monkeypatch, user)
+    _seed_msg(user.id, "out", minutes_ago=10, message_type=WATER_REMINDER_TYPE, body="water break")
+
+    heartbeat.heartbeat_tick(user.id)
+
+    assert _ticks(user.id)[-1].reason != "guardrail:proactive_stack"

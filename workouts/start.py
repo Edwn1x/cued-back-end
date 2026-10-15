@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 
 import config
 from models import get_session, User, WorkoutSession, SetLog
@@ -299,6 +300,8 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
             old = session.get(WorkoutSession, reuse_from)
             if old.status in ("planned", "active"):
                 old.status = "abandoned"
+                old.closed_via = "replaced"
+                old.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 session.commit()
             logger.info("WORKOUT_SESSION_REPLANNED user=%s old=%s key=%s", user_id, reuse_from, key)
         # No saved routine for this day → the card is the GENERIC default. Surface it so the

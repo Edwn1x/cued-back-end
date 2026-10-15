@@ -290,6 +290,8 @@ MIGRATIONS = [
         pr_count INTEGER
     )""",
     "CREATE INDEX IF NOT EXISTS idx_workout_sessions_user_date ON workout_sessions (user_id, date)",
+    # 2026-10-14: how a session closed, so the coach can explain "why did my workout stop".
+    "ALTER TABLE workout_sessions ADD COLUMN closed_via VARCHAR(12)",
     """CREATE TABLE IF NOT EXISTS set_logs (
         id SERIAL PRIMARY KEY,
         session_id INTEGER NOT NULL REFERENCES workout_sessions(id),
