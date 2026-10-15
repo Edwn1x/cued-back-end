@@ -174,7 +174,13 @@ def test_inbound_from_the_archived_number_matches_no_user_and_waitlist_makes_a_n
     assert r.status_code == 200 and r.get_json() == {"ok": True, "known": False}
     assert db.query(UnknownInbound).filter_by(handle=PHONE).count() == 1
 
-    # the REAL new-user path: the cued.fit form → a brand-new pending row on that number
+    # the REAL new-user path: the cued.fit chat → a brand-new LIVE row on that number
+    # (live sign-ups since 2026-10-15: no pending marker, the coach's first text goes
+    # out — run start_onboarding's thread inline here)
+    import app as appmod
+    from onboarding_agent import send_onboarding_hook
+    monkeypatch.setattr(appmod, "start_onboarding",
+                        lambda user, reason="start_onboarding": send_onboarding_hook(user.id, reason=reason))
     body = dict(name="Nau Again", phone=PHONE, sms_consent=True, age="22", gender="male",
                 goal=["muscle_building"], experience="none", equipment="full_gym", source="hero")
     r = client.post("/waitlist", data=json.dumps(body), content_type="application/json")
@@ -182,7 +188,7 @@ def test_inbound_from_the_archived_number_matches_no_user_and_waitlist_makes_a_n
     db.expire_all()
     new = db.query(User).filter(User.phone == PHONE).one()
     assert new.id != old_id
-    assert (new.onboarding_step or 0) == 0 and new.waitlist_status == "pending"
+    assert new.waitlist_status is None and new.activated_at is not None and new.onboarding_step == 1
     assert new.active is True and new.archived_at is None
     old = db.get(User, old_id)
     assert old.archived_at is not None and old.phone == f"archived-{old_id}" and old.archived_phone == PHONE

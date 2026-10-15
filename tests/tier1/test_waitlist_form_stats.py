@@ -27,6 +27,12 @@ def _waitlist(client, phone, **extra):
 def _no_photon(monkeypatch):
     import photon
     monkeypatch.setattr(photon, "provision_user", lambda uid: False)
+    # Live sign-ups (2026-10-15): with no link the hook goes out via start_onboarding's
+    # daemon thread — run it inline so nothing outlives the test.
+    import app as appmod
+    from onboarding_agent import send_onboarding_hook
+    monkeypatch.setattr(appmod, "start_onboarding",
+                        lambda user, reason="start_onboarding": send_onboarding_hook(user.id, reason=reason))
 
 
 def test_metric_form_fills_the_imperial_columns(db, client):

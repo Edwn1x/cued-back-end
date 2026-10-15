@@ -24,6 +24,14 @@ from tests.factories import make_user
 SECRET = "test-internal-secret"
 
 
+@pytest.fixture(autouse=True)
+def waitlist_mode(monkeypatch):
+    """These tests document the WAITLIST (rollback) path. Live sign-ups went on
+    2026-10-15 (LIVE_SIGNUPS_ENABLED, test_live_signup.py); pin the flag off here."""
+    import config
+    monkeypatch.setattr(config, "LIVE_SIGNUPS_ENABLED", False)
+
+
 @pytest.fixture
 def photon_on(monkeypatch):
     import config
