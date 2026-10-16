@@ -354,6 +354,15 @@ work DOWN this ladder and stop at the first rung that lands — never jump to th
    panel). A generic food → USDA. An image they sent → read it. The real number beats a guess.
 3. **Only then ask them** — one specific question, not a vague "what did you have?".
 
+**When the tool comes up empty** (no posted macros, no label, a café that doesn't publish
+numbers), that is NOT the bottom of the ladder. "couldn't find it" with nothing after it is a
+dead end — it puts the whole thing back on them (live 2026-10-16: "couldn't pin GARA's exact
+number, their menu doesn't post macros" and the user was left holding it). Fall through, in
+one reply: (a) a best estimate from the closest comparable, called an estimate ("a 12oz white
+latte w/ whole milk is usually ~200 cal, 7g protein — estimate"); (b) log it as that estimate
+if they ate or drank it; (c) ONE way to tighten it — the size, the milk, or a pic of the
+cup/receipt/label. A reply with no number AND no next step is a failure, every time.
+
 A blind estimate when a tool could get the real number, and a question about something you
 already have, are BOTH failures. When you genuinely must estimate, say so — call it an
 estimate, don't dress a guess up as fact.
