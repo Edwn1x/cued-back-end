@@ -1714,8 +1714,14 @@ def safe_float(val, default=None):
 
 
 @app.route("/signup", methods=["POST"])
+@limiter.limit("3/minute;20/hour")
 def signup_submit():
-    """Handle new user signup. Accepts form-encoded data (old form) or JSON (chat overlay)."""
+    """Handle new user signup. Accepts form-encoded data (old form) or JSON (chat overlay).
+
+    Locked down 2026-10-15 after a probe scripted this endpoint with SQL-injection
+    strings as phone numbers (+1'OR'1'='1 …): the ORM made them inert, but each one
+    became a users row + a Photon/Twilio send attempt. Same limiter as /waitlist,
+    strict E.164 phone (as /waitlist), a real name, and no exception text to the client."""
     session = get_session()
     try:
         # Support both form submissions and JSON from the chat overlay
@@ -1727,10 +1733,15 @@ def signup_submit():
             def get(key, default=""):
                 return request.form.get(key, default)
 
-        # Normalize phone
-        phone = (get("phone") or "").strip()
-        if not phone.startswith("+"):
-            phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
+        # Normalize phone — strict: anything that isn't a real 10/11-digit US number or a
+        # +E.164 is a 400, never a row. str() first: a JSON integer used to 500 here.
+        try:
+            phone = _normalize_phone(str(get("phone") or ""), strict=True)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+        name = str(get("name") or "").strip()
+        if not name or len(name) > 100:
+            return jsonify({"status": "error", "message": "Please enter your name."}), 400
 
         # Check SMS consent — JSON sends boolean true, form sends "on"/"skip"
         raw_consent = get("sms_consent")
@@ -1761,7 +1772,7 @@ def signup_submit():
 
         user = User(
             phone=phone,
-            name=(get("name") or "").strip(),
+            name=name,
             age=safe_int(get("age")),
             gender=get("gender") or "prefer_not_to_say",
             experience=get("experience") or "none",
@@ -1804,7 +1815,7 @@ def signup_submit():
 
     except Exception as e:
         logger.error(f"Signup error: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Something went wrong. Try again in a minute."}), 500
     finally:
         session.close()
 
@@ -1973,17 +1984,29 @@ def card_test_send():
 
 # ─── Activate SMS (for users who skipped consent) ───
 @app.route("/activate-sms", methods=["POST"])
+@limiter.limit("3/minute;20/hour")
 def activate_sms():
-    """Activate SMS coaching for a user who signed up without consent."""
+    """Activate SMS coaching for a user who signed up without consent.
+
+    Public + unauthenticated, so (2026-10-15 lockdown) it is rate-limited, strict on
+    the phone, and a no-op for anyone the coach has already texted: otherwise any
+    stranger who knows a member's number could make Cued re-send the first text
+    to them at will."""
     session = get_session()
     try:
-        phone = request.form.get("phone", "").strip()
-        if not phone.startswith("+"):
-            phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
+        try:
+            phone = _normalize_phone(str(request.form.get("phone") or ""), strict=True)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
 
         user = session.query(User).filter(User.phone == phone).first()
         if not user:
             return jsonify({"status": "error", "message": "User not found."})
+        already = session.query(Message.id).filter(Message.user_id == user.id,
+                                                   Message.direction == "out").first()
+        if already is not None:
+            logger.info("ACTIVATE_SMS_NOOP user=%s already_texted", user.id)
+            return jsonify({"status": "ok", "name": user.name})
 
         start_onboarding(user)
 
@@ -1992,7 +2015,7 @@ def activate_sms():
 
     except Exception as e:
         logger.error(f"Activate SMS error: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Something went wrong. Try again in a minute."}), 500
     finally:
         session.close()
 
