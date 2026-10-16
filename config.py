@@ -6,6 +6,16 @@ load_dotenv()
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+# Inbound-webhook authenticity (2026-10-15 probe: unsigned POSTs to /webhook with
+# forged From= numbers). Twilio signs every request with X-Twilio-Signature
+# (HMAC-SHA1 of url+params under the auth token). Modes:
+#   off     — never check
+#   shadow  — check + log TWILIO_SIG ok|mismatch, always process   (default)
+#   enforce — mismatch → 403, nothing processed
+# Rollout: deploy in shadow, confirm TWILIO_SIG ok=True on real inbounds (the
+# URL Twilio signs must equal what Flask sees behind ProxyFix — scheme + host +
+# path + query), THEN set TWILIO_SIGNATURE_MODE=enforce in Railway.
+TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow").strip().lower()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
