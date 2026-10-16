@@ -1147,9 +1147,39 @@ _NO_SLEEP_GUESS_LINE = ("Never invent wake/sleep clock times yourself: a vague s
                         "code-pinned guess, and you'll be handed the exact clause to say.")
 
 
+# A privacy / data question during setup (live 2026-10-16, user 66: "how is the privacy of this
+# conversation?" then "what information does cued store" — both got one thin line glued to the
+# same setup ask, twice; she stopped replying). It pauses the interview for one turn.
+_PRIVACY_RE = re.compile(
+    r"\b(?:privacy|private|confidential|confidentiality|anonymous"
+    r"|who (?:can |else )?(?:see|sees|read|reads|has access)"
+    r"|(?:what|which|how much) (?:info|information|data|stuff) (?:do|does|are|is|will|can|would) (?:you|u|cued|it|this) (?:store|keep|save|collect|have|see|track|hold)"
+    r"|(?:do|does|did|will|would) (?:you|u|cued|this|it) (?:store|keep|save|collect|sell|share|record|log) (?:my |our |this |the )?(?:info|information|data|convo|conversation|messages|texts|stuff)"
+    r"|(?:is|are) (?:this|these|my|our) (?:convo|conversation|chats?|texts?|messages?|data|info) (?:private|safe|secure|stored|saved|shared|sold)"
+    r"|(?:sell|selling|share|sharing) (?:my |our )?(?:data|info|information)"
+    r"|data (?:policy|protection|security|privacy)|how (?:secure|safe) (?:is|are))\b",
+    re.IGNORECASE,
+)
+
+_PRIVACY_BLOCK = (
+    "PRIVACY TURN: they just asked about privacy / what's stored. Pause setup for this reply — "
+    "no setup question, no 'last thing', no 'anyway'. Answer plainly and completely in two or "
+    "three short sentences, all of it: what's kept on their account (the stats they gave, what "
+    "they log — food, training, sleep — and this conversation) and why (so the coaching fits "
+    "them, not a generic plan); it's never sold or shared with anyone; once setup is done they "
+    "get a profile link where they can see everything that's stored; and they can tell you to "
+    "delete any of it, or all of it, any time and you'll do it. Don't name vendors or models "
+    "unless they ask. Then stop — setup picks back up next turn."
+)
+
+
+def is_privacy_question(text: str) -> bool:
+    return bool(text and _PRIVACY_RE.search(text))
+
+
 def _build_friend_reply(user, incoming_message: str, system_prompt: str,
                         missing_fields: list, *, assumption_note: str | None = None,
-                        continuation_prev: str | None = None) -> str:
+                        continuation_prev: str | None = None, privacy: bool = False) -> str:
     """The onboarding reply: engage the specific thing they said; if there's a
     natural reason, weave in ONE question from STILL UNKNOWN. This replaces both
     the eight-question big ask and the two-field gap bundling — a friend never
@@ -1180,13 +1210,14 @@ def _build_friend_reply(user, incoming_message: str, system_prompt: str,
         f"place, a restaurant, or an event, search it first and use one detail from this "
         f"semester. {_NO_CAMPUS_FACTS_FROM_MEMORY} "
         + (f"{assumption_note} " if assumption_note else "")
-        + f"End with ONE question that would tell you one of these you still don't know: "
+        + (f"{_PRIVACY_BLOCK} One message, one paragraph, no greeting. {_NOT_DONE_LINE}" if privacy else
+           f"End with ONE question that would tell you one of these you still don't know: "
         f"{unknown} — the one that fits what they said; if nothing fits, ask the first one plainly. "
         f"A reply with no question stalls setup and puts the next move on them. Nothing else is "
         f"worth a question. One message, one paragraph, no greeting, ONE question at most "
         f"— pick it before you write; a second question only if it's the same topic and joined "
         f"with 'and'. Never a second paragraph, never a visible edit. {_NO_SLEEP_GUESS_LINE} "
-        f"{_NOT_DONE_LINE}"
+        f"{_NOT_DONE_LINE}")
     )
     return _generate(system_prompt, instruction, user_id=user.id)
 
@@ -2151,6 +2182,9 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
                         big_ask_sent=_big_ask_sent(user_row.id))
     out_type = "onboarding"
     remaining_names = [f[0] for f in missing_after]
+    privacy_turn = mode not in ("big_ask",) and is_privacy_question(incoming_message)
+    if privacy_turn:
+        logger.info("ONBOARDING_PRIVACY_TURN user=%s text=%r", user_row.id, (incoming_message or "")[:80])
     if continuation and prev_coach and not assumption_note:
         # More of the same thought: the previous reply's question is still on the floor.
         mode = "continuation"
@@ -2172,7 +2206,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         text = _bundle_gap_questions(missing_after, user_row, incoming_message, system_prompt)
     else:
         text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after,
-                                   assumption_note=assumption_note)
+                                   assumption_note=assumption_note, privacy=privacy_turn)
     # Repeat-question guard for NORMAL turns too: a text that landed seconds after the coach's
     # question (not folded as a continuation) must not get that question again. Live
     # 2026-10-10 02:29 (user 49): the big ask asked food; 25s later a friend reply asked food
@@ -2194,7 +2228,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
         text = _reconcile_sleep_guess(user_row, text)
     if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
-            and mode != "big_ask" and not _question_part(text)):
+            and mode != "big_ask" and not privacy_turn and not _question_part(text)):
         field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
         appended = f"also, {_plain(field)}?"
         logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
