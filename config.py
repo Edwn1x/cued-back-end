@@ -1029,6 +1029,19 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 # pending row, one holding line when they text, admin activates from /admin.
 # Rollback = LIVE_SIGNUPS_ENABLED=false in Railway; nothing else changes.
 LIVE_SIGNUPS_ENABLED = os.getenv("LIVE_SIGNUPS_ENABLED", "true").lower() == "true"
+# Sign-up abuse ceilings (2026-10-16, after the launch-night probe showed the per-IP
+# limiter keying on Railway's edge hop — request_ip.py). Both are flask-limiter rate
+# strings; the decorators read them from config per request, so a Railway env change
+# applies on the next restart with no code change.
+#   SIGNUP_PHONE_LIMIT  — per PHONE, per route, on /signup /waitlist /activate-sms
+#       /signup/channel: a script can't text one number over and over by rotating IPs.
+#   SIGNUP_GLOBAL_LIMIT — shared across the text-minting routes (/signup /waitlist
+#       /activate-sms), all callers together: bounds a random-number blast to this many
+#       Twilio sends even when IP attribution is wrong. Launch night peaked at 19
+#       sign-ups in 14 min; 300/hour is ~16× that. Raise before a big event, never lower
+#       than the per-IP limit.
+SIGNUP_PHONE_LIMIT = os.getenv("SIGNUP_PHONE_LIMIT", "3/hour")
+SIGNUP_GLOBAL_LIMIT = os.getenv("SIGNUP_GLOBAL_LIMIT", "30/minute;300/hour")
 SIDECAR_URL = os.getenv("SIDECAR_URL", "")                       # http://sidecar.railway.internal:8080
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")  # same value on the sidecar service
 SIDECAR_TIMEOUT_S = int(os.getenv("SIDECAR_TIMEOUT_S", "15"))

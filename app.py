@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template_string, Response, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
+from request_ip import client_ip, phone_key, forwarding_snapshot
 from models import init_db, get_session, record_unknown_inbound, User, Message, Workout, DailyLog, confirm_workout_today, is_workout_confirmed_today, resolve_pending_clarification, maybe_infer_training_days, set_session_state, clear_session_state, claim_message_sid, release_message_sid
 from sms import send_sms, log_incoming, get_twiml_response
 from scheduler import start_scheduler
@@ -69,25 +69,40 @@ if not config.ADMIN_PASSWORD:
     logger.warning("ADMIN_PASSWORD not set — /admin console is UNAUTHENTICATED "
                    "(including write actions). Set the env var to enable auth.")
 
-# ProxyFix: Railway runs behind a TCP proxy. Without this, request.remote_addr
-# resolves to Railway's edge IP, so Flask-Limiter would rate-limit ALL users
-# to a single shared bucket. ProxyFix reads X-Forwarded-For and exposes the
-# real client IP. x_for=1 = trust the first proxy hop (Railway). Don't increase
-# without auditing each hop.
+# ProxyFix: Railway runs behind a TCP proxy. x_proto/x_host restore the public
+# scheme + host (Twilio signature URL, OAuth redirects); x_for=1 sets remote_addr
+# from the rightmost X-Forwarded-For entry. The LIMITER no longer relies on that:
+# live 2026-10-16 the buckets were keying on Railway's edge hop (see request_ip.py),
+# so its key_func reads X-Real-IP first and logs the raw headers on every 429.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
-# Per-IP rate limiter for public endpoints (currently /waitlist only). Memory
-# backend is single-dyno; switch storage_uri to redis:// when Cued scales out.
+# Rate limiter for the public endpoints (/waitlist, /signup, /signup/channel,
+# /activate-sms, /admin via #237). Three layers on the sign-up routes: per client IP
+# (request_ip.client_ip), per PHONE (request_ip.phone_key — IP rotation doesn't help
+# a script text one victim repeatedly), and one ceiling shared by the text-minting
+# routes (config.SIGNUP_GLOBAL_LIMIT — bounds a random-number blast even when IP
+# attribution is wrong). Memory backend is single-dyno; switch storage_uri to
+# redis:// when Cued scales out.
 limiter = Limiter(
     app=app,
-    key_func=get_remote_address,
+    key_func=client_ip,
     storage_uri="memory://",
     default_limits=[],
 )
+signup_phone_limit = limiter.limit(lambda: config.SIGNUP_PHONE_LIMIT, key_func=phone_key)
+signup_global_limit = limiter.shared_limit(lambda: config.SIGNUP_GLOBAL_LIMIT,
+                                           scope="signup_texts", key_func=lambda: "all")
 
 @app.errorhandler(429)
 def _ratelimit_handler(e):
-    """Frontend reads response.json().message — return the spec'd shape."""
+    """Frontend reads response.json().message — return the spec'd shape. The log
+    line carries the resolved key and the raw forwarding headers so a prod 429 is
+    attributable (and so the first deploy shows which header Railway fills)."""
+    try:
+        logger.warning("RATE_LIMITED endpoint=%s limit=%s %s",
+                       request.endpoint, getattr(e, "description", ""), forwarding_snapshot())
+    except Exception:  # noqa: BLE001 — never let the log line break the 429
+        pass
     return jsonify({
         "status": "error",
         "message": "Too many submissions. Try again in a minute.",
@@ -1754,6 +1769,8 @@ def safe_float(val, default=None):
 
 @app.route("/signup", methods=["POST"])
 @limiter.limit("3/minute;20/hour")
+@signup_phone_limit
+@signup_global_limit
 def signup_submit():
     """Handle new user signup. Accepts form-encoded data (old form) or JSON (chat overlay).
 
@@ -1862,6 +1879,7 @@ def signup_submit():
 # ─── Channel choice from the signup success screen ───
 @app.route("/signup/channel", methods=["POST"])
 @limiter.limit("10/minute;60/hour")
+@signup_phone_limit
 def signup_channel():
     """"I don't have an iPhone" on the success screen: put the user on SMS and send
     the deferred hook now. JSON {phone, channel:"sms"}. Idempotent — a user whose
@@ -2024,6 +2042,8 @@ def card_test_send():
 # ─── Activate SMS (for users who skipped consent) ───
 @app.route("/activate-sms", methods=["POST"])
 @limiter.limit("3/minute;20/hour")
+@signup_phone_limit
+@signup_global_limit
 def activate_sms():
     """Activate SMS coaching for a user who signed up without consent.
 
@@ -2062,6 +2082,8 @@ def activate_sms():
 # ─── Site sign-up endpoint (historically the waitlist) ─────────────────────
 @app.route("/waitlist", methods=["POST"])
 @limiter.limit("3/minute;20/hour")
+@signup_phone_limit
+@signup_global_limit
 def waitlist_signup():
     """
     Public sign-up from the site's chat (the "text cued" button). JSON-only.
