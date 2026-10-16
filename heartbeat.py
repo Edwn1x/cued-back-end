@@ -952,7 +952,12 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     evs = (active(session, Event, user_id=user.id)
            .filter(Event.occurred_at >= d0, Event.occurred_at < d1).order_by(Event.occurred_at).all())
     ev_txt = ", ".join(f"{(e.raw_text or e.event_type or 'event').strip()[:40]} at "
-                       f"{_clock(to_local(e.occurred_at, user))}" for e in evs) or "none logged"
+                       f"{_clock(to_local(e.occurred_at, user))}" for e in evs)
+    if not ev_txt:
+        # An empty list is only "nothing on" when a calendar is connected. Otherwise it is
+        # ignorance, and the model must not read it as a free day (live 2026-10-16, user 61).
+        ev_txt = ("none on their connected calendar" if _calendar_connected(user.id, session)
+                  else _NO_CALENDAR_CONTEXT)
     mins = int((local - wake_dt).total_seconds() // 60)
     # Where the wake came from when it is a KNOWN today-wake (layered wake model) — one
     # clause on the same line, so the block stays one line of material (diagnosable in
@@ -1198,6 +1203,75 @@ def _insert_degree_sign(msg: str, temp: str) -> str | None:
     if not m:
         return None
     return msg[:m.end()] + "°" + msg[m.end():]
+
+
+_NO_CALENDAR_CONTEXT = ("UNKNOWN — no calendar is connected, so you cannot see their classes or "
+                        "schedule. Never say 'no classes', 'free day', 'nothing on today' or anything "
+                        "that implies you can see their day; speak to what memory says about their "
+                        "routine, or say nothing about the schedule")
+
+# A sentence that claims to see an empty day. Matched only when no calendar is connected.
+_NO_SCHEDULE_CLAIM_RE = re.compile(
+    r"\b(?:no (?:classes?|lectures?|school|events?|meetings?)(?: down| on| scheduled| today| for today)?"
+    r"|nothing (?:on|down)(?: for)? (?:today|the calendar|(?:ur|your) (?:calendar|schedule|plate))"
+    r"|(?:free|open|empty|clear|light) (?:day|schedule|calendar)"
+    r"|day(?:'s| is) (?:wide )?open"
+    r"|(?:ur|your) (?:schedule|calendar)(?:'s| is) (?:clear|empty|open|wide open))\b",
+    re.IGNORECASE,
+)
+
+
+def _calendar_connected(user_id: int, session=None) -> bool:
+    """Read-only: any connected gcal/bcourses/canvas row. Own session when none is passed.
+    Fail-open to True (a false 'not connected' would mute real schedule talk)."""
+    try:
+        from schedule import _any_calendar_connected
+        if session is not None:
+            return bool(_any_calendar_connected(user_id, session))
+        s = get_session()
+        try:
+            return bool(_any_calendar_connected(user_id, s))
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("HEARTBEAT_CALENDAR_CHECK_FAILED user=%s err=%s", user_id, e)
+        return True
+
+
+def _guard_schedule_claims(msg: str, user_id: int) -> str:
+    """Send-time guard: with no calendar connected, drop any sentence that claims a free or
+    no-class day (the model cannot know that). Bubbles ("\n---\n") and sentences are kept
+    otherwise intact; a bubble left empty is dropped. If NOTHING survives, the original is
+    sent unchanged (fail-open) and logged — a silent tick is worse than an imperfect line."""
+    if not msg or not config.HEARTBEAT_NO_CALENDAR_GUARD_ENABLED:
+        return msg
+    if not _NO_SCHEDULE_CLAIM_RE.search(msg):
+        return msg
+    if _calendar_connected(user_id):
+        return msg
+    try:
+        kept_bubbles = []
+        dropped = []
+        for bubble in msg.split("\n---\n"):
+            sentences = re.split(r"(?<=[.!?])\s+", bubble.strip())
+            kept = []
+            for sen in sentences:
+                if sen and _NO_SCHEDULE_CLAIM_RE.search(sen):
+                    dropped.append(sen)
+                else:
+                    kept.append(sen)
+            joined = " ".join(x for x in kept if x).strip()
+            if joined:
+                kept_bubbles.append(joined)
+        out = "\n---\n".join(kept_bubbles).strip()
+        if not out:
+            logger.warning("HEARTBEAT_SCHEDULE_CLAIM_KEPT user=%s reason=nothing_left text=%r", user_id, msg[:120])
+            return msg
+        logger.info("HEARTBEAT_SCHEDULE_CLAIM_DROPPED user=%s dropped=%r kept=%r", user_id, dropped, out[:120])
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("HEARTBEAT_SCHEDULE_GUARD_FAILED user=%s err=%s", user_id, e)
+        return msg
 
 
 def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
@@ -1693,7 +1767,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 # log it as silence rather than continuing (which would leave this
                 # tool_use unanswered and malform the next request).
                 if msg:
-                    return (True, _enforce_briefing(msg, briefing, user_id), search)
+                    return (True, _guard_schedule_claims(_enforce_briefing(msg, briefing, user_id), user_id), search)
                 return (False, "send_text empty message", search)
             silent = next((b for b in resp.content
                            if getattr(b, "type", None) == "tool_use" and b.name == "stay_silent"), None)
@@ -1739,7 +1813,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
         # search result, the substance after). Same seam as agent_loop's _join_text.
         text = _join_text(resp.content)
         if text:
-            return (True, _enforce_briefing(text, briefing, user_id), search)
+            return (True, _guard_schedule_claims(_enforce_briefing(text, briefing, user_id), user_id), search)
         # A clean terminal stop with neither a decision tool nor text is an anomaly
         # — log the response shape by name (the signal whose absence let the
         # truncation bug hide) before recording the silent tick.
