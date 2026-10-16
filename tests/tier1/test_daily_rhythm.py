@@ -294,6 +294,13 @@ def test_fire_due_rearms_an_interval_row_and_composes_one_short_line(db, sms_cap
     r = create_reminder(u.id, "drink water", None, every_hours=2)
     db.expire_all()
     row = db.get(Reminder, r["id"])
+    # create_reminder arms from the wall clock; pin the first fire to a daytime grid slot
+    # so the +2h re-arm never lands in the 23:00–07:00 quiet hours (where the code
+    # correctly defers it to morning — which made this test fail when run at night).
+    row.fire_at = _naive(_at(*TUE, 9, 0))   # on the wake-aligned 2h grid (07,09,11…)
+    db.commit()
+    db.expire_all()
+    row = db.get(Reminder, r["id"])
     first = row.fire_at
     assert fire_due(now=first - timedelta(minutes=1)) == 0
     assert fire_due(now=first + timedelta(seconds=30)) == 1
