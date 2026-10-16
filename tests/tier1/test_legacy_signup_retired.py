@@ -125,3 +125,18 @@ def test_admin_throttle_window_drains(client, admin_pw, monkeypatch):
         for i in range(len(q)):
             q[i] -= 10_000
     assert client.get("/admin", headers=_basic("right-password"), environ_base=ip).status_code == 200
+
+
+def test_admin_throttle_keys_on_the_real_client_not_the_edge_hop(client, admin_pw):
+    # Behind Railway, request.remote_addr is the edge hop (X-Forwarded-For arrives as
+    # "<client>, <hop>", X-Real-IP is the client — live 2026-10-16, #241). Guesses from
+    # one client through rotating hops share a bucket; a different client through the
+    # blocked hop is untouched.
+    attacker = {"X-Real-IP": "203.0.113.9"}
+    for i in range(5):
+        client.get("/admin", headers={**_basic("wrong"), **attacker}, environ_base={"REMOTE_ADDR": f"152.233.76.{i}"})
+    assert client.get("/admin", headers={**_basic("right-password"), **attacker},
+                      environ_base={"REMOTE_ADDR": "152.233.76.9"}).status_code == 429
+    founder = {"X-Real-IP": "198.51.100.4"}
+    assert client.get("/admin", headers={**_basic("right-password"), **founder},
+                      environ_base={"REMOTE_ADDR": "152.233.76.9"}).status_code == 200

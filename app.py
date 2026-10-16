@@ -47,8 +47,10 @@ app.register_blueprint(integrations_bp)
 import integrations.providers_boot  # noqa: F401  (registers gcal/strava when wired)
 
 
-# Failed /admin auth attempts per client IP (ProxyFix → real IP). Single-dyno memory,
-# same caveat as the rate limiter. {ip: deque[monotonic_ts]}.
+# Failed /admin auth attempts per client IP — request_ip.client_ip (X-Real-IP), NOT
+# request.remote_addr: behind Railway that is the edge hop (live 2026-10-16, #241), which
+# would pool every visitor's guesses into ~6 shared buckets. Single-dyno memory, same
+# caveat as the rate limiter. {ip: deque[monotonic_ts]}.
 _ADMIN_FAILS: dict = {}
 
 
@@ -77,7 +79,7 @@ def _admin_auth_gate():
         return None
     import secrets as _secrets
     import time as _time
-    ip = request.remote_addr or "?"
+    ip = client_ip()
     now = _time.monotonic()
     fails = _admin_fails(ip, now)
     if len(fails) >= config.ADMIN_AUTH_MAX_FAILS:

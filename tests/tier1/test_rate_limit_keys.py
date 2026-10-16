@@ -1,11 +1,13 @@
 """Rate-limiter keys behind Railway's edge (2026-10-16, after the launch-night probe).
 
-Live: ten identical bad POSTs to /signup from one laptop → 400×5, 429×2, 400×3, the
+Live: ten identical bad POSTs to the (since retired) /signup from one laptop → 400×5, 429×2, 400×3, the
 429s landing on whichever Railway edge hop had already passed three. The limiter was
 keying on the hop. Now: key = X-Real-IP (Railway overwrites it with the client IP),
 else the rightmost X-Forwarded-For entry, else the peer — never a client-written left
 entry; the sign-up routes are also limited per PHONE and share one global ceiling;
-every 429 logs the resolved key and the raw forwarding headers."""
+every 429 logs the resolved key and the raw forwarding headers.
+
+The posts go to /waitlist — the live sign-up route (the legacy /signup is retired, 410)."""
 from __future__ import annotations
 
 import json
@@ -34,6 +36,7 @@ def no_provision(monkeypatch):
 
 
 def _post_signup(client, phone, *, real_ip=None, xff=None, peer="10.0.0.1", name="Sis"):
+    """POST the live sign-up route (/waitlist) with the usual chat payload."""
     headers = {}
     if real_ip is not None:
         headers["X-Real-IP"] = real_ip
@@ -41,7 +44,7 @@ def _post_signup(client, phone, *, real_ip=None, xff=None, peer="10.0.0.1", name
         headers["X-Forwarded-For"] = xff
     body = {"name": name, "phone": phone, "sms_consent": True, "goal": ["fat_loss"],
             "experience": "beginner", "equipment": "full_gym", "age": 22, "gender": "female"}
-    return client.post("/signup", data=json.dumps(body), content_type="application/json",
+    return client.post("/waitlist", data=json.dumps(body), content_type="application/json",
                        headers=headers, environ_base={"REMOTE_ADDR": peer})
 
 
@@ -99,7 +102,7 @@ def test_429_body_shape_and_log_line_name_the_key(db, client, limiter_on, caplog
     assert r.status_code == 429
     assert r.get_json() == {"status": "error", "message": "Too many submissions. Try again in a minute."}
     line = next(rec.getMessage() for rec in caplog.records if "RATE_LIMITED" in rec.getMessage())
-    assert "endpoint=signup_submit" in line and "'key': '203.0.113.9'" in line
+    assert "endpoint=waitlist_signup" in line and "'key': '203.0.113.9'" in line
     assert "'X-Forwarded-For': '1.1.1.1, 152.233.76.9'" in line and "'peer': '152.233.76.9'" in line
 
 
@@ -117,13 +120,11 @@ def test_global_ceiling_is_shared_across_the_text_minting_routes(db, client, lim
     # per request, so an env change needs no code change.
     monkeypatch.setattr(config, "SIGNUP_GLOBAL_LIMIT", "2/minute")
     assert _post_signup(client, "abc", real_ip="203.0.113.1").status_code == 400
+    # /activate-sms is retired (410) but still sits under the ceiling: a hit is a hit.
     r = client.post("/activate-sms", data={"phone": "abc"}, headers={"X-Real-IP": "203.0.113.2"},
                     environ_base={"REMOTE_ADDR": "10.0.0.2"})
-    assert r.status_code == 400
-    r = client.post("/waitlist", data=json.dumps({"name": "Sis", "phone": "abc", "sms_consent": True}),
-                    content_type="application/json", headers={"X-Real-IP": "203.0.113.3"},
-                    environ_base={"REMOTE_ADDR": "10.0.0.3"})
-    assert r.status_code == 429
+    assert r.status_code == 410
+    assert _post_signup(client, "abc", real_ip="203.0.113.3", peer="10.0.0.3").status_code == 429
     # /signup/channel is phone-keyed but NOT under the shared ceiling (it never mints a row).
     r = client.post("/signup/channel", data=json.dumps({"phone": "5105550199", "channel": "sms"}),
                     content_type="application/json", headers={"X-Real-IP": "203.0.113.4"},
