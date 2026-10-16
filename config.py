@@ -16,6 +16,11 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 # URL Twilio signs must equal what Flask sees behind ProxyFix — scheme + host +
 # path + query), THEN set TWILIO_SIGNATURE_MODE=enforce in Railway.
 TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow").strip().lower()
+# Search dead-end backstop (live 2026-10-16, user 61: "couldn't pin GARA's exact number, their
+# menu doesn't post macros" — no estimate, no question, no next step; the founder had to text
+# "send me a pic" by hand). When a reply says it couldn't find the number and carries neither a
+# number nor a question, code appends the one next step. voice.md carries the real rule.
+SEARCH_DEAD_END_BACKSTOP_ENABLED = os.getenv("SEARCH_DEAD_END_BACKSTOP_ENABLED", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
