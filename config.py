@@ -16,6 +16,15 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 # URL Twilio signs must equal what Flask sees behind ProxyFix — scheme + host +
 # path + query), THEN set TWILIO_SIGNATURE_MODE=enforce in Railway.
 TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow").strip().lower()
+# Legacy public sign-up surface (2026-10-15 retirement, after the probe). The live site
+# signs up through /waitlist only; /signup (JSON) + /activate-sms are retired (410) unless
+# this is flipped on for a rollback. GET /signup always redirects to the site.
+LEGACY_SIGNUP_ENABLED = os.getenv("LEGACY_SIGNUP_ENABLED", "false").lower() == "true"
+SITE_SIGNUP_URL = os.getenv("SITE_SIGNUP_URL", "https://cued.fit/#signup")
+# /admin basic-auth brute-force throttle: this many failed attempts per client IP inside
+# the window → 429 for that IP (even with the right password) until the window drains.
+ADMIN_AUTH_MAX_FAILS = int(os.getenv("ADMIN_AUTH_MAX_FAILS", "10"))
+ADMIN_AUTH_FAIL_WINDOW_S = int(os.getenv("ADMIN_AUTH_FAIL_WINDOW_S", "600"))
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):

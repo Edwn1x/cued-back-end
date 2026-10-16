@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, render_template_string, Response, make_response
+from flask import Flask, request, jsonify, render_template_string, Response, make_response, redirect
 from flask_cors import CORS
 from flask_limiter import Limiter
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -47,20 +47,49 @@ app.register_blueprint(integrations_bp)
 import integrations.providers_boot  # noqa: F401  (registers gcal/strava when wired)
 
 
+# Failed /admin auth attempts per client IP (ProxyFix → real IP). Single-dyno memory,
+# same caveat as the rate limiter. {ip: deque[monotonic_ts]}.
+_ADMIN_FAILS: dict = {}
+
+
+def _admin_fails(ip: str, now: float) -> "deque":
+    from collections import deque
+    q = _ADMIN_FAILS.setdefault(ip, deque())
+    cutoff = now - config.ADMIN_AUTH_FAIL_WINDOW_S
+    while q and q[0] < cutoff:
+        q.popleft()
+    return q
+
+
 @app.before_request
 def _admin_auth_gate():
     """HTTP Basic auth on everything under /admin (dashboard + debug blueprint +
     the write endpoints). Empty ADMIN_PASSWORD = gate off — non-breaking rollout;
-    the system page banners until the var is set."""
+    the system page banners until the var is set.
+
+    Brute-force throttle (2026-10-15): ADMIN_AUTH_MAX_FAILS wrong passwords from one
+    IP inside ADMIN_AUTH_FAIL_WINDOW_S → 429 for that IP until the window drains,
+    even for the right password. Unauthenticated first hits (no header) don't count:
+    that's the browser's normal prompt, not a guess."""
     if not request.path.startswith("/admin"):
         return None
     if not config.ADMIN_PASSWORD:
         return None
     import secrets as _secrets
+    import time as _time
+    ip = request.remote_addr or "?"
+    now = _time.monotonic()
+    fails = _admin_fails(ip, now)
+    if len(fails) >= config.ADMIN_AUTH_MAX_FAILS:
+        logger.warning("ADMIN_AUTH_THROTTLED ip=%s fails=%s", ip, len(fails))
+        return Response("Too many attempts. Try again later.", 429, {"Retry-After": str(config.ADMIN_AUTH_FAIL_WINDOW_S)})
     auth = request.authorization
     if auth and auth.type == "basic" and _secrets.compare_digest(
             auth.password or "", config.ADMIN_PASSWORD):
         return None
+    if auth is not None:   # a wrong guess, not the browser's first unauthenticated hit
+        fails.append(now)
+        logger.warning("ADMIN_AUTH_FAILED ip=%s fails=%s/%s", ip, len(fails), config.ADMIN_AUTH_MAX_FAILS)
     return Response("Authentication required", 401,
                     {"WWW-Authenticate": 'Basic realm="cued admin"'})
 
@@ -1754,8 +1783,9 @@ def classify_message(body: str, has_image: bool = False) -> str:
 # ─── User Signup Endpoint ───────────────────────────
 @app.route("/signup", methods=["GET"])
 def signup_form():
-    """Simple HTML signup form."""
-    return render_template_string(SIGNUP_HTML)
+    """Retired 2026-10-15: the backend no longer hosts a sign-up form. Old links land on
+    the site's sign-up section."""
+    return redirect(config.SITE_SIGNUP_URL, code=302)
 
 
 def safe_int(val, default=None):
@@ -1778,6 +1808,10 @@ def signup_submit():
     strings as phone numbers (+1'OR'1'='1 …): the ORM made them inert, but each one
     became a users row + a Photon/Twilio send attempt. Same limiter as /waitlist,
     strict E.164 phone (as /waitlist), a real name, and no exception text to the client."""
+    if not config.LEGACY_SIGNUP_ENABLED:
+        logger.info("LEGACY_SIGNUP_REFUSED path=/signup json=%s", request.is_json)
+        return jsonify({"status": "error",
+                        "message": "This sign-up is retired. Text cued or sign up at cued.fit."}), 410
     session = get_session()
     try:
         # Support both form submissions and JSON from the chat overlay
@@ -1892,8 +1926,10 @@ def signup_channel():
     channel = str(d.get("channel") or "").strip().lower()
     if channel != "sms":
         return jsonify({"status": "error", "message": "channel must be 'sms'"}), 400
-    if not phone.startswith("+"):
-        phone = "+1" + phone.replace("-", "").replace("(", "").replace(")", "").replace(" ", "")
+    try:
+        phone = _normalize_phone(phone, strict=True)
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
     session = get_session()
     try:
         user = session.query(User).filter(User.phone == phone).first()
@@ -2051,6 +2087,10 @@ def activate_sms():
     the phone, and a no-op for anyone the coach has already texted: otherwise any
     stranger who knows a member's number could make Cued re-send the first text
     to them at will."""
+    if not config.LEGACY_SIGNUP_ENABLED:
+        logger.info("LEGACY_SIGNUP_REFUSED path=/activate-sms")
+        return jsonify({"status": "error",
+                        "message": "This endpoint is retired. Text cued or sign up at cued.fit."}), 410
     session = get_session()
     try:
         try:
@@ -3577,215 +3617,6 @@ def health():
 
 
 # ─── HTML Templates ─────────────────────────────────
-SIGNUP_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Cued — Sign Up</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, system-ui, sans-serif; background: #18181B; color: #FAFAFA; padding: 20px; }
-        .container { max-width: 480px; margin: 48px auto; padding-bottom: 60px; }
-        h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; letter-spacing: -.5px; }
-        .sub { color: #A1A1AA; margin-bottom: 10px; font-size: 15px; }
-        .intro { color: #71717A; font-size: 13px; margin-bottom: 36px; line-height: 1.6; }
-        .section-label { font-size: 10px; font-weight: 700; color: #6D5CFF; text-transform: uppercase; letter-spacing: 2px; margin-top: 32px; margin-bottom: 14px; padding-top: 18px; border-top: 1px solid #27272A; }
-        .section-label:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
-        label { display: block; font-size: 13px; color: #A1A1AA; margin-bottom: 5px; margin-top: 16px; }
-        input, select { width: 100%; padding: 12px 14px; background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; color: #FAFAFA; font-size: 15px; font-family: inherit; }
-        input:focus, select:focus { outline: none; border-color: #6D5CFF; }
-        select option { background: #27272A; }
-        .row { display: flex; gap: 12px; }
-        .row > div { flex: 1; }
-        /* Pill toggle groups */
-        .pill-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
-        .pill-group label { display: flex; align-items: center; justify-content: center; gap: 6px; background: #27272A; border: 1px solid #3F3F46; border-radius: 20px; padding: 9px 16px; cursor: pointer; font-size: 13px; color: #A1A1AA; margin: 0; transition: all .15s; white-space: nowrap; }
-        .pill-group label:has(input:checked) { border-color: #6D5CFF; background: rgba(109,92,255,.15); color: #FAFAFA; }
-        .pill-group input { display: none; }
-        /* Consent block */
-        .consent-box { background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; padding: 14px 16px; margin-top: 8px; }
-        .consent-box label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin: 0; color: #FAFAFA; font-size: 13px; line-height: 1.55; }
-        .consent-box input[type="checkbox"] { width: 16px; height: 16px; margin-top: 1px; flex-shrink: 0; accent-color: #6D5CFF; cursor: pointer; }
-        #consent-error { display: none; color: #EF4444; font-size: 12px; margin-top: 6px; }
-        button[type="submit"] { width: 100%; padding: 14px; background: #6D5CFF; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 32px; transition: background .15s; }
-        button[type="submit"]:hover { background: #5B4DE6; }
-        button[type="submit"]:disabled { opacity: .6; cursor: not-allowed; }
-        #result { margin-top: 16px; padding: 12px 14px; border-radius: 8px; display: none; font-size: 13px; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>cued</h1>
-    <p class="sub">Your AI coach, right in your messages.</p>
-    <p class="intro">Takes 60 seconds. Your coach will handle the rest over text.</p>
-
-    <form id="signup" onsubmit="return handleSubmit(event)">
-
-        <div class="section-label">You</div>
-
-        <div class="row">
-            <div>
-                <label>First name</label>
-                <input name="name" required placeholder="Alex">
-            </div>
-            <div>
-                <label>Age</label>
-                <input name="age" type="number" min="13" max="99" placeholder="21">
-            </div>
-        </div>
-
-        <label>Phone number</label>
-        <input name="phone" required placeholder="(555) 867-5309" inputmode="tel">
-
-        <label>Gender</label>
-        <select name="gender">
-            <option value="male">Male</option>
-            <option value="female">Female</option>
-            <option value="non_binary">Non-binary</option>
-            <option value="prefer_not_to_say" selected>Prefer not to say</option>
-        </select>
-
-        <div class="section-label">Your Goal</div>
-
-        <label>What are you working toward?</label>
-        <div class="pill-group" id="goal-group">
-            <label><input type="checkbox" name="goals" value="fat_loss"> Lose fat</label>
-            <label><input type="checkbox" name="goals" value="muscle_building"> Build muscle</label>
-            <label><input type="checkbox" name="goals" value="strength"> Get stronger</label>
-            <label><input type="checkbox" name="goals" value="general_fitness"> General fitness</label>
-        </div>
-
-        <label style="margin-top:20px;">Biggest obstacle</label>
-        <select name="biggest_obstacle">
-            <option value="" selected disabled>Pick one</option>
-            <option value="consistency">Staying consistent</option>
-            <option value="nutrition">Nutrition / what to eat</option>
-            <option value="knowledge">Not knowing what to do</option>
-            <option value="time">Not enough time</option>
-            <option value="motivation">Motivation / accountability</option>
-            <option value="injuries">Injuries holding me back</option>
-        </select>
-
-        <div class="section-label">Training</div>
-
-        <label>Experience level</label>
-        <div class="pill-group" id="exp-group">
-            <label><input type="radio" name="experience" value="none"> Just starting out</label>
-            <label><input type="radio" name="experience" value="beginner"> Under 6 months</label>
-            <label><input type="radio" name="experience" value="intermediate" checked> 6 months – 2 years</label>
-            <label><input type="radio" name="experience" value="advanced"> 2+ years</label>
-        </div>
-
-        <label style="margin-top:20px;">Equipment access</label>
-        <div class="pill-group" id="equip-group">
-            <label><input type="radio" name="equipment" value="full_gym" checked> Full gym</label>
-            <label><input type="radio" name="equipment" value="limited_gym"> Limited gym</label>
-            <label><input type="radio" name="equipment" value="home_gym"> Home gym</label>
-            <label><input type="radio" name="equipment" value="bodyweight"> Bodyweight only</label>
-        </div>
-
-        <div class="section-label">Consent</div>
-
-        <div class="consent-box">
-            <label>
-                <input type="checkbox" name="sms_consent" id="sms_consent">
-                <span>I agree to receive automated SMS coaching messages from Cued. Message &amp; data rates may apply. Reply STOP at any time to unsubscribe.</span>
-            </label>
-        </div>
-        <div id="consent-error">You must agree to receive SMS messages to use Cued.</div>
-
-        <button type="submit" id="submit-btn">Start coaching →</button>
-    </form>
-    <div id="result"></div>
-</div>
-
-<script>
-async function handleSubmit(e) {
-    e.preventDefault();
-
-    // Validate SMS consent
-    if (!document.getElementById('sms_consent').checked) {
-        const err = document.getElementById('consent-error');
-        const box = document.querySelector('.consent-box');
-        err.style.display = 'block';
-        box.style.borderColor = '#EF4444';
-        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return false;
-    }
-    document.getElementById('consent-error').style.display = 'none';
-    document.querySelector('.consent-box').style.borderColor = '#3F3F46';
-
-    // Validate at least one goal selected
-    const goals = Array.from(document.querySelectorAll('input[name="goals"]:checked')).map(i => i.value);
-    if (!goals.length) {
-        document.getElementById('goal-group').scrollIntoView({ behavior: 'smooth', block: 'center' });
-        alert('Please select at least one goal.');
-        return false;
-    }
-
-    const btn = document.getElementById('submit-btn');
-    btn.disabled = true;
-    btn.textContent = 'Sending…';
-
-    const form = e.target;
-    const fd = new FormData(form);
-
-    // Build the payload with exactly the 8 fields the backend expects
-    const payload = {
-        name: (fd.get('name') || '').trim(),
-        phone: (fd.get('phone') || '').trim(),
-        age: fd.get('age') || '',
-        gender: fd.get('gender') || 'prefer_not_to_say',
-        experience: fd.get('experience') || 'none',
-        goal: goals.join(','),
-        biggest_obstacle: fd.get('biggest_obstacle') || '',
-        equipment: fd.get('equipment') || 'full_gym',
-        sms_consent: true,
-    };
-
-    try {
-        const res = await fetch('/signup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-
-        if (data.status === 'ok') {
-            document.querySelector('.container').innerHTML = `
-                <div style="text-align:center;padding:80px 0 60px;">
-                    <div style="font-size:52px;margin-bottom:24px;">✓</div>
-                    <h1 style="font-size:26px;margin-bottom:12px;letter-spacing:-.4px;">You're in, ${data.name || 'friend'}.</h1>
-                    <p style="color:#A1A1AA;font-size:15px;line-height:1.7;max-width:340px;margin:0 auto 20px;">
-                        You'll get a text in a sec. Your coach gets to know you over a few texts, then sends your first workout.
-                    </p>
-                    <p style="color:#6E6E73;font-size:13px;">Keep your phone nearby.</p>
-                </div>`;
-            window.scrollTo(0, 0);
-        } else {
-            const el = document.getElementById('result');
-            el.style.display = 'block';
-            el.style.background = data.status === 'exists' ? 'rgba(109,92,255,.15)' : 'rgba(220,38,38,.15)';
-            el.style.color = data.status === 'exists' ? '#A78BFA' : '#FCA5A5';
-            el.textContent = data.message;
-            btn.disabled = false;
-            btn.textContent = 'Start coaching →';
-        }
-    } catch (err) {
-        const el = document.getElementById('result');
-        el.style.display = 'block';
-        el.style.background = 'rgba(220,38,38,.15)';
-        el.style.color = '#FCA5A5';
-        el.textContent = 'Something went wrong. Please try again.';
-        btn.disabled = false;
-        btn.textContent = 'Start coaching →';
-    }
-}
-</script>
-</body>
-</html>
-"""
 
 # ─── App Startup ────────────────────────────────────
 def _install_shutdown_drain():
