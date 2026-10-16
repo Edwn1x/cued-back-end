@@ -19,6 +19,14 @@ import pytest
 
 from tests.factories import make_user
 
+
+@pytest.fixture(autouse=True)
+def _legacy_signup_on(monkeypatch):
+    """These tests exercise the retired JSON /signup (+ /activate-sms); they stay as the
+    rollback-path coverage behind LEGACY_SIGNUP_ENABLED."""
+    import config
+    monkeypatch.setattr(config, "LEGACY_SIGNUP_ENABLED", True)
+
 SECRET = "test-internal-secret"
 
 
