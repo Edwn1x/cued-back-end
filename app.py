@@ -1447,9 +1447,48 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     return get_twiml_response(), 200, {"Content-Type": "text/xml"}
 
 
+def _twilio_signature_ok():
+    """True/False = the X-Twilio-Signature matches this request under our auth
+    token; None = cannot check (no token configured). Validated against the URL
+    Flask sees — ProxyFix (x_proto/x_host) has already restored the public
+    scheme + host, so this is the URL Twilio signed. Never raises."""
+    token = config.TWILIO_AUTH_TOKEN
+    if not token:
+        return None
+    try:
+        from twilio.request_validator import RequestValidator
+        sig = request.headers.get("X-Twilio-Signature", "") or ""
+        return bool(RequestValidator(token).validate(request.url, request.form.to_dict(), sig))
+    except Exception as e:  # noqa: BLE001 — a validator crash must not take the rail down
+        logger.error("TWILIO_SIG_CHECK_FAILED err=%s", e)
+        return None
+
+
+def _twilio_signature_gate():
+    """Returns a 403 response when the signature is bad AND mode=enforce; else None.
+    shadow logs the verdict and lets the request through (rollout evidence)."""
+    mode = (config.TWILIO_SIGNATURE_MODE or "shadow").lower()
+    if mode == "off":
+        return None
+    ok = _twilio_signature_ok()
+    if ok is None:
+        logger.warning("TWILIO_SIG skipped=no_auth_token mode=%s", mode)
+        return None
+    logger.info("TWILIO_SIG ok=%s mode=%s from=%s sid=%s", ok, mode,
+                _last4(request.form.get("From", "")), request.form.get("MessageSid", ""))
+    if not ok and mode == "enforce":
+        return Response("forbidden", 403)
+    return None
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Handle incoming SMS from Twilio. Buffers messages before processing."""
+    # Authenticity first: a forged POST must not reach the pipeline (enforce) and
+    # must be visible (shadow). See config.TWILIO_SIGNATURE_MODE.
+    _denied = _twilio_signature_gate()
+    if _denied is not None:
+        return _denied
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
     # Twilio's idempotency key. Parsed up here so it's in scope for the release
