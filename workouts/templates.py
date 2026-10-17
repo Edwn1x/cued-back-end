@@ -124,6 +124,39 @@ BODYWEIGHT_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
 
 BODYWEIGHT_EQUIPMENT = {"bodyweight", "none", "no_equipment"}
 
+# Machines-only users (users.equipment = "machines" — set in code from "never used a bar",
+# "machines only", "scared of the bar"; see workouts.calibrate.maybe_capture_equipment_preference).
+# Every barbell lift in a day is swapped for its machine / dumbbell counterpart; the rest of
+# the day stands. Live 2026-10-17 (user 40, 17, wrist surgery months ago): "I've never done
+# any exercises using a bar" at the first-card ask, then "I'm a bit scared of the bar" —
+# the full-body barbell card (squat/bench/row/OHP/RDL) went out anyway.
+MACHINE_EQUIPMENT = {"machines", "machines_only", "machine"}
+_MACHINE_SWAPS: dict[str, "ExerciseTemplate"] = {
+    "squat": _ex("leg_press", "leg press", 3, 10, 180, 10),
+    "bench_press": _ex("chest_press_machine", "chest press machine", 3, 10, 80, 5),
+    "barbell_row": _ex("seated_cable_row", "seated cable row", 3, 10, 80, 5),
+    "overhead_press": _ex("shoulder_press_machine", "shoulder press machine", 3, 10, 50, 5),
+    "romanian_deadlift": _ex("leg_extension", "leg extension", 3, 12, 70, 5),
+    "deadlift": _ex("lat_pulldown", "lat pulldown", 3, 10, 100, 5),
+    "barbell_curl": _ex("dumbbell_curl", "dumbbell curl", 3, 10, 20, 5),
+    "preacher_curl": _ex("cable_curl", "cable curl", 3, 12, 30, 5),
+    "skullcrusher": _ex("overhead_tricep_extension", "overhead tricep extension", 3, 12, 30, 5),
+}
+
+
+def machine_variant(templates: list["ExerciseTemplate"]) -> list["ExerciseTemplate"]:
+    """The day with each barbell lift swapped for its machine counterpart; a swap that lands
+    on a movement already in the day is dropped (legs: squat→leg press, which is there)."""
+    out: list[ExerciseTemplate] = []
+    seen: set[str] = set()
+    for t in templates:
+        t2 = _MACHINE_SWAPS.get(t.slug, t)
+        if t2.slug in seen:
+            continue
+        seen.add(t2.slug)
+        out.append(t2)
+    return out
+
 
 # ── Body-part days (bro splits) ──────────────────────────────────────────────
 # Live 2026-09-22 (user 43): "chest and biceps, back and triceps, legs and shoulders"
@@ -173,6 +206,9 @@ PART_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
 PART_TEMPLATES["arms"] = PART_TEMPLATES["biceps"][:2] + PART_TEMPLATES["triceps"][:2]
 PART_TEMPLATES["core"] = [_bw("plank", "plank (sec)", 3, 30, 10), _bw("hanging_leg_raise", "hanging leg raise", 3, 10)]
 
+MACHINE_TEMPLATES: dict[str, list[ExerciseTemplate]] = {k: machine_variant(v) for k, v in TEMPLATES.items()}
+MACHINE_PART_TEMPLATES: dict[str, list[ExerciseTemplate]] = {k: machine_variant(v) for k, v in PART_TEMPLATES.items()}
+
 BODYWEIGHT_PART_TEMPLATES: dict[str, list[ExerciseTemplate]] = {
     "chest": [_bw("pushup", "pushup", 4, 10), _bw("diamond_pushup", "diamond pushup", 3, 8), _bw("chair_dip", "chair dip", 3, 10)],
     "back": [_bw("inverted_row", "inverted row (table or towel)", 4, 10), _bw("superman", "superman", 3, 12),
@@ -206,10 +242,10 @@ def is_composed_key(key: str | None) -> bool:
     return bool(key) and key not in TEMPLATES and all(p in PART_TEMPLATES for p in key.split("_"))
 
 
-def compose_day(key: str, *, bodyweight: bool = False) -> list[ExerciseTemplate]:
+def compose_day(key: str, *, bodyweight: bool = False, machines: bool = False) -> list[ExerciseTemplate]:
     """A body-part day's exercises: each part's block in the key's order, capped so a
     two-part day is ~7 movements, not 9. Duplicate slugs across parts are dropped."""
-    src = BODYWEIGHT_PART_TEMPLATES if bodyweight else PART_TEMPLATES
+    src = BODYWEIGHT_PART_TEMPLATES if bodyweight else (MACHINE_PART_TEMPLATES if machines else PART_TEMPLATES)
     parts = key.split("_")
     out: list[ExerciseTemplate] = []
     seen: set[str] = set()
@@ -344,7 +380,7 @@ def templates_for(user) -> dict[str, list[ExerciseTemplate]]:
     A user's own routine (users.custom_templates) overrides per split day — the
     card shows THEIR push day, not the generic one; days they didn't give fall back."""
     eq = (getattr(user, "equipment", None) or "").strip().lower()
-    base = BODYWEIGHT_TEMPLATES if eq in BODYWEIGHT_EQUIPMENT else TEMPLATES
+    base = BODYWEIGHT_TEMPLATES if eq in BODYWEIGHT_EQUIPMENT else (MACHINE_TEMPLATES if eq in MACHINE_EQUIPMENT else TEMPLATES)
     custom = custom_templates_for(user)
     if not custom:
         return base
@@ -356,6 +392,8 @@ def _all_templates():
     yield from BODYWEIGHT_TEMPLATES.values()
     yield from PART_TEMPLATES.values()
     yield from BODYWEIGHT_PART_TEMPLATES.values()
+    yield from MACHINE_TEMPLATES.values()
+    yield from MACHINE_PART_TEMPLATES.values()
 
 
 # Aliases the split pointer / a user might use.
@@ -383,6 +421,12 @@ NAME_HINTS: list[tuple[str, str]] = [
     ("rear delt", "rear_delt_fly"), ("front raise", "front_raise"), ("skull", "skullcrusher"),
     ("pec deck", "pec_deck"), ("seated row", "seated_cable_row"), ("cable row", "seated_cable_row"),
     ("overhead tricep", "overhead_tricep_extension"), ("overhead extension", "overhead_tricep_extension"),
+    # machine counterparts (MACHINE_TEMPLATES) — longer hints beat "press"/"curl"/"extension"
+    ("chest press", "chest_press_machine"), ("machine press", "chest_press_machine"),
+    ("shoulder press machine", "shoulder_press_machine"), ("machine shoulder press", "shoulder_press_machine"),
+    ("leg extension", "leg_extension"), ("leg ext", "leg_extension"),
+    ("dumbbell curl", "dumbbell_curl"), ("db curl", "dumbbell_curl"), ("cable curl", "cable_curl"),
+    ("stairmaster", "stairmaster"), ("stair master", "stairmaster"), ("stair climber", "stairmaster"),
 ]
 
 
@@ -414,7 +458,7 @@ def day_template(user, key: str) -> list[ExerciseTemplate]:
         return t[key]
     if is_composed_key(key):
         eq = (getattr(user, "equipment", None) or "").strip().lower()
-        return compose_day(key, bodyweight=eq in BODYWEIGHT_EQUIPMENT)
+        return compose_day(key, bodyweight=eq in BODYWEIGHT_EQUIPMENT, machines=eq in MACHINE_EQUIPMENT)
     raise KeyError(key)
 
 

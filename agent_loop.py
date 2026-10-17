@@ -1390,6 +1390,25 @@ def _day_totals(text: str) -> set:
     return out
 
 
+def _sent_since_latest_inbound(user_id: int) -> bool:
+    """True when a text (not a reaction) went out after the user's newest inbound — i.e.
+    a tool already replied this turn (a card + intro, a stat card, a link)."""
+    session = get_session()
+    try:
+        last_in = (session.query(Message.created_at)
+                   .filter(Message.user_id == user_id, Message.direction == "in")
+                   .order_by(Message.id.desc()).first())
+        if not last_in or not last_in[0]:
+            return False
+        row = (session.query(Message.id)
+               .filter(Message.user_id == user_id, Message.direction == "out",
+                       Message.created_at >= last_in[0], Message.message_type != "reaction")
+               .first())
+        return row is not None
+    finally:
+        session.close()
+
+
 def _recent_outbound_text(user_id: int, window_s: int) -> str:
     """Bodies of the coach's text sends to this user inside the window (newest first),
     reactions excluded — the restatement candidate's reference. '' when none."""
@@ -1857,6 +1876,23 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 except Exception as e:  # noqa: BLE001
                     logger.info("AGENT_LOOP_CONTINUATION_REACT_FAILED user=%s err=%s", user.id, e)
                 logger.info("AGENT_LOOP_CONTINUATION_SILENT user=%s text=%r", user.id, (combined_body or "")[:80])
+            # The sentinel means "the tapback WAS the reply" — when no tapback went up and no
+            # tool sent anything this turn, it is just silence. Live 2026-10-17 (user 40):
+            # "Okay thank youuu" → [silent], no react_to_message → nothing at all. The 👍 the
+            # rule asked for goes up in code. iMessage only: on SMS there is no tapback and a
+            # silent turn stays the legitimate outcome it always was (test_correction_silence).
+            if (config.SILENT_SENTINEL_BACKFILL_ENABLED and not state.get("reacted")
+                    and config.IMESSAGE_REACTIONS_ENABLED and not _sent_since_latest_inbound(user.id)):
+                from sms import _resolve_channel
+                if _resolve_channel(user.id) == "imessage":
+                    try:
+                        from sms import react_to_latest_inbound
+                        if react_to_latest_inbound(user.id, "like"):
+                            state["reacted"] = True
+                    except Exception as e:  # noqa: BLE001
+                        logger.info("AGENT_LOOP_SILENT_BACKFILL_FAILED user=%s err=%s", user.id, e)
+                    logger.info("AGENT_LOOP_SILENT_BACKFILLED user=%s reacted=%s text=%r",
+                                user.id, bool(state.get("reacted")), (combined_body or "")[:60])
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
             return ""
         from agent_tools import leaked_tool_call

@@ -33,6 +33,7 @@ behaviour, now the explicit fallback rather than the rule.
 from __future__ import annotations
 
 import logging
+import config
 import re
 from datetime import datetime, timezone
 
@@ -90,6 +91,11 @@ _LIFTS: dict[str, tuple[str, float | None, str]] = {
     "leg_press": ("squat", 1.50, "sled"),
     "leg_curl": ("squat", 0.30, "stack"),
     "leg_extension": ("squat", 0.40, "stack"),
+    # machine counterparts (templates.MACHINE_TEMPLATES)
+    "chest_press_machine": ("bench", 0.80, "stack"),
+    "shoulder_press_machine": ("ohp", 0.80, "stack"),
+    "dumbbell_curl": ("row", 0.15, "dumbbell"),
+    "cable_curl": ("row", 0.30, "stack"),
     "calf_raise": ("squat", 0.60, "sled"),
     # deadlift family
     "deadlift": ("deadlift", None, "barbell"),
@@ -500,6 +506,51 @@ def parse_stated_anchors(text: str, *, loose: bool = False) -> list[dict]:
     return out
 
 
+# "I've never done any exercises using a bar", "no barbell", "scared of the bar", "machines
+# only", "mainly machine exercises" — a stated preference for no barbell work. A "protein bar"
+# is not a bar.
+_MACHINES_ONLY_RE = re.compile(
+    r"(?:\bnever (?:done|used|touched|tried|lifted|do|use)\b[^.!?,]{0,40}?(?:a |the )?(?<!protein )(?<!granola )(?<!candy )(?<!snack )(?<!energy )bar(?:bell)?s?\b"
+    r"|\bno (?:bar|barbell)s?\b(?! tab)"
+    r"|\b(?:scared|afraid|nervous|wary) of (?:the |a )?bar(?:bell)?s?\b"
+    r"|\b(?:not|aren'?t|ain'?t|isn'?t) (?:really )?comfortable (?:with|using|on) (?:a |the )?bar(?:bell)?s?\b"
+    r"|\b(?:don'?t|dont|do not|won'?t|wont) (?:want|wanna|like) (?:to )?(?:use |using |touch |do )?(?:a |the )?bar(?:bell)?s?\b"
+    r"|\bmachines? only\b"
+    r"|\b(?:only|just|mainly|mostly|stick(?:ing)? to|stay(?:ing)? on|prefer|rather (?:do|use|stick to)) (?:the |do |doing |use |using )?machines?\b)",
+    re.I)
+_EQUIPMENT_OVERRIDABLE = {None, "", "full_gym", "home_gym", "gym"}
+
+
+def wants_machines_only(text: str) -> bool:
+    return bool(_MACHINES_ONLY_RE.search(text or ""))
+
+
+def maybe_capture_equipment_preference(user_id: int, text: str, *, source: str) -> str | None:
+    """Code trigger: a text that says no-barbell / machines-only flips users.equipment to
+    "machines" (templates.MACHINE_TEMPLATES) so every card from here on is machine-based,
+    not just the one-off the coach replans. Only a gym-equipment row is overridden (a
+    bodyweight user stays bodyweight). Returns the new value or None. Live 2026-10-17
+    (user 40): "never done any exercises using a bar" → the barbell full-body card."""
+    if not getattr(config, "EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", True) or not wants_machines_only(text):
+        return None
+    from models import get_session, User
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return None
+        cur = (user.equipment or "").strip().lower()
+        if cur not in _EQUIPMENT_OVERRIDABLE:
+            return None
+        user.equipment = "machines"
+        session.commit()
+        logger.info("EQUIPMENT_PREFERENCE_CAPTURED user=%s from=%r to=machines source=%s text=%r",
+                    user_id, cur, source, (text or "")[:60])
+        return "machines"
+    finally:
+        session.close()
+
+
 def maybe_capture_stated_anchors(user_id: int, text: str, *, source: str) -> dict | None:
     """Code trigger for tool-less surfaces (onboarding). Returns set_anchors' result or None."""
     items = parse_stated_anchors(text)
@@ -623,6 +674,9 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
         return False
     setup = peek_pending_setup(user_id)
     from workouts.start import start_workout_session, send_defaults_note
+    # "leg press 150, never done anything with a bar" — the preference lands BEFORE the
+    # card is built, so the card is the machine day.
+    maybe_capture_equipment_preference(user_id, text, source="card_reply")
     items = parse_stated_anchors(text, loose=True)
     if items:
         r = set_anchors(user_id, items, source="reply")

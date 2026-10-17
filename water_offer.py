@@ -172,6 +172,18 @@ def pending_offer(session, user) -> bool:
     return bool(last_out and last_out.message_type == MESSAGE_TYPE)
 
 
+def _newest_inbound_predates_offer(session, user) -> bool:
+    """True when the user's newest inbound row was logged before the offer was stamped."""
+    at = getattr(user, "water_offered_at", None)
+    if not at:
+        return False
+    from models import Message
+    row = (session.query(Message.created_at)
+           .filter(Message.user_id == user.id, Message.direction == "in")
+           .order_by(Message.id.desc()).first())
+    return bool(row and row[0] and row[0] < at)
+
+
 def handle_reply(user_id: int, text: str) -> str | None:
     """Deterministic reply to the offer. Returns the one line to send, or None when
     the inbound isn't an answer to a pending offer (normal turn). A non-yes/no reply
@@ -184,6 +196,13 @@ def handle_reply(user_id: int, text: str) -> str | None:
     try:
         user = session.get(User, user_id)
         if not user or not pending_offer(session, user):
+            return None
+        if config.WATER_OFFER_PREDATES_GUARD_ENABLED and _newest_inbound_predates_offer(session, user):
+            # Typed BEFORE the offer went out (it sat in the inbound buffer while the setup
+            # sweep fired) — not an answer, not a lapse. Live 2026-10-17 (user 40): "I'm not
+            # a Berkeley student…" arrived 19s before the offer, lapsed it, and his real
+            # "Yes remind me to drink water please" a minute later went to the model.
+            logger.info("WATER_OFFER_INBOUND_PREDATES user=%s", user_id)
             return None
         body = (text or "").strip()
         if YES_RE.match(body):
