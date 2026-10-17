@@ -274,13 +274,18 @@ def handle_text(user_id: int, text: str) -> str | None:
 # or emoji). Mixed texts ('heading out, had a bagel') fall through to the model,
 # which gets the same link in its RSF context block (rsf_context_block).
 _DEST = r"(?:the )?(?:gym|rsf|weight ?room)"
+# Live 2026-10-17 16:47 PT (founder): "Yeah ima head to the gym in a bit" matched nothing —
+# no "ima"/"imma"/"bout to", no leading "yeah" — and he found the line on arrival.
+_VERB = (r"(?:heading|headed|going|walking|bouta|boutta|bout to|about to|abt to|finna|gonna|gon|tryna|otw|omw|on my way"
+         r"|ima|imma|i'?m (?:gonna|going|bouta|boutta|bout to|about to|finna|tryna|headed|heading))")
+_LEAD = r"(?:(?:yeah|yea|ya|yep|yup|ok|okay|alr|aight|bet|k|also|and)[,!.]?\s+)?"
 HEADING_OUT_RE = re.compile(
-    r"^\W*(?:"
-    rf"(?:heading|headed|going|walking|bouta|about to|abt to|finna|gonna|tryna|otw|omw|on my way)\b[\w\s']{{0,14}}?(?:to |for |head to |go to |hit |go lift at )?{_DEST}"
+    rf"^\W*{_LEAD}(?:"
+    rf"{_VERB}\b[\w\s']{{0,14}}?(?:to |for |head to |head over to |go to |hit |go lift at )?{_DEST}"
     rf"|leaving (?:now )?(?:for|to) {_DEST}"
     rf"|(?:heading|headed) out(?: to {_DEST})?"
     rf"|(?:omw|otw|on my way|leaving now|heading over|walking over)(?: to {_DEST})?"
-    rf"|(?:bouta|about to|abt to|finna|gonna|going to|tryna) (?:go )?(?:lift|hit {_DEST}|head (?:to|over to) {_DEST}|go to {_DEST}|walk to {_DEST})"
+    rf"|{_VERB} (?:go )?(?:lift|hit {_DEST}|head (?:to|over to) {_DEST}|go to {_DEST}|walk to {_DEST})"
     r")(?:\s+(?:now|rn|right now|soon|in a (?:bit|sec|min)|in \d+(?: ?min)?))?\W*$",
     re.I,
 )

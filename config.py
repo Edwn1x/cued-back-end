@@ -551,6 +551,10 @@ RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
 # SEND_GYM_LINE_LINK_TOOL → gym_beats.send_line_link). The real capability behind
 # "here's the line link" so the coach never fakes the offer. Default ON.
 SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "true").lower() == "true"
+# Live 2026-10-17 16:48 PT: the coach put a 👎 tapback on the founder's "I had to get here to
+# find out bruh". Meant as sympathy; on iMessage a thumbs-down on someone's complaint reads
+# as disagreeing with them. The tool refuses 'dislike' and asks for a line of text instead.
+REACTION_DISLIKE_BLOCKED = os.getenv("REACTION_DISLIKE_BLOCKED", "true").lower() == "true"
 # Campus libraries (integrations/campus_libraries.py): bookable study rooms from the
 # UC Berkeley LibCal grid (Moffitt first) + every library's hours/feature tags from
 # lib.berkeley.edu/hours. CAMPUS_LIBRARIES_ENABLED gates every fetch + the weekly room

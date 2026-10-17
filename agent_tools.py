@@ -3019,6 +3019,10 @@ def handle_react_to_message(user_id: int, tool_input: dict, *, message_id=None) 
         return "error: emoji required (love|like|dislike|laugh|emphasize|question or one emoji)"
     if emoji.lower() not in TAPBACKS and len(emoji) > 4:
         return "error: emoji must be a tapback name or a single emoji"
+    if config.REACTION_DISLIKE_BLOCKED and (emoji.lower() == "dislike" or emoji in ("👎", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿")):
+        logger.info("REACTION_DISLIKE_REFUSED user=%s ref=%s", user_id, ref)
+        return ("error: a 👎 on their message reads as disagreeing with THEM, not sympathy — never. If "
+                "something went wrong for them, own it in one line of text (or react ❤️ if it's just rough news).")
     st = peek_turn_state(user_id)
     if st.get("reacted"):
         return "error: already reacted this turn — at most one reaction per user turn"
