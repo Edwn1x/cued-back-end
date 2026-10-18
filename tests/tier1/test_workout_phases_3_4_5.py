@@ -497,6 +497,8 @@ def test_recard_nudge_is_skipped_without_an_open_card_or_after_the_start_tool(db
     calls = []
 
     def _h(kw):
+        if "SESSION PLAN" in str(kw["messages"][0]["content"]):
+            return "nope"                                                    # the pre-session plan call (2026-10-18) isn't a loop turn
         calls.append(1)
         if len(calls) == 1:
             return ToolUse("start_workout_session", {"template_key": "upper", "exercises": ONE_OFF})

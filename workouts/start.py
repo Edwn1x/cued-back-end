@@ -339,8 +339,12 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         from photon_cards import CardError
         # Extension framing (once in full, then a one-liner) until the card has ever been opened.
         card_setup.send_extension_intro_if_due(user_id, phone)
-        send_sms(phone, intro_line(state["exercises"], key, first=first, estimated=estimated,
-                                   setup=setup, workout_time=workout_time),
+        intro = None
+        if not setup:
+            from workouts.review import pre_session_plan
+            intro = pre_session_plan(ws.id, first=first, estimated=estimated)
+        send_sms(phone, intro or intro_line(state["exercises"], key, first=first, estimated=estimated,
+                                            setup=setup, workout_time=workout_time),
                  user_id=user_id, message_type="workout_intro")
         try:
             send_workout_card(ws.id, reuse_from=reuse_from)
