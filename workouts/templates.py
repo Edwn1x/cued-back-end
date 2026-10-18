@@ -144,6 +144,15 @@ _MACHINE_SWAPS: dict[str, "ExerciseTemplate"] = {
 }
 
 
+def machine_slug_for(equipment: str | None, slug: str | None) -> str | None:
+    """For a machines-only user, a typed name that hints a BARBELL lift ("shoulder press"
+    → overhead_press) is its machine counterpart (shoulder_press_machine). Live 2026-10-18
+    (user 40): the card stored his machine shoulder press under the barbell name."""
+    if slug and (equipment or "").strip().lower() in MACHINE_EQUIPMENT and slug in _MACHINE_SWAPS:
+        return _MACHINE_SWAPS[slug].slug
+    return slug
+
+
 def machine_variant(templates: list["ExerciseTemplate"]) -> list["ExerciseTemplate"]:
     """The day with each barbell lift swapped for its machine counterpart; a swap that lands
     on a movement already in the day is dropped (legs: squat→leg press, which is there)."""

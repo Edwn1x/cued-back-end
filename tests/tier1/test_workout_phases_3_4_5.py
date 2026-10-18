@@ -273,7 +273,7 @@ def test_text_close_finishes_sends_summary_and_mirrors_to_legacy(db, imessage_on
         assert legacy.exercises[0]["sets"] == 2 and legacy.user_notes == f"card session #{sid}"
     finally:
         s.close()
-    summary = sidecar_ok[-1]
+    summary = next(b for b in reversed(sidecar_ok) if "lb total" in b)   # the first-workout line follows it (2026-10-18)
     assert summary.splitlines()[0].startswith("push · ") and "bench press — 135×5 · 135×5" in summary
     assert "1,350 lb total · 0 PRs" in summary and "no app opened" not in summary
     p = get_split_pointer(user.id)
@@ -316,7 +316,7 @@ def test_sms_done_fills_untouched_sets_as_planned_without_counting_them_as_taps(
     close_session(sid, via="text", fill_as_planned=True)
     rows = _sets(db, sid)
     assert all(r[2] for r in rows) and rows[0][5] == "text" and rows[1][5] == "coach"
-    summary = sms_capture[-1][1]
+    summary = next(b for _p, b in reversed(sms_capture) if "lb total" in b)   # the first-workout line follows it
     assert "no app opened" not in summary and summary.strip().endswith("PR") or "lb total" in summary
 
 

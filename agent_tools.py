@@ -563,17 +563,24 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
     """If a card/session is open, the model's extracted sets land there (source
     'text'), matched by name to the session's exercises; unmatched names become
     new exercises. Returns the tool result, or None when no session is open."""
-    from workouts.session_ops import active_session_id
-    from workouts.templates import slug_for_name
+    from workouts.session_ops import active_session_id, recently_closed_session_id
+    from workouts.templates import slug_for_name, machine_slug_for
     from card_page import apply_set_update
     from models import WorkoutSession, SetLog
     ws_id = active_session_id(user_id)
+    straggler = False
+    if not ws_id:
+        # "I also did crunches 100x10" a minute after the card closed: it's THAT session's
+        # work, not a second legacy row (live 2026-10-18 00:54, user 40).
+        ws_id = recently_closed_session_id(user_id)
+        straggler = bool(ws_id)
     if not ws_id:
         return None
     applied = 0
     session = get_session()
     try:
         ws = session.get(WorkoutSession, ws_id)
+        equipment = (session.query(User.equipment).filter(User.id == user_id).scalar() or "")
         rows = session.query(SetLog).filter(SetLog.session_id == ws_id).order_by(SetLog.id).all()
         labels = {r.exercise: (r.exercise_label or r.exercise) for r in rows}
         # Reconcile, don't append: when the coach re-logs an exercise (e.g. after the user
@@ -603,7 +610,7 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
             # set happened. Live 2026-10-08 02:17 (user 48): "pull ups … got 7" → slug None →
             # nothing written, while the reply said "logged, 7 on pull ups".
             slug = (next((sl for sl, lb in labels.items() if lb.lower() in name or name in lb.lower()), None)
-                    or slug_for_name(name) or _slugify_exercise(name))
+                    or machine_slug_for(equipment, slug_for_name(name)) or _slugify_exercise(name))
             n_sets = int(e.get("sets") or 1)
             w, r = e.get("weight"), e.get("reps")
             mine = [x for x in rows if x.exercise == slug and not x.done]
@@ -626,6 +633,16 @@ def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> 
                     skipped.append(f"{name or slug} (no reps given)")
     finally:
         session.close()
+    if straggler:
+        from workouts.session_ops import refresh_closed_session
+        logger.info("LOG_WORKOUT_INTO_CLOSED_SESSION user=%s session=%s sets=%s skipped=%s", user_id, ws_id, applied, skipped)
+        if applied == 0:
+            why = ("; ".join(skipped) if skipped else "no exercise names/reps could be read")
+            return (f"error: NOTHING was added to the session they just closed (#{ws_id}) — {why}. Pass each "
+                    f"exercise with `name` and `reps`. Do not tell them it's logged.")
+        s = refresh_closed_session(ws_id)
+        return (f"ok: added {applied} sets to the session they just closed (#{ws_id}); it's in that workout now, "
+                f"total {s['volume_lb']:,} lb")
     from workouts.card import refresh_card_async
     refresh_card_async(ws_id)
     logger.info("LOG_WORKOUT_INTO_SESSION user=%s session=%s sets=%s skipped=%s", user_id, ws_id, applied, skipped)

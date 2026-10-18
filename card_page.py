@@ -370,15 +370,16 @@ QUALIFIERS = ("dumbbell", "db", "incline", "decline", "seated", "standing", "mac
               "deficit", "front", "back", "sumo", "hack", "goblet", "bulgarian", "hammer", "preacher", "landmine")
 
 
-def resolve_exercise_name(name: str, present: set) -> tuple[str, str]:
+def resolve_exercise_name(name: str, present: set, *, equipment: str | None = None) -> tuple[str, str]:
     """(slug, label) for a typed name. A hinted (template) slug already in the
     session is the SAME lift only when the name has no qualifier ('ohp' → overhead
-    press); 'dumbbell bench' beside bench press is its own exercise."""
-    from workouts.templates import slug_for_name, label_for_slug
+    press); 'dumbbell bench' beside bench press is its own exercise. For a machines-only
+    user a barbell hint resolves to its machine counterpart (templates.machine_slug_for)."""
+    from workouts.templates import slug_for_name, label_for_slug, machine_slug_for
     import re as _re
     name = _re.sub(r"\s+", " ", (name or "").strip().lower())[:60]
     free_slug = _re.sub(r"[^a-z0-9]+", "_", name).strip("_")[:40]
-    hinted = slug_for_name(name)
+    hinted = machine_slug_for(equipment, slug_for_name(name))
     hinted_label = label_for_slug(hinted) if hinted else ""
     qualified = any(q in name and q not in hinted_label for q in QUALIFIERS)
     if hinted and (hinted not in present or not qualified):
@@ -421,7 +422,8 @@ def card_api_add_exercise():
         if ws.status in ("done", "abandoned"):
             return jsonify({"ok": False, "error": "session closed"}), 409
         present = {r[0] for r in session.query(SetLog.exercise).filter(SetLog.session_id == ws.id).distinct().all()}
-        slug, label = resolve_exercise_name(name, present)
+        equipment = session.query(User.equipment).filter(User.id == ws.user_id).scalar()
+        slug, label = resolve_exercise_name(name, present, equipment=equipment)
         if slug in present:
             return jsonify({"ok": False, "error": f"{label} is already in this session — add a set to it instead"}), 409
         pw, pr_ = _next_plan_for(session, ws, slug, label)
