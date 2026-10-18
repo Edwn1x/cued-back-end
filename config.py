@@ -101,6 +101,13 @@ USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").l
 # next write pass / nightly consolidation (0 = TTL off). Grocery bought Aug 6 is
 # irrelevant by Aug 20; it must never live in the immortal constraints bucket.
 FOOD_ON_HAND_TTL_DAYS = int(os.getenv("FOOD_ON_HAND_TTL_DAYS", "14"))
+# food_preferences bucket (likes/dislikes/habits that aren't restrictions) + reclassification of
+# food facts misfiled under training_preferences (live 2026-10-17, user 40: "no shakes" evicted
+# his machines-over-barbell preference).
+MEMORY_FOOD_PREFERENCES_ENABLED = os.getenv("MEMORY_FOOD_PREFERENCES_ENABLED", "true").lower() == "true"
+# A fact that restates a typed column (steps, cooking situation, tracker, a food already in
+# restrictions, weekly days, training time) is skipped at write time instead of spending cap room.
+MEMORY_TYPED_DUP_SKIP_ENABLED = os.getenv("MEMORY_TYPED_DUP_SKIP_ENABLED", "true").lower() == "true"
 # Superseded safety states ("currently ill" after "fully recovered") close via the
 # trigger-audited validity mechanism instead of coexisting immortally and crowding
 # the category cap (the live cause of grocery/food evictions). Ship-on + instrumented
