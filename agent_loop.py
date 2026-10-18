@@ -487,6 +487,13 @@ def build_loop_context(user, session) -> str:
     # push day" gets a captured routine instead of a generic default silently passed off as
     # theirs (live incident user 31). Only the day cycle they've stated is defaults-only.
     try:
+        from workouts.program import program_context
+        pb = program_context(user)
+        if pb:
+            parts.append(pb)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PROGRAM_CONTEXT_FAILED user=%s err=%s", user.id, e)
+    try:
         from workouts.routine import describe_routine
         routine_desc = describe_routine(getattr(user, "custom_templates", None))
     except Exception:  # noqa: BLE001
@@ -1668,6 +1675,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                                   RECONSTRUCT_ROUTINE_TOOL)
         tools.extend([START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL,
                       RECONSTRUCT_ROUTINE_TOOL])
+        if getattr(config, "PROGRAM_BUILDER_ENABLED", True):
+            from agent_tools import ADJUST_PROGRAM_TOOL
+            tools.append(ADJUST_PROGRAM_TOOL)
         if config.RESET_SESSION_TOOL_ENABLED:
             from agent_tools import RESET_WORKOUT_SESSION_TOOL
             tools.append(RESET_WORKOUT_SESSION_TOOL)

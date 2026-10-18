@@ -732,6 +732,21 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # Program brief: "those days work, or wanna swap any?" — a yes / a list of days / a
+        # swap is answered in code (workouts.program.handle_days_reply); anything else is a
+        # normal turn (the model has the PROGRAM block and adjust_program).
+        if (user.onboarding_step or 0) >= 3 and not image_url and getattr(config, "PROGRAM_BRIEF_ENABLED", True):
+            try:
+                from workouts.program import handle_days_reply
+                pline = handle_days_reply(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("PROGRAM_DAYS_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                pline = None
+            if pline:
+                send_sms(user.phone, pline, user_id=user.id, message_type="program_brief_reply")
+                typing_stop(user.id)
+                return
+
         # Water-reminder offer: a yes/no to the pending one-line offer is answered in
         # code (water_offer.handle_reply) — creates the interval reminder or remembers
         # the no. Anything else lapses the offer and continues as a normal turn.

@@ -185,6 +185,10 @@ class User(Base):
     # walk. Live 2026-09-22 (user 43): a stated bro split survived only as the label
     # "bro_split", which mapped to nothing, so the card fell to full_body.
     split_days = Column(JSON, default=None)
+    # The program the code built for them (workouts/program.py): split, days, times,
+    # exercises, scheme, progression, cardio, constraints, rationale. The columns above
+    # are mirrored FROM it; the brief and the loop's PROGRAM block render it.
+    program = Column(JSON, default=None)
     # Lifts the user has STATED ("i bench 135", "squat's around 185 for 5"):
     # {"bench_press": {"weight": 135, "reps": 5, "source": "model"|"onboarding", "at": iso}}.
     # workouts/calibrate.py turns these into the first card's numbers — for that lift

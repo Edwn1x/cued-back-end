@@ -2355,9 +2355,22 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
         system_prompt = _build_system_prompt(user_row)
         rundown_user = user_row
+        wants_program = bool(user_row.workout_days) and (user_row.coaching_branch or "") != "nutrition_only"
 
     finally:
         session.close()
+
+    # The program (workouts/program.py, founder 2026-10-18): the code builds their week and the
+    # coach explains it — split, days, exercises, how it progresses — ending on the days
+    # question. Their answer is code-handled (handle_days_reply) and only then does the first
+    # setup step go out (the brief is a STEP_TYPE: the sequence waits for an inbound).
+    brief_sent = False
+    if wants_program and not early and getattr(config, "PROGRAM_BRIEF_ENABLED", True):
+        try:
+            from workouts.program import send_program_brief
+            brief_sent = send_program_brief(user.id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PROGRAM_BRIEF_FAILED user=%s err=%s", user.id, e)
 
     # Second: the card setup step (workouts/card_setup.py) — extension framing, their
     # first card, the tour — for iMessage users. Before the rundown: the card is the
@@ -2387,7 +2400,9 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
     directive = (getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True)
                  and getattr(config, "SETUP_SEQUENCE_ENABLED", True) and config.CARD_SETUP_ENABLED
                  and not early)
-    if directive:
+    if directive and brief_sent:
+        logger.info("ONBOARDING_SETUP_KICKOFF_DEFERRED user=%s reason=program_brief", user.id)
+    elif directive:
         try:
             from setup_sequence import kickoff as _setup_kickoff
             if config.ONBOARDING_RUNDOWN_DELAY_S > 0:
