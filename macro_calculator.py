@@ -52,6 +52,18 @@ PROTEIN_FLOOR = 80
 # PA by activity level: sedentary / low active / active / very active.
 _EER_PA = {"male": (1.00, 1.13, 1.26, 1.42), "female": (1.00, 1.16, 1.31, 1.56)}
 
+# IOM total energy expenditure for OVERWEIGHT / OBESE children 3–18 (BMI ≥ 85th percentile;
+# DRI 2002/2005, Table 5-25). The normal-weight equation above is linear in bodyweight with
+# a steep slope (boys: 26.7 kcal/kg × PA) and was fit on normal-weight kids — at 200 lb it
+# extrapolates wildly. Live 2026-10-17 (user 40, 17M, 5'4"/200, 10k steps, fat loss): the
+# normal-weight equation at "very active" gave a 4585 maintenance and a 4150 target.
+#   boys : TEE = 114 − 50.9·age + PA·(19.5·kg + 1161.4·m)
+#   girls: TEE = 389 − 41.2·age + PA·(15.0·kg + 701.6·m)
+_EER_PA_OVERWEIGHT = {"male": (1.00, 1.12, 1.24, 1.45), "female": (1.00, 1.18, 1.35, 1.60)}
+TEEN_OVERWEIGHT_BMI = 25.0      # the adult overweight cutoff ≈ the 85th percentile at 17–18;
+                                # younger teens cross it later, which only keeps the gentler equation
+TEEN_ADULT_CEILING = 1.15       # a teen maintenance never exceeds the adult path's by more than this
+
 
 def activity_level_index(avg_steps, days_count: int) -> int:
     """0 sedentary, 1 low active, 2 active, 3 very active — from avg_steps when known
@@ -72,14 +84,36 @@ def activity_level_index(avg_steps, days_count: int) -> int:
     return 3
 
 
-def teen_eer(weight_kg: float, height_cm: float, age: int, is_male: bool, level: int) -> float:
+def teen_eer(weight_kg: float, height_cm: float, age: int, is_male: bool, level: int,
+             *, overweight: bool = False) -> float:
     """IOM EER for ages 9–18 at activity `level` — a TOTAL daily requirement (growth
-    included), so it is the maintenance number itself, not a BMR to multiply."""
-    pa = _EER_PA["male" if is_male else "female"][level]
+    included), so it is the maintenance number itself, not a BMR to multiply.
+    `overweight` selects the IOM overweight/obese TEE equation (see _EER_PA_OVERWEIGHT)."""
     m = height_cm / 100.0
+    if overweight:
+        pa = _EER_PA_OVERWEIGHT["male" if is_male else "female"][level]
+        if is_male:
+            return 114 - 50.9 * age + pa * (19.5 * weight_kg + 1161.4 * m)
+        return 389 - 41.2 * age + pa * (15.0 * weight_kg + 701.6 * m)
+    pa = _EER_PA["male" if is_male else "female"][level]
     if is_male:
         return 88.5 - 61.9 * age + pa * (26.7 * weight_kg + 903 * m) + 25
     return 135.3 - 30.8 * age + pa * (10.0 * weight_kg + 934 * m) + 25
+
+
+def teen_activity_level(avg_steps, days_count: int) -> int:
+    """The IOM PA category for a teen. The adult buckets read 10k steps as the top bucket
+    (×1.725 — defensible there); IOM "very active" means PAL ≥ 1.9, a competitive athlete,
+    and "active" ≥ 60 min of moderate activity on top of daily living. 10k steps a day is
+    low active; 12.5k+ or a 5+-day training week earns active; nothing earns very active
+    from steps alone."""
+    if avg_steps:
+        lvl = 0 if avg_steps < 7500 else (1 if avg_steps < 12500 else 2)
+    else:
+        lvl = 0 if days_count <= 2 else (1 if days_count <= 4 else 2)
+    if days_count >= 5:
+        lvl = min(lvl + 1, 3)
+    return lvl
 
 
 def reference_weight_lbs(weight_lbs: float, height_cm: float) -> float:
@@ -271,9 +305,29 @@ def calculate_targets(user, session=None) -> dict:
         # Teen: the EER IS the maintenance number. `bmr` reports the sedentary
         # (PA=1.0) requirement — the closest analog for the log line and the
         # profile page; there is no separate resting figure in this equation.
-        bmr_formula = "iom_eer"
-        bmr = teen_eer(weight_kg, height_cm, age, is_male, 0)
-        tdee = round(teen_eer(weight_kg, height_cm, age, is_male, level))
+        # Overweight teens get the IOM overweight equation, the PA category is the
+        # teen one (see teen_activity_level), and the result is capped at the adult
+        # path × TEEN_ADULT_CEILING — the adult equations run low for a growing
+        # teenager, not 60% low (live 2026-10-17, user 40: 4585 vs 3179).
+        bmi = weight_kg / (height_cm / 100.0) ** 2
+        overweight = bool(getattr(config, "TEEN_EER_OVERWEIGHT_ENABLED", True) and bmi >= TEEN_OVERWEIGHT_BMI)
+        bmr_formula = "iom_eer_overweight" if overweight else "iom_eer"
+        bmr = teen_eer(weight_kg, height_cm, age, is_male, 0, overweight=overweight)
+        if getattr(config, "TEEN_EER_OVERWEIGHT_ENABLED", True):
+            level = teen_activity_level(eff_steps, days_count)
+        tdee_iom = round(teen_eer(weight_kg, height_cm, age, is_male, level, overweight=overweight))
+        if is_male:
+            adult_bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+        else:
+            adult_bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+        adult_tdee = round(adult_bmr * (1.2, 1.375, 1.55, 1.725)[activity_level_index(eff_steps, days_count)])
+        ceiling = round(adult_tdee * TEEN_ADULT_CEILING)
+        if getattr(config, "TEEN_EER_OVERWEIGHT_ENABLED", True) and tdee_iom > ceiling:
+            logger.info("TEEN_TDEE_CEILING user=%s iom=%s adult=%s ceiling=%s", getattr(user, "id", None),
+                        tdee_iom, adult_tdee, ceiling)
+            tdee = ceiling
+        else:
+            tdee = tdee_iom
         multiplier = None
     elif days_count >= TEN_HAAF_MIN_DAYS:
         bmr_formula = "ten_haaf"

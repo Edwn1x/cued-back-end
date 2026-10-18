@@ -99,8 +99,23 @@ def has_wearable(user) -> bool:
     return any(k in tools for k in ("fitbit", "pixel", "google_health", "google health"))
 
 
+# Not a college student, whatever the word "student" says. Live 2026-10-17 (user 40,
+# occupation "high school student"): the plain substring gate offered bCourses — "I'm not a
+# Berkeley student so I don't have bcources" — and the rundown/capabilities copy would have
+# kept saying "calendar and bcourses" to him.
+_NOT_COLLEGE_RE = re.compile(
+    r"\b(high ?school|highschool|hs|middle ?school|junior high|grade school|elementary|"
+    r"\d{1,2}(?:st|nd|rd|th) grade|(?:freshman|sophomore|junior|senior) in high)\b", re.I)
+
+
 def is_student(user) -> bool:
-    return "student" in (getattr(user, "occupation", None) or "").lower() or bool(getattr(user, "year", None))
+    """A COLLEGE student — the campus integrations (bCourses, dining halls, RSF, library
+    rooms) are Berkeley's. A class year on file (the sign-up form's) counts; an occupation
+    that names a school below college does not, even with 'student' in it."""
+    occ = (getattr(user, "occupation", None) or "").lower()
+    if _NOT_COLLEGE_RE.search(occ):
+        return False
+    return "student" in occ or bool(getattr(user, "year", None))
 
 
 # ─── allowlist state (Testing mode) ──────────────────────────────────────────

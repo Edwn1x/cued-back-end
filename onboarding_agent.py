@@ -1593,7 +1593,11 @@ def _assumption_note(wake: str, sleep: str) -> str:
 
 
 # ─── Continuation turns: the question that already went is not asked twice ────
-_Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|any|got|wyd|wya|whats|when's)\b", re.I)
+# "got" leads a question ("got any number?") — but not "got it", "got u", "gotcha": live
+# 2026-10-17 (user 40) strip_questions dropped "got it, we'll keep anything wrist-heavy light…"
+# as a question and the repeat guard's kept text came out empty → a 👍 was the whole reply.
+_Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|any|got(?!\s*(?:it|u|you|cha|chu|em|them)\b)|"
+                        r"wyd|wya|whats|when's)\b", re.I)
 
 
 def _question_part(text: str) -> str:
@@ -1616,9 +1620,9 @@ _QUESTION_TOPICS = {
     "injuries": r"\b(injur\w*|hurt|pain|bugging|work around|limitations?)\b",
     "split": r"\b(split|routine|ppl|push.?pull|upper.?lower|bro split|what (u|you) (hit|run)|which days|each day)\b",
     "workout_days_time": r"\b(days a week|how many days|what time|when (u|you) (train|lift|go))\b",
-    "diet": r"\b(vegetarian|vegan|allerg\w*|restriction|halal|kosher|diet)\b",
+    "diet": r"\b(vegetarian|vegan|allerg\w*|restriction|halal|kosher|diet|(?:don'?t|dont|won'?t|wont|can'?t|cant) eat)\b",
     "existing_tools": r"\b(apps?|watch|fitbit|strava|garmin|track(ing)?|wearable)\b",
-    "occupation": r"\b(student|major|work(ing)?|job)\b",
+    "occupation": r"\b(student|major|work(?:ing)?(?! around)|job)\b",      # "work around (an injury)" is not a job
 }
 _QUESTION_TOPIC_RES = {k: re.compile(v, re.I) for k, v in _QUESTION_TOPICS.items()}
 
@@ -1629,6 +1633,45 @@ def question_topics(text: str) -> set[str]:
     if not q:
         return set()
     return {k for k, rx in _QUESTION_TOPIC_RES.items() if rx.search(q)}
+
+
+# The intake fields each question topic fills (what the turn's extractor stores) and the
+# names _get_missing_fields reports them under.
+_TOPIC_STORED_FIELDS = {
+    "cooking_situation": ("cooking_situation",), "avg_steps": ("avg_steps",),
+    "activity_level": ("activity_level",), "wake_sleep": ("wake_time", "sleep_time"),
+    "injuries": ("injuries",), "split": ("current_split", "split_days"),
+    "workout_days_time": ("workout_days", "workout_time"),
+    "diet": ("diet", "restrictions", "food_dislikes"), "existing_tools": ("existing_tools",),
+    "occupation": ("occupation",),
+}
+_TOPIC_MISSING_NAMES = {
+    "cooking_situation": ("cooking_situation",), "avg_steps": ("avg_steps",),
+    "activity_level": ("activity_level",), "wake_sleep": ("wake_sleep",), "injuries": ("injuries",),
+    "split": ("current_split", "split_days"), "workout_days_time": ("workout_days", "workout_time"),
+    "diet": ("diet",), "existing_tools": ("existing_tools",), "occupation": ("occupation",),
+}
+
+
+def unanswered_half_reask(reply: str, prev: str, stored: dict | None, missing_after) -> set[str]:
+    """The topics `reply` asks that `prev` ALSO asked, which this turn left unanswered while
+    it DID answer another of prev's topics — finishing the question, not repeating it.
+    Live 2026-10-17 (user 40): "anything u don't eat, and anything that hurts?" in one
+    bubble; the wrist answer came 86s later; the follow-up "and anything u don't eat?" was
+    suppressed as a repeat and only a 👍 went out. Empty when the turn answered none of
+    what was asked (user 49, 2026-10-10: a text 2s after the big ask answered nothing of
+    it — that repeat stays a repeat) or when prev asked a single thing. Pure."""
+    prev_topics = question_topics(prev)
+    if len(prev_topics) < 2:
+        return set()
+    keys = {k for k, v in (stored or {}).items() if v not in (None, "", [], {})}
+    answered = {t for t in prev_topics if any(f in keys for f in _TOPIC_STORED_FIELDS.get(t, ()))}
+    if not answered:
+        return set()
+    still = {f[0] for f in (missing_after or [])}
+    open_topics = {t for t in prev_topics - answered
+                   if any(n in still for n in _TOPIC_MISSING_NAMES.get(t, ()))}
+    return question_topics(reply) & open_topics
 
 
 def is_duplicate_question(reply: str, prev: str, threshold: float | None = None) -> bool:
@@ -2177,7 +2220,17 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # question (not folded as a continuation) must not get that question again. Live
     # 2026-10-10 02:29 (user 49): the big ask asked food; 25s later a friend reply asked food
     # again. Keep the reaction, drop the question; nothing left → 👍.
-    if (mode != "big_ask" and prev_coach and text and is_duplicate_question(text, prev_coach)):
+    reask = set()
+    if (mode != "big_ask" and prev_coach and text
+            and getattr(config, "ONBOARDING_HALF_ANSWERED_REASK_ENABLED", True)):
+        reask = unanswered_half_reask(text, prev_coach, {**(extracted or {}), **(code_found or {})}, missing_after)
+        shared = question_topics(text) & question_topics(prev_coach)
+        if shared and shared <= reask:
+            logger.info("ONBOARDING_HALF_ANSWERED_REASK user=%s topics=%s", user_row.id, sorted(shared))
+            reask = shared
+        else:
+            reask = set()
+    if (mode != "big_ask" and prev_coach and text and not reask and is_duplicate_question(text, prev_coach)):
         age = _last_coach_message_age_s(user_row.id)
         if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:
             kept = strip_questions(text)

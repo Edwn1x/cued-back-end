@@ -135,7 +135,10 @@ def _names_a_food_app(user) -> bool:
 
 
 def _is_student(user) -> bool:
-    return "student" in (getattr(user, "occupation", None) or "").lower() or bool(getattr(user, "year", None))
+    """One gate for every campus mention (connect_offers.is_student): a high-schooler is
+    not a Berkeley student (live 2026-10-17, user 40)."""
+    from connect_offers import is_student
+    return is_student(user)
 
 
 CAPABILITIES: list[Capability] = [

@@ -711,6 +711,14 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # Live 2026-09-23 (3/3): left to the model, "no clue" got "wanna start today
         # or just planning" and no card. Anything else continues as a normal turn.
         if (user.onboarding_step or 0) >= 3 and not image_url and config.START_WORKOUT_TOOL_ENABLED:
+            # "I like doing mainly machine exercises… scared of the bar" (live 2026-10-17, user
+            # 40, the turn AFTER the first card) → every later card is the machine day, not
+            # just the one-off the coach replans now.
+            try:
+                from workouts.calibrate import maybe_capture_equipment_preference
+                maybe_capture_equipment_preference(user.id, combined_body, source="turn")
+            except Exception as e:  # noqa: BLE001
+                logger.info("EQUIPMENT_PREFERENCE_CAPTURE_FAILED user=%s err=%s", user.id, e)
             try:
                 from workouts.calibrate import handle_pending_card_reply
                 card_sent = handle_pending_card_reply(user.id, combined_body)

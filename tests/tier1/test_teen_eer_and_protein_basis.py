@@ -14,8 +14,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 from macro_calculator import (calculate_targets, teen_eer, reference_weight_lbs,
-                              activity_level_index, apply_target_override, recompute_targets,
-                              override_bounds)
+                              activity_level_index, teen_activity_level, apply_target_override,
+                              recompute_targets, override_bounds)
 from tests.factories import make_user
 
 
@@ -49,14 +49,69 @@ def test_iom_eer_boys_pinned():
 
 
 def test_under_18_uses_the_eer_as_maintenance_no_multiplier():
+    """At BMI 31.6 she is on the IOM OVERWEIGHT girls equation (2026-10-17):
+    389 − 41.2·16 + 1.00·(15·78.29 + 701.6·1.5748) = 2009 — closer to the ~2.0–2.2k her own
+    app said than the normal-weight equation's 1921 (the user-32 review's complaint)."""
     t = calculate_targets(_u(**AISLINN))
-    assert t["bmr_formula"] == "iom_eer"
-    assert t["tdee"] == 1921                    # sedentary (4k steps) PA = 1.0
-    assert t["calories"] == 1750                # teen −10% → 1729 → 1750 (was 1400 = −500 → floor)
+    assert t["bmr_formula"] == "iom_eer_overweight"
+    assert t["tdee"] == 2009                    # sedentary (4k steps) PA = 1.0
+    assert t["calories"] == 1800                # teen −10% → 1808 → 1800 (was 1400 = −500 → floor)
     assert t["goal_pct"] == -0.10 and t["goal_limits"] == []
     assert t["activity_level"] == 0
-    # at 180 lb / 5'2" the same path gives 1955 → 1750 as well
-    assert calculate_targets(_u(**dict(AISLINN, weight_lbs=180)))["calories"] == 1750
+    # at 180 lb / 5'2" the same path gives 2059 → 1850
+    assert calculate_targets(_u(**dict(AISLINN, weight_lbs=180)))["calories"] == 1850
+
+
+def test_normal_weight_teen_keeps_the_normal_weight_equation(monkeypatch):
+    # 5'6" / 130 lb / 16F = BMI 21 → the original girls equation, sedentary
+    t = calculate_targets(_u(**dict(AISLINN, height_ft=5, height_in=6, weight_lbs=130)))
+    assert t["bmr_formula"] == "iom_eer"
+    kg, cm = 130 * 0.453592, 66 * 2.54
+    assert t["tdee"] == round(teen_eer(kg, cm, 16, False, 0))
+    # flag off → the pre-2026-10-17 path for everyone (Aislinn back on 1921 / 1750)
+    import config
+    monkeypatch.setattr(config, "TEEN_EER_OVERWEIGHT_ENABLED", False)
+    t = calculate_targets(_u(**AISLINN))
+    assert t["bmr_formula"] == "iom_eer" and t["tdee"] == 1921 and t["calories"] == 1750
+
+
+JAYDEN = dict(height_ft=5, height_in=4, weight_lbs=200, age=17, gender="male",
+              goal="fat_loss", workout_days="4", avg_steps=10000)
+
+
+def test_live_2026_10_17_user_40_is_not_told_4150():
+    """17M, 5'4"/200 (BMI 34), 10k steps, 4 days, fat loss. Live: the normal-weight boys
+    equation at "very active" (10k steps = the top adult bucket) → tdee 4585 → 4150 cal.
+    Now: overweight boys equation, 10k steps = LOW ACTIVE (PA 1.12):
+    114 − 50.9·17 + 1.12·(19.5·90.72 + 1161.4·1.6256) = 3344.5 → −10% → 3010 → 3000."""
+    t = calculate_targets(_u(**JAYDEN))
+    assert t["bmr_formula"] == "iom_eer_overweight"
+    assert t["activity_level"] == 1
+    assert t["tdee"] == 3345 and t["calories"] == 3000
+    assert t["protein"] == 146                   # the BMI-25 reference weight already capped this
+    # the adult path for the same body (Mifflin 1843 × 1.725) is 3179; the teen number sits
+    # inside the +15% ceiling, so the equation — not the ceiling — set it
+    assert t["tdee"] <= round(3179 * 1.15)
+
+
+def test_teen_tdee_is_capped_at_the_adult_path_plus_15pct():
+    """A heavy, very active teen: 5+ training days lifts the PA to "active" and the IOM
+    number clears the adult ×1.15 ceiling → the ceiling wins and is logged."""
+    u = _u(**dict(JAYDEN, workout_days="6", avg_steps=14000))
+    t = calculate_targets(u)
+    assert t["activity_level"] == 3
+    kg, cm = 200 * 0.453592, 64 * 2.54
+    iom = round(teen_eer(kg, cm, 17, True, 3, overweight=True))
+    adult = round((10 * kg + 6.25 * cm - 5 * 17 + 5) * 1.725)
+    assert iom > round(adult * 1.15) == t["tdee"]
+
+
+def test_teen_activity_level_reads_steps_honestly():
+    # IOM "very active" is an athlete; steps alone never earn it
+    assert teen_activity_level(4000, 3) == 0 and teen_activity_level(7000, 3) == 0
+    assert teen_activity_level(10000, 4) == 1 and teen_activity_level(12500, 3) == 2
+    assert teen_activity_level(10000, 5) == 2 and teen_activity_level(14000, 6) == 3
+    assert teen_activity_level(None, 2) == 0 and teen_activity_level(None, 4) == 1 and teen_activity_level(None, 5) == 3
 
 
 def test_same_body_at_18_is_adult_obese_rule_with_the_ea_floor():
@@ -70,14 +125,15 @@ def test_same_body_at_18_is_adult_obese_rule_with_the_ea_floor():
 
 def test_eighteen_is_adult_seventeen_is_teen():
     assert calculate_targets(_u(**dict(AISLINN, age=18)))["bmr_formula"] == "mifflin"
-    assert calculate_targets(_u(**dict(AISLINN, age=17)))["bmr_formula"] == "iom_eer"
+    assert calculate_targets(_u(**dict(AISLINN, age=17)))["bmr_formula"].startswith("iom_eer")
 
 
 def test_teen_activity_follows_the_same_buckets():
     lo = calculate_targets(_u(**dict(AISLINN, avg_steps=4000)))["tdee"]
     mid = calculate_targets(_u(**dict(AISLINN, avg_steps=6000)))["tdee"]
     hi = calculate_targets(_u(**dict(AISLINN, avg_steps=12000)))["tdee"]
-    assert lo == 1921 and mid == 2282 and hi > mid
+    # teen buckets (2026-10-17): 6k steps is still sedentary; 12k is low active (overweight PA 1.18)
+    assert lo == 2009 and mid == lo and hi == 2419
     assert activity_level_index(None, 3) == 2 and activity_level_index(None, 5) == 3
 
 
@@ -116,7 +172,7 @@ def test_protein_floor_still_applies():
 def test_reported_maintenance_within_range_centres_the_band(db):
     user = make_user(db, onboarding_step=3, calorie_target=1750, protein_target=137,
                      targets_source="computed", **AISLINN)
-    # computed tdee 1921; 2200 is +14.5% → accepted; basis = 2200 × 0.9 (teen) = 1980 → 2000 → band 1700–2300
+    # computed tdee 2009; 2200 is +9.5% → accepted; basis = 2200 × 0.9 (teen) = 1980 → 2000 → band 1700–2300
     r = apply_target_override(user.id, calories=1700, maintenance=2200, note="app says 2200")
     assert r["maintenance"]["accepted"] is True and r["maintenance"]["basis_calories"] == 2000
     assert r["accepted"] == {"calories": 1700} and r["rejected"] == {}
@@ -124,13 +180,13 @@ def test_reported_maintenance_within_range_centres_the_band(db):
     db.expire_all()
     u = db.get(User, user.id)
     assert u.reported_maintenance == 2200 and u.calorie_target == 1700 and u.targets_source == "user"
-    assert u.calorie_target_computed == 1750  # the computed pair is still recorded beside it
+    assert u.calorie_target_computed == 1800  # the computed pair is still recorded beside it
 
 
 def test_without_a_reported_maintenance_1400_is_out_of_band(db):
     user = make_user(db, onboarding_step=3, calorie_target=1750, protein_target=137, **AISLINN)
     r = apply_target_override(user.id, calories=1400)
-    assert r["accepted"] == {} and r["rejected"]["calories"]["min"] == override_bounds(1750)[0]
+    assert r["accepted"] == {} and r["rejected"]["calories"]["min"] == override_bounds(1800)[0]
 
 
 def test_reported_maintenance_too_far_is_rejected_and_not_stored(db):
@@ -201,7 +257,7 @@ def test_recompute_moves_a_computed_row_and_leaves_a_user_pick(db):
                      calorie_target_computed=1400, protein_target_computed=180,
                      targets_source="computed", **AISLINN)
     r = recompute_targets(user.id)
-    assert r["old"] == (1400, 173) and r["new"] == (1750, 137) and r["changed"]
+    assert r["old"] == (1400, 173) and r["new"] == (1800, 137) and r["changed"]
     picked = make_user(db, onboarding_step=3, calorie_target=1600, protein_target=140,
                        targets_source="user", **dict(AISLINN, phone="+15550000099"))
     r2 = recompute_targets(picked.id)
@@ -299,12 +355,12 @@ def test_recompute_leaves_a_target_adjustment_the_coach_explains(db):
     s = get_session()
     try:
         rows = s.query(TargetAdjustment).filter(TargetAdjustment.user_id == user.id).all()
-        assert len(rows) == 1 and rows[0].changed and rows[0].old_target == 1400 and rows[0].new_target == 1750
+        assert len(rows) == 1 and rows[0].changed and rows[0].old_target == 1400 and rows[0].new_target == 1800
         assert rows[0].reason.startswith("calculator update") and "protein 173 → 137g" in rows[0].reason
         ctx = todays_adjustment_context(s.get(User, user.id), s)
     finally:
         s.close()
-    assert ctx.startswith("## TARGET CHANGED TODAY (a fix on our side") and "1400 → 1750" in ctx
+    assert ctx.startswith("## TARGET CHANGED TODAY (a fix on our side") and "1400 → 1800" in ctx
     assert "protein" in ctx and "never call it a diet" in ctx.lower()
     # an unchanged row writes nothing
     assert recompute_targets(user.id)["changed"] is False

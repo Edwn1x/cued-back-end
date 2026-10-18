@@ -95,14 +95,30 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
 ROUTINE_NOTE_TYPE = "routine_capture_offer"
 
 
-def defaults_note(key: str) -> str:
+def defaults_note(key: str, *, has_routine: bool = True) -> str:
     """The one line that says a generic day is generic. Code-sent cards (the first-card
     ask answered in code, the onboarding kickoff) have no model turn to say it, so the
     user-31 incident — a default pull day passed off as 'their card' — repeated on the
-    from-zero account (2026-10-05, user 48)."""
+    from-zero account (2026-10-05, user 48).
+
+    `has_routine=False` (experience none / no split): "tell me what u actually run" is
+    unanswerable for someone who has never run anything — live 2026-10-17 (user 40) the
+    founder had to follow it up by hand with "or tell me what kind of workouts you're
+    already doing and we can build from that". The ask becomes what they'd rather do."""
     d = day_label(key)
+    if not has_routine:
+        return (f"one thing — those are starter {d} day exercises. anything on there u'd rather "
+                f"not do, or something u'd rather do instead, tell me and i'll swap it")
     return (f"one thing — those are starter {d} day exercises, not urs yet. tell me what u "
             f"actually run on {d} day and i'll swap em in")
+
+
+def has_routine(user) -> bool:
+    """They have SOMETHING they already run: a split on file and an experience level above
+    'none'. False for the brand-new lifter the defaults note should not quiz."""
+    split = (getattr(user, "current_split", None) or "").strip().lower()
+    exp = (getattr(user, "experience", None) or "").strip().lower()
+    return bool(split) and split != "none" and exp != "none"
 
 
 def send_defaults_note(user_id: int, sr: dict | None) -> bool:
@@ -115,11 +131,13 @@ def send_defaults_note(user_id: int, sr: dict | None) -> bool:
         try:
             u = session.get(User, user_id)
             phone = u.phone if u else None
+            routine = has_routine(u) if u else True
         finally:
             session.close()
         if not phone:
             return False
-        send_sms(phone, defaults_note(sr["template_key"]), user_id=user_id, message_type=ROUTINE_NOTE_TYPE)
+        send_sms(phone, defaults_note(sr["template_key"], has_routine=routine), user_id=user_id,
+                 message_type=ROUTINE_NOTE_TYPE)
         logger.info("ROUTINE_CAPTURE_NOTE_SENT user=%s key=%s session=%s", user_id, sr["template_key"], sr.get("session_id"))
         return True
     except Exception as e:  # noqa: BLE001 — the card already went out; the note is extra

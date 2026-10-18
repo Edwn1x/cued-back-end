@@ -253,6 +253,9 @@ NARRATION_SALVAGE_ENABLED = os.getenv("NARRATION_SALVAGE_ENABLED", "true").lower
 # about the project I have due today / I'm still working on it / It's the third time i tell
 # you atp" → remember(lesson) + [silent] — nothing sent.
 CORRECTION_SILENCE_NUDGE_ENABLED = os.getenv("CORRECTION_SILENCE_NUDGE_ENABLED", "true").lower() == "true"
+# A bare [silent] with no tapback and no tool send this turn gets a 👍 in code (iMessage only; SMS stays silent).
+# Live 2026-10-17 (user 40): "Okay thank youuu" → nothing at all.
+SILENT_SENTINEL_BACKFILL_ENABLED = os.getenv("SILENT_SENTINEL_BACKFILL_ENABLED", "true").lower() == "true"
 # A plan written as TEXT while a card is open → one forced follow-up to put it ON the card
 # (start_workout_session with exercises=). Live 2026-10-08 02:14 (user 48, friend's gym): the
 # coach typed a six-move plan and said "tap sets on the card" while the card still held the
@@ -852,6 +855,8 @@ SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "fa
 # after the kickoff (new users) and on a guarded sweep (existing users); the reply is
 # handled in code. Founder 2026-09-22: users can't ask for a feature they've never heard of.
 WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
+# A text logged BEFORE the offer went out can't be its answer (live 2026-10-17, user 40).
+WATER_OFFER_PREDATES_GUARD_ENABLED = os.getenv("WATER_OFFER_PREDATES_GUARD_ENABLED", "true").lower() == "true"
 # Card setup step at onboarding completion (workouts/card_setup.py): the extension
 # framing (an iMessage extension like GamePigeon, not an app), their first card sent
 # right then so the install happens at home, and a one-time tour of the card. When ON,
@@ -1155,6 +1160,15 @@ OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD = float(os.getenv("OUTBOUND_RESTATEMENT_
 ONBOARDING_CONTINUATION_FOLD_ENABLED = os.getenv("ONBOARDING_CONTINUATION_FOLD_ENABLED", "true").lower() == "true"
 ONBOARDING_DUP_QUESTION_THRESHOLD = float(os.getenv("ONBOARDING_DUP_QUESTION_THRESHOLD", "0.45"))
 ONBOARDING_DUP_QUESTION_WINDOW_S = int(os.getenv("ONBOARDING_DUP_QUESTION_WINDOW_S", "180"))
+# Re-asking the half of a multi-field ask the turn left unanswered (while answering the other
+# half) is finishing the question, not repeating it (live 2026-10-17, user 40: diet + injuries).
+ONBOARDING_HALF_ANSWERED_REASK_ENABLED = os.getenv("ONBOARDING_HALF_ANSWERED_REASK_ENABLED", "true").lower() == "true"
+# Under-18 targets: IOM overweight equation at BMI ≥ 25, the teen PA category (10k steps =
+# low active), and a ceiling at the adult path × 1.15 (live 2026-10-17, user 40: 4150 cal).
+TEEN_EER_OVERWEIGHT_ENABLED = os.getenv("TEEN_EER_OVERWEIGHT_ENABLED", "true").lower() == "true"
+# "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
+# card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
+EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"
 BUFFER_INFLIGHT_WAIT_S = float(os.getenv("BUFFER_INFLIGHT_WAIT_S", "90"))
 # Burst replay (live 2026-10-10 02:33, user 49): three texts in 18s. The first turn's model
 # saw all three in the thread and answered them (it even pegged sleep itself, 11/3); then
