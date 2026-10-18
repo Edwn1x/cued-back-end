@@ -41,7 +41,11 @@ REMEMBER_TOOL = {
         "yet eaten): save it this turn — the image is gone next turn, and a detail "
         "you only spoke back is not saved. CATEGORY ROUTING: groceries / food on "
         "hand not yet eaten go to 'food_on_hand' (transient inventory — it ages out "
-        "automatically as it's eaten), NEVER to 'constraints'; 'constraints' is for "
+        "automatically as it's eaten), NEVER to 'constraints'; food likes / dislikes / "
+        "eating habits that are not allergies ('hates canned fish', 'no protein shakes — "
+        "texture', 'coffee every morning') go to 'food_preferences', never to "
+        "'training_preferences' (that bucket is for how they train — machines over "
+        "barbell, hates morning cardio); 'constraints' is for "
         "injuries, medical issues, and hard limits only. When they say an "
         "injury/illness is over, save the recovered state — storage closes the "
         "superseded active states it replaces (audited). add: a new fact. update: "
@@ -109,7 +113,7 @@ def handle_remember(user_id: int, tool_input: dict, *, message_id=None) -> str:
                 "action": action, "category": category, "text": text,
                 "replaces_text": tool_input.get("replaces_text"),
                 "safety_critical": bool(tool_input.get("safety_critical")),
-            }], user_id=user_id)
+            }], user_id=user_id, user=user)
             user.user_profile_memory = new_profile
             flag_modified(user, "user_profile_memory")
             session.commit()

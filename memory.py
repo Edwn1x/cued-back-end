@@ -27,8 +27,9 @@ Phase A1 additions:
     to prevent.
 
 Phase A2/A3 additions:
-  - CATEGORIES: the six allowed buckets (identity, constraints,
-    training_preferences, communication_preferences, schedule, goals).
+  - CATEGORIES: the allowed buckets (identity, constraints, training_preferences,
+    communication_preferences, schedule, goals, food_on_hand, food_preferences,
+    coaching_lessons).
   - apply_facts(profile, facts): pure function that takes the current
     user_profile_memory dict + a list of extraction-output fact dicts and
     returns the updated dict plus a stats summary. Handles action verbs
@@ -66,6 +67,13 @@ CATEGORIES = (
     # expire_stale_entries) — so a grocery haul can't crowd the safety bucket or
     # evict durable facts. Routed here by the remember tool + extraction prompt.
     "food_on_hand",
+    # Food likes / dislikes / eating habits that are NOT allergies or restrictions
+    # (those are typed columns): "hates canned fish", "won't touch protein shakes —
+    # texture", "coffee every morning", "skips breakfast". Live 2026-10-17 (user 40):
+    # with no such bucket the coach filed "no protein shakes or bars" under
+    # training_preferences, and that write's cap eviction dropped his
+    # machines-over-barbell preference — the one training fact his cards depend on.
+    "food_preferences",
     # Coaching lessons (lessons.py): the coach's own notes about its past misses with
     # this user — instructions to itself, not facts about them. Own soft cap
     # (LESSONS_SOFT_CAP), never safety, exempt from consolidation's stale-close,
@@ -149,7 +157,7 @@ def render_dietary_line(user) -> str:
 #     lands here behind the USER_PROFILE_MEMORY_ENABLED flag.
 CATEGORY_INJECTION_MAP = {
     "nutrition": {
-        "categories": ("identity", "training_preferences", "goals", "food_on_hand"),
+        "categories": ("identity", "training_preferences", "goals", "food_on_hand", "food_preferences"),
         "include_body_line": False,
         "include_dietary_line": True,
         "include_food_context": True,
@@ -748,7 +756,93 @@ def sanitize_facts(facts, *, user_id=None) -> tuple:
     return kept, rejected
 
 
-def apply_facts(profile, facts, *, user_id=None) -> tuple:
+# Food words that mark a training_preferences entry as a misfiled food preference, and
+# training words that keep it where it is ("pre-workout meal timing" stays).
+_FOOD_PREF_RE = re.compile(
+    r"\b(eat|eats|eating|food|foods|canned|spicy|shake|shakes|protein bars?|snacks?|coffee|breakfast|lunch|"
+    r"dinner|meals?|cooks?|cooking|veggies|vegetables?|fruits?|meat|chicken|beef|fish|dairy|milk|sugar|sweets?|"
+    r"dessert|flavou?r|texture|tastes?|picky|cuisine|restaurants?|dining)\b", re.I)
+_TRAINING_WORD_RE = re.compile(
+    r"\b(cardio|lifts?|lifting|gym|workouts?|exercises?|squats?|bench|deadlifts?|machines?|barbell|dumbbells?|"
+    r"reps|sets|split|pre-?workout|post-?workout)\b", re.I)
+
+
+def reclassify_food_preferences(profile: dict, *, user_id=None) -> int:
+    """Move food likes/dislikes that were filed under training_preferences (before the
+    food_preferences bucket existed, or by a model that still routes them there) into
+    food_preferences. Ids, timestamps and uses travel with the entry; nothing is lost.
+    Returns the number moved."""
+    if not getattr(config, "MEMORY_FOOD_PREFERENCES_ENABLED", True):
+        return 0
+    src = profile.get("training_preferences") or []
+    moved = 0
+    for e in list(src):
+        text = (e.get("text") or "") if isinstance(e, dict) else ""
+        if text and _FOOD_PREF_RE.search(text) and not _TRAINING_WORD_RE.search(text) and not e.get("safety"):
+            src.remove(e)
+            profile.setdefault("food_preferences", []).append(e)
+            moved += 1
+            logger.info("MEMORY_RECLASSIFIED user_id=%s from=training_preferences to=food_preferences text=%r",
+                        user_id, text[:80])
+    return moved
+
+
+# Facts that duplicate a TYPED column the coach already reads (the extractor prompt says
+# not to emit them; the model does anyway). A duplicate costs cap room in a category
+# and evicts a real fact — live 2026-10-17 (user 40): steps / cooking mix / Apple Watch /
+# canned / spicy, all already on the row, filled training_preferences to 370/400.
+_STEPS_DUP_RE = re.compile(r"\b(\d[\d,]{2,}|\d+k)\s*steps?\b|\bsteps? (a|per) day\b|\bdaily steps?\b", re.I)
+_COOKING_DUP_RE = re.compile(
+    r"\b(equal mix|mix of (eating out|cooking)|mostly (cooks|eats out|eating out|home-?cooked|dining hall)|"
+    r"cooks most|eats out most|on the (dining|meal) plan|dining hall most|eats (at )?the dining hall|"
+    r"cooks (at home|for (himself|herself|themselves)))\b", re.I)
+_TOOLS = ("apple watch", "apple fitness", "apple health", "fitbit", "strava", "garmin", "oura", "whoop",
+          "myfitnesspal", "google fit", "samsung health", "health app", "fitness app")
+_TOOL_VERB_RE = re.compile(r"\b(uses?|using|tracks?|tracking|wears?|wearing|has|logs?)\b", re.I)
+_DISLIKE_RE = re.compile(r"\b(dislikes?|doesn'?t eat|won'?t eat|does not eat|hates?|avoids?|can'?t eat|allergic to)\b", re.I)
+_DAYS_DUP_RE = re.compile(r"\b\d\s*(?:-|–|to)?\s*\d?\s*days? (a|per) week\b", re.I)
+_TIME_DUP_RE = re.compile(r"\b(gym|trains?|training|works? out|lifts?|workouts?)\b[^.]{0,30}\b(at|around|about|~)\s*\d{1,2}(:\d{2})?\s*(am|pm)\b", re.I)
+_STOP = {"dislikes", "dislike", "doesn", "doesnt", "does", "not", "eat", "eats", "won", "wont", "hates", "hate",
+         "avoids", "avoid", "cant", "can", "allergic", "to", "the", "and", "or", "of", "with", "any", "all",
+         "especially", "like", "likes", "things", "stuff", "food", "foods", "products", "added", "most", "very",
+         "really", "kind", "kinds", "type", "types", "that", "this", "them", "it", "a", "an", "in", "on", "for"}
+
+
+def typed_column_duplicate(user, text: str) -> str | None:
+    """The typed column `text` restates, or None. Conservative: the column must be filled
+    AND the text must be about exactly that thing (a number of steps, the overall
+    cooking situation, a tracker they use, a food already in restrictions, the weekly
+    day count, the usual training time)."""
+    t = (text or "").strip()
+    if not t or user is None:
+        return None
+    low = t.lower()
+    if getattr(user, "avg_steps", None) and _STEPS_DUP_RE.search(low):
+        return "avg_steps"
+    if (getattr(user, "cooking_situation", None) or "").strip() and _COOKING_DUP_RE.search(low):
+        return "cooking_situation"
+    tools = (getattr(user, "existing_tools", None) or "").lower().replace("_", " ")
+    if tools and tools != "none" and _TOOL_VERB_RE.search(low):
+        for name in _TOOLS:
+            if name in low and (name in tools or name.split()[0] in tools):
+                return "existing_tools"
+    restrictions = (getattr(user, "restrictions", None) or "").lower()
+    if restrictions and _DISLIKE_RE.search(low):
+        words = [w for w in re.findall(r"[a-z][a-z'-]{3,}", low) if w not in _STOP]
+        if words and any(w in restrictions for w in words):
+            return "restrictions"
+    if (getattr(user, "workout_days", None) or "") and _DAYS_DUP_RE.search(low) and not _TRAINING_PREF_HINT_RE.search(low):
+        return "workout_days"
+    if (getattr(user, "workout_time", None) or "") and _TIME_DUP_RE.search(low):
+        return "workout_time"
+    return None
+
+
+# "prefers to train 3 days a week in the morning because…" carries a preference, not just the count
+_TRAINING_PREF_HINT_RE = re.compile(r"\b(because|since|so that|prefers? (not )?to|would rather|wants? to)\b", re.I)
+
+
+def apply_facts(profile, facts, *, user_id=None, user=None) -> tuple:
     """
     Pure-function write path. Takes the current user_profile_memory dict (or
     None) and a list of extraction-output dicts of shape:
@@ -776,6 +870,7 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
     """
     profile = dict(profile) if profile else {}
     profile = _ensure_categories(profile)
+    reclassify_food_preferences(profile, user_id=user_id)
 
     # TTL sweep FIRST: a stale grocery entry must not dedup-suppress (or be
     # supersession-matched against) the fresh haul arriving in this same write.
@@ -819,6 +914,17 @@ def apply_facts(profile, facts, *, user_id=None) -> tuple:
         if action == "skip":
             stats["skipped"] += 1
             continue
+
+        # A fact that restates a typed column the coach already reads is not stored —
+        # it would only spend cap room and evict a real fact. Safety facts are exempt.
+        if (user is not None and not is_safety and category != "coaching_lessons"
+                and getattr(config, "MEMORY_TYPED_DUP_SKIP_ENABLED", True)):
+            col = typed_column_duplicate(user, text)
+            if col:
+                logger.info("MEMORY_TYPED_DUP_SKIPPED user_id=%s category=%s column=%s text=%r",
+                            user_id, category, col, text[:80])
+                stats["skipped"] += 1
+                continue
 
         entries = profile[category]
 

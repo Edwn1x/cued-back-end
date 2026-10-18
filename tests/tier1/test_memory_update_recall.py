@@ -106,7 +106,9 @@ def test_distinct_related_facts_are_not_collapsed(db):
         "text": "likes eggs for breakfast",
         "replaces_text": None, "safety_critical": False,
     }])
-    assert len(profile["training_preferences"]) == 2
+    # food facts filed under training_preferences move to food_preferences on the next
+    # write (2026-10-17) — both survive, neither is collapsed
+    assert len(profile["training_preferences"]) + len(profile["food_preferences"]) == 2
 
 
 # ─── Fix 4: the fresh superseding fact survives eviction, the stale one goes ──

@@ -341,6 +341,7 @@ Categories (use exactly one of these per fact):
   - schedule                 — recurring time constraints (Tuesdays class-heavy, gym closes 10pm, travels monthly for work)
   - goals                    — durable goals/motivations (lean for summer, train for hike, look good for wedding)
   - food_on_hand             — groceries / food at home not yet eaten ("did a TJ's run, got eggs and ground beef"). Transient inventory: it auto-expires as it's eaten. NEVER put on-hand food in constraints, and it is never safety_critical.
+  - food_preferences         — food likes / dislikes / eating habits that are NOT allergies or restrictions (hates canned fish, won't touch protein shakes because of the texture, coffee every morning, skips breakfast). Never in training_preferences.
 
 DO NOT emit facts for these (they have typed columns; storage handles them elsewhere):
   - weight, height, body fat percentage
@@ -348,6 +349,8 @@ DO NOT emit facts for these (they have typed columns; storage handles them elsew
   - food allergies / food restrictions (lactose, gluten, "allergic to whey")
   - food context (which dining hall, favorite restaurants)
   - confirmed plan decisions (training split, workout time, coach-set calorie/protein targets)
+  - daily step count, how active they are, whether they cook / eat out / use the dining hall (typed columns)
+  - fitness apps and wearables they use (Apple Watch, Fitbit, Strava…) and how many days a week they train (typed columns)
   (Macro preferences they track to ON THEIR OWN beyond calories/protein — "I keep fat under 55g and carbs around 250g" — DO belong here, category goals, so the coach can honor them.)
 
 Existing facts (use these for `replaces_text` on `update`, or to decide `skip`):
@@ -475,7 +478,7 @@ def extract_and_store_memory(user_id: int, user_message: str, coach_response: st
                 if f.get("text"):
                     f["text"] = resolve_deixis(f["text"], user)
             current_profile = dict(user.user_profile_memory or {})
-            new_profile, stats = apply_facts(current_profile, facts, user_id=user_id)
+            new_profile, stats = apply_facts(current_profile, facts, user_id=user_id, user=user)
             user.user_profile_memory = new_profile
             # flag_modified is required: SQLAlchemy's JSON tracker treats
             # in-place nested mutations as no-ops. Without this the apply_facts
