@@ -570,6 +570,7 @@ MIGRATIONS = [
     # Onboarding restructure PR 4 (2026-10-09): per-day / multi-select training times.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS workout_times JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS program JSON",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS training_decisions JSON",
 ]
 
 def wait_for_db(retries=10, delay=3):

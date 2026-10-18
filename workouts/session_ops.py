@@ -448,8 +448,10 @@ def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool =
     def _after():
         refresh_card(session_id)
         if send_session_summary(session_id):
-            from workouts.close import send_first_workout_line
-            send_first_workout_line(session_id)
+            from workouts.review import post_session_review
+            if not post_session_review(session_id):
+                from workouts.close import send_first_workout_line
+                send_first_workout_line(session_id)
         mirror_to_legacy(session_id)
     threading.Thread(target=_after, daemon=True).start()
     return s
