@@ -44,9 +44,11 @@ def _u(uid):
 def test_voice_carries_the_in_the_moment_rule():
     from agent_loop import _voice_prompt
     v = " ".join(_voice_prompt().split())
-    for phrase in ("The moment they try to bail on a session THEY set up", 'does NOT mean "ok don\'t then"',
-                   "ONE warm push, then the smallest version", "Never \"it's late anyway\" when it's their normal time",
-                   "set_reminder for the same time tomorrow and SAY you did", "Never claim it's \"on the books\""):
+    for phrase in ("The moment they try to bail on a session THEY set up", "is the whole job",
+                   'it is never "ok don\'t then"', "keep pushing while they're still talking to you",
+                   "day one or one day", "make it small and concrete", "Vary the angle each turn",
+                   "Never \"it's late anyway\" when it's their normal time", "Stop pushing only for a real reason",
+                   "set_reminder for the same time tomorrow, and SAY you did", "Never claim it's \"on the books\""):
         assert phrase in v, phrase
 
 
