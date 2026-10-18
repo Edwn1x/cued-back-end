@@ -108,6 +108,8 @@ MEMORY_FOOD_PREFERENCES_ENABLED = os.getenv("MEMORY_FOOD_PREFERENCES_ENABLED", "
 # A fact that restates a typed column (steps, cooking situation, tracker, a food already in
 # restrictions, weekly days, training time) is skipped at write time instead of spending cap room.
 MEMORY_TYPED_DUP_SKIP_ENABLED = os.getenv("MEMORY_TYPED_DUP_SKIP_ENABLED", "true").lower() == "true"
+# Nightly consolidation closes pre-existing entries that restate a typed column (backlog of the above).
+MEMORY_TYPED_DUP_SWEEP_ENABLED = os.getenv("MEMORY_TYPED_DUP_SWEEP_ENABLED", "true").lower() == "true"
 # Superseded safety states ("currently ill" after "fully recovered") close via the
 # trigger-audited validity mechanism instead of coexisting immortally and crowding
 # the category cap (the live cause of grocery/food evictions). Ship-on + instrumented
@@ -388,6 +390,10 @@ SCHEDULE_RUNDOWN_MAX_EVENTS = int(os.getenv("SCHEDULE_RUNDOWN_MAX_EVENTS", "40")
 # 60s firing sweep. Ships ON (founder rule: capabilities ship on + budgeted + instrumented);
 # one flag covers all three so a revert is one var.
 REMINDERS_ENABLED = os.getenv("REMINDERS_ENABLED", "true").lower() == "true"
+# A fired one-off gym reminder with no session started within N hours re-arms once for
+# tomorrow (source='rearm'), so "go tomorrow" is a row, not a sentence (live 2026-10-17, u40).
+REMINDER_GYM_REARM_ENABLED = os.getenv("REMINDER_GYM_REARM_ENABLED", "true").lower() == "true"
+REMINDER_GYM_REARM_AFTER_H = float(os.getenv("REMINDER_GYM_REARM_AFTER_H", "3"))
 # Logger bridge (rewrite/logger-bridge): a user still logging food in another app.
 # Gates the OTHER FOOD LOGGER context block, the diary-screenshot rules, parity
 # lines and nightly graduation. Live 2026-09-19: user 32's MyNetDiary screenshot
@@ -448,6 +454,10 @@ WEATHER_DEFAULT_PLACE = os.getenv("WEATHER_DEFAULT_PLACE", "Berkeley")
 ADAPTIVE_TARGETS_ENABLED = os.getenv("ADAPTIVE_TARGETS_ENABLED", "true").lower() == "true"
 # Workout logger card (workouts/): the coach tool that sends today's session.
 START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").lower() == "true"
+# A text log within this many minutes of closing a card lands in THAT session (0 = off).
+WORKOUT_STRAGGLER_WINDOW_MIN = int(os.getenv("WORKOUT_STRAGGLER_WINDOW_MIN", "20"))
+# One code line after the summary on a user's first-ever completed session.
+FIRST_WORKOUT_LINE_ENABLED = os.getenv("FIRST_WORKOUT_LINE_ENABLED", "true").lower() == "true"
 # Workout-session lifecycle (the gym deadlock fix, 2026-09-27): reset_workout_session — an
 # on-demand tool that CLEARS the user's active session so a fresh card can go out (finalizes
 # it if sets are logged so work is never lost, else abandons it). Also lets start_workout_session

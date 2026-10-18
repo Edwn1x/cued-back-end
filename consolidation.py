@@ -156,9 +156,33 @@ def _collapse_contradictions(candidate: dict, ops: list) -> None:
                     ops.append(("superseded", _short(target.get("text"))))
 
 
+def _sweep_typed_dups(candidate: dict, ops: list, user) -> None:
+    """Pre-2026-10-17 entries that only restate a typed column (steps, cooking situation,
+    tracker, a food already in restrictions, weekly days, training time) are closed so they
+    stop crowding category caps — the live cause of user 40's evictions. Write-time skip
+    (memory.typed_column_duplicate) stops new ones; this clears the backlog, bounded by
+    the run's delta guardrail like every other pass. Safety entries are never touched."""
+    if not getattr(config, "MEMORY_TYPED_DUP_SWEEP_ENABLED", True):
+        return
+    from memory import typed_column_duplicate
+    for cat, e in list(_valid_entries(candidate)):
+        if e.get("safety") or cat == "coaching_lessons":
+            continue
+        col = typed_column_duplicate(user, e.get("text") or "")
+        if col and invalidate_entry(candidate, e["id"], by="consolidation_typed_dup", trigger=f"column:{col}"):
+            ops.append(("closed", f"{_short(e.get('text', ''))}, restates {col}"))
+
+
+def _reclassify_food(candidate: dict, ops: list, user_id) -> None:
+    from memory import reclassify_food_preferences
+    n = reclassify_food_preferences(candidate, user_id=user_id)
+    if n:
+        ops.append(("moved", f"{n} food fact{'s' if n != 1 else ''} → food_preferences"))
+
+
 def _build_summary(ops: list) -> str:
     """One human-readable line, grouped by op kind, in the founder's format."""
-    order = ["closed", "merged", "superseded"]
+    order = ["closed", "merged", "superseded", "moved"]
     parts = []
     for kind in order:
         items = [detail for k, detail in ops if k == kind]
@@ -195,6 +219,8 @@ def consolidate_user(user_id: int) -> dict:
 
         ops: list = []
         allowed_safety_closures: set = set()
+        _sweep_typed_dups(candidate, ops, user)
+        _reclassify_food(candidate, ops, user_id)
         _expire_ttl(candidate, ops, now)
         _supersede_safety(candidate, ops, allowed_safety_closures)
         _close_stale(candidate, ops, now)

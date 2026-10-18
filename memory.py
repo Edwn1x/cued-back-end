@@ -767,6 +767,12 @@ _TRAINING_WORD_RE = re.compile(
     r"reps|sets|split|pre-?workout|post-?workout)\b", re.I)
 
 
+# Where misfiled food habits turn up: training_preferences (no food bucket existed) and
+# schedule ("Gets a coffee every morning" — evicted there 2026-10-18 by a walk fact).
+_FOOD_PREF_SOURCE_CATEGORIES = ("training_preferences", "schedule")
+_TIMED_RE = re.compile(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b|\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b\d{1,2}[-–]\d{1,2}\b", re.I)
+
+
 def reclassify_food_preferences(profile: dict, *, user_id=None) -> int:
     """Move food likes/dislikes that were filed under training_preferences (before the
     food_preferences bucket existed, or by a model that still routes them there) into
@@ -774,16 +780,21 @@ def reclassify_food_preferences(profile: dict, *, user_id=None) -> int:
     Returns the number moved."""
     if not getattr(config, "MEMORY_FOOD_PREFERENCES_ENABLED", True):
         return 0
-    src = profile.get("training_preferences") or []
     moved = 0
-    for e in list(src):
-        text = (e.get("text") or "") if isinstance(e, dict) else ""
-        if text and _FOOD_PREF_RE.search(text) and not _TRAINING_WORD_RE.search(text) and not e.get("safety"):
+    for cat in _FOOD_PREF_SOURCE_CATEGORIES:
+        src = profile.get(cat) or []
+        for e in list(src):
+            text = (e.get("text") or "") if isinstance(e, dict) else ""
+            if not text or e.get("safety") or not _FOOD_PREF_RE.search(text) or _TRAINING_WORD_RE.search(text):
+                continue
+            # schedule: a food word inside a timed/dated line ("lunch break 12-1 weekdays") is
+            # a schedule fact; a habit ("gets a coffee every morning") is a food preference.
+            if cat == "schedule" and _TIMED_RE.search(text):
+                continue
             src.remove(e)
             profile.setdefault("food_preferences", []).append(e)
             moved += 1
-            logger.info("MEMORY_RECLASSIFIED user_id=%s from=training_preferences to=food_preferences text=%r",
-                        user_id, text[:80])
+            logger.info("MEMORY_RECLASSIFIED user_id=%s from=%s to=food_preferences text=%r", user_id, cat, text[:80])
     return moved
 
 

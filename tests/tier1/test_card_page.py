@@ -262,7 +262,7 @@ def test_finish_closes_the_session_and_sends_the_summary_text(client, planned, s
         assert w.status == "done" and w.finished_at is not None and w.total_volume_lb == 2585
     finally:
         s.close()
-    assert len(sms_capture) == 1
+    assert len(sms_capture) == 2            # the summary, then the first-ever-workout line (2026-10-18)
     text = sms_capture[0][1]
     assert text.splitlines()[0].startswith("push · wed")
     # the card's finish mirrors like the text path: legacy row + pointer + today confirmed
@@ -281,7 +281,7 @@ def test_finish_closes_the_session_and_sends_the_summary_text(client, planned, s
     # a closed session refuses further taps; finishing again is idempotent
     assert client.post(f"/card/api/set/{ids[0]}", headers=_auth(tok), data=json.dumps({"done": False})).status_code == 409
     assert client.post("/card/api/finish", headers=_auth(tok), data="{}").get_json()["ok"]
-    assert len(sms_capture) == 1
+    assert len(sms_capture) == 2            # a second finish re-sends nothing (summary + first-workout line only)
 
 
 def test_finish_with_nothing_done_sends_no_summary(client, planned, sms_capture, monkeypatch):

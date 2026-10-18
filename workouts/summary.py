@@ -59,7 +59,11 @@ def summarize(session, ws: WorkoutSession) -> dict:
             f"{_fmt(s.actual_weight)}×{s.actual_reps}" if (s.actual_weight or 0) else f"{s.actual_reps}"
             for s in ex_done))
     prs = session_prs(session, ws, done)
-    start, end = ws.started_at or ws.date, ws.finished_at or _utcnow()
+    # Duration runs from the FIRST SET, not from when the card was built — a card sent
+    # at 22:55 and first tapped at 23:58 is not a 118-minute workout (live 2026-10-18,
+    # user 40). Falls back to started_at / date when no set carries a timestamp.
+    first_tap = min((s.done_at for s in done if s.done_at), default=None)
+    start, end = first_tap or ws.started_at or ws.date, ws.finished_at or _utcnow()
     minutes = max(int(round((end - start).total_seconds() / 60)), 0) if start else 0
     taps = sum(1 for s in done if s.source == "card")
     texts = sum(1 for s in done if s.source == "text")

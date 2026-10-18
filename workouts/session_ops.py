@@ -36,6 +36,83 @@ def active_session_id(user_id: int) -> int | None:
         session.close()
 
 
+def recently_closed_session_id(user_id: int, *, within_min: int | None = None) -> int | None:
+    """The session this user closed within the last `within_min` minutes (status done),
+    for a text that lands right after the card: "I also did crunches 100x10". Live
+    2026-10-18 00:54 (user 40): one minute after closing, the sets went to the legacy
+    row and the session + summary disagreed. None when the window is 0 or nothing qualifies."""
+    import config as _cfg
+    within = int(getattr(_cfg, "WORKOUT_STRAGGLER_WINDOW_MIN", 20) if within_min is None else within_min)
+    if within <= 0:
+        return None
+    session = get_session()
+    try:
+        ws = (session.query(WorkoutSession)
+              .filter(WorkoutSession.user_id == user_id, WorkoutSession.status == "done",
+                      WorkoutSession.finished_at.isnot(None),
+                      WorkoutSession.finished_at >= _utcnow() - timedelta(minutes=within))
+              .order_by(WorkoutSession.finished_at.desc()).first())
+        return ws.id if ws else None
+    finally:
+        session.close()
+
+
+def refresh_closed_session(session_id: int) -> dict:
+    """After sets are added to an already-closed session: recompute totals/PRs (the
+    finish stamp stays), refresh the card bubble, and rewrite the legacy mirror row
+    in place (never a second row). Returns the summary dict."""
+    from workouts.summary import summarize
+    from workouts.card import refresh_card_async
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, session_id)
+        s = summarize(session, ws)
+        ws.total_volume_lb = s["volume_lb"]
+        ws.pr_count = s["pr_count"]
+        session.commit()
+    finally:
+        session.close()
+    refresh_card_async(session_id)
+    refresh_legacy_mirror(session_id)
+    return s
+
+
+def refresh_legacy_mirror(session_id: int) -> int | None:
+    """Rebuild the legacy `workouts` row that mirrors this session (user_notes
+    'card session #N') from its done sets; create it if the close never mirrored."""
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, session_id)
+        if not ws:
+            return None
+        w = (session.query(Workout).filter(Workout.user_id == ws.user_id,
+                                            Workout.user_notes == f"card session #{ws.id}",
+                                            Workout.deleted_at.is_(None)).order_by(Workout.id.desc()).first())
+        if not w:
+            session.close()
+            return mirror_to_legacy(session_id)
+        done = [s for s in session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.done.is_(True)).order_by(SetLog.id).all()
+                if s.actual_weight and s.actual_reps]
+        exercises, order = {}, []
+        for s in done:
+            if s.exercise not in exercises:
+                exercises[s.exercise] = {"name": s.exercise_label or s.exercise, "sets": 0, "reps": 0, "weight": 0.0, "detail": []}
+                order.append(s.exercise)
+            e = exercises[s.exercise]
+            e["sets"] += 1
+            e["detail"].append([float(s.actual_weight), int(s.actual_reps)])
+            if (float(s.actual_weight), int(s.actual_reps)) > (e["weight"], e["reps"]):
+                e["weight"], e["reps"] = float(s.actual_weight), int(s.actual_reps)
+        w.exercises = [exercises[k] for k in order]
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(w, "exercises")
+        session.commit()
+        logger.info("WORKOUT_MIRROR_REFRESHED user=%s session=%s workout_id=%s", ws.user_id, ws.id, w.id)
+        return w.id
+    finally:
+        session.close()
+
+
 def has_logged_sets(session, ws_id: int) -> bool:
     """Real logged work on the session: any done set (card / text / tapback / coach).
     The line between FINALIZE (keep it) and abandon (nothing to keep)."""
@@ -317,7 +394,9 @@ def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool =
 
     def _after():
         refresh_card(session_id)
-        send_session_summary(session_id)
+        if send_session_summary(session_id):
+            from workouts.close import send_first_workout_line
+            send_first_workout_line(session_id)
         mirror_to_legacy(session_id)
     threading.Thread(target=_after, daemon=True).start()
     return s

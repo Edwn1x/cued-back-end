@@ -412,7 +412,62 @@ def fire_due(now: datetime | None = None) -> int:
                 sent += 1
         except Exception as e:  # noqa: BLE001 — one bad row must not block the rest
             logger.error("REMINDER_FIRE_FAILED id=%s err=%s", rid, e, exc_info=True)
+    try:
+        rearm_bailed_gym_reminders(now)
+    except Exception as e:  # noqa: BLE001
+        logger.error("REMINDER_GYM_REARM_FAILED err=%s", e, exc_info=True)
     return sent
+
+
+_GYM_REMINDER_RE = re.compile(r"\b(gym|work ?out|lift(?:ing)?|train(?:ing)?|session|rsf|run)\b", re.I)
+
+
+def rearm_bailed_gym_reminders(now: datetime | None = None) -> int:
+    """A one-off "go to the gym" reminder that fired and was NOT followed by a workout
+    session within REMINDER_GYM_REARM_AFTER_H hours re-arms once for the same local time
+    tomorrow (source='rearm'), so the coach's "go tomorrow" is a row in REMINDERS, not a
+    sentence. Live 2026-10-17 22:42 (user 40): "go tomorrow, it's on the books" — the
+    reminder was one-off and inactive, nothing was on the books. Never re-arms a re-arm
+    (one extra chance, not a nag), never when a session did start, never when an
+    equivalent active reminder already exists. Returns the number created."""
+    if not getattr(config, "REMINDER_GYM_REARM_ENABLED", True):
+        return 0
+    now = now or _naive_utcnow()
+    after_h = float(getattr(config, "REMINDER_GYM_REARM_AFTER_H", 3))
+    lo, hi = now - timedelta(hours=24), now - timedelta(hours=after_h)
+    created = 0
+    session = get_session()
+    try:
+        from models import WorkoutSession
+        rows = (session.query(Reminder)
+                .filter(Reminder.active.is_(False), Reminder.recur_days.is_(None), Reminder.every_hours.is_(None),
+                        Reminder.cancelled_at.is_(None), Reminder.last_sent_at.isnot(None),
+                        Reminder.last_sent_at >= lo, Reminder.last_sent_at <= hi,
+                        Reminder.source != "rearm", Reminder.local_time.isnot(None)).all())
+        todo = []
+        for r in rows:
+            if not _GYM_REMINDER_RE.search(r.text or ""):
+                continue
+            started = (session.query(WorkoutSession.id)
+                       .filter(WorkoutSession.user_id == r.user_id, WorkoutSession.started_at.isnot(None),
+                               WorkoutSession.started_at >= r.last_sent_at).first())
+            if started:
+                continue
+            dup = (session.query(Reminder.id)
+                   .filter(Reminder.user_id == r.user_id, Reminder.active.is_(True), Reminder.text == r.text).first())
+            if dup:
+                continue
+            todo.append((r.id, r.user_id, r.text, r.local_time))
+    finally:
+        session.close()
+    for rid, uid, text, local_time in todo:
+        res = create_reminder(uid, text, local_time, date_str="tomorrow", source="rearm")
+        if "error" in res:
+            logger.info("REMINDER_GYM_REARM_SKIPPED user=%s from=%s err=%s", uid, rid, res["error"])
+            continue
+        created += 1
+        logger.info("REMINDER_GYM_REARMED user=%s from=%s new=%s fire_at=%s text=%r", uid, rid, res["id"], res["fire_at"], text[:60])
+    return created
 
 
 def _interval_gate_reason(user, now: datetime) -> str | None:
