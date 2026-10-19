@@ -374,13 +374,24 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
         # to capture the real ones is the whole point (live incident user 31: generic pull card
         # passed off as "their card").
-        return base + " " + _defaults_instruction(r["template_key"])
+        return base + " " + _defaults_instruction(r["template_key"], beginner=not r.get("has_routine", True))
     return base + " Reply with exactly [silent]."
 
 
-def _defaults_instruction(key: str) -> str:
+def _defaults_instruction(key: str, *, beginner: bool = False) -> str:
     """The tool-result sentence that makes the coach flag a generic day — shared by the
-    start tool and the set_lift_anchors pending-card branch (which used to say [silent])."""
+    start tool and the set_lift_anchors pending-card branch (which used to say [silent]).
+    `beginner` (no routine of their own — experience none / no split): they're following
+    YOU; the card is the program you prescribed. Founder 2026-10-18: "we shouldn't be asking
+    him what he runs — he doesn't run anything and he's listening to us. we're the experts
+    here so we should be guiding him." Live: user 40 was asked "want me to save what u
+    actually run so next week's dialed in?" after his second-ever session."""
+    if beginner:
+        return (f"They're a BEGINNER with no routine of their own — this {key} card IS the program you're "
+                f"giving them. Send ONE short line that says WHY it's built this way (the split for their "
+                f"days, machines/bodyweight if that's their setup, the weights) and the one thing to focus "
+                f"on. NEVER ask what they run or what they'd like the plan to be; ask only about pain or "
+                f"equipment if it matters. Don't reply [silent].")
     return (f"NO routine on file for {key} — these are STARTING DEFAULT exercises, not their "
             f"real ones. Send ONE short line: flag they're just defaults and ask what they actually run on "
             f"{key} day so you can save it (save_routine). Don't call it 'their card' and don't "
@@ -485,7 +496,7 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
             base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
                     f"as a {how} ({sr['sets']} sets) starting from these numbers.")
             if sr.get("used_default"):
-                return base + " " + _defaults_instruction(sr["template_key"])
+                return base + " " + _defaults_instruction(sr["template_key"], beginner=not sr.get("has_routine", True))
             return base + " Reply with exactly [silent]."
         except Exception as e:  # noqa: BLE001 — anchors are saved regardless
             logger.warning("LIFT_ANCHORS_PENDING_CARD_FAILED user=%s key=%s err=%s", user_id, pending, e)
@@ -1625,6 +1636,11 @@ def handle_reconstruct_routine_from_history(user_id: int, tool_input: dict, *, m
         return f"error: couldn't read their history ({e})"
     if r["status"] == "none":
         req = r.get("requested_key")
+        from workouts.start import has_routine, _user_row
+        if not has_routine(_user_row(user_id)):
+            return ("no completed sessions on record for that, and they're a beginner with no routine of "
+                    "their own — there is nothing to ask them for. Build the day yourself "
+                    "(start_workout_session) and tell them why it's built that way.")
         if req:
             return (f"no completed {day_label(req)} sessions on record yet — they genuinely have "
                     f"nothing logged for that day. Ask them what they run on {day_label(req)} "

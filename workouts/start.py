@@ -113,6 +113,14 @@ def defaults_note(key: str, *, has_routine: bool = True) -> str:
             f"actually run on {d} day and i'll swap em in")
 
 
+def _user_row(user_id: int):
+    session = get_session()
+    try:
+        return session.get(User, user_id)
+    finally:
+        session.close()
+
+
 def has_routine(user) -> bool:
     """They have SOMETHING they already run: a split on file and an experience level above
     'none'. False for the brand-new lifter the defaults note should not quiz."""
@@ -362,7 +370,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
                 user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
             "first": first, "estimated": estimated, "setup": setup, "used_default": used_default,
-            "one_off": bool(adhoc)}
+            "one_off": bool(adhoc), "has_routine": has_routine(_user_row(user_id))}
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,
