@@ -27,3 +27,20 @@ def test_sunday_evening_pacific_is_sunday_on_the_card_and_in_the_summary(db):
         assert build_state(s, ws)["session"]["weekday"] == "mon"
     finally:
         s.close()
+
+
+def test_a_weekday_name_as_the_reminder_date_means_that_weekday_never_today():
+    """Live 2026-10-18 18:37 PT (user 40): date_str="wednesday" fell through to TODAY and
+    armed a 10pm "gym" ping for that night (reminder 9, cancelled by hand)."""
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timezone
+    from reminders import next_fire_at
+    tz = ZoneInfo("America/Los_Angeles")
+    sun_evening = datetime(2026, 10, 19, 1, 37, tzinfo=timezone.utc).replace(tzinfo=None)      # Sun 18:37 PT
+    wed = next_fire_at(tz, "22:00", None, after=sun_evening, date_str="wednesday")
+    assert wed == datetime(2026, 10, 22, 5, 0)                                                   # Wed 22:00 PT
+    assert next_fire_at(tz, "22:00", None, after=sun_evening, date_str="next wed") == wed
+    assert next_fire_at(tz, "22:00", None, after=sun_evening, date_str="Sunday") == datetime(2026, 10, 19, 5, 0)   # still ahead today
+    assert next_fire_at(tz, "17:00", None, after=sun_evening, date_str="sunday") == datetime(2026, 10, 26, 0, 0)   # passed → next sunday
+    assert next_fire_at(tz, "22:00", None, after=sun_evening, date_str="someday") is None                          # unreadable → error, not today
+    assert next_fire_at(tz, "22:00", None, after=sun_evening, date_str="2026-10-21") == wed
