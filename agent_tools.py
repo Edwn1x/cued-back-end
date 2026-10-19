@@ -374,7 +374,7 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
         # to capture the real ones is the whole point (live incident user 31: generic pull card
         # passed off as "their card").
-        return base + " " + _defaults_instruction(r["template_key"], beginner=not r.get("has_routine", True))
+        return base + " " + _defaults_instruction(r["template_key"], beginner=bool(r.get("novice")))
     return base + " Reply with exactly [silent]."
 
 
@@ -496,7 +496,7 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
             base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
                     f"as a {how} ({sr['sets']} sets) starting from these numbers.")
             if sr.get("used_default"):
-                return base + " " + _defaults_instruction(sr["template_key"], beginner=not sr.get("has_routine", True))
+                return base + " " + _defaults_instruction(sr["template_key"], beginner=bool(sr.get("novice")))
             return base + " Reply with exactly [silent]."
         except Exception as e:  # noqa: BLE001 — anchors are saved regardless
             logger.warning("LIFT_ANCHORS_PENDING_CARD_FAILED user=%s key=%s err=%s", user_id, pending, e)
@@ -1636,8 +1636,8 @@ def handle_reconstruct_routine_from_history(user_id: int, tool_input: dict, *, m
         return f"error: couldn't read their history ({e})"
     if r["status"] == "none":
         req = r.get("requested_key")
-        from workouts.start import has_routine, _user_row
-        if not has_routine(_user_row(user_id)):
+        from workouts.start import is_novice, _user_row
+        if is_novice(_user_row(user_id)):
             return ("no completed sessions on record for that, and they're a beginner with no routine of "
                     "their own — there is nothing to ask them for. Build the day yourself "
                     "(start_workout_session) and tell them why it's built that way.")

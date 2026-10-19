@@ -24,6 +24,9 @@ def test_the_start_tool_tells_the_coach_to_prescribe_not_poll_a_beginner(db, ime
     v = make_user(db, preferred_channel="imessage", phone="+15550009801", **FOUNDER)            # ppl on file, intermediate
     r2 = handle_start_workout_session(v.id, {"template_key": "push"})
     assert "ask what they actually run" in r2 and "BEGINNER" not in r2
+    w = make_user(db, preferred_channel="imessage", phone="+15550009803", **dict(FOUNDER, current_split=None, split_pointer_day=None, split_pointer_source=None))
+    r3 = handle_start_workout_session(w.id, {"template_key": "push"})                            # intermediate, no split told → they run something: ask
+    assert "ask what they actually run" in r3 and "BEGINNER" not in r3
     assert "BEGINNER" in _defaults_instruction("push", beginner=True) and "[silent]" in _defaults_instruction("push")
 
 

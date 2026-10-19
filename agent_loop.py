@@ -495,8 +495,8 @@ def build_loop_context(user, session) -> str:
         parts.append("## THEIR ROUTINE (on their workout cards — the real exercises; don't re-ask)\n"
                      + routine_desc)
     elif config.ROUTINE_CAPTURE_OFFER_ENABLED and config.START_WORKOUT_TOOL_ENABLED:
-        from workouts.start import has_routine as _has_routine
-        if not _has_routine(user):
+        from workouts.start import is_novice as _is_novice
+        if _is_novice(user):
             # A beginner is following YOU. Founder 2026-10-18: "we're the experts here so we
             # should be guiding him" — never ask what they run, prescribe and explain.
             parts.append("## THEIR ROUTINE\nnone — they're a BEGINNER following you. The workout card IS the "
