@@ -155,9 +155,14 @@ def build_state(session, ws: WorkoutSession) -> dict:
     for ex in exercises.values():
         ex["bodyweight"] = bool(ex["sets"]) and all(not (st["planned_weight"] or 0) for st in ex["sets"])
     when = ws.date or ws.started_at or _utcnow()
+    # The weekday is THEIR weekday: ws.date is naive UTC, so a card built Sunday 6:31pm PT
+    # read "· mon" (live 2026-10-18, user 40).
+    from timefmt import to_local
+    owner = session.get(User, ws.user_id)
+    weekday = (to_local(when, owner) if owner else when).strftime("%a").lower()
     return {
         "session": {"id": ws.id, "template_key": ws.template_key, "status": ws.status,
-                    "weekday": when.strftime("%a").lower(), "started_at": ws.started_at.isoformat() if ws.started_at else None,
+                    "weekday": weekday, "started_at": ws.started_at.isoformat() if ws.started_at else None,
                     "finished_at": ws.finished_at.isoformat() if ws.finished_at else None},
         "exercises": [exercises[k] for k in order],
         "bodyweight": bool(order) and all(exercises[k]["bodyweight"] for k in order),

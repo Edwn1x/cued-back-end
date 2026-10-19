@@ -68,7 +68,12 @@ def summarize(session, ws: WorkoutSession) -> dict:
     taps = sum(1 for s in done if s.source == "card")
     texts = sum(1 for s in done if s.source == "text")
     tapbacks = sum(1 for s in done if s.source == "tapback")
-    return {"template_key": ws.template_key, "weekday": (ws.date or start).strftime("%a").lower() if (ws.date or start) else "",
+    from timefmt import to_local
+    from models import User
+    owner = session.get(User, ws.user_id)
+    when = ws.date or start
+    weekday = (to_local(when, owner) if (when and owner) else when).strftime("%a").lower() if when else ""
+    return {"template_key": ws.template_key, "weekday": weekday,
             "minutes": minutes, "lines": lines, "volume_lb": volume, "pr_count": len(prs),
             "prs": [p.message for p in prs], "sets_done": len(done), "sets_planned": len(sets),
             "taps": taps, "texts": texts, "tapbacks": tapbacks}
