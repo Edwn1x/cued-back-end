@@ -359,6 +359,14 @@ def rsf_context_block(reading: dict | None) -> str:
         return ""
     block = ("\n\n## RSF WEIGHT ROOM (live meter — quote it, never invent a number)\n"
              + occupancy.context_line(reading))
+    if not reading["line_on"]:
+        # Live 2026-10-17 16:47 PT: a 40-min ENTRANCE line while this meter read 44%, then
+        # 2026-10-18 "Line at rsf?" → "no line, it's pretty dead rn". The meter counts the
+        # weight-room FLOOR; it cannot see the door. A quiet floor is not "no line".
+        block += ("\nThis meter is the weight-room floor count only — it cannot see the entrance line. "
+                  "A low number means the floor is open, NOT that there's no line at the door: say the "
+                  "floor number and that you can't see the door line (never 'no line'). If they're there "
+                  "and report a line, believe them over the meter.")
     if reading["line_on"]:
         block += (f"\nthe virtual line is ON. if they're heading there now, give them the join link exactly as "
                   f"written, on its own: {JOIN_URL} — this is the one exception to the no-links rule.")

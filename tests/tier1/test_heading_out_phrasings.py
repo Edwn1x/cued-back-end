@@ -48,3 +48,25 @@ def test_with_the_line_off_the_live_text_is_still_a_normal_turn(db, meter_only, 
     _open_now(monkeypatch)
     _reading(db, 53)
     assert gym_beats.heading_out(user.id, "Yeah ima head to the gym in a bit") is None
+
+
+# ─── the meter is the floor, not the door ─────────────────────────────────────
+
+def test_context_block_says_the_meter_cannot_see_the_door_when_the_line_is_off():
+    import gym_beats
+    from datetime import datetime, timezone
+    reading = {"pct": 43, "label": "light", "line_on": False, "est_wait_min": None,
+               "as_of": datetime(2026, 10, 19, 2, 43, tzinfo=timezone.utc).replace(tzinfo=None)}
+    block = gym_beats.rsf_context_block(reading)
+    assert "43%" in block
+    assert "cannot see the entrance line" in block and "never 'no line'" in block
+
+
+def test_context_block_with_the_line_on_still_carries_the_join_link():
+    import gym_beats
+    from integrations.waitwell.client import JOIN_URL
+    from datetime import datetime, timezone
+    reading = {"pct": 97, "label": "packed", "line_on": True, "est_wait_min": None,
+               "as_of": datetime(2026, 10, 19, 2, 43, tzinfo=timezone.utc).replace(tzinfo=None)}
+    block = gym_beats.rsf_context_block(reading)
+    assert JOIN_URL in block and "cannot see the entrance line" not in block
