@@ -402,16 +402,52 @@ def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool =
     return s
 
 
+def last_activity_at(session, ws) -> datetime | None:
+    """When the session was last touched: the newest done set, else when it started
+    (or was sent). A card tapped 20 minutes ago is in progress whatever the start time."""
+    last_set = (session.query(SetLog.done_at).filter(SetLog.session_id == ws.id, SetLog.done.is_(True),
+                                                      SetLog.done_at.isnot(None))
+                .order_by(SetLog.done_at.desc()).first())
+    cands = [t for t in (ws.started_at or ws.date, last_set[0] if last_set else None) if t]
+    return max(cands) if cands else None
+
+
+def session_in_progress(user_id: int, *, session=None, now: datetime | None = None, within_min: int | None = None):
+    """The user's active session touched within `within_min` (default
+    HEARTBEAT_SESSION_GUARD_MINUTES), as (session_id, minutes_since_last_activity), else None."""
+    import config as _cfg
+    now = now or _utcnow()
+    within = int(_cfg.HEARTBEAT_SESSION_GUARD_MINUTES if within_min is None else within_min)
+    own = session is None
+    session = session or get_session()
+    try:
+        ws = (session.query(WorkoutSession)
+              .filter(WorkoutSession.user_id == user_id, WorkoutSession.status == "active")
+              .order_by(WorkoutSession.id.desc()).first())
+        if not ws:
+            return None
+        last = last_activity_at(session, ws)
+        if not last:
+            return None
+        mins = int((now - last).total_seconds() // 60)
+        return (ws.id, mins) if mins <= within else None
+    finally:
+        if own:
+            session.close()
+
+
 def abandon_stale(now: datetime | None = None) -> int:
-    """Scheduler: a session still open ABANDON_AFTER_H after it started (or was
-    sent, if never started) → abandoned. No message, ever."""
+    """Scheduler: a session still open ABANDON_AFTER_H after it was LAST TOUCHED (a
+    done set, else when it started / was sent) → abandoned. No message, ever. Live
+    2026-10-19 00:01 PT (user 40): a card built at 18:38 for a session he got to at
+    23:55 would have been swept mid-workout at 00:38 on the old start-time clock."""
     now = now or _utcnow()
     cutoff = now - timedelta(hours=ABANDON_AFTER_H)
     session = get_session()
     try:
         n = 0
         for ws in session.query(WorkoutSession).filter(WorkoutSession.status.in_(("planned", "active"))).all():
-            anchor = ws.started_at or ws.date
+            anchor = last_activity_at(session, ws)
             if anchor and anchor < cutoff:
                 ws.status = "abandoned"; n += 1
                 logger.info("WORKOUT_ABANDONED user=%s session=%s started=%s", ws.user_id, ws.id, anchor)

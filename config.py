@@ -757,6 +757,10 @@ HEARTBEAT_TICK_MINUTES = int(os.getenv("HEARTBEAT_TICK_MINUTES", "45"))     # du
 HEARTBEAT_JITTER_SECONDS = int(os.getenv("HEARTBEAT_JITTER_SECONDS", "600"))  # 0-10 min offset — kills the :00/:30 tell
 HEARTBEAT_MAX_PER_DAY = int(os.getenv("HEARTBEAT_MAX_PER_DAY", "5"))        # hard cap (guardrail)
 HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre-gate
+# Mid-workout hard gate: an ACTIVE session touched within this many minutes (a done set, else
+# its start) blocks every proactive send and tells the loop they're mid-session (founder 2026-10-19).
+HEARTBEAT_SESSION_GUARD_ENABLED = os.getenv("HEARTBEAT_SESSION_GUARD_ENABLED", "true").lower() == "true"
+HEARTBEAT_SESSION_GUARD_MINUTES = int(os.getenv("HEARTBEAT_SESSION_GUARD_MINUTES", "120"))
 # Standing overnight quiet window for PROACTIVE sends (heartbeat + gym beats), so a
 # nudge never lands at 1am. Separate from quiet_until (a transient goodnight). Default
 # 9pm–8am LOCAL; a user's parseable sleep_time/wake_time can only EXTEND it (more
