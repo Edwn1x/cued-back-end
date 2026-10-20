@@ -329,11 +329,14 @@ def test_prompt_assumes_a_berkeley_student_and_only_asks_what_is_unknown(db):
     assert "ASSUME a UC Berkeley student" in sp and "ask ONCE, as a rough range" in sp
 
 
-def test_identity_bans_the_words_and_knows_they_are_broke():
+def test_identity_bans_the_words_and_does_not_assume_they_are_broke():
     from agent_loop import identity_prompt
     ident = identity_prompt()
     assert '"parked"' in ident and '"dragging"' in ident and '"real" as a whole reaction' in ident
-    assert "They're broke students." in ident and "double\n  chicken bowl" in ident
+    # founder 2026-10-16: don't assume broke; ok to acknowledge a student may want to be
+    # financially responsible (the old "They're broke students." line is gone)
+    assert "Don't assume they're broke." in ident and "double chicken bowl" in " ".join(ident.split())
+    assert "They're broke students." not in ident
     assert "Assume, then say so." in ident
     assert "lwk" in ident, "lwk stays allowed (founder 2026-10-09)"
 
