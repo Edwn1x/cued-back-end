@@ -553,6 +553,18 @@ def build_loop_context(user, session) -> str:
         card_line = None
     if card_line:
         parts.append(card_line)
+    # Mid-workout right now (founder, 2026-10-19): coach the session, never the clock.
+    try:
+        from workouts.session_ops import session_in_progress
+        _sip = session_in_progress(user.id) if config.HEARTBEAT_SESSION_GUARD_ENABLED else None
+    except Exception:  # noqa: BLE001
+        _sip = None
+    if _sip:
+        parts.append(f"## SESSION IN PROGRESS\nthey are mid-workout RIGHT NOW (card #{_sip[0]} open, last activity "
+                     f"{_sip[1]} min ago). Coach the session: sets, form, the next lift. Whatever the clock says, no "
+                     "'go to sleep' / 'it's late' / bedtime talk and no food plan — they got here late, it happens; "
+                     "the session is the plan. The summary and review come when they close the card; sleep talk, "
+                     "if any, comes after that.")
 
     # 4a-ii. A one-time form-demo link for a movement on their card they haven't been
     # shown yet (exercise_demos.py). Resolver is PURE (no DB write); we mark seen in a

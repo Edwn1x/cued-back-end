@@ -443,6 +443,17 @@ def guardrail_reason(user, session, *, now=None) -> str | None:
     # quiet hours (goodnight / quiet_until, naive UTC)
     if user.quiet_until and _naive_utcnow() < user.quiet_until:
         return "quiet_hours"
+    # Mid-workout: a card is open and was touched recently. Nothing proactive lands in a
+    # session — not a meal-gap, not an evening close, not a bedtime line (founder, 2026-10-19:
+    # "my worry is that the coach is going to start nagging him to go to sleep while he's
+    # clearly just gotten to the gym"). The summary + review close the session.
+    if config.HEARTBEAT_SESSION_GUARD_ENABLED:
+        try:
+            from workouts.session_ops import session_in_progress
+            if session_in_progress(user.id, session=session, now=_naive(_ref(now)) if now else None):
+                return "workout_in_progress"
+        except Exception as e:  # noqa: BLE001 — a guard must never break the tick
+            logger.warning("SESSION_GUARD_FAILED user=%s err=%s", user.id, e)
     day_start = _local_day_start_utc(user)
     # daily cap on proactive messages
     spoke_today = (session.query(HeartbeatTick)
