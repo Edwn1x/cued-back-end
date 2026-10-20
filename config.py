@@ -16,6 +16,13 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 # URL Twilio signs must equal what Flask sees behind ProxyFix — scheme + host +
 # path + query), THEN set TWILIO_SIGNATURE_MODE=enforce in Railway.
 TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow").strip().lower()
+# Stalled-onboarding re-engagement (onboarding_reengage.sweep). Live 2026-10-15: 15 sign-ups
+# in one night, 1 finished setup, 11 stalled mid-intake and were never contacted again (the
+# heartbeat only serves step-3 users). Two nudges max: ~20h and ~72h after the thread went
+# quiet, 10:00–21:00 local, each ending in the next intake ask.
+ONBOARDING_REENGAGE_ENABLED = os.getenv("ONBOARDING_REENGAGE_ENABLED", "true").lower() == "true"
+ONBOARDING_REENGAGE_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FIRST_HOURS", "20"))
+ONBOARDING_REENGAGE_SECOND_HOURS = int(os.getenv("ONBOARDING_REENGAGE_SECOND_HOURS", "72"))
 # Legacy public sign-up surface (2026-10-15 retirement, after the probe). The live site
 # signs up through /waitlist only; /signup (JSON) + /activate-sms are retired (410) unless
 # this is flipped on for a rollback. GET /signup always redirects to the site.
