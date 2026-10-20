@@ -108,6 +108,15 @@ def parse_local_time(hhmm) -> tuple[int, int] | None:
     return h, mm
 
 
+def _weekday_from(raw: str) -> int | None:
+    """'wednesday' / 'wed' / 'next wed' / 'on thursday' → weekday index, else None."""
+    import re as _re
+    m = _re.search(r"\b(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)[a-z]*\b", raw or "")
+    if not m:
+        return None
+    return DAY_ABBR.index(m.group(1)[:3])
+
+
 def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after: datetime | None = None,
                  date_str: str | None = None) -> datetime | None:
     """Naive-UTC instant of the next occurrence strictly after `after` (default now).
@@ -132,10 +141,25 @@ def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after
                 return cand.astimezone(timezone.utc).replace(tzinfo=None)
         return None
     if date_str and str(date_str).strip().lower() not in ("", "today", "tomorrow"):
+        raw = str(date_str).strip().lower()
+        wd = _weekday_from(raw)
+        if wd is not None:
+            # "wednesday" / "next wed" → the next such day (today only if the time is still ahead)
+            for offset in range(0, 8):
+                cand_d = (now_local + timedelta(days=offset)).date()
+                if cand_d.weekday() != wd:
+                    continue
+                cand = datetime(cand_d.year, cand_d.month, cand_d.day, h, mm, tzinfo=tz)
+                if cand > now_local and not (raw.startswith("next") and offset == 0):
+                    return cand.astimezone(timezone.utc).replace(tzinfo=None)
+            return None
         try:
-            d = datetime.fromisoformat(str(date_str).strip()).date()
+            d = datetime.fromisoformat(raw).date()
         except ValueError:
-            d = now_local.date()
+            # Live 2026-10-18 (user 40): "wednesday" fell through to TODAY and armed a 10pm
+            # "gym" ping for tonight. An unreadable date is an error, never a guess.
+            logger.warning("REMINDER_DATE_UNREADABLE date_str=%r", date_str)
+            return None
     elif str(date_str or "").strip().lower() == "tomorrow":
         d = (now_local + timedelta(days=1)).date()
     else:

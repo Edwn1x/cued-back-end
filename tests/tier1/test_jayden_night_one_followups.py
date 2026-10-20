@@ -48,7 +48,7 @@ def test_voice_carries_the_in_the_moment_rule():
                    'it is never "ok don\'t then"', "keep pushing while they're still talking to you",
                    "day one or one day", "make it small and concrete", "Vary the angle each turn",
                    "Never \"it's late anyway\" when it's their normal time", "Stop pushing only for a real reason",
-                   "set_reminder for the same time tomorrow, and SAY you did", "Never claim it's \"on the books\""):
+                   "set_reminder for the day they named (tomorrow if they didn't)", "Never claim it's \"on the books\""):
         assert phrase in v, phrase
 
 
