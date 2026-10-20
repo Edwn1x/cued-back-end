@@ -244,4 +244,5 @@ def _legacy_completion_shape(monkeypatch):
     import config as _cfg
     monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
     monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")
+    monkeypatch.setattr(_cfg, "PROGRAM_BRIEF_ENABLED", False)   # the program brief (2026-10-18) has its own tests: test_program_builder.py
     monkeypatch.setattr(_cfg, "SETUP_STEPS_DIRECTIVE_ENABLED", False)

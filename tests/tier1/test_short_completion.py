@@ -19,6 +19,14 @@ from tests.tier1.test_onboarding_restructure_1 import _bodies, _coach_said
 from tests.tier1.test_rundown_tiers import ALL as _ALL_FLAGS
 
 
+
+@pytest.fixture(autouse=True)
+def _no_program_brief(monkeypatch):
+    """These pin the completion shape without the program brief (2026-10-18), which now
+    sits between the summary and the first setup step — its own tests: test_program_builder.py."""
+    monkeypatch.setattr(config, "PROGRAM_BRIEF_ENABLED", False)
+
+
 @pytest.fixture
 def all_on(monkeypatch):
     for f in _ALL_FLAGS:

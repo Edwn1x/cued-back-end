@@ -1530,6 +1530,64 @@ def handle_set_checkin_level(user_id: int, tool_input: dict, *, message_id=None)
             f"{effect}. Say it plainly in one line; don't promise anything beyond that.")
 
 
+ADJUST_PROGRAM_TOOL = {
+    "name": "adjust_program",
+    "description": (
+        "Change the code-built training PROGRAM (the PROGRAM block): which days they train, their "
+        "split, or their time. Use it when they ask — 'make it 3 days', 'move tuesday to wednesday', "
+        "'can we do push pull legs', 'i train at 7am now' — then explain the new week in one line "
+        "(the result has it). Days are weekday abbreviations (mon…sun). Exercise swaps are NOT this "
+        "tool (save_routine / the card). The program is rebuilt from their profile + these inputs and "
+        "their standing gym reminder follows it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "days": {"type": "array", "items": {"type": "string"}, "description": "weekdays to train, e.g. ['mon','wed','fri']"},
+            "split": {"type": "string", "enum": ["full_body", "upper_lower", "ppl"], "description": "a split they asked for"},
+            "time": {"type": "string", "description": "their training time, local 'HH:MM' (24h)"},
+        },
+        "required": [],
+    },
+}
+
+
+def handle_adjust_program(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from workouts.program import apply_program, describe_week, ensure_program_reminder, DAYS, _confirm
+    from reminders import parse_local_time
+    days = [str(d).strip().lower()[:3] for d in (tool_input.get("days") or []) if str(d).strip()]
+    bad = [d for d in days if d not in DAYS]
+    if bad:
+        return f"error: unknown days {bad} — use mon/tue/wed/thu/fri/sat/sun"
+    split = (tool_input.get("split") or "").strip().lower() or None
+    t = (tool_input.get("time") or "").strip() or None
+    if t and parse_local_time(t) is None:
+        return f"error: time {t!r} not understood — use local 'HH:MM' (24h)"
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).with_for_update().one_or_none()
+        if not user:
+            return "error: user not found"
+        if t:
+            h, m = parse_local_time(t)
+            user.workout_time = f"{h:02d}:{m:02d}"
+            user.workout_times = None
+            flag_modified(user, "workout_times")
+        if days:
+            user.workout_days = ",".join(d for d in DAYS if d in days)
+            user.confirmed_training_days = user.workout_days
+        session.commit()
+    finally:
+        session.close()
+    prog = apply_program(user_id, weekdays=[d for d in DAYS if d in days] if days else None, source="adjust_program",
+                         stated_split=split)
+    if not prog:
+        return "error: program builder is off"
+    _confirm(user_id, prog)
+    logger.info("ADJUST_PROGRAM user=%s days=%s split=%s time=%s → %s", user_id, days, split, t, list(prog["days"]))
+    return f"ok: program is now {describe_week(prog)} ({prog['split'].replace('_', '/')}); tell them the new week in one line"
+
+
 SAVE_ROUTINE_TOOL = {
     "name": "save_routine",
     "description": (
@@ -4230,6 +4288,7 @@ _HANDLERS = {
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,
     "save_routine": handle_save_routine,
+    "adjust_program": handle_adjust_program,
     "reconstruct_routine_from_history": handle_reconstruct_routine_from_history,
     "set_lift_anchors": handle_set_lift_anchors,
     "cancel_reminder": handle_cancel_reminder,

@@ -36,7 +36,7 @@ import config
 logger = logging.getLogger("cued.setup_sequence")
 
 # Outbound types that are setup steps: the anchor for "was the previous step answered".
-STEP_TYPES = ("connect_offer", "connect_link", "water_offer", "card_setup", "workout_intro", "workout_card")
+STEP_TYPES = ("program_brief", "connect_offer", "connect_link", "water_offer", "card_setup", "workout_intro", "workout_card")
 
 
 def _naive_utcnow() -> datetime:

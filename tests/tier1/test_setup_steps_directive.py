@@ -15,6 +15,14 @@ from tests.tier1.test_card_setup import sidecar_ok, card_ok, sync_threads, _u  #
 from tests.tier1.test_setup_sequence import seq_on, _user, _inbound, _backdate  # noqa: F401
 
 
+
+@pytest.fixture(autouse=True)
+def _no_program_brief(monkeypatch):
+    """These pin the completion shape without the program brief (2026-10-18), which now
+    sits between the summary and the first setup step — its own tests: test_program_builder.py."""
+    monkeypatch.setattr(config, "PROGRAM_BRIEF_ENABLED", False)
+
+
 @pytest.fixture
 def directive(seq_on, monkeypatch):
     monkeypatch.setattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True)

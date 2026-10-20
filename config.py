@@ -458,6 +458,14 @@ START_WORKOUT_TOOL_ENABLED = os.getenv("START_WORKOUT_TOOL_ENABLED", "true").low
 WORKOUT_STRAGGLER_WINDOW_MIN = int(os.getenv("WORKOUT_STRAGGLER_WINDOW_MIN", "20"))
 # One code line after the summary on a user's first-ever completed session.
 FIRST_WORKOUT_LINE_ENABLED = os.getenv("FIRST_WORKOUT_LINE_ENABLED", "true").lower() == "true"
+# The code-built, tailored program (workouts/program.py): split by days+level, weekdays, times,
+# machine/bodyweight variants, cardio finisher, rationale — stored on users.program and mirrored
+# into current_split / confirmed_training_days / workout_times.
+PROGRAM_BUILDER_ENABLED = os.getenv("PROGRAM_BUILDER_ENABLED", "true").lower() == "true"
+# The brief at onboarding completion (3 bubbles ending on "those days work?"), its code-handled answer,
+# and the standing gym reminder on the program's days once they confirm.
+PROGRAM_BRIEF_ENABLED = os.getenv("PROGRAM_BRIEF_ENABLED", "true").lower() == "true"
+PROGRAM_REMINDER_ENABLED = os.getenv("PROGRAM_REMINDER_ENABLED", "true").lower() == "true"
 # Workout-session lifecycle (the gym deadlock fix, 2026-09-27): reset_workout_session — an
 # on-demand tool that CLEARS the user's active session so a fresh card can go out (finalizes
 # it if sets are logged so work is never lost, else abandons it). Also lets start_workout_session

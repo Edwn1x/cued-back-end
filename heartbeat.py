@@ -1575,6 +1575,13 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
             parts.append(rb)
     except Exception as e:  # noqa: BLE001
         logger.warning("REMINDER_CONTEXT_FAILED user=%s err=%s", user.id, e)
+    try:
+        from workouts.program import program_context
+        pb = program_context(user)
+        if pb:
+            parts.append(pb)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PROGRAM_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)
