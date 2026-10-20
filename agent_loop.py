@@ -495,10 +495,20 @@ def build_loop_context(user, session) -> str:
         parts.append("## THEIR ROUTINE (on their workout cards — the real exercises; don't re-ask)\n"
                      + routine_desc)
     elif config.ROUTINE_CAPTURE_OFFER_ENABLED and config.START_WORKOUT_TOOL_ENABLED:
-        parts.append("## THEIR ROUTINE\nnone on file — their workout cards fall back to GENERIC default "
-                     "exercises for each day. When they ask for a card / start a session, tell them it's "
-                     "starting defaults and offer to save what they actually run (save_routine with "
-                     "routine_text). Don't pass a default day off as their real routine.")
+        from workouts.start import is_novice as _is_novice
+        if _is_novice(user):
+            # A beginner is following YOU. Founder 2026-10-18: "we're the experts here so we
+            # should be guiding him" — never ask what they run, prescribe and explain.
+            parts.append("## THEIR ROUTINE\nnone — they're a BEGINNER following you. The workout card IS the "
+                         "program you prescribe (the PROGRAM block when present; else the day's starter "
+                         "exercises). NEVER ask what they run / what they'd like the plan to be — they have "
+                         "nothing to give you. When a card goes out, say WHY it's built that way and the one "
+                         "thing to focus on; questions to them are about pain, equipment, or time only.")
+        else:
+            parts.append("## THEIR ROUTINE\nnone on file — their workout cards fall back to GENERIC default "
+                         "exercises for each day. When they ask for a card / start a session, tell them it's "
+                         "starting defaults and offer to save what they actually run (save_routine with "
+                         "routine_text). Don't pass a default day off as their real routine.")
     # 4a-i. Even with NO saved routine, their PAST sessions and every set ARE logged and
     # can be reconstructed — so the coach never confabulates "I don't have your old card's
     # exercises" (live incident user 31: 8 completed push sessions on record, coach said
