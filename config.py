@@ -30,6 +30,11 @@ ADMIN_AUTH_FAIL_WINDOW_S = int(os.getenv("ADMIN_AUTH_FAIL_WINDOW_S", "600"))
 # read an empty events list as knowledge). Context names the unconnected calendar, and a
 # send-time guard drops a sentence that claims a free/no-class day when none is connected.
 HEARTBEAT_NO_CALENDAR_GUARD_ENABLED = os.getenv("HEARTBEAT_NO_CALENDAR_GUARD_ENABLED", "true").lower() == "true"
+# Search dead-end backstop (live 2026-10-16, user 61: "couldn't pin GARA's exact number, their
+# menu doesn't post macros" — no estimate, no question, no next step; the founder had to text
+# "send me a pic" by hand). When a reply says it couldn't find the number and carries neither a
+# number nor a question, code appends the one next step. voice.md carries the real rule.
+SEARCH_DEAD_END_BACKSTOP_ENABLED = os.getenv("SEARCH_DEAD_END_BACKSTOP_ENABLED", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):

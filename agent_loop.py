@@ -1172,6 +1172,31 @@ def _continuation_block(user, combined_body: str, session) -> str | None:
         return None
 
 
+# "couldn't find / pin / locate …" or "they don't post macros" — the search came up empty.
+_DEAD_END_RE = re.compile(
+    r"\b(?:couldn'?t|can'?t|could not|cannot|unable to|wasn'?t able to|not able to) "
+    r"(?:find|pin(?: down)?|locate|get|track down|dig up|pull up|confirm)\b"
+    r"|\b(?:doesn'?t|don'?t|does not|do not|didn'?t) (?:post|publish|list|have) (?:their |its |the )?"
+    r"(?:macros|nutrition|calories|numbers|cals|info)\b",
+    re.IGNORECASE,
+)
+_DEAD_END_FALLBACK = " — give me the size or send a pic and i'll log a solid estimate"
+
+
+def _dead_end_fallback(text: str, user_id: int) -> str:
+    """Backstop for the voice.md rule: a reply that says the lookup failed and offers neither a
+    number nor a question gets the one next step appended. A number (an estimate was given) or
+    a question (they were asked to tighten it) means the ladder was followed — untouched."""
+    if not text or not config.SEARCH_DEAD_END_BACKSTOP_ENABLED:
+        return text
+    if not _DEAD_END_RE.search(text):
+        return text
+    if "?" in text or re.search(r"\d", text):
+        return text
+    logger.info("AGENT_LOOP_DEAD_END_BACKSTOP user=%s text=%r", user_id, text[:100])
+    return text.rstrip().rstrip(".") + _DEAD_END_FALLBACK
+
+
 def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
@@ -2061,7 +2086,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                     text = lowered
             # Restatement guard (layer B): a no-write turn that restates the reply sent
             # moments ago becomes an ack, never a second "already in — ur at 555".
-            return _apply_restatement_guard(user, text, combined_body, state)
+            return _apply_restatement_guard(user, _dead_end_fallback(text, user.id), combined_body, state)
 
         # A reaction-only turn: the tapback WAS the reply. Empty text is the correct
         # outcome, not an anomaly — the caller sends nothing and clears the bubble.
