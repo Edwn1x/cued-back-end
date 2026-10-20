@@ -1205,7 +1205,13 @@ def _insert_degree_sign(msg: str, temp: str) -> str | None:
     `msg` as a BARE number (digit-boundaried; not already followed by °/º/degrees/deg/F),
     return `msg` with "°" inserted right after the FIRST such occurrence; else None. The
     degree sign is kept as-is downstream (UCS-2 for SMS — wanted; never converted to "F")."""
-    pat = re.compile(rf"(?<![\d°º]){re.escape(temp)}(?![\d°º])(?!\s*(?:°|º|degrees|deg\b|f\b))",
+    # Already signed anywhere → nothing to do. Live 2026-10-14 (user 51): "70° and clear
+    # out. cs70 hw due by 4pm" — the signed 70 failed the lookahead, the search ran on and
+    # signed the 70 in "cs70". And a number glued to letters (cs70, 61c, rm70) is never the
+    # temperature: the lookbehind is a WORD boundary now, not just digit/degree.
+    if re.search(rf"(?<![\w°º]){re.escape(temp)}\s*(?:°|º)", msg or ""):
+        return None
+    pat = re.compile(rf"(?<![\w°º]){re.escape(temp)}(?![\w°º])(?!\s*(?:°|º|degrees|deg\b|f\b))",
                      re.IGNORECASE)
     m = pat.search(msg or "")
     if not m:
