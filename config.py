@@ -25,6 +25,11 @@ SITE_SIGNUP_URL = os.getenv("SITE_SIGNUP_URL", "https://cued.fit/#signup")
 # the window → 429 for that IP (even with the right password) until the window drains.
 ADMIN_AUTH_MAX_FAILS = int(os.getenv("ADMIN_AUTH_MAX_FAILS", "10"))
 ADMIN_AUTH_FAIL_WINDOW_S = int(os.getenv("ADMIN_AUTH_FAIL_WINDOW_S", "600"))
+# Heartbeat schedule-claim guard (live 2026-10-16, user 61: "no classes down for today so good
+# shot at an evening lift" — calendar never connected, memory says 8am classes daily; the model
+# read an empty events list as knowledge). Context names the unconnected calendar, and a
+# send-time guard drops a sentence that claims a free/no-class day when none is connected.
+HEARTBEAT_NO_CALENDAR_GUARD_ENABLED = os.getenv("HEARTBEAT_NO_CALENDAR_GUARD_ENABLED", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
