@@ -233,3 +233,21 @@ def test_stretched_yes_and_no_spellings_count(db, offer_on):
         assert YES_RE.match(t) and not NO_RE.match(t), t
     assert not NO_RE.match("not really sure what u mean") and not NO_RE.match("nothing today")
     assert not YES_RE.match("yesterday was rough") and not YES_RE.match("yale game sat")
+
+
+def test_a_fired_water_ping_does_not_take_the_floor_from_the_offer(db, offer_on, sms_capture):
+    """Interval pings now carry their own type (engagement_tracker.WATER_REMINDER_TYPE);
+    like a one-off reminder bubble they ask nothing, so a bare 'no' still lands on the offer."""
+    from water_offer import send_offer, handle_reply, NO_REPLY
+    from models import get_session, Message
+    u = make_user(db)
+    send_offer(u.id)
+    s = get_session()
+    try:
+        s.add(Message(user_id=u.id, direction="out", body="water break", message_type="water_reminder",
+                      created_at=_now() + timedelta(seconds=5)))
+        s.commit()
+    finally:
+        s.close()
+    assert handle_reply(u.id, "Nahh I drink a lot of water") == NO_REPLY
+    assert _u(u.id).water_offer_status == "no" and _reminders(u.id) == []

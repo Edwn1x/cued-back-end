@@ -588,6 +588,15 @@ def build_loop_context(user, session) -> str:
             brief = None
         if brief:
             parts.append(brief)
+        # 4c. And the session that JUST closed (how + what was logged), so "why did my
+        # workout stop" gets the real answer (she tapped Finish) instead of a guess.
+        try:
+            from workouts.session_ops import recent_close_brief
+            closed = recent_close_brief(user)
+        except Exception:  # noqa: BLE001 — never let this block break the turn
+            closed = None
+        if closed:
+            parts.append(closed)
 
     # 5. Coaching summary + delivered points.
     if (user.coaching_summary or "").strip():

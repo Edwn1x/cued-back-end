@@ -48,7 +48,7 @@ NO_RE = re.compile(r"^\s*(no+|nah+|naw|nope+|no thanks|no thank you|i'?m good|im
 HOURS_RE = re.compile(r"every\s*(\d{1,2})\s*(?:h|hr|hrs|hours?)", re.I)
 STATUS_OFFERED, STATUS_YES, STATUS_NO, STATUS_LAPSED = "offered", "yes", "no", "lapsed"
 # Outbound types that never ask the user anything (see pending_offer).
-NO_QUESTION_TYPES = ("reminder",)
+NO_QUESTION_TYPES = ("reminder", "water_reminder")  # engagement_tracker.REMINDER_TYPES
 
 
 def _naive_utcnow() -> datetime:
