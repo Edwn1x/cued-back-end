@@ -271,3 +271,17 @@ def test_the_loop_and_heartbeat_contexts_carry_the_program_block(db, anthropic_s
     from agent_loop import _voice_prompt
     v = " ".join(_voice_prompt().split())
     assert "Their program (the PROGRAM block" in v and "adjust_program" in v
+
+
+def test_a_single_mentioned_day_is_not_a_schedule_when_they_stated_a_count(caplog):
+    """Live 2026-10-19 (user 40): the decisions extractor wrote confirmed_training_days='wed' off
+    "can't go to the gym till Wednesday"; workout_days was '4'. That's a mention, not his week."""
+    import logging
+    from workouts.program import build_program, named_days
+    caplog.set_level(logging.INFO)
+    u = _u(workout_days="4", confirmed_training_days="wed")
+    assert named_days(u) is None and "PROGRAM_NAMED_DAYS_IGNORED" in caplog.text
+    p = build_program(u)
+    assert p["days_per_week"] == 4 and p["split"] == "upper_lower" and p["days_source"] == "default"
+    assert named_days(_u(workout_days="4", confirmed_training_days="mon,tue,thu,fri")) == ["mon", "tue", "thu", "fri"]
+    assert named_days(_u(workout_days="mon,wed,fri", confirmed_training_days=None)) == ["mon", "wed", "fri"]   # no count stated → the names are the schedule

@@ -61,8 +61,16 @@ def days_per_week(user) -> int:
 
 
 def named_days(user) -> list[str] | None:
-    """Weekdays they actually named (confirmed_training_days / workout_days), in week order."""
+    """Weekdays they actually named (confirmed_training_days / workout_days), in week order.
+    A list SHORTER than the weekly count they stated is a mention, not a schedule — live
+    2026-10-19 (user 40): the per-turn decisions extractor wrote confirmed_training_days='wed'
+    off "I can't go to the gym till Wednesday" while workout_days was '4'; the builder would
+    have made that a one-day program."""
     import re
+    count = None
+    m = re.fullmatch(r"\s*(\d)\s*", str(getattr(user, "workout_days", None) or ""))
+    if m:
+        count = int(m.group(1))
     for col in ("confirmed_training_days", "workout_days"):
         raw = (getattr(user, col, None) or "").lower()
         found = [t[:3] for t in re.split(r"[\s,/&+]+", raw) if t[:3] in DAYS]
@@ -71,6 +79,10 @@ def named_days(user) -> list[str] | None:
             for d in DAYS:
                 if d in found and d not in seen:
                     seen.append(d)
+            if count and len(seen) < count:
+                logger.info("PROGRAM_NAMED_DAYS_IGNORED user=%s named=%s count=%s col=%s",
+                            getattr(user, "id", None), seen, count, col)
+                return None
             return seen
     return None
 
