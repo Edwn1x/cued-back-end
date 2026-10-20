@@ -70,6 +70,13 @@ def next_targets(session, user_id: int, tmpl, user=None) -> tuple[float, int, st
     (no profile at all). Pass `user` to enable calibration."""
     if tmpl.default_weight == 0 and tmpl.rep_step:
         return _next_bodyweight_targets(session, user_id, tmpl)
+    # A target the post-session review set ("start leg press at 155 next time") beats the
+    # +1-step rule — once (consumed when the session is built; workouts/review.py).
+    if user is not None:
+        from workouts.review import pending_decision
+        d = pending_decision(user, tmpl.slug)
+        if d and d.get("weight") is not None:
+            return float(d["weight"]), int(d.get("reps") or tmpl.reps), "review"
     sets = _last_session_sets(session, user_id, tmpl.slug)
     done = [s for s in sets if s.done and s.actual_weight and s.actual_reps]
     if done:
@@ -115,6 +122,10 @@ def build_session(user, template_key: str, *, now=None, exercises=None) -> Worko
         session.refresh(ws)
         _ = ws.sets  # load before detaching
         session.expunge(ws)
-        return ws
     finally:
         session.close()
+    used = [k for k, v in sources.items() if v == "review"]
+    if used:
+        from workouts.review import consume_decisions
+        consume_decisions(user.id, used)
+    return ws

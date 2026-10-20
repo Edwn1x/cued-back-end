@@ -189,6 +189,10 @@ class User(Base):
     # exercises, scheme, progression, cardio, constraints, rationale. The columns above
     # are mirrored FROM it; the brief and the loop's PROGRAM block render it.
     program = Column(JSON, default=None)
+    # Per-exercise NEXT targets from the post-session review (workouts/review.py):
+    # {slug: {weight, reps, why, session_id, set_at, consumed}} — honoured once by
+    # plan.next_targets, then marked consumed.
+    training_decisions = Column(JSON, default=None)
     # Lifts the user has STATED ("i bench 135", "squat's around 185 for 5"):
     # {"bench_press": {"weight": 135, "reps": 5, "source": "model"|"onboarding", "at": iso}}.
     # workouts/calibrate.py turns these into the first card's numbers — for that lift

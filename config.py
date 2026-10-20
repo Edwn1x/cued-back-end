@@ -466,6 +466,11 @@ PROGRAM_BUILDER_ENABLED = os.getenv("PROGRAM_BUILDER_ENABLED", "true").lower() =
 # and the standing gym reminder on the program's days once they confirm.
 PROGRAM_BRIEF_ENABLED = os.getenv("PROGRAM_BRIEF_ENABLED", "true").lower() == "true"
 PROGRAM_REMINDER_ENABLED = os.getenv("PROGRAM_REMINDER_ENABLED", "true").lower() == "true"
+# The coach's reasoning around a session (workouts/review.py, prompts/training_knowledge.md):
+# a model-written review after the code summary (next targets bounded + stored) and a
+# model-written plan with the card (replaces the generic intro). Founder 2026-10-18.
+SESSION_REVIEW_ENABLED = os.getenv("SESSION_REVIEW_ENABLED", "true").lower() == "true"
+PRE_SESSION_PLAN_ENABLED = os.getenv("PRE_SESSION_PLAN_ENABLED", "true").lower() == "true"
 # Workout-session lifecycle (the gym deadlock fix, 2026-09-27): reset_workout_session — an
 # on-demand tool that CLEARS the user's active session so a fresh card can go out (finalizes
 # it if sets are logged so work is never lost, else abandons it). Also lets start_workout_session
