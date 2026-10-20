@@ -1418,7 +1418,12 @@ LOG_EVENT_TOOL = {
         "matters and stays visible for a timely check-in — a semantic memory fact would "
         "be wrong (it never expires) and gets crowded out. For a whole calendar / a day "
         "with several commitments, pass an `events` list — ONE call for the screenshot "
-        "is cheaper and far less likely to truncate than five separate calls."
+        "is cheaper and far less likely to truncate than five separate calls. "
+        "If the date they give CONFLICTS with what's already on their calendar (the EVENTS "
+        "block), ask which is right FIRST and do not log it in the same turn you question it "
+        "— live 2026-10-15: 'midterm's today at 7 not tmrw?' was asked AND the event written, "
+        "then the day was read wrong and the radar carried both. If they correct a date you "
+        "already logged, fix that row with manage_log (edit or delete) in the same turn."
     ),
     "input_schema": {
         "type": "object",
