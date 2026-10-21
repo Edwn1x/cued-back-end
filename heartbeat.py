@@ -1162,14 +1162,19 @@ def _mentions_title(text: str, title: str) -> bool:
     'CS70 hw' or 'CS 70 hw' matches 'CS 70 HW Due' via the fused 'cs70'. A generic paraphrase
     with no title token ('hw due tonight') counts as a drop — a log line, never a text change."""
     low = (text or "").lower()
-    # fuse letter/digit pairs split by whitespace so "CS 70" in the text also reads "cs70"
+    # fuse letter/digit pairs split by whitespace so "CS 70" in the text also reads "cs70".
+    # Live 2026-10-21: fusing BOTH directions at once turned "cs 70 hw" into "cs70hw", which
+    # no longer matched the candidate "cs70" (boundary fails) — a false DROP log on a
+    # briefing that named the item. Try each direction on its own as well as both.
+    fused_ld = re.sub(r"(?<=[a-z])\s+(?=\d)", "", low)          # "cs 70 hw" → "cs70 hw"
+    fused_dl = re.sub(r"(?<=\d)\s+(?=[a-z])", "", low)          # "70 hw"    → "70hw"
     fused = re.sub(r"(?<=[a-z])\s+(?=\d)|(?<=\d)\s+(?=[a-z])", "", low)
     cands = _title_candidates(title)
     if not cands:
         return bool(low)
     for c in cands:
         pat = rf"(?<![a-z0-9]){re.escape(c)}(?![a-z0-9])" if len(c) >= 3 else rf"(?<![a-z0-9]){re.escape(c)}"
-        if re.search(pat, low) or re.search(pat, fused):
+        if any(re.search(pat, v) for v in (low, fused_ld, fused_dl, fused)):
             return True
     return False
 
