@@ -30,6 +30,10 @@ ADMIN_AUTH_FAIL_WINDOW_S = int(os.getenv("ADMIN_AUTH_FAIL_WINDOW_S", "600"))
 # read an empty events list as knowledge). Context names the unconnected calendar, and a
 # send-time guard drops a sentence that claims a free/no-class day when none is connected.
 HEARTBEAT_NO_CALENDAR_GUARD_ENABLED = os.getenv("HEARTBEAT_NO_CALENDAR_GUARD_ENABLED", "true").lower() == "true"
+# Briefing due-TODAY guarantee (live 2026-10-21 12:59 PT: the whole briefing was "67° and
+# overcast out" — CS 70 HW due at 4pm, the gym window and nutrition all dropped; only the
+# weather had a code guarantee). A dropped due-today item is appended as its own bubble.
+BRIEFING_DUE_TODAY_GUARANTEE_ENABLED = os.getenv("BRIEFING_DUE_TODAY_GUARANTEE_ENABLED", "true").lower() == "true"
 # Search dead-end backstop (live 2026-10-16, user 61: "couldn't pin GARA's exact number, their
 # menu doesn't post macros" — no estimate, no question, no next step; the founder had to text
 # "send me a pic" by hand). When a reply says it couldn't find the number and carries neither a

@@ -1310,20 +1310,35 @@ def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
         drops = _briefing_drops(msg, parts)
         for item, detail in drops:
             logger.info("BRIEFING_DROPPED_ITEM user=%s item=%s detail=%r", user_id, item, detail)
-        if not config.BRIEFING_WEATHER_GUARANTEE_ENABLED or not parts.get("weather"):
-            return msg
-        if any(i == "weather" for i, _ in drops):
-            wl = parts["weather"].strip().rstrip(".")
-            sep = ". " if "—" in wl else " — "
-            logger.info("BRIEFING_WEATHER_PREPENDED user=%s weather=%r", user_id, wl)
-            return f"{wl}{sep}{msg}"
-        temp, _cond = _weather_signals(parts["weather"])
-        if temp:
-            fixed = _insert_degree_sign(msg, temp)
-            if fixed is not None:
-                logger.info("BRIEFING_DEGREE_INSERTED user=%s temp=%s", user_id, temp)
-                return fixed
-        return msg
+        out = msg
+        if config.BRIEFING_WEATHER_GUARANTEE_ENABLED and parts.get("weather"):
+            if any(i == "weather" for i, _ in drops):
+                wl = parts["weather"].strip().rstrip(".")
+                sep = ". " if "—" in wl else " — "
+                logger.info("BRIEFING_WEATHER_PREPENDED user=%s weather=%r", user_id, wl)
+                out = f"{wl}{sep}{out}"
+            else:
+                temp, _cond = _weather_signals(parts["weather"])
+                if temp:
+                    fixed = _insert_degree_sign(out, temp)
+                    if fixed is not None:
+                        logger.info("BRIEFING_DEGREE_INSERTED user=%s temp=%s", user_id, temp)
+                        out = fixed
+        # Due TODAY is "the single most important line of the morning and may never be
+        # dropped" (the briefing instruction) — live 2026-10-21 12:59 PT the whole briefing
+        # was "67° and overcast out" with CS 70 HW due at 4pm. Code appends it as its own
+        # bubble when the model left it out.
+        dropped_due = [d for i, d in drops if i == "due_today"]
+        if dropped_due and getattr(config, "BRIEFING_DUE_TODAY_GUARANTEE_ENABLED", True):
+            times = parts.get("due_today_times") or {}
+            bits = []
+            for t in dropped_due:
+                name = re.sub(r"\s+due\s*$", "", t.strip(), flags=re.IGNORECASE).lower()
+                bits.append(f"{name} due today by {times[t]}" if t in times else f"{name} due today")
+            line = "also: " + " + ".join(bits)
+            logger.info("BRIEFING_DUE_TODAY_APPENDED user=%s items=%r", user_id, dropped_due)
+            out = f"{out.rstrip()}\n---\n{line}"
+        return out
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_ENFORCE_FAILED user=%s err=%s", user_id, e)
         return msg
