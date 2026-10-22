@@ -35,6 +35,14 @@ _STOPWORDS = {
 _TOKEN_RE = re.compile(r"[a-z]+")
 
 MATCH_THRESHOLD = 0.6
+# Name-anchored repeat matching ("same overnight oats") — every content token of the
+# NAME must sit inside the prior's description. Jaccard can't do this: the user says
+# two words, the logged row lists seven ingredients (live 2026-10-22, user 51: 'same
+# overnight oats but with strawberries instead of blueberries' vs 'overnight oats w/
+# milk, blueberries, honey + scoop vanilla whey' = 0.2 → no match → the whey was lost).
+CONTAIN_THRESHOLD = 1.0
+CONTAIN_THRESHOLD_LONG = 0.75   # a 4+-token name may miss one token
+SHORT_NAME_MAX_TOKENS = 3
 HISTORY_DAYS = 120
 HISTORY_ROW_CAP = 400
 MAX_MATCHES = 3
@@ -61,6 +69,14 @@ def jaccard(a: frozenset, b: frozenset) -> float:
     return len(a & b) / len(a | b)
 
 
+def containment(query: frozenset, tokens: frozenset) -> float:
+    """Share of the QUERY's tokens present in the prior — 'overnight oats' ⊂ 'overnight
+    oats w/ milk, blueberries, honey + whey' scores 1.0 where Jaccard scores 0.2."""
+    if not query or not tokens:
+        return 0.0
+    return len(query & tokens) / len(query)
+
+
 def _median_int(values: list[int]):
     if not values:
         return None
@@ -80,7 +96,34 @@ def match_meal_history(user_id: int, description: str, *, days: int = HISTORY_DA
     query = normalize_tokens(description)
     if not query:
         return []
+    matches = _grouped_matches(user_id, query, jaccard, threshold, days=days, session=session)
+    if not matches and len(query) in (2, SHORT_NAME_MAX_TOKENS):
+        # A short name that Jaccard can't reach ("overnight oats" vs an ingredient-listed
+        # prior) — fall through to containment. Never for one word ("chicken" would match
+        # every chicken dish); that path exists only behind an explicit "same/usual"
+        # (match_repeat_meal).
+        matches = _grouped_matches(user_id, query, containment, CONTAIN_THRESHOLD,
+                                   days=days, session=session, rank_by_count=True)
+    return matches[:MAX_MATCHES]
 
+
+def match_repeat_meal(user_id: int, name: str, *, days: int = HISTORY_DAYS,
+                      session=None) -> list[dict]:
+    """The user said this is the SAME meal as before and named it — find the prior by
+    name containment, ranked by how often they've logged it (their 'usual'), then
+    recency. One word is allowed here because the user asserted the repeat. Empty list
+    when nothing in their history carries the name — the caller stays silent."""
+    query = normalize_tokens(name)
+    if not query:
+        return []
+    thr = CONTAIN_THRESHOLD if len(query) <= SHORT_NAME_MAX_TOKENS else CONTAIN_THRESHOLD_LONG
+    matches = _grouped_matches(user_id, query, containment, thr, days=days, session=session,
+                               rank_by_count=True)
+    return matches[:MAX_MATCHES]
+
+
+def _grouped_matches(user_id: int, query: frozenset, scorer, threshold: float, *,
+                     days: int, session=None, rank_by_count: bool = False) -> list[dict]:
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     own = session is None
     s = session or get_session()
@@ -92,7 +135,7 @@ def match_meal_history(user_id: int, description: str, *, days: int = HISTORY_DA
         groups: dict[frozenset, dict] = {}
         for m in rows:
             tokens = normalize_tokens(m.description or "")
-            score = jaccard(query, tokens)
+            score = scorer(query, tokens)
             if score < threshold:
                 continue
             g = groups.get(tokens)
@@ -123,5 +166,9 @@ def match_meal_history(user_id: int, description: str, *, days: int = HISTORY_DA
             "calories": _median_int(g["_cal"]), "protein_g": _median_int(g["_pro"]),
             "carbs_g": _median_int(g["_carb"]), "fat_g": _median_int(g["_fat"]),
         })
-    matches.sort(key=lambda m: (-m["score"], -m["count"]))
-    return matches[:MAX_MATCHES]
+    if rank_by_count:
+        matches.sort(key=lambda m: (-m["score"], -m["count"],
+                                    -(m["last_eaten_at"].timestamp() if m["last_eaten_at"] else 0)))
+    else:
+        matches.sort(key=lambda m: (-m["score"], -m["count"]))
+    return matches
