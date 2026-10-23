@@ -369,6 +369,8 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
                 f"one-off list — NOT saved as their routine (their usual {r['template_key']} day is untouched).{first} "
                 f"Reply with exactly [silent].")
     base = f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first}"
+    if r.get("used_default") and r.get("defaults_noted_today"):
+        return base + " " + _defaults_again_note(r["template_key"])
     if r.get("used_default"):
         # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
@@ -376,6 +378,14 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         # passed off as "their card").
         return base + " " + _defaults_instruction(r["template_key"], beginner=bool(r.get("novice")))
     return base + " Reply with exactly [silent]."
+
+
+def _defaults_again_note(key: str) -> str:
+    """Same generic {key} day, second card today: the defaults line and the what-do-you-run
+    ask already went out with the earlier card. Repeating it reads as nagging (live
+    2026-10-14, user 53: asked twice in five minutes)."""
+    return (f"Same starting-default {key} exercises as the earlier card today — you ALREADY flagged "
+            f"that and asked what they run; do NOT repeat it. Reply with exactly [silent].")
 
 
 def _defaults_instruction(key: str, *, beginner: bool = False) -> str:
@@ -426,8 +436,13 @@ def handle_reset_workout_session(user_id: int, tool_input: dict, *, message_id=N
     key = r.get("template_key") or "workout"
     if r["status"] == "finalized":
         n = r["sets_logged"]
+        if r.get("summary_sent", True):
+            return (f"ok: finalized their {key} session (#{r['session_id']}) with {n} logged "
+                    f"set{'s' if n != 1 else ''} — the summary already went out, nothing lost. "
+                    f"Now clear to start_workout_session for a fresh card.")
         return (f"ok: finalized their {key} session (#{r['session_id']}) with {n} logged "
-                f"set{'s' if n != 1 else ''} — the summary already went out, nothing lost. "
+                f"set{'s' if n != 1 else ''} kept, nothing lost — too small for a summary bubble, so none "
+                f"went out (mention the kept set in a few words only if it matters). "
                 f"Now clear to start_workout_session for a fresh card.")
     return (f"ok: cleared the empty {key} session (#{r['session_id']}) — nothing was logged, so "
             f"nothing lost. Now clear to start_workout_session for a fresh card.")
@@ -495,6 +510,8 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
             logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s", user_id, pending, sr["session_id"], setup)
             base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
                     f"as a {how} ({sr['sets']} sets) starting from these numbers.")
+            if sr.get("used_default") and sr.get("defaults_noted_today"):
+                return base + " " + _defaults_again_note(sr["template_key"])
             if sr.get("used_default"):
                 return base + " " + _defaults_instruction(sr["template_key"], beginner=bool(sr.get("novice")))
             return base + " Reply with exactly [silent]."

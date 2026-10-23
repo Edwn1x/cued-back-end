@@ -425,3 +425,75 @@ def test_a_saved_routine_gets_no_defaults_note_and_the_tool_stays_silent(db, mon
     assert handle_start_workout_session(v.id, {"template_key": "push"}).startswith("error: first card")
     assert handle_pending_card_reply(v.id, "bench 185 for 5") is True
     assert all(t != ROUTINE_NOTE_TYPE for _b, t in sent)
+
+
+
+def test_a_tapped_through_guess_does_not_reanchor_the_family(db):
+    """Live 2026-10-14 (user 53): one seated-row set ticked at the swap's default 15 lb
+    became row-family 'history', and her next pull card opened lat pulldown at 15 (the
+    profile had said 65). A set they never touched on a lift we only guessed is a
+    confirmed guess, not evidence. Touching the number, typing it, or repeating the lift
+    in a second session makes it count."""
+    from workouts.plan import build_session
+    from models import get_session, SetLog, User
+    user = make_user(db, **ANGEL)
+    first = build_session(user, "pull")
+    lat0 = _first(_plan(first.id), "lat_pulldown")
+    row0 = _first(_plan(first.id), "face_pull")
+    assert lat0[0] > 0 and row0[0] > 0
+
+    def _mark(session_id, slug, *, weight, source="card", n=1):
+        s = get_session()
+        try:
+            rows = s.query(SetLog).filter_by(session_id=session_id, exercise=slug).order_by(SetLog.set_index).all()
+            for x in rows[:n]:
+                x.actual_weight, x.actual_reps, x.done, x.source = weight, x.planned_reps, True, source
+            s.commit()
+        finally:
+            s.close()
+
+    # 1. tapped through at the planned (guessed) weight, dropped to a third → the family holds
+    _mark(first.id, "face_pull", weight=row0[0])
+    s = get_session()
+    try:
+        x = s.query(SetLog).filter_by(session_id=first.id, exercise="face_pull", done=True).first()
+        x.planned_weight = x.actual_weight = row0[0] / 3            # the swap's tiny default, untouched
+        s.commit()
+    finally:
+        s.close()
+    db.expire_all(); user = db.get(User, user.id)
+    second = build_session(user, "pull")
+    assert _first(_plan(second.id), "lat_pulldown") == lat0        # NOT dragged down with it
+
+    # 2. they TOUCHED the number (actual ≠ planned) → real evidence, the family follows
+    _mark(second.id, "face_pull", weight=row0[0] / 3)
+    s = get_session()
+    try:
+        x = s.query(SetLog).filter_by(session_id=second.id, exercise="face_pull", done=True).first()
+        x.planned_weight = row0[0]                                    # plan said row0, they did a third
+        s.commit()
+    finally:
+        s.close()
+    db.expire_all(); user = db.get(User, user.id)
+    third = build_session(user, "pull")
+    assert _first(_plan(third.id), "lat_pulldown")[0] < lat0[0]
+
+
+def test_a_typed_set_at_the_planned_number_is_evidence(db):
+    from workouts.calibrate import _history_best
+    from workouts.plan import build_session
+    from models import get_session, SetLog, User
+    user = make_user(db, **ANGEL)
+    first = build_session(user, "pull")
+    s = get_session()
+    try:
+        x = s.query(SetLog).filter_by(session_id=first.id, exercise="face_pull").first()
+        x.actual_weight, x.actual_reps, x.done, x.source = x.planned_weight, x.planned_reps, True, "card"
+        s.commit()
+        assert _history_best(s, user.id, "face_pull", verified_only=True) is None   # tapped through
+        assert _history_best(s, user.id, "face_pull") is not None                   # direct history still remembers
+        x.source = "text"
+        s.commit()
+        assert _history_best(s, user.id, "face_pull", verified_only=True) is not None  # they typed it
+    finally:
+        s.close()

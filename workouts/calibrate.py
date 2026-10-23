@@ -237,16 +237,31 @@ def anchors_of(user) -> dict[str, dict]:
     return out
 
 
-def _history_best(session, user_id: int, slug: str) -> tuple[float, int] | None:
-    """Best completed (weight, reps) for a slug across card sessions and legacy rows."""
+def _history_best(session, user_id: int, slug: str, *, verified_only: bool = False) -> tuple[float, int] | None:
+    """Best completed (weight, reps) for a slug across card sessions and legacy rows.
+
+    `verified_only` (the FAMILY inference): a set tapped through at the planned number on
+    a lift we had only GUESSED is a confirmed guess, not evidence of their strength — live
+    2026-10-14 (user 53) one seated-row set ticked at the swap's default 15 lb re-anchored
+    the whole row family, and her next card opened lat pulldown at 15 (the profile had
+    said 65). A set counts as verified when they touched the number (actual ≠ planned),
+    typed it (source text), or the lift has done sets across two or more sessions (the
+    second session repeats the number on purpose). Typed legacy rows always count."""
     from models import SetLog, WorkoutSession, Workout, active
     from workouts.templates import slug_for_name
     best: tuple[float, int] | None = None
-    q = (session.query(SetLog.actual_weight, SetLog.actual_reps)
+    q = (session.query(SetLog.actual_weight, SetLog.actual_reps, SetLog.planned_weight, SetLog.source,
+                       SetLog.session_id)
          .join(WorkoutSession, SetLog.session_id == WorkoutSession.id)
          .filter(WorkoutSession.user_id == user_id, SetLog.exercise == slug, SetLog.done.is_(True),
                  SetLog.actual_weight.isnot(None), SetLog.actual_reps.isnot(None)))
-    for w, r in q.all():
+    rows = q.all()
+    repeated = len({sid for *_x, sid in rows}) >= 2
+    for w, r, planned, src, _sid in rows:
+        if verified_only and not repeated:
+            touched = planned is None or float(w or 0) != float(planned or 0)
+            if not touched and (src or "") != "text":
+                continue
         if w and r and (best is None or epley_1rm(float(w), int(r)) > epley_1rm(*best)):
             best = (float(w), int(r))
     rows = (active(session, Workout, user_id=user_id).filter(Workout.exercises.isnot(None))
@@ -276,7 +291,7 @@ def family_1rm_evidence(session, user, family: str) -> tuple[float, str] | None:
             continue
         ev: list[tuple[tuple[float, int], str]] = []
         if session is not None and getattr(user, "id", None):
-            h = _history_best(session, user.id, slug)
+            h = _history_best(session, user.id, slug, verified_only=True)
             if h:
                 ev.append((h, "history"))
         a = anchors.get(slug)
