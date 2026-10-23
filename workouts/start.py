@@ -143,6 +143,9 @@ def send_defaults_note(user_id: int, sr: dict | None) -> bool:
     text the defaults_note. Returns True when it went out. Never raises."""
     if not sr or not sr.get("used_default"):
         return False
+    if sr.get("defaults_noted_today"):
+        logger.info("ROUTINE_CAPTURE_NOTE_SKIPPED user=%s key=%s reason=already_today", user_id, sr.get("template_key"))
+        return False
     try:
         session = get_session()
         try:
@@ -325,6 +328,22 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         # instead of silently passing off the default day as theirs (live incident user 31).
         from workouts.templates import custom_templates_for
         used_default = bool(config.ROUTINE_CAPTURE_OFFER_ENABLED and key not in custom_templates_for(user))
+        # …but say it ONCE a day per day-type. A second card for the same day (a swap, a
+        # re-send after they tapped Finish) carries the same generic defaults, and the
+        # coach relayed the ask again 4 minutes later (live 2026-10-14, user 53: "whats ur
+        # actual pull day?" twice in five minutes). Any earlier session today with this key
+        # already carried the note (tool result or code-sent).
+        defaults_noted_today = False
+        if used_default:
+            from timefmt import local_day_bounds
+            day0, _day1 = local_day_bounds(user)
+            earlier = (session.query(WorkoutSession.id)
+                       .filter(WorkoutSession.user_id == user_id, WorkoutSession.template_key == key,
+                               WorkoutSession.date >= day0)
+                       .first())
+            defaults_noted_today = earlier is not None
+            if defaults_noted_today:
+                logger.info("DEFAULTS_NOTE_ALREADY_TODAY user=%s key=%s earlier_session=%s", user_id, key, earlier[0])
         phone, workout_time = user.phone, user.workout_time
     finally:
         session.close()
@@ -385,6 +404,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
                 user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
             "first": first, "estimated": estimated, "setup": setup, "used_default": used_default,
+            "defaults_noted_today": defaults_noted_today and not adhoc,
             "one_off": bool(adhoc), "has_routine": has_routine(_user_row(user_id)),
             "novice": is_novice(_user_row(user_id))}
 

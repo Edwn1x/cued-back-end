@@ -119,12 +119,19 @@ def has_logged_sets(session, ws_id: int) -> bool:
     return session.query(SetLog.id).filter(SetLog.session_id == ws_id, SetLog.done.is_(True)).first() is not None
 
 
+RESET_SUMMARY_MIN_SETS = 3
+
+
 def reset_active_session(user_id: int) -> dict:
     """Clear the user's ACTIVE workout session so a fresh card can go out on demand
     (the gym-deadlock fix). NEVER discards logged work: a session with any done set is
-    FINALIZED (status='done' + the normal summary + legacy mirror); an empty one is
-    abandoned. Returns {"status": "finalized"|"abandoned"|"none", "session_id",
-    "template_key", "sets_logged"} so the coach can relay it plainly."""
+    FINALIZED (status='done' + legacy mirror); an empty one is abandoned. The summary
+    BUBBLE goes out only when there was a session worth summarising (≥ RESET_SUMMARY_
+    MIN_SETS done sets): "give me a back workout instead" after one tapped set used to
+    land "legs · thu · 11 min / romanian deadlift — 75×10 / 750 lb total · 0 PRs" in the
+    thread right before the new card (live 2026-10-14, user 53). The set is kept either
+    way; the tool result names it. Returns {"status": "finalized"|"abandoned"|"none",
+    "session_id", "template_key", "sets_logged", "summary_sent"}."""
     ws_id = active_session_id(user_id)
     if not ws_id:
         return {"status": "none", "session_id": None, "template_key": None, "sets_logged": 0}
@@ -138,10 +145,14 @@ def reset_active_session(user_id: int) -> dict:
     finally:
         session.close()
     if logged:
-        # finalize — same path as a normal close: summary text + legacy mirror. Work is kept.
-        close_session(ws_id, via="reset")
-        logger.info("WORKOUT_SESSION_RESET_FINALIZED user=%s session=%s key=%s sets=%s", user_id, ws_id, key, n)
-        return {"status": "finalized", "session_id": ws_id, "template_key": key, "sets_logged": n}
+        # finalize — the normal close path (card refresh + legacy mirror); the summary
+        # bubble only for a real session. Work is kept either way.
+        quiet = n < RESET_SUMMARY_MIN_SETS
+        close_session(ws_id, via="reset", quiet=quiet)
+        logger.info("WORKOUT_SESSION_RESET_FINALIZED user=%s session=%s key=%s sets=%s summary=%s",
+                    user_id, ws_id, key, n, not quiet)
+        return {"status": "finalized", "session_id": ws_id, "template_key": key, "sets_logged": n,
+                "summary_sent": not quiet}
     session = get_session()
     try:
         ws = session.get(WorkoutSession, ws_id)
@@ -420,10 +431,13 @@ def mirror_to_legacy(session_id: int) -> int | None:
     return wid
 
 
-def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool = False) -> dict | None:
+def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool = False,
+                  quiet: bool = False) -> dict | None:
     """Finish + bubble refresh + summary text + legacy mirror. `fill_as_planned`
     (text 'done' on the tapback/SMS path): undone sets are marked done at plan
-    with source='coach' — assumed, not tapped, so they never count as taps."""
+    with source='coach' — assumed, not tapped, so they never count as taps.
+    `quiet`: finalize and mirror but send no summary / review / first-workout line
+    (a tiny session swept aside by a reset — see reset_active_session)."""
     from workouts.summary import finish_session
     from workouts.close import send_session_summary
     from workouts.card import refresh_card
@@ -447,7 +461,9 @@ def close_session(session_id: int, *, via: str = "card", fill_as_planned: bool =
 
     def _after():
         refresh_card(session_id)
-        if send_session_summary(session_id):
+        if quiet:
+            logger.info("WORKOUT_SUMMARY_SKIPPED user=%s session=%s reason=quiet_reset", uid, session_id)
+        elif send_session_summary(session_id):
             from workouts.review import post_session_review
             if not post_session_review(session_id):
                 from workouts.close import send_first_workout_line
