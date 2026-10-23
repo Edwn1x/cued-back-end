@@ -352,13 +352,13 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         session.close()
 
     surface = "messages"
+    intro = None                                # the coach's plan text, when one went out (iMessage only)
     if _resolve_channel(user_id) == "imessage":
         from workouts.card import send_workout_card
         from workouts import card_setup
         from photon_cards import CardError
         # Extension framing (once in full, then a one-liner) until the card has ever been opened.
         card_setup.send_extension_intro_if_due(user_id, phone)
-        intro = None
         if not setup:
             from workouts.review import pre_session_plan
             intro = pre_session_plan(ws.id, first=first, estimated=estimated)
@@ -381,12 +381,31 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         else:
             _send_exercise_messages(user_id, phone, ws.id, state, intro=(_resolve_channel(user_id) != "imessage"),
                                     first=first, estimated=estimated)
-    logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s",
-                user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from)
+    logger.info("WORKOUT_SESSION_STARTED user=%s session=%s template=%s surface=%s sets=%s first=%s estimated=%s setup=%s reuse_from=%s plan_text=%s",
+                user_id, ws.id, key, surface, state["set_count"], first, estimated, setup, reuse_from, bool(intro))
     return {"session_id": ws.id, "template_key": key, "surface": surface, "sets": state["set_count"],
             "first": first, "estimated": estimated, "setup": setup, "used_default": used_default,
             "one_off": bool(adhoc), "has_routine": has_routine(_user_row(user_id)),
-            "novice": is_novice(_user_row(user_id))}
+            "novice": is_novice(_user_row(user_id)),
+            # The coach's own plan text (workouts/review.pre_session_plan) went out with this card —
+            # the tool result tells the model so it adds nothing (live 2026-10-22, user 40: the plan
+            # said leg press 175, the model's extra line said 165).
+            "plan_text": bool(intro), "card": card_numbers(state)}
+
+
+def card_numbers(state: dict) -> list[str]:
+    """'leg press 175×10' per exercise from the card state — the numbers the card shows, for
+    the tool result (so anything the model says matches the card) and the loop's conflict guard."""
+    out = []
+    for ex in state.get("exercises") or []:
+        sets = ex.get("sets") or []
+        if not sets:
+            continue
+        w = sets[0].get("planned_weight") or 0
+        r = sets[0].get("planned_reps") or 0
+        label = (ex.get("label") or ex.get("slug") or "").lower()
+        out.append(f"{label} {float(w):g}×{r}" if w else f"{label} ×{r}")
+    return out
 
 
 def _send_exercise_messages(user_id: int, phone: str, session_id: int, state: dict, *, intro: bool,

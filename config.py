@@ -35,6 +35,8 @@ HEARTBEAT_NO_CALENDAR_GUARD_ENABLED = os.getenv("HEARTBEAT_NO_CALENDAR_GUARD_ENA
 # "send me a pic" by hand). When a reply says it couldn't find the number and carries neither a
 # number nor a question, code appends the one next step. voice.md carries the real rule.
 SEARCH_DEAD_END_BACKSTOP_ENABLED = os.getenv("SEARCH_DEAD_END_BACKSTOP_ENABLED", "true").lower() == "true"
+CARD_PLAN_TEXT_SILENT_ENABLED = os.getenv("CARD_PLAN_TEXT_SILENT_ENABLED", "true").lower() == "true"
+CARD_NUMBER_CONFLICT_GUARD_ENABLED = os.getenv("CARD_NUMBER_CONFLICT_GUARD_ENABLED", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
