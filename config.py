@@ -787,6 +787,12 @@ HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre
 # Mid-workout hard gate: an ACTIVE session touched within this many minutes (a done set, else
 # its start) blocks every proactive send and tells the loop they're mid-session (founder 2026-10-19).
 HEARTBEAT_SESSION_GUARD_ENABLED = os.getenv("HEARTBEAT_SESSION_GUARD_ENABLED", "true").lower() == "true"
+# A workout card goes out when they're GOING, not when they mention going (founder 2026-10-22:
+# "shouldn't have sent the workout card unless he's actually at the gym ready to work out").
+# The start tool, called off a statement with their usual start ≥ CARD_EARLY_SEND_HOURS away,
+# parks the card; an arrival / ask line releases it in code (workouts/park.py).
+CARD_EARLY_SEND_GATE_ENABLED = os.getenv("CARD_EARLY_SEND_GATE_ENABLED", "true").lower() == "true"
+CARD_EARLY_SEND_HOURS = float(os.getenv("CARD_EARLY_SEND_HOURS", "2"))
 HEARTBEAT_SESSION_GUARD_MINUTES = int(os.getenv("HEARTBEAT_SESSION_GUARD_MINUTES", "120"))
 # Standing overnight quiet window for PROACTIVE sends (heartbeat + gym beats), so a
 # nudge never lands at 1am. Separate from quiet_until (a transient goodnight). Default
