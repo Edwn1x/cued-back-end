@@ -478,6 +478,9 @@ def test_both_flags_off_records_nothing(db, monkeypatch, sms_capture, anthropic_
 
     monkeypatch.setattr(config, "HEARTBEAT_STALE_SKIP_SHADOW", False)
     monkeypatch.setattr(config, "HEARTBEAT_STALE_SKIP_ENABLED", False)
+    # the dormant backoff shares the evaluator — with it on, the fingerprint is still recorded
+    monkeypatch.setattr(config, "HEARTBEAT_BACKOFF_SHADOW", False)
+    monkeypatch.setattr(config, "HEARTBEAT_BACKOFF_ENABLED", False)
     user = make_user(db)
     _allow(monkeypatch, user)
     _silent(anthropic_stub)

@@ -35,6 +35,10 @@ Two flags: HEARTBEAT_STALE_SKIP_SHADOW computes + records the verdict on every t
 but still calls the model (the would-skip/spoke pairs are the false-negative audit:
 HEARTBEAT_STALE_SHADOW_MISS); HEARTBEAT_STALE_SKIP_ENABLED actually skips. Ships
 shadow-on / skip-off; flip after a week of clean shadow data.
+
+A second rule lives here too — the DORMANT-USER BACKOFF (backoff_verdict, 2026-10-22):
+a dormancy-dependent floor that ignores the fingerprint. See the section comment below.
+Same shadow→enable rollout (HEARTBEAT_BACKOFF_SHADOW / HEARTBEAT_BACKOFF_ENABLED).
 """
 
 from __future__ import annotations
@@ -52,7 +56,9 @@ from models import (HeartbeatTick, Message, Meal, Workout, WorkoutSession, Event
 
 logger = logging.getLogger("cued.heartbeat.stale")
 
-SKIP_REASON_PREFIX = "skipped:stale"
+SKIP_PREFIX = "skipped:"                 # any code-level skip (not a decision)
+SKIP_REASON_PREFIX = "skipped:stale"     # the stale rule
+BACKOFF_REASON_PREFIX = "skipped:backoff"  # the dormant-user backoff (below)
 
 # Context blocks that change on EVERY tick by construction. Their meaning is carried
 # by the coarse bands appended in fingerprint() instead.
@@ -77,6 +83,7 @@ class Verdict:
     fingerprint: str
     would_skip: bool
     detail: str
+    kind: str = ""   # "stale" | "backoff" when would_skip; "" otherwise
 
 
 def _naive(dt: datetime) -> datetime:
@@ -163,9 +170,12 @@ def fingerprint(user, session, context: str, *, now=None) -> str:
 
 # ---- what landed since the anchor -------------------------------------------
 
-def new_rows_since(user, session, since: datetime, now: datetime) -> list[str]:
+def new_rows_since(user, session, since: datetime, now: datetime, *,
+                   include_outbound: bool = True) -> list[str]:
     """Labels of every data source with a row in (since, now] for this user. One
-    EXISTS query per source; extend the list when a new proactive input lands."""
+    EXISTS query per source; extend the list when a new proactive input lands.
+    include_outbound=False counts only INBOUND messages (the backoff asks "did they
+    engage?", and a water ping or connect offer we sent is not engagement)."""
     checks = (
         ("message", Message, Message.created_at),
         ("meal", Meal, Meal.logged_at),
@@ -186,10 +196,10 @@ def new_rows_since(user, session, since: datetime, now: datetime) -> list[str]:
     )
     found = []
     for label, model, col in checks:
-        hit = (session.query(model.id)
-               .filter(model.user_id == user.id, col > since, col <= now)
-               .first())
-        if hit:
+        qy = session.query(model.id).filter(model.user_id == user.id, col > since, col <= now)
+        if model is Message and not include_outbound:
+            qy = qy.filter(Message.direction == "in")
+        if qy.first():
             found.append(label)
     la = getattr(user, "last_active_at", None)
     if la and since < _naive(la) <= now:
@@ -200,15 +210,17 @@ def new_rows_since(user, session, since: datetime, now: datetime) -> list[str]:
 # ---- anchor + verdict -------------------------------------------------------
 
 def is_chained_skip(t: HeartbeatTick) -> bool:
-    """A tick that was (or, in shadow mode, would have been) skipped as stale — it is
-    NOT a decision, so the anchor is whatever came before it."""
-    return (not t.spoke) and ((t.reason or "").startswith(SKIP_REASON_PREFIX) or bool(t.stale_would_skip))
+    """A tick that was (or, in shadow mode, would have been) skipped by a code rule —
+    stale or backoff — it is NOT a decision, so the anchor is whatever came before it."""
+    return (not t.spoke) and ((t.reason or "").startswith(SKIP_PREFIX)
+                              or bool(t.stale_would_skip)
+                              or bool(getattr(t, "backoff_would_skip", False)))
 
 
 def is_model_silent(t: HeartbeatTick) -> bool:
     r = t.reason or ""
     return ((not t.spoke) and bool(r)
-            and not r.startswith(("guardrail:", "truncated:", SKIP_REASON_PREFIX))
+            and not r.startswith(("guardrail:", "truncated:", SKIP_PREFIX))
             and r not in _ANOMALY_REASONS)
 
 
@@ -228,11 +240,128 @@ def find_anchor(user, session) -> tuple[HeartbeatTick | None, int]:
     return None, chained
 
 
+def last_evaluation(user, session) -> HeartbeatTick | None:
+    """The most recent tick that actually ran the model (spoke OR silent), walking back
+    over code skips AND code gates. The backoff measures time since this, not since the
+    last decision-with-nothing-between: for a dormant user a quiet-hours gate in between
+    must not reset the clock, or the first post-quiet tick would run every day at every
+    tier."""
+    ticks = (session.query(HeartbeatTick)
+             .filter(HeartbeatTick.user_id == user.id)
+             .order_by(HeartbeatTick.decided_at.desc(), HeartbeatTick.id.desc())
+             .limit(80).all())
+    for t in ticks:
+        if is_chained_skip(t):
+            continue
+        if (t.reason or "").startswith("guardrail:"):
+            continue
+        if t.fingerprint:   # ran the model under the rule (pre-rule ticks don't anchor)
+            return t
+    return None
+
+
+# ---- dormant-user backoff ----------------------------------------------------
+#
+# Live 2026-10-22 (13 days of the stale rule): users quiet ≥7 days were 55% of model
+# runs and 54% of spend but 41% of texts — the model re-judged "ghosted 25 days, hold"
+# ~10×/day per user because every daypart change re-opened the question. The backoff
+# is a dormancy-dependent floor that ignores the fingerprint: once they have been quiet
+# for N days, look at most every H hours unless they ENGAGE (inbound text/tapback, card
+# open, a logged meal/workout/weigh-in, a calendar/wearable change). Tiers in
+# HEARTBEAT_BACKOFF_TIERS ("7:10,14:20" = quiet ≥7d → ≥10h between looks, i.e. morning +
+# evening; ≥14d → ≥20h, i.e. one look a day, landing on the first post-quiet tick).
+
+def days_quiet(user, session, *, now=None) -> float | None:
+    """Days since the user last ENGAGED: the later of their last inbound message (text or
+    tapback) and users.last_active_at (card open). None when there is no engagement on
+    record at all (a brand-new account) — never backed off."""
+    now_n = _now(now)
+    last_in = (session.query(Message.created_at)
+               .filter(Message.user_id == user.id, Message.direction == "in")
+               .order_by(Message.created_at.desc()).first())
+    cands = []
+    if last_in and last_in[0]:
+        cands.append(_naive(last_in[0]))
+    la = getattr(user, "last_active_at", None)
+    if la:
+        cands.append(_naive(la))
+    if not cands:
+        return None
+    return max(0.0, (now_n - max(cands)).total_seconds() / 86400)
+
+
+def backoff_tiers() -> list[tuple[float, float]]:
+    """Parsed HEARTBEAT_BACKOFF_TIERS: [(min_quiet_days, min_hours_between_looks), ...]
+    ascending by days. Malformed entries are ignored (fail-open = no backoff)."""
+    out = []
+    for part in (config.HEARTBEAT_BACKOFF_TIERS or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        try:
+            d, h = part.split(":", 1)
+            out.append((float(d), float(h)))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def backoff_hours_for(quiet_days: float | None) -> float:
+    """Minimum hours between model looks at this dormancy; 0 = no backoff."""
+    if quiet_days is None:
+        return 0.0
+    hours = 0.0
+    for d, h in backoff_tiers():
+        if quiet_days >= d:
+            hours = h
+    return hours
+
+
+def backoff_verdict(user, session, fp: str, *, now=None) -> Verdict | None:
+    """The dormant-user backoff: a would-skip Verdict (kind="backoff") when the user is
+    dormant, the last model look is younger than their tier's interval, no recheck is
+    due, and they have not engaged since. None when the backoff does not apply."""
+    now_n = _now(now)
+    quiet = days_quiet(user, session, now=now_n)
+    hours = backoff_hours_for(quiet)
+    if not hours:
+        return None
+    last = last_evaluation(user, session)
+    if last is None:
+        return None
+    age_h = (now_n - _naive(last.decided_at)).total_seconds() / 3600
+    if age_h >= hours:
+        return None
+    if last.recheck_at and now_n >= _naive(last.recheck_at):
+        return None
+    engaged = new_rows_since(user, session, _naive(last.decided_at), now_n, include_outbound=False)
+    if engaged:
+        return None
+    return Verdict(fp, True, f"quiet {quiet:.0f}d → look every {hours:.0f}h; last look #{last.id} "
+                             f"{age_h:.1f}h ago, no engagement since", kind="backoff")
+
+
 def evaluate(user, session, context: str, *, now=None) -> Verdict:
     """The verdict for this tick. Pure read; the caller stores the fingerprint on the
-    tick row either way so the NEXT tick can compare against it."""
+    tick row either way so the NEXT tick can compare against it. The stale rule is
+    judged first; the dormant backoff only when the stale rule says "run"."""
     now_n = _now(now)
     fp = fingerprint(user, session, context, now=now_n)
+    v = _stale_verdict(user, session, fp, now_n)
+    if v.would_skip:
+        return v
+    if config.HEARTBEAT_BACKOFF_SHADOW or config.HEARTBEAT_BACKOFF_ENABLED:
+        try:
+            b = backoff_verdict(user, session, fp, now=now_n)
+        except Exception as e:  # noqa: BLE001 — fail open: the backoff never breaks a tick
+            logger.warning("HEARTBEAT_BACKOFF_EVAL_FAILED user=%s err=%s", user.id, e)
+            b = None
+        if b is not None:
+            return b
+    return v
+
+
+def _stale_verdict(user, session, fp: str, now_n: datetime) -> Verdict:
     anchor, chained = find_anchor(user, session)
     if anchor is None:
         return Verdict(fp, False, "no prior tick")
@@ -250,4 +379,4 @@ def evaluate(user, session, context: str, *, now=None) -> Verdict:
     if new:
         return Verdict(fp, False, f"new since anchor #{anchor.id}: {','.join(new)}")
     return Verdict(fp, True, f"anchor #{anchor.id} silent {age.total_seconds() / 60:.0f}m ago, "
-                             f"{chained} chained, nothing new, same state")
+                             f"{chained} chained, nothing new, same state", kind="stale")

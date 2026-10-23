@@ -969,6 +969,18 @@ HEARTBEAT_STALE_SKIP_ENABLED = os.getenv("HEARTBEAT_STALE_SKIP_ENABLED", "false"
 # The floor: a real evaluation at least this often regardless — a trigger the
 # fingerprint misses costs at most this delay, never a lost text.
 HEARTBEAT_STALE_MAX_HOURS = float(os.getenv("HEARTBEAT_STALE_MAX_HOURS", "3"))
+# Dormant-user backoff (stale_skip.backoff_verdict, 2026-10-22). After 13 days of the
+# stale rule, users quiet ≥7 days were still 55% of model runs (the daypart bands re-open
+# the question ~5×/day) but 41% of texts — the model re-judging "ghosted, hold". The
+# backoff is a dormancy-dependent floor that ignores the fingerprint: quiet ≥N days →
+# at most one model look per H hours unless they ENGAGE (inbound/tapback/card open or a
+# logged meal/workout/weigh-in/calendar/wearable change — our own outbound pings don't
+# count). Same shadow→enable rollout as the stale rule.
+HEARTBEAT_BACKOFF_SHADOW = os.getenv("HEARTBEAT_BACKOFF_SHADOW", "true").lower() == "true"
+HEARTBEAT_BACKOFF_ENABLED = os.getenv("HEARTBEAT_BACKOFF_ENABLED", "false").lower() == "true"
+# "days:hours,days:hours" ascending. 7:10 = morning + evening look; 14:20 = one look a
+# day, landing on the first tick after quiet hours.
+HEARTBEAT_BACKOFF_TIERS = os.getenv("HEARTBEAT_BACKOFF_TIERS", "7:10,14:20")
 # Addendum (post-burn-in): ON for burn-in, deliberately — proactive search is part
 # of the product claim burn-in exists to validate (a coach that can check hours/
 # availability before texting). The managed risk is search UN-BUDGETED, not search

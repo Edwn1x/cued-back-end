@@ -558,6 +558,29 @@ _HEARTBEAT_BODY = """
   </div>
 </div>
 
+<div class="grid grid-4">
+  <div class="stat-card">
+    <div class="stat-label">Dormant Backoff (7d)</div>
+    <div class="stat-val">{{ backoff_mode }}</div>
+    <div class="stat-sub">tiers {{ backoff_tiers }} (quiet days : hours between looks)</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Backoff Would Skip (7d)</div>
+    <div class="stat-val blue">{{ backoff_would_7d }}</div>
+    <div class="stat-sub">{{ backoff_skipped_7d }} actually skipped (no model call)</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Backoff Shadow Misses (7d)</div>
+    <div class="stat-val {{ 'green' if backoff_miss_7d == 0 else 'yellow' }}">{{ backoff_miss_7d }}</div>
+    <div class="stat-sub">would-skip ticks the model spoke on — texts the backoff would delay to the next look</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Backoff Share (7d)</div>
+    <div class="stat-val">{{ (backoff_would_7d * 100 // (stale_eval_7d - stale_would_7d)) if (stale_eval_7d - stale_would_7d) > 0 else 0 }}%</div>
+    <div class="stat-sub">of the runs the stale rule still allows</div>
+  </div>
+</div>
+
 {% if per_user %}
 <div class="section">
   <div class="section-title">Per-User Today</div>
@@ -589,7 +612,7 @@ _HEARTBEAT_BODY = """
       <tr class="clickable" onclick="window.location.href='/admin/user/{{ t.user_id }}/debug'">
         <td style="white-space:nowrap;color:var(--text3)">{{ t.when }}</td>
         <td style="color:var(--accent)">{{ t.name }}</td>
-        <td>{% if t.spoke %}<span class="badge badge-accent">SPOKE</span>{% else %}<span class="badge badge-gray">SILENT</span>{% endif %}{% if t.stale_would_skip %} <span class="badge badge-gray" title="stale-skip rule: would skip this tick">stale</span>{% endif %}</td>
+        <td>{% if t.spoke %}<span class="badge badge-accent">SPOKE</span>{% else %}<span class="badge badge-gray">SILENT</span>{% endif %}{% if t.stale_would_skip %} <span class="badge badge-gray" title="stale-skip rule: would skip this tick">stale</span>{% endif %}{% if t.backoff_would_skip %} <span class="badge badge-gray" title="dormant backoff: would skip this tick">backoff</span>{% endif %}</td>
         <td class="prewrap" style="max-width:560px">{% if t.spoke and t.message %}<span style="color:var(--text)">{{ t.message }}</span>{% if t.reason and t.reason != 'spoke' %}<br><span style="color:var(--text3);font-size:11px">{{ t.reason }}</span>{% endif %}{% else %}{{ t.reason }}{% endif %}</td>
         <td>{% if t.search_used %}<span class="badge badge-blue">USED</span> <span class="mono" style="font-size:10.5px">{{ t.search_query or '' }}</span>
             {% elif t.search_available %}<span class="badge badge-gray">OFFERED</span>
@@ -624,6 +647,9 @@ def heartbeat_page():
         stale_would_7d = sum(1 for t in week_ticks if t.stale_would_skip)
         stale_skipped_7d = sum(1 for t in week_ticks if (t.reason or "").startswith("skipped:stale"))
         stale_miss_7d = sum(1 for t in week_ticks if t.stale_would_skip and t.spoke)
+        backoff_would_7d = sum(1 for t in week_ticks if t.backoff_would_skip)
+        backoff_skipped_7d = sum(1 for t in week_ticks if (t.reason or "").startswith("skipped:backoff"))
+        backoff_miss_7d = sum(1 for t in week_ticks if t.backoff_would_skip and t.spoke)
 
         user_map = {u.id: u.name for u in session.query(User).all()}
 
@@ -654,6 +680,7 @@ def heartbeat_page():
             "search_used": t.search_used,
             "search_query": (t.search_query or "")[:120],
             "stale_would_skip": bool(t.stale_would_skip),
+            "backoff_would_skip": bool(t.backoff_would_skip),
         } for t in recent]
 
         return _render("heartbeat", "Heartbeat",
@@ -670,6 +697,10 @@ def heartbeat_page():
                        stale_skipped_7d=stale_skipped_7d, stale_miss_7d=stale_miss_7d,
                        stale_mode=("ENABLED" if config.HEARTBEAT_STALE_SKIP_ENABLED
                                    else "shadow" if config.HEARTBEAT_STALE_SKIP_SHADOW else "off"),
+                       backoff_would_7d=backoff_would_7d, backoff_skipped_7d=backoff_skipped_7d,
+                       backoff_miss_7d=backoff_miss_7d, backoff_tiers=config.HEARTBEAT_BACKOFF_TIERS,
+                       backoff_mode=("ENABLED" if config.HEARTBEAT_BACKOFF_ENABLED
+                                     else "shadow" if config.HEARTBEAT_BACKOFF_SHADOW else "off"),
                        per_user=per_user_rows, ticks=ticks_data)
     finally:
         session.close()
