@@ -800,6 +800,21 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # A parked card (workouts/park.py: sent off a mention hours early → held) goes out
+        # the moment the whole message says they're going / there / want it — in code, no
+        # model turn (founder 2026-10-22: the card when they're at the gym, not at 3pm).
+        if (user.onboarding_step or 0) >= 3 and not image_url:
+            try:
+                from workouts.park import release_parked_card
+                released = release_parked_card(user.id, combined_body)
+            except Exception as e:  # noqa: BLE001
+                logger.error("WORKOUT_CARD_RELEASE_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                released = None
+            if released:
+                _react_to_latest_inbound(user.id, "like")
+                typing_stop(user.id)
+                return
+
         # Workout card, Phase 4: with a session open, a terse set ('190 x4',
         # 'only got 3', 'skipped incline') or a close ('done') is handled in code —
         # exactly one line back ('swapped it in.' / the PR line), never a model turn.

@@ -345,11 +345,49 @@ START_WORKOUT_SESSION_TOOL = {
 }
 
 
+def _inbound_body(message_id) -> str | None:
+    """The text of the inbound message a tool call is answering (None off a proactive turn)."""
+    if not message_id:
+        return None
+    from models import get_session, Message
+    session = get_session()
+    try:
+        m = session.get(Message, int(message_id))
+        return m.body if m and m.direction == "in" else None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        session.close()
+
+
 def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from workouts.start import start_workout_session
     one_off = tool_input.get("exercises")
     if one_off is not None and not isinstance(one_off, list):
         return "error: exercises must be a list of {name, sets, reps, weight}"
+    # Going, not mentioning going (founder 2026-10-22): a statement hours before their usual
+    # start parks the card instead of sending it; an ask / arrival line always sends.
+    if config.CARD_EARLY_SEND_GATE_ENABLED and message_id:
+        try:
+            from workouts import park
+            from models import get_session, User
+            _s = get_session()
+            try:
+                _u = _s.get(User, user_id)
+                reason = park.hold_reason(_u, _inbound_body(message_id)) if _u else None
+            finally:
+                _s.close()
+        except Exception as e:  # noqa: BLE001 — the gate never blocks a card by accident
+            logger.warning("CARD_EARLY_GATE_FAILED user=%s err=%s", user_id, e)
+            reason = None
+        if reason:
+            key = (tool_input.get("template_key") or "").strip() or None
+            park.park(user_id, template_key=key, no_anchors=bool(tool_input.get("no_anchors")),
+                      exercises=one_off or None, reason=reason)
+            return (f"NOT sent — {reason}. The card is parked and goes out BY ITSELF when they say they're "
+                    f"heading out / at the gym / about to start, or if they ask for it. Reply with ONE short line "
+                    f"that nods at the plan (no exercise list, no weights, don't say a card is coming) — e.g. "
+                    f"\"bet, see u at the gym tonight\". Don't call this again this turn.")
     try:
         r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None,
                                   no_anchors=bool(tool_input.get("no_anchors")),
@@ -378,6 +416,8 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         # plan text IS the why-line.
         return (base + f" Your plan text already went out with it (card: {card}) — the weights and the "
                 f"reasons are said. Add NOTHING about exercises or weights. Reply with exactly [silent].")
+    if r.get("used_default") and r.get("defaults_noted_today"):
+        return base + " " + _defaults_again_note(r["template_key"])
     if r.get("used_default"):
         # No routine on file for this day: the card is GENERIC defaults, not their real exercises.
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
@@ -388,6 +428,14 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
             line += f" The card shows: {card} — if you name a weight, it is one of THESE, never another number."
         return base + " " + line
     return base + " Reply with exactly [silent]."
+
+
+def _defaults_again_note(key: str) -> str:
+    """Same generic {key} day, second card today: the defaults line and the what-do-you-run
+    ask already went out with the earlier card. Repeating it reads as nagging (live
+    2026-10-14, user 53: asked twice in five minutes)."""
+    return (f"Same starting-default {key} exercises as the earlier card today — you ALREADY flagged "
+            f"that and asked what they run; do NOT repeat it. Reply with exactly [silent].")
 
 
 def _defaults_instruction(key: str, *, beginner: bool = False) -> str:
@@ -438,8 +486,13 @@ def handle_reset_workout_session(user_id: int, tool_input: dict, *, message_id=N
     key = r.get("template_key") or "workout"
     if r["status"] == "finalized":
         n = r["sets_logged"]
+        if r.get("summary_sent", True):
+            return (f"ok: finalized their {key} session (#{r['session_id']}) with {n} logged "
+                    f"set{'s' if n != 1 else ''} — the summary already went out, nothing lost. "
+                    f"Now clear to start_workout_session for a fresh card.")
         return (f"ok: finalized their {key} session (#{r['session_id']}) with {n} logged "
-                f"set{'s' if n != 1 else ''} — the summary already went out, nothing lost. "
+                f"set{'s' if n != 1 else ''} kept, nothing lost — too small for a summary bubble, so none "
+                f"went out (mention the kept set in a few words only if it matters). "
                 f"Now clear to start_workout_session for a fresh card.")
     return (f"ok: cleared the empty {key} session (#{r['session_id']}) — nothing was logged, so "
             f"nothing lost. Now clear to start_workout_session for a fresh card.")
@@ -507,6 +560,8 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
             logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s", user_id, pending, sr["session_id"], setup)
             base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
                     f"as a {how} ({sr['sets']} sets) starting from these numbers.")
+            if sr.get("used_default") and sr.get("defaults_noted_today"):
+                return base + " " + _defaults_again_note(sr["template_key"])
             if sr.get("used_default"):
                 return base + " " + _defaults_instruction(sr["template_key"], beginner=bool(sr.get("novice")))
             return base + " Reply with exactly [silent]."

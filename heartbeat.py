@@ -26,7 +26,7 @@ from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSe
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text
 from llm_client import make_client
-from stale_skip import SKIP_REASON_PREFIX
+from stale_skip import SKIP_PREFIX, SKIP_REASON_PREFIX, BACKOFF_REASON_PREFIX
 
 logger = logging.getLogger("cued.heartbeat")
 client = make_client()
@@ -133,6 +133,7 @@ def _log_tick(user_id, spoke, reason, message=None, search=None):
                                   # verdict, and the model's own recheck time if it set one.
                                   fingerprint=search.get("fingerprint"),
                                   stale_would_skip=bool(search.get("stale_would_skip")),
+                                  backoff_would_skip=bool(search.get("backoff_would_skip")),
                                   recheck_at=search.get("recheck_at")))
         session.commit()
     finally:
@@ -1578,6 +1579,16 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
     if gap:
         parts.append(gap)
 
+    # A parked card (workouts/park.py): the proactive coach doesn't nudge 'ur card's ready'
+    # or push the session early — it sends itself when they say they're going.
+    try:
+        from workouts.park import context_line as _parked_line
+        parked = _parked_line(user)
+    except Exception:  # noqa: BLE001
+        parked = None
+    if parked:
+        parts.append(parked)
+
     # Wearable recovery (flag-gated + fail-open inside; inert without fresh wearable data).
     try:
         rec = _recovery_signal(user, session)
@@ -1671,7 +1682,7 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
 
     ticks = (session.query(HeartbeatTick)
              .filter(HeartbeatTick.user_id == user.id,
-                     ~HeartbeatTick.reason.like(f"{SKIP_REASON_PREFIX}%"))
+                     ~HeartbeatTick.reason.like(f"{SKIP_PREFIX}%"))
              .order_by(HeartbeatTick.decided_at.desc())
              .limit(config.HEARTBEAT_RECENT_TICKS).all())
 
@@ -1718,12 +1729,14 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
         state: dict = {}
         context = _proactive_context(user, session, state=state)
         search = {"available": _search_available(user, session), "used": False, "query": None}
-        if config.HEARTBEAT_STALE_SKIP_SHADOW or config.HEARTBEAT_STALE_SKIP_ENABLED:
+        if (config.HEARTBEAT_STALE_SKIP_SHADOW or config.HEARTBEAT_STALE_SKIP_ENABLED
+                or config.HEARTBEAT_BACKOFF_SHADOW or config.HEARTBEAT_BACKOFF_ENABLED):
             try:
                 from stale_skip import evaluate
                 v = evaluate(user, session, context)
                 search["fingerprint"] = v.fingerprint
-                search["stale_would_skip"] = v.would_skip
+                search["stale_would_skip"] = v.would_skip and v.kind == "stale"
+                search["backoff_would_skip"] = v.would_skip and v.kind == "backoff"
                 search["stale_detail"] = v.detail
             except Exception as e:  # noqa: BLE001 — fail open: an eval error means "run the model"
                 logger.warning("HEARTBEAT_STALE_EVAL_FAILED user=%s err=%s", user_id, e)
@@ -1733,6 +1746,9 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     if allow_skip and config.HEARTBEAT_STALE_SKIP_ENABLED and search.get("stale_would_skip"):
         logger.info("HEARTBEAT_STALE_SKIPPED user=%s detail=%s", user_id, search.get("stale_detail"))
         return (False, f"{SKIP_REASON_PREFIX} ({search.get('stale_detail')})", search)
+    if allow_skip and config.HEARTBEAT_BACKOFF_ENABLED and search.get("backoff_would_skip"):
+        logger.info("HEARTBEAT_BACKOFF_SKIPPED user=%s detail=%s", user_id, search.get("stale_detail"))
+        return (False, f"{BACKOFF_REASON_PREFIX} ({search.get('stale_detail')})", search)
     # Set only on the morning-open daily-briefing tick: the material the sent text is
     # verified against (weather guarantee + BRIEFING_DROPPED_ITEM). None on every other tick.
     briefing = state.get("briefing")
@@ -1874,12 +1890,21 @@ def heartbeat_tick(user_id: int):
     # Shadow audit (stale_skip.py): a would-skip verdict that the model then SPOKE on is
     # a false negative of the skip rule — the number that decides whether the real skip
     # can be turned on. Only meaningful when the model actually ran (not already skipped).
-    if search.get("stale_would_skip") and not payload.startswith(SKIP_REASON_PREFIX):
+    if search.get("stale_would_skip") and not payload.startswith(SKIP_PREFIX):
         if spoke:
             logger.warning("HEARTBEAT_STALE_SHADOW_MISS user=%s detail=%s message=%r",
                            user_id, search.get("stale_detail"), payload[:160])
         else:
             logger.info("HEARTBEAT_STALE_SHADOW_HIT user=%s detail=%s reason=%r",
+                        user_id, search.get("stale_detail"), payload[:120])
+    # Same audit for the dormant backoff (stale_skip.backoff_verdict): a would-skip tick
+    # the model spoke on is a text the backoff would have delayed to the next look.
+    if search.get("backoff_would_skip") and not payload.startswith(SKIP_PREFIX):
+        if spoke:
+            logger.warning("HEARTBEAT_BACKOFF_SHADOW_MISS user=%s detail=%s message=%r",
+                           user_id, search.get("stale_detail"), payload[:160])
+        else:
+            logger.info("HEARTBEAT_BACKOFF_SHADOW_HIT user=%s detail=%s reason=%r",
                         user_id, search.get("stale_detail"), payload[:120])
     if spoke:
         send_sms(phone, payload, user_id=user_id, message_type="heartbeat")

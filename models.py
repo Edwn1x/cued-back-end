@@ -756,6 +756,7 @@ class HeartbeatTick(Base):
     # time from stay_silent(recheck_in_minutes), if it set one.
     fingerprint = Column(String(32))
     stale_would_skip = Column(Boolean, default=False)
+    backoff_would_skip = Column(Boolean, default=False)   # dormant-user backoff verdict (shadow audit)
     recheck_at = Column(DateTime)
 
 

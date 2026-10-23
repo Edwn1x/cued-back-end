@@ -103,12 +103,28 @@ def test_reset_finalizes_a_session_with_logged_sets_no_data_loss(db, imessage_on
     assert r["sets_logged"] == 1
     assert _status(sid) == "done"                       # finalized, not abandoned
     assert _done_count(sid) == 1                        # the logged set survived
-    # finalize ran the normal close path: legacy mirror + a summary text went out.
+    # finalize ran the close path: legacy mirror. ONE set is too small for a summary bubble
+    # (a reset is a redirect, not a finish — live 2026-10-14 user 53 got "legs · thu · 11 min /
+    # romanian deadlift — 75×10 / 750 lb total" right before the card she'd asked for).
     s = get_session()
     try:
         assert s.query(Workout).filter_by(user_id=user.id).count() == 1
     finally:
         s.close()
+    assert r["summary_sent"] is False
+    assert not any("lb total" in (b or "") for b in sidecar_ok)
+
+
+def test_reset_of_a_real_session_still_sends_the_summary(db, imessage_on, sidecar_ok, card_ok, sync_threads):
+    from workouts.start import start_workout_session
+    from workouts.session_ops import apply_text_update, reset_active_session, RESET_SUMMARY_MIN_SETS
+    user = make_user(db, preferred_channel="imessage", **FOUNDER)
+    sid = start_workout_session(user.id, "pull")["session_id"]
+    for _ in range(RESET_SUMMARY_MIN_SETS):
+        apply_text_update(user.id, "135 x5")
+    assert _done_count(sid) == RESET_SUMMARY_MIN_SETS
+    r = reset_active_session(user.id)
+    assert r["status"] == "finalized" and r["summary_sent"] is True
     assert any("pull" in (b or "") and "lb total" in (b or "") for b in sidecar_ok)
 
 
@@ -132,6 +148,7 @@ def test_reset_tool_handler_relays_each_outcome(db, imessage_on, sidecar_ok, car
     apply_text_update(user.id, "135 x5")
     out2 = dispatch_tool("reset_workout_session", {}, user.id)
     assert out2.startswith("ok: finalized their pull session") and "1 logged set" in out2 and "nothing lost" in out2
+    assert "too small for a summary bubble" in out2       # the coach knows no summary went out
 
 
 # ─── start_workout_session: replace-on-active ────────────────────────────────
@@ -347,3 +364,32 @@ def test_recent_close_brief_is_none_when_nothing_closed_recently(db, imessage_on
     close_session(sid, via="card")
     assert recent_close_brief(user) is not None
     assert recent_close_brief(user, now=_utcnow() + timedelta(hours=2)) is None   # an old close isn't "just closed"
+
+
+# ─── the defaults ask goes out once per day-type, not per card ───────────────
+# Live 2026-10-14 (user 53): pull card at 5:51pm → "heads up these are default back
+# exercises… what do u usually run on back day?"; she tapped Finish, asked for it fresh,
+# second pull card 5:56pm → the same ask again. The second start tool result now says
+# "already flagged, don't repeat"; a different day-type still gets the note.
+
+INTERMEDIATE = dict(FOUNDER, experience="intermediate")
+
+
+def test_second_default_card_of_the_same_day_type_does_not_repeat_the_ask(db, imessage_on, sidecar_ok, card_ok):
+    from agent_tools import dispatch_tool
+    from workouts.start import start_workout_session, send_defaults_note
+    user = make_user(db, preferred_channel="imessage", **INTERMEDIATE)
+    out1 = dispatch_tool("start_workout_session", {"template_key": "pull"}, user.id)
+    assert "STARTING DEFAULT" in out1 and "ask what they actually run" in out1
+    dispatch_tool("reset_workout_session", {}, user.id)
+    out2 = dispatch_tool("start_workout_session", {"template_key": "pull"}, user.id)
+    assert "ALREADY flagged" in out2 and "do NOT repeat" in out2 and out2.endswith("Reply with exactly [silent].")
+    assert "STARTING DEFAULT" not in out2
+    dispatch_tool("reset_workout_session", {}, user.id)
+    out3 = dispatch_tool("start_workout_session", {"template_key": "legs"}, user.id)   # a different day-type
+    assert "STARTING DEFAULT" in out3
+    # the code-sent note path honours the same marker
+    dispatch_tool("reset_workout_session", {}, user.id)
+    sr = start_workout_session(user.id, "legs")
+    assert sr["used_default"] is True and sr["defaults_noted_today"] is True
+    assert send_defaults_note(user.id, sr) is False

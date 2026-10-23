@@ -16,6 +16,13 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 # URL Twilio signs must equal what Flask sees behind ProxyFix — scheme + host +
 # path + query), THEN set TWILIO_SIGNATURE_MODE=enforce in Railway.
 TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow").strip().lower()
+# Stalled-onboarding re-engagement (onboarding_reengage.sweep). Live 2026-10-15: 15 sign-ups
+# in one night, 1 finished setup, 11 stalled mid-intake and were never contacted again (the
+# heartbeat only serves step-3 users). Two nudges max: ~20h and ~72h after the thread went
+# quiet, 10:00–21:00 local, each ending in the next intake ask.
+ONBOARDING_REENGAGE_ENABLED = os.getenv("ONBOARDING_REENGAGE_ENABLED", "true").lower() == "true"
+ONBOARDING_REENGAGE_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FIRST_HOURS", "20"))
+ONBOARDING_REENGAGE_SECOND_HOURS = int(os.getenv("ONBOARDING_REENGAGE_SECOND_HOURS", "72"))
 # Legacy public sign-up surface (2026-10-15 retirement, after the probe). The live site
 # signs up through /waitlist only; /signup (JSON) + /activate-sms are retired (410) unless
 # this is flipped on for a rollback. GET /signup always redirects to the site.
@@ -37,6 +44,7 @@ HEARTBEAT_NO_CALENDAR_GUARD_ENABLED = os.getenv("HEARTBEAT_NO_CALENDAR_GUARD_ENA
 SEARCH_DEAD_END_BACKSTOP_ENABLED = os.getenv("SEARCH_DEAD_END_BACKSTOP_ENABLED", "true").lower() == "true"
 CARD_PLAN_TEXT_SILENT_ENABLED = os.getenv("CARD_PLAN_TEXT_SILENT_ENABLED", "true").lower() == "true"
 CARD_NUMBER_CONFLICT_GUARD_ENABLED = os.getenv("CARD_NUMBER_CONFLICT_GUARD_ENABLED", "true").lower() == "true"
+REPEAT_MEAL_ANCHOR_ENABLED = os.getenv("REPEAT_MEAL_ANCHOR_ENABLED", "true").lower() == "true"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 _raw_db_url = os.getenv("DATABASE_URL", "sqlite:///baseline.db")
 if _raw_db_url.startswith("postgres://"):
@@ -789,6 +797,12 @@ HEARTBEAT_ACTIVE_CONVO_MINUTES = 30    # a recent inbound => obvious-silence pre
 # Mid-workout hard gate: an ACTIVE session touched within this many minutes (a done set, else
 # its start) blocks every proactive send and tells the loop they're mid-session (founder 2026-10-19).
 HEARTBEAT_SESSION_GUARD_ENABLED = os.getenv("HEARTBEAT_SESSION_GUARD_ENABLED", "true").lower() == "true"
+# A workout card goes out when they're GOING, not when they mention going (founder 2026-10-22:
+# "shouldn't have sent the workout card unless he's actually at the gym ready to work out").
+# The start tool, called off a statement with their usual start ≥ CARD_EARLY_SEND_HOURS away,
+# parks the card; an arrival / ask line releases it in code (workouts/park.py).
+CARD_EARLY_SEND_GATE_ENABLED = os.getenv("CARD_EARLY_SEND_GATE_ENABLED", "true").lower() == "true"
+CARD_EARLY_SEND_HOURS = float(os.getenv("CARD_EARLY_SEND_HOURS", "2"))
 HEARTBEAT_SESSION_GUARD_MINUTES = int(os.getenv("HEARTBEAT_SESSION_GUARD_MINUTES", "120"))
 # Standing overnight quiet window for PROACTIVE sends (heartbeat + gym beats), so a
 # nudge never lands at 1am. Separate from quiet_until (a transient goodnight). Default
@@ -971,6 +985,18 @@ HEARTBEAT_STALE_SKIP_ENABLED = os.getenv("HEARTBEAT_STALE_SKIP_ENABLED", "false"
 # The floor: a real evaluation at least this often regardless — a trigger the
 # fingerprint misses costs at most this delay, never a lost text.
 HEARTBEAT_STALE_MAX_HOURS = float(os.getenv("HEARTBEAT_STALE_MAX_HOURS", "3"))
+# Dormant-user backoff (stale_skip.backoff_verdict, 2026-10-22). After 13 days of the
+# stale rule, users quiet ≥7 days were still 55% of model runs (the daypart bands re-open
+# the question ~5×/day) but 41% of texts — the model re-judging "ghosted, hold". The
+# backoff is a dormancy-dependent floor that ignores the fingerprint: quiet ≥N days →
+# at most one model look per H hours unless they ENGAGE (inbound/tapback/card open or a
+# logged meal/workout/weigh-in/calendar/wearable change — our own outbound pings don't
+# count). Same shadow→enable rollout as the stale rule.
+HEARTBEAT_BACKOFF_SHADOW = os.getenv("HEARTBEAT_BACKOFF_SHADOW", "true").lower() == "true"
+HEARTBEAT_BACKOFF_ENABLED = os.getenv("HEARTBEAT_BACKOFF_ENABLED", "false").lower() == "true"
+# "days:hours,days:hours" ascending. 7:10 = morning + evening look; 14:20 = one look a
+# day, landing on the first tick after quiet hours.
+HEARTBEAT_BACKOFF_TIERS = os.getenv("HEARTBEAT_BACKOFF_TIERS", "7:10,14:20")
 # Addendum (post-burn-in): ON for burn-in, deliberately — proactive search is part
 # of the product claim burn-in exists to validate (a coach that can check hours/
 # availability before texting). The managed risk is search UN-BUDGETED, not search

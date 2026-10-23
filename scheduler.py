@@ -97,6 +97,19 @@ def start_scheduler():
             max_instances=1,
         )
 
+    # Stalled-onboarding re-engagement (onboarding_reengage.sweep): two nudges max, ~20h and
+    # ~72h after a mid-intake thread went quiet, inside 10:00–21:00 local.
+    if getattr(config, "ONBOARDING_REENGAGE_ENABLED", True):
+        from onboarding_reengage import sweep as onboarding_reengage_sweep
+        scheduler.add_job(
+            onboarding_reengage_sweep,
+            trigger=_IT(minutes=30),
+            id="onboarding_reengage_sweep",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
     # Setup sequence (setup_sequence.sweep): the first card as the LAST setup step once
     # the connect offers are through and the conversation went quiet — every 10 min,
     # inside the heartbeat's guardrails.

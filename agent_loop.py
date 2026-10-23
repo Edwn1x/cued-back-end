@@ -573,6 +573,16 @@ def build_loop_context(user, session) -> str:
                      "the session is the plan. The summary and review come when they close the card; sleep talk, "
                      "if any, comes after that.")
 
+    # A parked card (workouts/park.py): the coach must not re-call the start tool off a
+    # mention or claim the card is 'ready'.
+    try:
+        from workouts.park import context_line as _parked_line
+        _parked = _parked_line(user)
+    except Exception:  # noqa: BLE001
+        _parked = None
+    if _parked:
+        parts.append(_parked)
+
     # 4a-ii. A one-time form-demo link for a movement on their card they haven't been
     # shown yet (exercise_demos.py). Resolver is PURE (no DB write); we mark seen in a
     # background thread ONLY for the demo we actually inject, so it never repeats. Flag-
@@ -1083,6 +1093,103 @@ def _deliverable_block(user, text: str, session, *, now: datetime = None) -> str
         )
     except Exception as e:  # noqa: BLE001 — a hint must never break a turn
         logger.warning("DELIVERABLE_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
+        return None
+
+
+# "same overnight oats but with strawberries instead of blueberries" — a repeat they NAMED.
+# Live 2026-10-22 (user 51): the coach estimated fresh (350cal/12g) and dropped the scoop
+# of whey that all three prior logs carried (470cal/37g); match_meal_history was never
+# called, and with the user's two-word name it couldn't have matched anyway (Jaccard 0.2).
+# Code finds the prior by name containment and hands the model the ground truth + the
+# stated change; the matcher's silence (no prior) stays silent.
+_REPEAT_LEAD = r"(?:^|\b)(?:and\s+|also\s+|just\s+)?(?:eating|ate|had|having|drank|drinking|made|did|doing|got|grabbed)?\s*"
+_REPEAT_MEAL_RE = re.compile(
+    r"\b(?:the\s+)?(?:same|usual|regular|my\s+(?:usual|regular|normal|go[- ]to))\s+"
+    r"(?!(?:as|but|with|w/|except|minus|plus|without|no|instead|again|from|this|for|and|that|i|rn|lol|always|before|yesterday|time|thing|stuff|one|here|there|lol)\b)"
+    r"(?P<food>[a-z][a-z'/-]*(?:\s+[a-z][a-z'/-]*){0,4}?)"
+    r"(?=\s*(?:,|\.|!|$|\b(?:but|with|w/|except|minus|plus|without|no|instead|again|as|from|this|for|and|that|i|rn|lol)\b))",
+    re.I)
+_REPEAT_AGAIN_RE = re.compile(
+    r"(?P<food>[a-z][a-z'/-]*(?:\s+[a-z][a-z'/-]*){0,3}?)\s+(?:again|like\s+(?:last\s+time|yesterday|usual|always|before|normal))\b(?P<rest>.*)$",
+    re.I)
+_REPEAT_FOOD_STOP = {"thing", "stuff", "meal", "food", "breakfast", "lunch", "dinner", "snack",
+                     "one", "order", "as", "time", "way", "place", "spot", "deal"}
+
+
+def _repeat_meal_mention(text: str) -> tuple[str, str] | None:
+    """(food name, their stated change) when the text names a repeat meal; None otherwise.
+    'same overnight oats but with strawberries instead of blueberries' → ('overnight oats',
+    'but with strawberries instead of blueberries'). A bare 'same thing' has no name → None."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = _REPEAT_MEAL_RE.search(t)
+    if m:
+        food = m.group("food").strip()
+        rest = t[m.end():].strip(" ,.!")
+    else:
+        m = _REPEAT_AGAIN_RE.search(t)
+        if not m:
+            return None
+        food = re.sub(_REPEAT_LEAD, "", m.group("food").strip(), count=1, flags=re.I).strip()
+        rest = (m.group("rest") or "").strip(" ,.!")
+    food = re.sub(r"^(?:that|the|a|an|my|some|this|those|these)\s+", "", food, flags=re.I).strip()
+    words = [w for w in re.findall(r"[a-z][a-z'/-]*", food.lower())]
+    if not words or all(w in _REPEAT_FOOD_STOP for w in words):
+        return None
+    return food, rest
+
+
+def _repeat_meal_block(user, text: str, session) -> str | None:
+    """Their own prior for a meal they called a repeat — code-matched by name, with the
+    change they stated — so the model starts from the ground truth instead of a fresh
+    estimate. Read-only, fail-open: no phrasing or no prior → None (silent)."""
+    if not getattr(config, "REPEAT_MEAL_ANCHOR_ENABLED", True) or not text:
+        return None
+    try:
+        hit = _repeat_meal_mention(text)
+        if not hit:
+            return None
+        food, change = hit
+        from meal_history import match_repeat_meal
+        matches = match_repeat_meal(user.id, food, session=session)
+        if not matches:
+            logger.info("REPEAT_MEAL_NO_MATCH user=%s food=%r", user.id, food[:60])
+            return None
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        lines = []
+        for m in matches[:2]:
+            days = max(0, (now - m["last_eaten_at"]).days) if m["last_eaten_at"] else None
+            when = "today" if days == 0 else (f"{days}d ago" if days is not None else "unknown")
+            macros = [f"~{m['calories']}cal" if m["calories"] is not None else None,
+                      f"{m['protein_g']}g protein" if m["protein_g"] is not None else None,
+                      f"{m['carbs_g']}g carbs" if m["carbs_g"] is not None else None,
+                      f"{m['fat_g']}g fat" if m["fat_g"] is not None else None]
+            macros = [x for x in macros if x]
+            lines.append(f"'{m['description']}' — logged {m['count']}x, last {when}"
+                         + (", usually " + "/".join(macros) if macros else ", no macros recorded"))
+        top = matches[0]
+        logger.info("REPEAT_MEAL_ANCHOR user=%s food=%r change=%r match=%r n=%s cal=%s pro=%s",
+                    user.id, food[:60], change[:80], (top["description"] or "")[:60],
+                    top["count"], top["calories"], top["protein_g"])
+        change_line = (f"Their stated change: \"{change}\".\n" if change
+                       else "They stated no change.\n")
+        return (
+            "## REPEAT MEAL — their own history (code-matched; this is the ground truth, not a guess)\n"
+            f"They said \"{food}\" is the SAME as something they've logged before. Best match"
+            + ("es" if len(lines) > 1 else "") + ":\n" + "\n".join(lines) + "\n"
+            + change_line +
+            "Rules: start from the top prior's numbers. Everything they did NOT mention stays "
+            "exactly as in the prior — the milk, the honey, the scoop of whey — never drop an "
+            "ingredient because they didn't re-list it this time. Adjust ONLY for the stated "
+            "change: a like-for-like swap (fruit for fruit, one bread for another) is ~0 change; "
+            "a removed or added ingredient moves the numbers by that ingredient alone. If they "
+            "ate it, call log_meal NOW with the adjusted numbers and a description that carries "
+            "the prior's ingredients with the change applied; say you used their usual. Do not "
+            "re-estimate from scratch and do not ask them to re-list what's in it."
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REPEAT_MEAL_BLOCK_FAILED user=%s err=%s", getattr(user, "id", None), e)
         return None
 
 
@@ -1679,6 +1786,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         _dl = _deliverable_block(user, combined_body, session)
         if _dl:
             context += "\n\n" + _dl
+        # A repeat meal they named ("same overnight oats") → their own prior + the stated change,
+        # so the estimate starts from history, not from scratch (live 2026-10-22: whey dropped).
+        _rm = _repeat_meal_block(user, combined_body, session)
+        if _rm:
+            context += "\n\n" + _rm
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
