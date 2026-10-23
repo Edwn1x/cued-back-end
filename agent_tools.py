@@ -345,11 +345,49 @@ START_WORKOUT_SESSION_TOOL = {
 }
 
 
+def _inbound_body(message_id) -> str | None:
+    """The text of the inbound message a tool call is answering (None off a proactive turn)."""
+    if not message_id:
+        return None
+    from models import get_session, Message
+    session = get_session()
+    try:
+        m = session.get(Message, int(message_id))
+        return m.body if m and m.direction == "in" else None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        session.close()
+
+
 def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from workouts.start import start_workout_session
     one_off = tool_input.get("exercises")
     if one_off is not None and not isinstance(one_off, list):
         return "error: exercises must be a list of {name, sets, reps, weight}"
+    # Going, not mentioning going (founder 2026-10-22): a statement hours before their usual
+    # start parks the card instead of sending it; an ask / arrival line always sends.
+    if config.CARD_EARLY_SEND_GATE_ENABLED and message_id:
+        try:
+            from workouts import park
+            from models import get_session, User
+            _s = get_session()
+            try:
+                _u = _s.get(User, user_id)
+                reason = park.hold_reason(_u, _inbound_body(message_id)) if _u else None
+            finally:
+                _s.close()
+        except Exception as e:  # noqa: BLE001 — the gate never blocks a card by accident
+            logger.warning("CARD_EARLY_GATE_FAILED user=%s err=%s", user_id, e)
+            reason = None
+        if reason:
+            key = (tool_input.get("template_key") or "").strip() or None
+            park.park(user_id, template_key=key, no_anchors=bool(tool_input.get("no_anchors")),
+                      exercises=one_off or None, reason=reason)
+            return (f"NOT sent — {reason}. The card is parked and goes out BY ITSELF when they say they're "
+                    f"heading out / at the gym / about to start, or if they ask for it. Reply with ONE short line "
+                    f"that nods at the plan (no exercise list, no weights, don't say a card is coming) — e.g. "
+                    f"\"bet, see u at the gym tonight\". Don't call this again this turn.")
     try:
         r = start_workout_session(user_id, (tool_input.get("template_key") or "").strip() or None,
                                   no_anchors=bool(tool_input.get("no_anchors")),

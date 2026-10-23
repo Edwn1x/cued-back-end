@@ -573,6 +573,16 @@ def build_loop_context(user, session) -> str:
                      "the session is the plan. The summary and review come when they close the card; sleep talk, "
                      "if any, comes after that.")
 
+    # A parked card (workouts/park.py): the coach must not re-call the start tool off a
+    # mention or claim the card is 'ready'.
+    try:
+        from workouts.park import context_line as _parked_line
+        _parked = _parked_line(user)
+    except Exception:  # noqa: BLE001
+        _parked = None
+    if _parked:
+        parts.append(_parked)
+
     # 4a-ii. A one-time form-demo link for a movement on their card they haven't been
     # shown yet (exercise_demos.py). Resolver is PURE (no DB write); we mark seen in a
     # background thread ONLY for the demo we actually inject, so it never repeats. Flag-

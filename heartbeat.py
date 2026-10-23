@@ -1579,6 +1579,16 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
     if gap:
         parts.append(gap)
 
+    # A parked card (workouts/park.py): the proactive coach doesn't nudge 'ur card's ready'
+    # or push the session early — it sends itself when they say they're going.
+    try:
+        from workouts.park import context_line as _parked_line
+        parked = _parked_line(user)
+    except Exception:  # noqa: BLE001
+        parked = None
+    if parked:
+        parts.append(parked)
+
     # Wearable recovery (flag-gated + fail-open inside; inert without fresh wearable data).
     try:
         rec = _recovery_signal(user, session)
