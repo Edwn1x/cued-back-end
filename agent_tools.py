@@ -407,6 +407,15 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
                 f"one-off list — NOT saved as their routine (their usual {r['template_key']} day is untouched).{first} "
                 f"Reply with exactly [silent].")
     base = f"ok: {r['template_key']} session #{r['session_id']} sent as a {how} ({r['sets']} sets).{first}"
+    card = ", ".join(r.get("card") or [])
+    if r.get("plan_text") and getattr(config, "CARD_PLAN_TEXT_SILENT_ENABLED", True):
+        # The coach's own pre-session plan (weights + reasons, in their voice) already went out
+        # with the card. Anything the model adds is a second intro at best and a conflicting
+        # number at worst (live 2026-10-22, user 40: plan text "leg press up to 175", model's
+        # extra line "leg press start at 165"). This outranks the defaults/beginner line — the
+        # plan text IS the why-line.
+        return (base + f" Your plan text already went out with it (card: {card}) — the weights and the "
+                f"reasons are said. Add NOTHING about exercises or weights. Reply with exactly [silent].")
     if r.get("used_default") and r.get("defaults_noted_today"):
         return base + " " + _defaults_again_note(r["template_key"])
     if r.get("used_default"):
@@ -414,7 +423,10 @@ def handle_start_workout_session(user_id: int, tool_input: dict, *, message_id=N
         # Break the usual [silent] contract here — a ONE-liner that labels them defaults and offers
         # to capture the real ones is the whole point (live incident user 31: generic pull card
         # passed off as "their card").
-        return base + " " + _defaults_instruction(r["template_key"], beginner=bool(r.get("novice")))
+        line = _defaults_instruction(r["template_key"], beginner=bool(r.get("novice")))
+        if card:
+            line += f" The card shows: {card} — if you name a weight, it is one of THESE, never another number."
+        return base + " " + line
     return base + " Reply with exactly [silent]."
 
 

@@ -1625,6 +1625,80 @@ def _restatement_figure(reply: str, inbound: str, prev: str):
     return None
 
 
+_LOAD_LB_RE = re.compile(r"(\d[\d,]*)\s?(?:lb|lbs|pounds?)\b", re.I)
+
+
+def _card_number_guard(user, text: str) -> str:
+    """A card went out THIS turn; any load figure the model states that the card doesn't show
+    is dropped, sentence by sentence (live 2026-10-22, user 40: card + plan text said leg press
+    175, the model's extra line said 165 — two numbers in the thread, one of them wrong). The
+    card's planned weights and reps are the only figures allowed; small counts (sets, "3x")
+    are below the floor. Empty when nothing survives — the card already speaks."""
+    if not text or not getattr(config, "CARD_NUMBER_CONFLICT_GUARD_ENABLED", True):
+        return text
+    try:
+        from agent_tools import turn_called
+        if not turn_called(user.id, "start_workout_session"):
+            return text
+        from workouts.session_ops import active_session_id
+        from models import SetLog
+        sid = active_session_id(user.id)
+        if not sid:
+            return text
+        s = get_session()
+        try:
+            rows = (s.query(SetLog.planned_weight, SetLog.planned_reps, SetLog.exercise_label, SetLog.exercise)
+                    .filter(SetLog.session_id == sid).all())
+        finally:
+            s.close()
+        allowed, labels = set(), set()
+        for w, r, label, slug in rows:
+            if w:
+                allowed.add(int(round(float(w))))
+            if r:
+                allowed.add(int(r))
+            for name in (label, slug):
+                if name:
+                    labels.add(name.lower().replace("_", " ").strip())
+        if not allowed:
+            return text
+        bad = {f for f in _figures(text) if f >= 20 and f not in allowed}
+        if not bad:
+            return text
+
+        def _conflicts(piece: str) -> bool:
+            # A LOAD claim: a bad figure in a sentence that names one of the card's exercises, or
+            # a bad figure in pounds. "db up to 50" (equipment), "30 min", a date — not loads.
+            figs = _figures(piece) & bad
+            if not figs:
+                return False
+            low = piece.lower()
+            if any(lb in low for lb in labels):
+                return True
+            return any(int(m.replace(",", "")) in bad for m in _LOAD_LB_RE.findall(piece))
+
+        kept, removed = [], 0
+        for line in text.split("\n"):
+            if not line.strip():
+                kept.append(line)                       # blank lines are layout, keep them
+                continue
+            pieces = re.split(r"(?<=[.!?])\s+", line)
+            ok = [p for p in pieces if not _conflicts(p)]
+            removed += len(pieces) - len(ok)
+            if ok:
+                kept.append(" ".join(ok).strip())
+        if not removed:
+            return text
+        out = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+        out = "\n".join(k for k in kept if k).strip()
+        logger.warning("AGENT_LOOP_CARD_NUMBER_CONFLICT user=%s session=%s bad=%s card=%s dropped=%r kept=%r",
+                       user.id, sid, sorted(bad), sorted(allowed), text[:120], out[:80])
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("CARD_NUMBER_GUARD_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return text
+
+
 def _apply_restatement_guard(user, text: str, combined_body: str, state: dict) -> str:
     """Final reply → the reply to send. When the turn wrote nothing and `text` restates
     the outbound sent inside OUTBOUND_RESTATEMENT_WINDOW_S, send a minimal ack instead:
@@ -2187,6 +2261,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             sid = latest_inbound_imessage_sid(user.id) if _resolve_channel(user.id) == "imessage" else None
             if sid and react_to_message(user.id, sid, text.strip()):
                 logger.info("AGENT_LOOP_EMOJI_TEXT_AS_REACTION user=%s emoji=%r", user.id, text.strip())
+                return ""
+        if text:
+            # A card went out this turn: a weight the card doesn't show never reaches the thread.
+            text = _card_number_guard(user, text)
+            if not text:
+                logger.info("AGENT_LOOP_CARD_SPEAKS user=%s iter=%d — reply dropped, the card + plan text already went out", user.id, i)
                 return ""
         if text:
             _persist_recent_photo(user.id, image_data, combined_body, text)
