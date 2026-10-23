@@ -43,6 +43,22 @@ def _sent(sms_capture):
     return [b for _p, b in sms_capture]
 
 
+def _pin_nudge(uid, at):
+    """The nudge the sweep just sent is stamped with the REAL clock (send_sms), while every
+    other timestamp here is relative to the fake `now`. Pin it to the fake clock so the
+    72h gap is measured from the sweep's `now`, whatever day the suite runs on (it went red
+    on main on 2026-10-22, two days after the fixed date)."""
+    from models import get_session, Message
+    s = get_session()
+    try:
+        for m in s.query(Message).filter(Message.user_id == uid, Message.direction == "out",
+                                         Message.created_at > PT_NOON_UTC).all():
+            m.created_at = at
+        s.commit()
+    finally:
+        s.close()
+
+
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_ENABLED", True)
@@ -85,6 +101,7 @@ def test_second_nudge_only_72h_after_the_first_and_never_a_third(db, sms_capture
     import onboarding_reengage as r
     u = _stalled(db, ago_h=24)
     assert r.sweep(now=PT_NOON_UTC) == 1
+    _pin_nudge(u.id, PT_NOON_UTC)
     assert r.sweep(now=PT_NOON_UTC + timedelta(hours=24)) == 0          # too soon for #2
     assert r.sweep(now=PT_NOON_UTC + timedelta(hours=73)) == 1          # #2
     assert "last one from me" in _sent(sms_capture)[-1]
@@ -96,6 +113,7 @@ def test_a_reply_after_the_first_nudge_stops_the_second(db, sms_capture):
     import onboarding_reengage as r
     u = _stalled(db, ago_h=24)
     assert r.sweep(now=PT_NOON_UTC) == 1
+    _pin_nudge(u.id, PT_NOON_UTC)
     _msg(u.id, "in", "yeah lets do it", ago_h=-1)       # one hour after the nudge
     assert r.sweep(now=PT_NOON_UTC + timedelta(hours=100)) == 0
 
