@@ -1049,6 +1049,17 @@ def _daily_briefing_parts(user, session, *, now=None) -> dict:
                     parts["due_today_times"][t] = _clock(to_local(d.when, user))
             parts["due_soon"] = [(display_title(d.title), d.days_until(now_utc))
                                  for d in items if d.id not in today_ids][:3]
+            # "wed by 4:00pm" / "wed" per due-soon item — the words the radar bubble uses when
+            # the model drops one (live 2026-10-24 Sat: CS 70 HW due Wed left out of a briefing
+            # that had nothing else on it).
+            parts["due_soon_when"] = {}
+            for d in items:
+                if d.id in today_ids:
+                    continue
+                t = display_title(d.title)
+                loc = to_local(d.when, user)
+                day = loc.strftime("%a").lower()
+                parts["due_soon_when"][t] = day if d.all_day else f"{day} by {_clock(loc)}"
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_DEADLINES_FAILED user=%s err=%s", user.id, e)
     try:
@@ -1339,6 +1350,26 @@ def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
             line = "also: " + " + ".join(bits)
             logger.info("BRIEFING_DUE_TODAY_APPENDED user=%s items=%r", user_id, dropped_due)
             out = f"{out.rstrip()}\n---\n{line}"
+        # Due SOON on a day with nothing due: the radar is the briefing's academic content, and
+        # the model dropped it (live 2026-10-24 Sat 13:07: "67° and clear … gym's wide open" with
+        # CS 70 HW due Wed in the parts). Code appends the near ones — within
+        # BRIEFING_DUE_SOON_RADAR_DAYS, at most two — as one bubble. A due-TODAY day already
+        # carries its own line; this never stacks on it.
+        dropped_soon = [d for i, d in drops if i == "due_soon"]
+        if (dropped_soon and not parts.get("due_today")
+                and getattr(config, "BRIEFING_DUE_SOON_RADAR_ENABLED", True)):
+            days = {t: d for t, d in (parts.get("due_soon") or [])}
+            when = parts.get("due_soon_when") or {}
+            horizon = getattr(config, "BRIEFING_DUE_SOON_RADAR_DAYS", 5)
+            picks = [t for t in dropped_soon if days.get(t, 99) <= horizon][:2]
+            if picks:
+                bits = []
+                for t in picks:
+                    name = re.sub(r"\s+due\s*$", "", t.strip(), flags=re.IGNORECASE).lower()
+                    bits.append(f"{name} due {when[t]}" if t in when else f"{name} due in {days[t]:.0f}d")
+                line = "heads up: " + " + ".join(bits)
+                logger.info("BRIEFING_DUE_SOON_APPENDED user=%s items=%r", user_id, picks)
+                out = f"{out.rstrip()}\n---\n{line}"
         return out
     except Exception as e:  # noqa: BLE001
         logger.warning("BRIEFING_ENFORCE_FAILED user=%s err=%s", user_id, e)
