@@ -1753,8 +1753,11 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
                     for t in reversed(ticks))
                 parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n"
                              "Only entries marked [today] count toward today's budget. Earlier days are context "
-                             "for tone and variety, never a reason to stay silent today — a question asked "
-                             "yesterday is not open today, and yesterday's nudges don't 'already' cover today.\n" + tl)
+                             "for tone and variety, never a reason to stay silent today — yesterday's nudges don't "
+                             "'already' cover today. An earlier day's question they never answered is CLOSED: it "
+                             "doesn't block you, and you don't re-ask it either (live: 'how'd the quiz go' asked "
+                             "Friday, re-asked Sunday as 'how'd the quiz go sat' — wrong day, same question). "
+                             "Move on to what's real today.\n" + tl)
             else:
                 tl = "\n".join(
                     f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"

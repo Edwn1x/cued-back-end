@@ -53,7 +53,8 @@ def test_live_friday_question_is_labelled_yesterday_and_todays_nudge_today(db, m
     assert "[yesterday 9:21pm] silent: open quiz question" in ctx
     assert "[today 12:01am] SPOKE: 67° and clear out" in ctx
     assert "Only entries marked [today] count toward today's budget" in ctx
-    assert "a question asked yesterday is not open today" in ctx
+    assert "An earlier day's question they never answered is CLOSED" in ctx
+    assert "you don't re-ask it either" in ctx
 
 
 def test_older_days_carry_the_weekday():
