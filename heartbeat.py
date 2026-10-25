@@ -145,6 +145,25 @@ def _log_tick(user_id, spoke, reason, message=None, search=None):
                 search.get("available", False), search.get("used", False))
 
 
+def _tick_day_label(decided_at, user, *, now=None) -> str:
+    """'today 5:37pm' / 'yesterday 5:37pm' / 'Thu 5:37pm' for a tick's naive-UTC instant, judged
+    on the user's LOCAL calendar day."""
+    try:
+        tz = _user_tz(user)
+        ref = _ref(now).astimezone(tz)
+        loc = decided_at.replace(tzinfo=timezone.utc).astimezone(tz) if decided_at.tzinfo is None \
+            else decided_at.astimezone(tz)
+        delta = (ref.date() - loc.date()).days
+        clock = loc.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm")
+        if delta <= 0:
+            return f"today {clock}"
+        if delta == 1:
+            return f"yesterday {clock}"
+        return f"{loc.strftime('%a')} {clock}"
+    except Exception:  # noqa: BLE001
+        return "earlier"
+
+
 def _local_day_start_utc(user):
     try:
         tz = ZoneInfo(user.user_timezone or "America/Los_Angeles")
@@ -1722,10 +1741,25 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
             parts.append("## RECENT PROACTIVE MESSAGES (today — do NOT repeat these)\n"
                          + "\n".join(f"- {m.body}" for m in reversed(todays_out)))
         if ticks:
-            tl = "\n".join(
-                f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
-                for t in reversed(ticks))
-            parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
+            if getattr(config, "HEARTBEAT_TICK_HISTORY_DATED_ENABLED", True):
+                # Each decision carries its LOCAL day. Live 2026-10-24 (Sat) 16:37–19:07 PT: the
+                # history listed Friday's "how'd the quiz go" and Friday's silent reasons undated;
+                # the model read them as today ("already asked about today's quiz … nothing new
+                # to add") and stayed silent through a second zero-food day — and its own stale
+                # reason then re-entered the history as fact for the next tick.
+                tl = "\n".join(
+                    f"- [{_tick_day_label(t.decided_at, user)}] {'SPOKE' if t.spoke else 'silent'}: "
+                    f"{t.message if t.spoke else t.reason}"
+                    for t in reversed(ticks))
+                parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n"
+                             "Only entries marked [today] count toward today's budget. Earlier days are context "
+                             "for tone and variety, never a reason to stay silent today — a question asked "
+                             "yesterday is not open today, and yesterday's nudges don't 'already' cover today.\n" + tl)
+            else:
+                tl = "\n".join(
+                    f"- {'SPOKE' if t.spoke else 'silent'}: {t.message if t.spoke else t.reason}"
+                    for t in reversed(ticks))
+                parts.append("## TICK HISTORY (your recent proactive decisions — don't re-send a thought)\n" + tl)
 
     return "\n\n".join(parts)
 
