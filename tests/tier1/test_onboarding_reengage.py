@@ -64,6 +64,7 @@ def _on(monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_ENABLED", True)
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_FIRST_HOURS", 20)
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_SECOND_HOURS", 72)
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", False)   # the template path; model copy has its own file
 
 
 def test_first_nudge_after_20h_quiet_names_what_is_left_and_asks(db, sms_capture):
@@ -71,9 +72,11 @@ def test_first_nudge_after_20h_quiet_names_what_is_left_and_asks(db, sms_capture
     u = _stalled(db, ago_h=24)
     assert r.sweep(now=PT_NOON_UTC) == 1
     out = _sent(sms_capture)
-    assert len(out) == 1 and out[0].startswith("hey Test, still down to finish setup?")
-    assert "quick things left" in out[0] and out[0].endswith("?")
-    assert "ur height and weight" in out[0]              # the next plain ask (first missing field)
+    # founder's structure: why they signed up → starting is the hard part, i'm here → the ONE ask: today's food
+    assert len(out) == 1 and out[0].startswith("hey Test, u signed up to"), out[0]
+    assert "getting started is always the hard part" in out[0] and "lock in" in out[0]
+    assert "eaten so far today?" in out[0]                        # 12:00 PT → the food ask
+    assert "height" not in out[0] and "quick things left" not in out[0]   # no setup questions, no field count
 
 
 def test_never_replied_user_gets_the_open_door_variant(db, sms_capture):
@@ -81,7 +84,8 @@ def test_never_replied_user_gets_the_open_door_variant(db, sms_capture):
     u = _stalled(db, replied=False, ago_h=30)
     assert r.sweep(now=PT_NOON_UTC) == 1
     out = _sent(sms_capture)[0]
-    assert "ur spot's still open" in out and out.endswith("?")
+    assert out.startswith("hey Test, it's cued") and "u signed up to" in out and "?" in out
+    assert "eaten" in out and "height" not in out
 
 
 def test_too_soon_sends_nothing(db, sms_capture):

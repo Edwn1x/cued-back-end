@@ -833,6 +833,44 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 typing_stop(user.id)
                 return
 
+        # Re-engaged mid-setup user (onboarding_reengage.py, food-first window): their reply
+        # to "what have u eaten today?" goes to the agent loop — log_meal + the numbers — not
+        # back into the questionnaire. Once a meal is logged, code asks the next intake field
+        # with the reason attached, and the intake agent takes over again.
+        if (user.onboarding_step or 0) < 3:
+            try:
+                from onboarding_reengage import food_first_active, meal_logged_since, intake_hook_line, last_nudge_at
+                food_first = food_first_active(session, user)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("REENGAGE_FOOD_FIRST_CHECK_FAILED user=%s err=%s", user.id, e)
+                food_first = False
+            if food_first and config.SINGLE_AGENT_LOOP_ENABLED:
+                since = last_nudge_at(session, user.id)
+                try:
+                    response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
+                                                   image_data_list=images, continuation=continuation)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("REENGAGE_FOOD_FIRST_LOOP_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                    response_text = None
+                if response_text is not None:
+                    from agent_tools import pop_turn_state, REACTION_ONLY_SENTINEL
+                    if (response_text or "").strip().lower() == REACTION_ONLY_SENTINEL:
+                        response_text = ""
+                    turn = pop_turn_state(user.id)
+                    if response_text:
+                        send_sms(user.phone, response_text, user_id=user.id, message_type=message_type,
+                                 reply_to_sid=turn.get("reply_to"))
+                    logged = bool(since) and meal_logged_since(session, user.id, since)
+                    if logged and not (response_text or "").rstrip().endswith("?"):
+                        send_sms(user.phone, intake_hook_line(user), user_id=user.id, message_type="onboarding")
+                    if not response_text:
+                        typing_stop(user.id)
+                    logger.info("REENGAGE_FOOD_FIRST_TURN user=%s meal_logged=%s", user.id, logged)
+                    threading.Thread(target=extract_and_store_memory, args=(user.id, combined_body, response_text),
+                                     daemon=True).start()
+                    return
+                # the loop failed → the intake agent answers, as before
+
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             from onboarding_agent import coach_turn_text, latest_message_id

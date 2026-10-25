@@ -936,6 +936,17 @@ def build_loop_context(user, session) -> str:
     if _up:
         parts.append(_up)
 
+    # Re-engaged mid-setup user in the food-first window (onboarding_reengage.py): log the
+    # meal, say the numbers, no setup questions — code asks the next one after the meal.
+    if (getattr(user, "onboarding_step", 0) or 0) < 3:
+        try:
+            from onboarding_reengage import context_block as _reengage_block
+            _rb = _reengage_block(user, session)
+        except Exception:  # noqa: BLE001
+            _rb = None
+        if _rb:
+            parts.append(_rb)
+
     return "\n\n".join(parts)
 
 
