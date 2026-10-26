@@ -112,7 +112,7 @@ def test_imessage_user_gets_the_gif_as_an_attachment_and_no_line(db, gif_on, ime
     assert row.active is True and row.sent_count == 1 and row.fire_at > row.last_sent_at
 
 
-def test_consecutive_pings_rotate_through_the_files(db, gif_on, imessage_on, attachment_ok, anthropic_stub):
+def test_consecutive_pings_never_repeat_a_file(db, gif_on, imessage_on, attachment_ok, anthropic_stub):
     from models import Reminder
     from reminders import fire_due
     from water_gif import gif_files
@@ -120,14 +120,25 @@ def test_consecutive_pings_rotate_through_the_files(db, gif_on, imessage_on, att
     _no_model(anthropic_stub)
     u = make_user(db, preferred_channel="imessage")
     row = _water_row(db, u)
-    first = row.fire_at
-    assert fire_due(now=first) == 1
-    db.expire_all()
-    row = db.get(Reminder, row.id)
-    assert fire_due(now=row.fire_at) == 1
+    for _ in range(6):
+        db.expire_all()
+        row = db.get(Reminder, row.id)
+        assert fire_due(now=row.fire_at) == 1
     names = [c[2] for c in attachment_ok]
-    assert len(names) == 2 and names[0] != names[1]
-    assert names == gif_files()[:2]
+    assert len(names) == 6 and all(a != b for a, b in zip(names, names[1:]))
+    assert set(names) <= set(gif_files()) and len(set(names)) >= 2
+
+
+def test_the_shuffle_is_per_user_and_covers_every_file():
+    from water_gif import _slot
+    n = 5
+    for uid in (1, 40, 51, 1234):
+        seq = [_slot(uid, n, c) for c in range(40)]
+        assert all(a != b for a, b in zip(seq, seq[1:]))          # never twice in a row
+        assert set(seq) == set(range(n))                           # every file gets a turn
+    # two users don't walk the same fixed cycle
+    assert [_slot(1, n, c) for c in range(12)] != [_slot(2, n, c) for c in range(12)]
+    assert _slot(7, 1, 3) == 0 and _slot(7, 0, 3) == 0
 
 
 def test_attachment_failure_falls_back_to_the_composed_line(db, gif_on, imessage_on, monkeypatch,
@@ -174,7 +185,8 @@ def test_sms_user_gets_an_mms_pointing_at_the_static_gif(db, gif_on, mms_ok, sms
     assert not sms_capture and len(mms_ok) == 1
     phone, url = mms_ok[0]
     assert phone == u.phone
-    assert url == f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/static/water/{gif_files()[0]}"
+    base = f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/static/water/"
+    assert url.startswith(base) and url[len(base):] in gif_files()
     rows = _out(db, u.id)
     assert [(r.message_type, r.body, r.channel) for r in rows] == [("water_reminder", MARKER, "sms")]
 

@@ -50,13 +50,33 @@ def gif_files() -> list[str]:
         return []
 
 
-def pick_gif(row) -> str | None:
-    """Rotate by the row's sent_count so consecutive pings differ."""
+def _slot(user_id: int, n: int, count: int) -> int:
+    """Deterministic pseudo-random index for ping number `count`: varies per user and
+    per ping (so the order isn't the same fixed cycle for everyone), and never lands
+    on the slot the previous ping used. Recomputable, so no state to store."""
+    if n <= 1:
+        return 0
+    def h(c):
+        x = (int(user_id or 0) * 1_000_003 + c * 7_919) & 0xFFFFFFFF
+        x ^= x >> 13; x = (x * 0x5BD1E995) & 0xFFFFFFFF; x ^= x >> 15
+        return x
+    idx = h(count) % n
+    if count > 0:
+        prev = _slot(user_id, n, count - 1)
+        if idx == prev:
+            idx = (idx + 1 + h(count) % (n - 1)) % n
+    return idx
+
+
+def pick_gif(row, user_id: int | None = None) -> str | None:
+    """Next GIF for this row: shuffled per user and per ping (founder: 'a few distinct
+    ones so it never gets repetitive'), never the same file twice in a row."""
     files = gif_files()
     if not files:
         return None
-    n = int(getattr(row, "sent_count", 0) or 0)
-    return files[n % len(files)]
+    count = int(getattr(row, "sent_count", 0) or 0)
+    uid = user_id if user_id is not None else getattr(row, "user_id", 0)
+    return files[_slot(uid, len(files), count)]
 
 
 def gif_url(name: str) -> str:
@@ -71,7 +91,7 @@ def send_water_gif(user, row) -> bool:
     send path owns failover / hold semantics."""
     if not config.WATER_GIF_ENABLED:
         return False
-    name = pick_gif(row)
+    name = pick_gif(row, user.id)
     if not name:
         logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
         return False
