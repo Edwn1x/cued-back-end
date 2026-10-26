@@ -11,7 +11,7 @@ pytz==2024.1
 psycopg[binary]==3.2.6
 requests==2.32.3
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml==5.3.0
 pillow==12.3.0
 pillow-heif==1.7.0
 cryptography==44.0.1
