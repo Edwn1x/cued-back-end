@@ -258,6 +258,53 @@ def test_a_gif_ping_is_not_an_unanswered_proactive(db, gif_on, imessage_on, atta
     assert has_unanswered_proactive(u.id, 180) is False
 
 
+# ─── admin preview: POST /admin/water-gif/send ──────────────────────────────────
+
+def test_admin_preview_sends_one_gif_without_the_flag_and_logs_it_as_admin(db, client, imessage_on, attachment_ok,
+                                                                           monkeypatch):
+    import config
+    from water_gif import MARKER, gif_files
+    monkeypatch.setattr(config, "WATER_GIF_ENABLED", False)
+    u = make_user(db, preferred_channel="imessage")
+    r = client.post("/admin/water-gif/send", data={"user_id": str(u.id), "name": gif_files()[1]})
+    assert r.status_code == 200 and r.get_json() == {"status": "ok", "sent": [gif_files()[1]], "failed": []}
+    assert [c[2] for c in attachment_ok] == [gif_files()[1]]
+    rows = _out(db, u.id)
+    assert [(m.message_type, m.body, m.channel) for m in rows] == [("admin", MARKER, "imessage")]
+
+
+def test_admin_preview_all_sends_every_file_in_order(db, client, mms_ok, monkeypatch):
+    import time
+    from water_gif import gif_files
+    monkeypatch.setattr(time, "sleep", lambda s: None)   # app.py imports time locally → same module object
+    u = make_user(db)
+    r = client.post("/admin/water-gif/send", data={"user_id": str(u.id), "name": "all"})
+    assert r.status_code == 200 and r.get_json()["sent"] == gif_files()
+    assert [url.rsplit("/", 1)[1] for _, url in mms_ok] == gif_files()
+
+
+def test_admin_preview_refuses_unknown_gif_archived_and_opted_out(db, client, mms_ok):
+    from datetime import datetime
+    u = make_user(db)
+    r = client.post("/admin/water-gif/send", data={"user_id": str(u.id), "name": "nope.gif"})
+    assert r.status_code == 404 and "available" in r.get_json()
+    out = make_user(db, opted_out=True)
+    assert client.post("/admin/water-gif/send", data={"user_id": str(out.id)}).status_code == 400
+    arch = make_user(db)
+    arch.archived_at = datetime(2026, 10, 1); db.commit()
+    assert client.post("/admin/water-gif/send", data={"user_id": str(arch.id)}).status_code == 400
+    assert client.post("/admin/water-gif/send", data={"user_id": "999999"}).status_code == 404
+    assert not mms_ok
+
+
+def test_admin_preview_reports_a_failed_send(db, client, monkeypatch):
+    import sms
+    monkeypatch.setattr(sms, "_send_single_mms", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("twilio down")))
+    u = make_user(db)
+    r = client.post("/admin/water-gif/send", data={"user_id": str(u.id)})
+    assert r.status_code == 502 and r.get_json()["status"] == "error" and r.get_json()["failed"]
+
+
 # ─── the files ───────────────────────────────────────────────────────────────────
 
 def test_gifs_are_served_as_static_files_and_stay_mms_sized(client):

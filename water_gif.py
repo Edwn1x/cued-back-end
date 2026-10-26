@@ -84,17 +84,10 @@ def gif_url(name: str) -> str:
     return f"{base}/static/water/{name}"
 
 
-def send_water_gif(user, row) -> bool:
-    """Send the next GIF in the rotation to `user` for interval reminder `row`.
-    Returns True only when it landed and the Message row is written. Any failure is
-    logged and returns False — the caller falls back to the plain line, whose own
-    send path owns failover / hold semantics."""
-    if not config.WATER_GIF_ENABLED:
-        return False
-    name = pick_gif(row, user.id)
-    if not name:
-        logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
-        return False
+def send_gif(user, name: str, *, message_type: str = WATER_REMINDER_TYPE) -> bool:
+    """Send static/water/<name> to `user` over their channel and write the Message row.
+    True only when it landed. Any failure is logged and returns False — callers decide
+    the fallback (the reminder sends its plain line; the admin preview reports it)."""
     import sms
     channel = "sms"
     try:
@@ -110,11 +103,23 @@ def send_water_gif(user, row) -> bool:
             sid = sms._send_imessage_attachment(user.phone, data, name, MIME)
         else:
             sid = sms._send_single_mms(user.phone, gif_url(name))
-        sms._log_message(user.id, MARKER, WATER_REMINDER_TYPE, channel=channel,
+        sms._log_message(user.id, MARKER, message_type, channel=channel,
                          provider_sid=sid, delivery_status="sent")
-        logger.info("WATER_GIF_SENT user=%s channel=%s gif=%s", user.id, channel, name)
+        logger.info("WATER_GIF_SENT user=%s channel=%s gif=%s type=%s", user.id, channel, name, message_type)
         return True
     except Exception as e:  # noqa: BLE001 — never lose the ping to a media failure
         logger.warning("WATER_GIF_FAILED user=%s channel=%s gif=%s err=%s — falling back to text",
                        user.id, channel, name, e)
         return False
+
+
+def send_water_gif(user, row) -> bool:
+    """The reminder path: next GIF in this user's shuffle for interval reminder `row`.
+    False → the caller sends the plain line, whose own send path owns failover / hold."""
+    if not config.WATER_GIF_ENABLED:
+        return False
+    name = pick_gif(row, user.id)
+    if not name:
+        logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
+        return False
+    return send_gif(user, name)
