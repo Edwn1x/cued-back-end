@@ -222,6 +222,13 @@ def test_non_water_interval_rows_and_one_offs_keep_the_line(db, gif_on, mms_ok, 
     r = create_reminder(u.id, "stand up and stretch", None, every_hours=2, source="model")
     db.expire_all()
     assert fire_due(now=db.get(Reminder, r["id"]).fire_at) == 1
+    # Park the interval row's +2h re-arm out of the way: the 07:00 one-off below is more
+    # than 2h out for most of the day, so otherwise BOTH fire there and the count is 2
+    # (wall-clock fragile — green at 04:34 PT, red at 08:00 PT on 2026-10-26).
+    db.expire_all()
+    stretch = db.get(Reminder, r["id"])
+    stretch.fire_at = stretch.fire_at + timedelta(days=2)
+    db.commit()
     one = create_reminder(u.id, "take creatine", "07:00")
     db.expire_all()
     assert fire_due(now=db.get(Reminder, one["id"]).fire_at) == 1
