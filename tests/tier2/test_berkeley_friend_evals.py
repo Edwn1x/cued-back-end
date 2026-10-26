@@ -221,7 +221,11 @@ def test_asking_for_a_card_before_the_basics_gets_an_honest_ask(db, driver, monk
     for banned in ("glitch", "pop up", "loading", "should show", "sent it", "here it is", "3x", "x10", "sets"):
         assert banned not in low, (banned, reply)
     assert any(k in low for k in ("height", "weight", "tall", "weigh")), reply
-    assert "?" in reply or any(k in low for k in ("send me", "drop", "need", "gimme", "give me", "once i have", "shoot me")), reply
+    # An honest ask names what's needed before a card; the phrasing varies by model
+    # ("once i have" on 4.8, "once i know" / "soon as i know" on 5.5 — 2026-10-26 A/B).
+    assert "?" in reply or any(k in low for k in (
+        "send me", "drop", "need", "gimme", "give me", "once i have", "shoot me",
+        "once i know", "soon as i know", "when i know", "sec i have")), reply
 
 
 def test_extractor_does_not_turn_an_anecdote_into_a_fact(db, monkeypatch):
