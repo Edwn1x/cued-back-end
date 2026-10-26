@@ -934,6 +934,15 @@ SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "fa
 WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
 # A text logged BEFORE the offer went out can't be its answer (live 2026-10-17, user 40).
 WATER_OFFER_PREDATES_GUARD_ENABLED = os.getenv("WATER_OFFER_PREDATES_GUARD_ENABLED", "true").lower() == "true"
+# Water-break GIF (water_gif.py, founder 2026-10-26: "replace the boring drink-water text
+# with a cute gif"): the standing water ping goes out as a loop of the coach's character
+# (static/water/*.gif, rotated per fire) instead of a model-composed line — iMessage via
+# the sidecar's /send-attachment, SMS via Twilio MMS. GIF alone, no caption. The plain
+# line is the fallback whenever the file doesn't land. OFF until the sidecar build with
+# /send-attachment is deployed.
+WATER_GIF_ENABLED = os.getenv("WATER_GIF_ENABLED", "false").lower() == "true"
+# Public base Twilio fetches the MMS media from. Empty → INTEGRATIONS_BASE_URL.
+WATER_GIF_BASE_URL = os.getenv("WATER_GIF_BASE_URL", "")
 # Card setup step at onboarding completion (workouts/card_setup.py): the extension
 # framing (an iMessage extension like GamePigeon, not an app), their first card sent
 # right then so the install happens at home, and a one-time tour of the card. When ON,

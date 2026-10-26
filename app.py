@@ -2938,6 +2938,48 @@ def admin_send():
         session.close()
 
 
+@app.route("/admin/water-gif/send", methods=["POST"])
+def admin_water_gif_send():
+    """Send a water-break GIF to a user right now (founder preview, 2026-10-26: "send
+    them to krla and ed, i want to see what they look like in action"). Bypasses
+    WATER_GIF_ENABLED — not the channel router, the archive guard or opt-out. Form:
+    user_id, name = one file in static/water, 'all' for every file in order (1.5 s
+    apart), or empty for the first. Logged as message_type 'admin' so the heartbeat
+    and the ack window don't read a preview as a ping."""
+    from water_gif import gif_files, send_gif
+    session = get_session()
+    try:
+        user = session.get(User, int(request.form.get("user_id") or 0))
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."}), 404
+        if user.archived_at:
+            return jsonify({"status": "error", "message": "User is archived — restore first."}), 400
+        if getattr(user, "opted_out", False):
+            return jsonify({"status": "error", "message": "User opted out."}), 400
+        files = gif_files()
+        if not files:
+            return jsonify({"status": "error", "message": "No GIFs in static/water."}), 500
+        name = (request.form.get("name") or "").strip()
+        if name == "all":
+            names = files
+        elif name:
+            if name not in files:
+                return jsonify({"status": "error", "message": "Unknown GIF.", "available": files}), 404
+            names = [name]
+        else:
+            names = files[:1]
+        import time as _time
+        sent, failed = [], []
+        for i, n in enumerate(names):
+            if i:
+                _time.sleep(1.5)
+            (sent if send_gif(user, n, message_type="admin") else failed).append(n)
+        status = "ok" if not failed else ("partial" if sent else "error")
+        return jsonify({"status": status, "sent": sent, "failed": failed}), (200 if sent else 502)
+    finally:
+        session.close()
+
+
 # ─── Activate Waitlist User (admin) ──────────────────────
 @app.route("/admin/user/<int:user_id>/activate-waitlist", methods=["POST"])
 def admin_activate_waitlist(user_id):

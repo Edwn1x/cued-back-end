@@ -48,6 +48,10 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
     updateCard: async (phone, cardSession, url, live, layout) => {
       calls.push(layout || live !== undefined ? ["updateCard", phone, cardSession.id, url, live, layout] : ["updateCard", phone, cardSession.id, url]);
     },
+    sendAttachment: async (phone, bytes, name, mimeType) => {
+      calls.push(["sendAttachment", phone, bytes.length, name, mimeType]);
+      return { provider_message_id: "photon-att-1" };
+    },
     ...overrides,
     calls,
   };
@@ -66,7 +70,7 @@ function req(path: string, init: RequestInit & { secret?: string | null } = {}) 
 describe("auth", () => {
   test("every route 401s without the shared secret", async () => {
     const h = createHandler(deps());
-    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"], ["POST", "/read"]] as const) {
+    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"], ["POST", "/read"], ["POST", "/send-attachment"]] as const) {
       const res = await h(req(p, { method: m, secret: null, body: m === "POST" ? "{}" : undefined }));
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
@@ -522,6 +526,45 @@ describe("POST /send-card", () => {
       method: "POST", body: JSON.stringify({ phone: "+1555", url: "https://x/y" }),
     }));
     expect(res.status).toBe(503);
+  });
+});
+
+describe("POST /send-attachment", () => {
+  // GIF89a header + a little padding — enough to be "a file", small enough to read.
+  const gifB64 = Buffer.from("GIF89a" + "\u0000".repeat(40), "latin1").toString("base64");
+
+  test("decodes the base64, hands the SDK bytes + name + mime, returns the id", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/send-attachment", {
+      method: "POST", body: JSON.stringify({ phone: "+12094205037", name: "water-sip.gif", mime_type: "image/gif", data_base64: gifB64 }),
+    }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, provider_message_id: "photon-att-1" });
+    expect(d.calls).toEqual([["sendAttachment", "+12094205037", 46, "water-sip.gif", "image/gif"]]);
+  });
+
+  test("400 on a missing field, a non-image mime, empty bytes, or bad json", async () => {
+    const d = deps();
+    const h = createHandler(d);
+    for (const body of ["{}", "nope",
+                        JSON.stringify({ phone: "+1", name: "a.gif", mime_type: "image/gif" }),
+                        JSON.stringify({ phone: "+1", name: "a.pdf", mime_type: "application/pdf", data_base64: gifB64 }),
+                        JSON.stringify({ phone: "+1", name: "a.gif", mime_type: "image/gif", data_base64: "" }),
+                        JSON.stringify({ phone: "+1", name: "a.gif", mime_type: "image/gif", data_base64: "!!!!" })]) {
+      const res = await h(req("/send-attachment", { method: "POST", body }));
+      expect(res.status).toBe(400);
+    }
+    expect(d.calls).toEqual([]);
+  });
+
+  test("provider throw → 502 with the error text; stream down → 503", async () => {
+    const payload = JSON.stringify({ phone: "+1555", name: "a.gif", mime_type: "image/gif", data_base64: gifB64 });
+    const boom = await createHandler(deps({ sendAttachment: async () => { throw new Error("Target not allowed for this project"); } }))(
+      req("/send-attachment", { method: "POST", body: payload }));
+    expect(boom.status).toBe(502);
+    expect(((await boom.json()) as { error: string }).error).toContain("Target not allowed");
+    const down = await createHandler(deps({ connected: () => false }))(req("/send-attachment", { method: "POST", body: payload }));
+    expect(down.status).toBe(503);
   });
 });
 

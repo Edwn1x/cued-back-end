@@ -551,13 +551,24 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 logger.info("REMINDER_GATED user=%s id=%s reason=%s next=%s", row.user_id, rid,
                             reason, row.fire_at if row.active else None)
                 return False
-        text = _compose(user, row)
-        # Interval pings carry their own type so the heartbeat's anti-stack gate and the
-        # rhythm gates can tell "a water ping landed" from "the coach spoke" (engagement_
-        # tracker.WATER_REMINDER_TYPE). One-offs stay "reminder".
-        from engagement_tracker import WATER_REMINDER_TYPE
-        send_sms(user.phone, text, user_id=user.id,
-                 message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
+        # Water pings go out as the character GIF when the flag is on (water_gif.py,
+        # founder 2026-10-26) — no model call, no line. The plain line below is the
+        # fallback for every other case, including a GIF that didn't land.
+        sent_as_gif = False
+        if row.every_hours and config.WATER_GIF_ENABLED:
+            from water_gif import MARKER, is_water_row, send_water_gif
+            if is_water_row(row):
+                sent_as_gif = send_water_gif(user, row)
+        if sent_as_gif:
+            text = MARKER
+        else:
+            text = _compose(user, row)
+            # Interval pings carry their own type so the heartbeat's anti-stack gate and the
+            # rhythm gates can tell "a water ping landed" from "the coach spoke" (engagement_
+            # tracker.WATER_REMINDER_TYPE). One-offs stay "reminder".
+            from engagement_tracker import WATER_REMINDER_TYPE
+            send_sms(user.phone, text, user_id=user.id,
+                     message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
         row.last_sent_at = now
         row.sent_count = (row.sent_count or 0) + 1
         if row.every_hours or row.recur_days:
