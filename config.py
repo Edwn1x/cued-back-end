@@ -97,7 +97,7 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",
 # model. Same request surface as Sonnet 5 (rejects temperature/top_p/top_k and
 # manual budget_tokens; adaptive thinking supported). Env-overridable as the
 # rollback lever, matching the flag culture elsewhere in this file.
-COACH_MODEL = os.getenv("COACH_MODEL", "claude-opus-4-8")
+COACH_MODEL = os.getenv("COACH_MODEL", "claude-opus-5-5")
 # SMS conciseness is PROMPT-governed; this cap is truncation insurance, sized
 # for richer outputs (macro breakdowns, multi-part replies, future features) —
 # a hit cap means a reply cut mid-sentence, which is strictly worse than a long
@@ -182,8 +182,11 @@ MEMORY_SEMANTIC_UPDATE_ENABLED = os.getenv("MEMORY_SEMANTIC_UPDATE_ENABLED", "tr
 
 # Phase C1/C1.5 — prompt caching + cost telemetry.
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
+# Per-million list prices. "cache_read" is the per-model cached-input multiplier where it
+# differs from CACHE_READ_MULTIPLIER (Opus 5.5 reads at $0.20/M = 0.05× its $4 input).
 MODEL_PRICING = {
-    "opus":   {"input": 5.00, "output": 25.00},
+    "opus55": {"input": 4.00, "output": 20.00, "cache_read": 0.05},   # claude-opus-5-5
+    "opus":   {"input": 5.00, "output": 25.00},                       # claude-opus-4-8 and older
     "sonnet": {"input": 2.00, "output": 10.00},   # claude-sonnet-5 list price (was the 4.6 rate)
     "haiku":  {"input": 1.00, "output": 5.00},
 }
@@ -250,7 +253,12 @@ MEMORY_EXTRACTOR_MODEL = os.getenv("MEMORY_EXTRACTOR_MODEL", "claude-sonnet-5")
 # temperature/top_p/top_k and manual budget_tokens with a 400. Loop passes no sampling
 # params; adaptive thinking + low effort held constant (see
 # rewrite/phase-2/INVESTIGATION.md §5). Env-overridable.
-AGENT_LOOP_MODEL = os.getenv("AGENT_LOOP_MODEL", "claude-opus-4-8")
+# 2026-10-26: Opus 4.8 → Opus 5.5 (lever 4 of the cost pass). Same tokenizer, same request
+# surface we already use (adaptive thinking, explicit effort, no forced tool_choice, no
+# thinking replay across turns), $4/$20 vs $5/$25 and cache reads at $0.20/M vs $0.50/M.
+# Rollback = AGENT_LOOP_MODEL=claude-opus-4-8 in Railway (no code change). Gate was the
+# tier-2 anchors (heartbeat, daily rhythm, meal routing/estimation, voice, onboarding).
+AGENT_LOOP_MODEL = os.getenv("AGENT_LOOP_MODEL", "claude-opus-5-5")
 # Phase 6 Commit C retired the legacy pipeline, so the loop is the sole responder.
 # This flag is kept as a permanently-on lever (many tests toggle it, and turning it
 # off is a deliberate kill-switch that now routes to the safe minimal error reply

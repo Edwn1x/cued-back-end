@@ -10,7 +10,7 @@ SINGLE_AGENT_LOOP_ENABLED, kept as a permanently-on lever.
 Context is UNIFIED — all memory categories rendered (not the per-agent slice), so
 a fact told in one domain is available in another (fixes failure 1). Safety
 constraints stay universal via render_categories(include_safety_universal=True).
-Model: claude-opus-4-8 (config.AGENT_LOOP_MODEL), no sampling params, adaptive
+Model: claude-opus-5-5 (config.AGENT_LOOP_MODEL; was 4.8 until 2026-10-26), no sampling params, adaptive
 thinking + low effort held constant (Opus 4.8 rejects temperature/budget_tokens;
 switching thinking modes would break the messages cache — see INVESTIGATION §5).
 """

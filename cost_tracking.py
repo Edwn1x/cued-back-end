@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 def _model_key(model_str: str) -> str | None:
     """Map Anthropic model id strings -> the keys in config.MODEL_PRICING.
-    Returns None for unknown models (caller treats as a no-op)."""
+    Returns None for unknown models (caller treats as a no-op). "opus55" is its own
+    key (cheaper input/output and a 0.05× cache-read rate); every other Opus id
+    stays "opus" so historical rows keep their as-charged cost."""
     if not model_str:
         return None
     s = model_str.lower()
+    if "opus-5-5" in s:
+        return "opus55"
     if "opus" in s:
         return "opus"
     if "sonnet" in s:
@@ -68,7 +72,7 @@ def compute_cost(model_key: str, usage) -> float:
         inp * p["input"]
         + cc5m * p["input"] * config.CACHE_WRITE_MULTIPLIER
         + cc1h * p["input"] * config.CACHE_WRITE_MULTIPLIER_1H
-        + cr * p["input"] * config.CACHE_READ_MULTIPLIER
+        + cr * p["input"] * p.get("cache_read", config.CACHE_READ_MULTIPLIER)
         + out * p["output"]
     ) / 1_000_000
 

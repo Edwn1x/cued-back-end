@@ -1868,6 +1868,14 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
             return (False, "truncated:max_tokens (decide hit the output cap "
                            "mid-generation — not chosen silence)", search)
 
+        # Safety-classifier refusal (HTTP 200, stop_reason=refusal; broader set on Opus
+        # 5.5): nothing composed, nothing to send. Name it so it never reads as "no
+        # message composed" or as chosen silence in the tick ledger.
+        if stop == "refusal":
+            cat = getattr(getattr(resp, "stop_details", None), "category", None)
+            logger.warning("HEARTBEAT_REFUSAL user=%s category=%s", user_id, cat)
+            return (False, f"refusal:{cat or 'unspecified'} (classifier declined — not chosen silence)", search)
+
         # Fallback: the model ended with bare text instead of calling send_text (rarer
         # now that speaking is an explicit tool, but kept for robustness). Concatenate
         # EVERY text block, not just the first — with adaptive thinking + inline
