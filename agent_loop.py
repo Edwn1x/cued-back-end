@@ -57,9 +57,25 @@ def identity_prompt() -> str:
     return _identity_cache
 
 
+def stable_cache_control() -> dict:
+    """cache_control for a STABLE prefix block (the voice prompt, the routing prompt,
+    training knowledge, the onboarding head): ephemeral with the 1-hour TTL under
+    config.PROMPT_CACHE_TTL="1h" (default), plain 5-minute otherwise. Every site uses
+    this on the same byte-identical _voice_prompt() so they all read ONE warm entry.
+    Ordering rule (API): 1-hour entries must come before 5-minute ones — stable blocks
+    are always first and per-turn context is never cached, so it holds everywhere."""
+    cc = {"type": "ephemeral"}
+    if (config.PROMPT_CACHE_TTL or "").strip().lower() == "1h":
+        cc["ttl"] = "1h"
+    return cc
+
+
 def _voice_prompt() -> str:
     """identity.md + voice.md as ONE stable, cacheable prefix. The heartbeat
-    composes its system from this same string, so both surfaces stay one person."""
+    composes its system from this same string, so both surfaces stay one person.
+    NEVER prepend identity_prompt() to this — it already starts with identity; a
+    second copy makes a different byte prefix that can't share the warm cache
+    (reminders paid a full 30k-token write on every water ping until 2026-10-26)."""
     global _voice_cache
     if _voice_cache is None:
         with open(_VOICE_PATH, "r", encoding="utf-8") as f:
@@ -1838,10 +1854,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                       else _IMAGE_REGISTER_REMINDER)
 
     if config.PROMPT_CACHING_ENABLED:
-        system = [{"type": "text", "text": voice, "cache_control": {"type": "ephemeral"}}]
+        system = [{"type": "text", "text": voice, "cache_control": stable_cache_control()}]
         if routing:
             system.append({"type": "text", "text": routing,
-                           "cache_control": {"type": "ephemeral"}})
+                           "cache_control": stable_cache_control()})
         system.append({"type": "text", "text": context})
         if estimation:
             system.append({"type": "text", "text": estimation})

@@ -869,8 +869,9 @@ def _cacheable_system(system_prompt: str):
     head, sep, tail = system_prompt.partition(_STATIC_PROMPT_END)
     if not sep or len(head) < 1024:
         return system_prompt  # no marker (tests / odd callers) → plain string, as before
+    from agent_loop import stable_cache_control
     return [
-        {"type": "text", "text": head, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": head, "cache_control": stable_cache_control()},
         {"type": "text", "text": sep + tail},
     ]
 

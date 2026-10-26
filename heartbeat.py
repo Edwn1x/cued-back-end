@@ -24,7 +24,7 @@ import config
 from cost_tracking import track
 from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSession, Meal, Event, active
 from sms import send_sms
-from agent_loop import build_loop_context, _voice_prompt, _join_text
+from agent_loop import build_loop_context, _voice_prompt, _join_text, stable_cache_control
 from llm_client import make_client
 from stale_skip import SKIP_PREFIX, SKIP_REASON_PREFIX, BACKOFF_REASON_PREFIX
 
@@ -1781,7 +1781,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_HIGH_LOAD_TONE_ENABLED:
         prompt = prompt + "\n\n" + _HIGH_LOAD_GUIDANCE
     system = [
-        {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
         {"type": "text", "text": prompt + "\n\n" + context},
     ]
     tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]

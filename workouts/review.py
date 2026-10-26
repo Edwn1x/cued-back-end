@@ -187,13 +187,13 @@ def facts_text(f: dict, *, for_plan: bool = False) -> str:
 # ─── the model call ──────────────────────────────────────────────────────────
 
 def _system(user_name: str, tz_name: str | None) -> list:
-    from agent_loop import identity_prompt, _voice_prompt
+    from agent_loop import _voice_prompt, stable_cache_control
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(tz_name or "America/Los_Angeles")
     now_local = datetime.now(tz).strftime("%A %-I:%M%p").replace("AM", "am").replace("PM", "pm")
     return [
-        {"type": "text", "text": identity_prompt() + "\n\n---\n\n" + _voice_prompt(), "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": training_knowledge(), "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
+        {"type": "text", "text": training_knowledge(), "cache_control": stable_cache_control()},
         {"type": "text", "text": f"Their name: {user_name}. It's {now_local} their time."},
     ]
 

@@ -377,14 +377,15 @@ def _compose(user, row: Reminder) -> str:
     failure → the plain line; the promise is kept either way."""
     fallback = f"reminder: {row.text}"
     try:
-        from agent_loop import _join_text, identity_prompt, _voice_prompt
+        from agent_loop import _join_text, _voice_prompt, stable_cache_control
         from cost_tracking import track
         from llm_client import make_client
         tz = _tz(user.user_timezone)
         now_local = datetime.now(tz).strftime("%A %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+        # The SAME bytes as every other site (_voice_prompt already starts with identity)
+        # so a water ping reads the warm voice-prompt entry instead of writing its own.
         system = [
-            {"type": "text", "text": identity_prompt() + "\n\n---\n\n" + _voice_prompt(),
-             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
             {"type": "text", "text": f"Their name: {user.name}. It's {now_local} their time."},
         ]
         instruction = (
