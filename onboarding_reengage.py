@@ -315,10 +315,27 @@ def eligible(session, user, now: datetime) -> tuple[bool, str, int, bool]:
     return True, "second", 2, replied
 
 
+def start_at() -> datetime | None:
+    """ONBOARDING_REENGAGE_START_AT as naive UTC, or None (unset / unreadable → no gate)."""
+    raw = (getattr(config, "ONBOARDING_REENGAGE_START_AT", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("ONBOARDING_REENGAGE_START_AT unreadable: %r", raw)
+        return None
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
 def sweep(now: datetime | None = None) -> int:
     if not config.ONBOARDING_REENGAGE_ENABLED:
         return 0
     now = now or _naive_utcnow()
+    gate = start_at()
+    if gate and now < gate:
+        logger.info("ONBOARDING_REENGAGE_NOT_YET start_at=%s now=%s", gate, now)
+        return 0
     from sms import send_sms
     session = get_session()
     sent_n = 0

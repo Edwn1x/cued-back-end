@@ -153,3 +153,15 @@ def test_flag_off(db, sms_capture, monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_ENABLED", False)
     _stalled(db, ago_h=48)
     assert r.sweep(now=PT_NOON_UTC) == 0
+
+
+def test_start_at_holds_the_sweep_until_the_instant_and_then_sends(db, sms_capture, monkeypatch):
+    """Founder 2026-10-25: 'have the first nudges go out tmr morning, like 10am' — flag on,
+    sweep armed, nothing before the instant; the first tick at/after it sends."""
+    import onboarding_reengage as r
+    _stalled(db, ago_h=24)
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_START_AT", "2026-10-26T17:00:00Z")      # 10:00 PT
+    assert r.sweep(now=datetime(2026, 10, 26, 16, 30)) == 0 and sms_capture == []
+    assert r.sweep(now=datetime(2026, 10, 26, 17, 0)) == 1
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_START_AT", "garbage")
+    assert r.start_at() is None                                                              # unreadable → no gate
