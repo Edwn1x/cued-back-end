@@ -23,6 +23,15 @@ TWILIO_SIGNATURE_MODE = (os.getenv("TWILIO_SIGNATURE_MODE", "shadow") or "shadow
 ONBOARDING_REENGAGE_ENABLED = os.getenv("ONBOARDING_REENGAGE_ENABLED", "true").lower() == "true"
 ONBOARDING_REENGAGE_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FIRST_HOURS", "20"))
 ONBOARDING_REENGAGE_SECOND_HOURS = int(os.getenv("ONBOARDING_REENGAGE_SECOND_HOURS", "72"))
+# Founder 2026-10-25: nudge #1 is model-written per person (goal + their own words → the food ask);
+# a nudged mid-setup user's replies go to the agent loop for ONBOARDING_REENGAGE_FOOD_FIRST_HOURS
+# (log_meal + the numbers) until a meal is logged, then code asks the next intake field.
+ONBOARDING_REENGAGE_MODEL_COPY_ENABLED = os.getenv("ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", "true").lower() == "true"
+ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED = os.getenv("ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED", "true").lower() == "true"
+ONBOARDING_REENGAGE_FOOD_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FOOD_FIRST_HOURS", "48"))
+# Founder 2026-10-25: "have the first nudges go out tmr morning, like 10am" — an ISO UTC instant
+# before which the sweep sends nothing (flag on, job armed, first tick at/after this sends).
+ONBOARDING_REENGAGE_START_AT = os.getenv("ONBOARDING_REENGAGE_START_AT", "")
 # Legacy public sign-up surface (2026-10-15 retirement, after the probe). The live site
 # signs up through /waitlist only; /signup (JSON) + /activate-sms are retired (410) unless
 # this is flipped on for a rollback. GET /signup always redirects to the site.

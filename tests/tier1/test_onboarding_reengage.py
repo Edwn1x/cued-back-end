@@ -64,6 +64,7 @@ def _on(monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_ENABLED", True)
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_FIRST_HOURS", 20)
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_SECOND_HOURS", 72)
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", False)   # the template path; model copy has its own file
 
 
 def test_first_nudge_after_20h_quiet_names_what_is_left_and_asks(db, sms_capture):
@@ -71,9 +72,11 @@ def test_first_nudge_after_20h_quiet_names_what_is_left_and_asks(db, sms_capture
     u = _stalled(db, ago_h=24)
     assert r.sweep(now=PT_NOON_UTC) == 1
     out = _sent(sms_capture)
-    assert len(out) == 1 and out[0].startswith("hey Test, still down to finish setup?")
-    assert "quick things left" in out[0] and out[0].endswith("?")
-    assert "ur height and weight" in out[0]              # the next plain ask (first missing field)
+    # founder's structure: why they signed up → starting is the hard part, i'm here → the ONE ask: today's food
+    assert len(out) == 1 and out[0].startswith("hey Test, u signed up to"), out[0]
+    assert "getting started is always the hard part" in out[0] and "lock in" in out[0]
+    assert "eaten so far today?" in out[0]                        # 12:00 PT → the food ask
+    assert "height" not in out[0] and "quick things left" not in out[0]   # no setup questions, no field count
 
 
 def test_never_replied_user_gets_the_open_door_variant(db, sms_capture):
@@ -81,7 +84,8 @@ def test_never_replied_user_gets_the_open_door_variant(db, sms_capture):
     u = _stalled(db, replied=False, ago_h=30)
     assert r.sweep(now=PT_NOON_UTC) == 1
     out = _sent(sms_capture)[0]
-    assert "ur spot's still open" in out and out.endswith("?")
+    assert out.startswith("hey Test, it's cued") and "u signed up to" in out and "?" in out
+    assert "eaten" in out and "height" not in out
 
 
 def test_too_soon_sends_nothing(db, sms_capture):
@@ -149,3 +153,15 @@ def test_flag_off(db, sms_capture, monkeypatch):
     monkeypatch.setattr(config, "ONBOARDING_REENGAGE_ENABLED", False)
     _stalled(db, ago_h=48)
     assert r.sweep(now=PT_NOON_UTC) == 0
+
+
+def test_start_at_holds_the_sweep_until_the_instant_and_then_sends(db, sms_capture, monkeypatch):
+    """Founder 2026-10-25: 'have the first nudges go out tmr morning, like 10am' — flag on,
+    sweep armed, nothing before the instant; the first tick at/after it sends."""
+    import onboarding_reengage as r
+    _stalled(db, ago_h=24)
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_START_AT", "2026-10-26T17:00:00Z")      # 10:00 PT
+    assert r.sweep(now=datetime(2026, 10, 26, 16, 30)) == 0 and sms_capture == []
+    assert r.sweep(now=datetime(2026, 10, 26, 17, 0)) == 1
+    monkeypatch.setattr(config, "ONBOARDING_REENGAGE_START_AT", "garbage")
+    assert r.start_at() is None                                                              # unreadable → no gate
