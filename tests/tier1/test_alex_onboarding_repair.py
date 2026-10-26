@@ -312,7 +312,7 @@ def test_onboarding_system_prompt_is_split_for_caching(db, anthropic_stub, sms_c
     sp = onboarding_agent._build_system_prompt(user)
     blocks = onboarding_agent._cacheable_system(sp)
     assert isinstance(blocks, list) and len(blocks) == 2
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"} and "cache_control" not in blocks[1]
+    assert blocks[0]["cache_control"]["type"] == "ephemeral" and "cache_control" not in blocks[1]
     assert blocks[0]["text"].lstrip().startswith(__import__("agent_loop").identity_prompt().strip()[:40])
     assert "## RIGHT NOW" in blocks[1]["text"] and user.name in blocks[1]["text"]
     assert "## RIGHT NOW" not in blocks[0]["text"]

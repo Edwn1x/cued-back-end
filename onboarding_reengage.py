@@ -170,7 +170,7 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
     if not getattr(config, "ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", True):
         return None
     try:
-        from agent_loop import identity_prompt, _voice_prompt, _join_text
+        from agent_loop import _voice_prompt, _join_text, stable_cache_control
         from llm_client import make_client
         from cost_tracking import track
         now = now or _naive_utcnow()
@@ -200,8 +200,7 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
             f"about them or skip straight to the next beat. "
             f"Return only the text. Separate the two bubbles with a line containing just ---."
         )
-        system = [{"type": "text", "text": identity_prompt() + "\n\n---\n\n" + _voice_prompt(),
-                   "cache_control": {"type": "ephemeral"}}]
+        system = [{"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()}]
         client = make_client()
         resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=400, system=system,
                                       messages=[{"role": "user", "content": instruction}])

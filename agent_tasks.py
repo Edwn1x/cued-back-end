@@ -278,7 +278,7 @@ def _tools_for_run() -> list:
 def _run_loop(user, row: AgentTask) -> tuple[str, str]:
     """Bounded tool loop. Returns (outcome, payload): ("report", message) |
     ("nothing", reason) | ("failed", why). Never raises."""
-    from agent_loop import _voice_prompt, build_loop_context, _join_text
+    from agent_loop import _voice_prompt, build_loop_context, _join_text, stable_cache_control
     from agent_tools import dispatch_tool, begin_turn, pop_turn_state
     from llm_client import make_client
     from cost_tracking import track
@@ -294,7 +294,7 @@ def _run_loop(user, row: AgentTask) -> tuple[str, str]:
             watch_line = (f"LAST CHECK ({row.runs} so far): {row.watch_last}" if row.watch_last
                           else "LAST CHECK: none yet — this is the first look; report only a real change from the goal's baseline.")
         system = [
-            {"type": "text", "text": _voice_prompt(), "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
             {"type": "text", "text": _TASK_PROMPT.format(kind=row.kind, goal=row.goal, watch_line=watch_line)
                                      + "\n\n" + context},
         ]

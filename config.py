@@ -184,11 +184,21 @@ MEMORY_SEMANTIC_UPDATE_ENABLED = os.getenv("MEMORY_SEMANTIC_UPDATE_ENABLED", "tr
 # Anthropic API pricing, USD per 1M tokens. Verified Jun 2026 — update if rates change.
 MODEL_PRICING = {
     "opus":   {"input": 5.00, "output": 25.00},
-    "sonnet": {"input": 3.00, "output": 15.00},
+    "sonnet": {"input": 2.00, "output": 10.00},   # claude-sonnet-5 list price (was the 4.6 rate)
     "haiku":  {"input": 1.00, "output": 5.00},
 }
 CACHE_WRITE_MULTIPLIER = 1.25   # 5-min ephemeral cache write, on the input rate
+CACHE_WRITE_MULTIPLIER_1H = 2.0 # 1-hour ephemeral cache write, on the input rate
 CACHE_READ_MULTIPLIER  = 0.10   # cached-input read (90% off), on the input rate
+# Prompt-cache TTL for the STABLE prefix blocks (the voice prompt, the meal-routing
+# prompt, training knowledge, the onboarding head). 2026-10-26 spend read: cache WRITES
+# were 61% of the Opus bill ($69 of $114/wk) — the ~33k-token voice prompt sat behind a
+# 5-minute TTL while 34% of consecutive calls were >5 min apart (but only 1% >60 min),
+# so it was re-written at 1.25× on 29% of heartbeat calls, 35% of replies and 100% of
+# reminders. "1h" keeps it warm across those gaps (writes cost 2× but happen ~30× less).
+# Rule: 1-hour entries must precede 5-minute ones in a request — every site puts the
+# stable blocks first and leaves per-turn context uncached, so this holds. "5m" = old.
+PROMPT_CACHE_TTL = os.getenv("PROMPT_CACHE_TTL", "1h")
 TWILIO_COST_PER_SEGMENT = 0.015 # volume-based; keep separate from API cost
 # Feature flag — when false, system prompts ship as a single string (no cache_control blocks).
 # Lets us roll back the structural prompt-caching change without a redeploy if something breaks.

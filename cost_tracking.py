@@ -43,7 +43,8 @@ def compute_cost(model_key: str, usage) -> float:
     Formula (matches Anthropic SDK semantics — the three input buckets are
     mutually exclusive: input_tokens is fresh uncached input):
       cost = ( input_tokens                * in_rate
-             + cache_creation_input_tokens * in_rate * 1.25
+             + 5-min cache writes          * in_rate * 1.25
+             + 1-hour cache writes         * in_rate * 2.0
              + cache_read_input_tokens     * in_rate * 0.10
              + output_tokens               * out_rate ) / 1_000_000
 
@@ -55,9 +56,18 @@ def compute_cost(model_key: str, usage) -> float:
     cc = getattr(usage, "cache_creation_input_tokens", 0) or 0
     cr = getattr(usage, "cache_read_input_tokens", 0) or 0
     out = getattr(usage, "output_tokens", 0) or 0
+    # 1-hour-TTL writes bill at 2× (5-minute at 1.25×). The SDK breaks the write total
+    # down in usage.cache_creation.{ephemeral_1h,ephemeral_5m}_input_tokens; older
+    # responses have no breakdown → everything is a 5-minute write, as before.
+    cc1h = 0
+    breakdown = getattr(usage, "cache_creation", None)
+    if breakdown is not None:
+        cc1h = min(cc, getattr(breakdown, "ephemeral_1h_input_tokens", 0) or 0)
+    cc5m = cc - cc1h
     return (
         inp * p["input"]
-        + cc * p["input"] * config.CACHE_WRITE_MULTIPLIER
+        + cc5m * p["input"] * config.CACHE_WRITE_MULTIPLIER
+        + cc1h * p["input"] * config.CACHE_WRITE_MULTIPLIER_1H
         + cr * p["input"] * config.CACHE_READ_MULTIPLIER
         + out * p["output"]
     ) / 1_000_000
