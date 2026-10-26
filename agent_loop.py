@@ -1596,6 +1596,22 @@ def _recent_outbound_text(user_id: int, window_s: int) -> str:
     return "\n".join(r[0] for r in rows if r[0] and not r[0].startswith("[reacted"))
 
 
+_INBOUND_ACK_RE = re.compile(
+    r"^\W*(?:ok(?:ay)?|k+|kk|yes|yep|yup|ya|yeah|yea|no|nah|nope|sure|bet|cool|nice|good|great|"
+    r"thanks?|thank you|thx|ty|got it|sounds good|word|facts|fr|lol|lmao|haha|true|right|alr(?:ight)?|"
+    r"will do|on it|done|same|ight|aight|👍|🙏|❤️|💯)\W*$", re.I)
+_RESTATEMENT_STOP = {"a", "an", "the", "and", "or", "but", "so", "to", "of", "for", "in", "on", "at", "is",
+                     "it", "its", "it's", "u", "ur", "you", "your", "you're", "i", "im", "i'm", "that", "this",
+                     "with", "just", "like", "rn", "now", "today", "day", "lol", "tho", "if", "be", "do", "not"}
+
+
+def _novel_words(reply: str, prev: str) -> int:
+    """Content words in `reply` that `prev` never used — how much the reply SAYS that the
+    previous send didn't. A restatement re-says; new content doesn't."""
+    toks = lambda t: {w for w in re.findall(r"[a-z][a-z'-]*", (t or "").lower()) if w not in _RESTATEMENT_STOP}
+    return len(toks(reply) - toks(prev))
+
+
 def _restatement_figure(reply: str, inbound: str, prev: str):
     """The day-total figure (or 'neardup') that makes `reply` a restatement of `prev`,
     else None. Pure: no I/O, no state."""
@@ -1605,6 +1621,19 @@ def _restatement_figure(reply: str, inbound: str, prev: str):
         return None
     if _INBOUND_QUESTION_RE.search(inbound or ""):
         return None
+    if getattr(config, "OUTBOUND_RESTATEMENT_NOVELTY_GATE_ENABLED", True):
+        # Live 2026-10-25 18:40 PT (user 51): "if you want extraordinary results you have to take
+        # extraordinary actions" (about a steroid cycle) → the reply "extraordinary action is eating
+        # enough and training hard for 2 yrs straight. u ha… 142…" re-cited his bodyweight, the
+        # day-total regex read "ur 142" as a total already stated, and the pushback was swallowed
+        # into a 👍 — which read as agreement. Two gates: (1) a SUBSTANTIVE inbound (a real
+        # sentence, not an ack) earns a real reply; (2) a reply that says many things the previous
+        # send never said is new content, whatever number it repeats.
+        words = re.findall(r"[a-z][a-z'-]*", (inbound or "").lower())
+        if len(words) >= getattr(config, "OUTBOUND_RESTATEMENT_SUBSTANTIVE_WORDS", 6) and not _INBOUND_ACK_RE.match(inbound or ""):
+            return None
+        if _novel_words(reply, prev) >= getattr(config, "OUTBOUND_RESTATEMENT_NOVEL_WORDS", 10):
+            return None
     prev_figs = _figures(prev)
     totals = _day_totals(reply)
     if totals - prev_figs:
