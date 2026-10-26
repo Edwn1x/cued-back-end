@@ -15,7 +15,7 @@
  * `delivery_status='failed'` row (the keystone) happen there, never hidden here.
  */
 
-import { Emoji, Spectrum, app as appCard, edit, reaction, reply, text, type Message, type Space } from "spectrum-ts";
+import { Emoji, Spectrum, app as appCard, attachment, edit, reaction, reply, text, type Message, type Space } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
 // ─── small helpers ───────────────────────────────────────────────────────────
@@ -66,6 +66,10 @@ export type Deps = {
    *  original Message is looked up from this process's memory first, then rebuilt
    *  from `card_session` (survives a sidecar restart as far as the SDK allows). */
   updateCard: (phone: string, cardSession: CardSession, url: string, live?: boolean, layout?: CardLayout) => Promise<void>;
+  /** One file into the DM with `phone` as a plain iMessage attachment (the water-break
+   *  GIF: `attachment(bytes, {name, mimeType})`). No caption — a GIF bubble stands
+   *  alone. Throws on failure. */
+  sendAttachment: (phone: string, bytes: Uint8Array, name: string, mimeType: string) => Promise<{ provider_message_id: string | null }>;
   /** Series §3.0 (b): Photon's continuous-share read, IF the SDK exposes one. Left
    *  undefined in this build — spectrum-ts 12.8.0 has no `locations` API — so
    *  GET /location/:phone answers 501 with that reason. */
@@ -86,6 +90,9 @@ export type CardLayout = {
 // bubble is just the picture: the SDK's own OG-derived layout always adds the page
 // title twice (over the image + a caption strip).
 const MAX_IMAGE_B64 = 2_000_000;
+// /send-attachment ceiling: ~4.5 MB of file. The water GIFs are ~0.3–0.6 MB; MMS
+// (the SMS-side twin) tops out at 5 MB, so nothing bigger belongs here either.
+const MAX_ATTACHMENT_B64 = 6_000_000;
 
 export function pickLayout(v: unknown): CardLayout | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -305,6 +312,34 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
         const msg = err instanceof Error ? err.message : String(err);
         log("warn", "card update failed", { to: last4(body.phone), id: cs.id, error: msg });
         return json(502, { ok: false, error: msg });
+      }
+    }
+
+    if (req.method === "POST" && pathname === "/send-attachment") {
+      // A file as its own bubble (water-break GIF). JSON can't carry bytes, so the
+      // body is base64; the sidecar decodes and hands the SDK a Buffer. Images only —
+      // this route exists for one thing and shouldn't quietly become a file pipe.
+      const body = await readJson(req);
+      if (!body || !isNonEmptyString(body.phone) || !isNonEmptyString(body.name)
+          || !isNonEmptyString(body.mime_type) || !isNonEmptyString(body.data_base64)) {
+        return json(400, { ok: false, error: "expected JSON {phone, name, mime_type, data_base64}" });
+      }
+      if (!/^image\/(gif|png|jpeg|webp)$/.test(body.mime_type)) {
+        return json(400, { ok: false, error: "mime_type must be image/gif|png|jpeg|webp" });
+      }
+      if (body.data_base64.length > MAX_ATTACHMENT_B64) {
+        return json(400, { ok: false, error: `data_base64 over ${MAX_ATTACHMENT_B64} chars` });
+      }
+      const bytes = Uint8Array.from(Buffer.from(body.data_base64, "base64"));
+      if (!bytes.length) return json(400, { ok: false, error: "data_base64 decoded to nothing" });
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        const { provider_message_id } = await deps.sendAttachment(body.phone, bytes, body.name, body.mime_type);
+        log("info", "attachment sent", { to: last4(body.phone), provider_message_id, name: body.name, mime: body.mime_type, bytes: bytes.length });
+        return json(200, { ok: true, provider_message_id });
+      } catch (err) {
+        log("error", "attachment failed", { to: last4(body.phone), name: body.name, error: String(err) });
+        return json(502, { ok: false, error: String(err) });
       }
     }
 
@@ -713,6 +748,14 @@ async function main() {
       await dm.send(edit(appCard(url, opts as Parameters<typeof appCard>[1]), target));
       // The provider refreshes miniAppCardSession on the target after each update.
       sentCards.set(cardSession.id, target);
+    },
+    sendAttachment: async (phone, bytes, name, mimeType) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      const sent = await dm.send(attachment(Buffer.from(bytes), { name, mimeType }));
+      await dm.stopTyping().catch(() => undefined);
+      return { provider_message_id: (Array.isArray(sent) ? sent[0]?.id : sent?.id) ?? null };
     },
   };
 

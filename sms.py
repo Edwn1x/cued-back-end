@@ -1,5 +1,6 @@
 import difflib
 import hashlib
+import base64
 import logging
 import re
 import threading
@@ -108,6 +109,37 @@ def _send_single(phone: str, body: str) -> str:
         to=phone,
     )
     return message.sid
+
+
+def _send_single_mms(phone: str, media_url: str, body: str = "") -> str:
+    """One MMS carrying `media_url` via Twilio (the water-break GIF for SMS users).
+    Twilio fetches the URL itself, so it has to be public. Returns the SID."""
+    kwargs = {"media_url": [media_url], "from_": config.TWILIO_PHONE_NUMBER, "to": phone}
+    if body:
+        kwargs["body"] = body
+    message = client.messages.create(**kwargs)
+    return message.sid
+
+
+def _send_imessage_attachment(phone: str, data: bytes, name: str, mime_type: str) -> str:
+    """POST one file to the sidecar's /send-attachment as its own bubble (no caption).
+    Bytes travel base64 in JSON. Returns the Photon message id; raises on non-2xx,
+    ok=false, or any transport error — the caller decides what the fallback is."""
+    payload = {"phone": phone, "name": name, "mime_type": mime_type,
+               "data_base64": base64.b64encode(data).decode("ascii")}
+    resp = requests.post(
+        config.SIDECAR_URL.rstrip("/") + "/send-attachment",
+        json=payload,
+        headers={"X-Internal-Secret": config.INTERNAL_SHARED_SECRET},
+        # An upload is slower than a text; give it at least half a minute.
+        timeout=max(config.SIDECAR_TIMEOUT_S, 30),
+    )
+    if resp.status_code >= 300:
+        raise RuntimeError(f"sidecar /send-attachment {resp.status_code}: {resp.text[:200]}")
+    data_ = resp.json()
+    if not isinstance(data_, dict) or not data_.get("ok"):
+        raise RuntimeError(f"sidecar /send-attachment not ok: {resp.text[:200]}")
+    return data_.get("provider_message_id")
 
 
 def _log_message(user_id: int, body: str, message_type: str,
