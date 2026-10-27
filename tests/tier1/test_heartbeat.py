@@ -287,8 +287,17 @@ def test_model_scheduled_event_informs_but_does_not_hard_gate(db, monkeypatch, s
 
     user = make_user(db)
     _allow(monkeypatch, user)
-    handle_log_event(user.id, {"description": "founder summit", "starts_at": "12:00",
-                               "ends_at": "14:30", "date": "today"})
+    # A timed event that is ONGOING or starts within CALENDAR_HARD_BLOCK_MINUTES is a
+    # code gate for every event source (calendar_block) — that is not what this test
+    # is about. Pin the summit well ahead of the tick in the user's local day so the
+    # test is not hostage to the wall clock (it was red 11:40–14:30 PT on 2026-10-27).
+    from zoneinfo import ZoneInfo
+    local = datetime.now(ZoneInfo(user.user_timezone))
+    start = local + timedelta(hours=2)
+    end = start + timedelta(hours=2, minutes=30)
+    date = "today" if start.date() == local.date() else "tomorrow"
+    handle_log_event(user.id, {"description": "founder summit", "starts_at": start.strftime("%H:%M"),
+                               "ends_at": end.strftime("%H:%M"), "date": date})
     anthropic_stub.reply_with(lambda kw: ToolUse("stay_silent", {"reason": "nothing to add"}))
 
     heartbeat.heartbeat_tick(user.id)

@@ -219,7 +219,12 @@ def sync_user(user_id: int, *, timeout: float | None = None) -> dict:
         start, end = ev["start_utc"], ev["end_utc"]
         if not (lo <= start < hi):
             continue
-        if end is not None and (end - start) > timedelta(hours=MAX_EVENT_HOURS):
+        # All-day items are converted at LOCAL midnight, so on the DST fall-back day
+        # (first Sunday of November) one all-day event spans 25h in UTC and read as
+        # "longer than a day" — a bCourses midterm/due date on that day was silently
+        # dropped (live 2026-10-27, Nov 1 fixture). Give all-day rows the extra hour.
+        limit = timedelta(hours=MAX_EVENT_HOURS) + (timedelta(hours=1) if ev["all_day"] else timedelta(0))
+        if end is not None and (end - start) > limit:
             continue
         upsert_external_event(user_id, source=SOURCE, external_id=ev["external_id"],
                               title=ev["title"], occurred_at=start, ends_at=end,

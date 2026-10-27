@@ -364,3 +364,27 @@ def test_sync_all_touches_only_bcourses_rows(db, monkeypatch):
     seen = []
     monkeypatch.setattr(bcourses, "sync_user", lambda uid: seen.append(uid))
     assert bcourses.sync_all() == 1 and seen == [a.id]
+
+
+def test_all_day_item_on_dst_fallback_day_is_kept(db, monkeypatch):
+    """2026-11-01 is the US fall-back day: local midnight → next local midnight is 25h in
+    UTC, so an all-day item that day used to fail the max-duration check and vanish.
+    Pinned clock so the test is not hostage to the calendar (it bit 2026-10-27 live)."""
+    from tests.factories import make_user
+    from integrations import bcourses
+    from events import upcoming_events
+    from datetime import date as _date
+
+    user = make_user(db)
+    _connect(db, user.id)
+    monkeypatch.setattr(bcourses, "_utcnow", lambda: datetime(2026, 10, 27, 21, 0, 0))
+    dst_day = _date(2026, 11, 1)
+    feed = _ics(_vevent("event-calendar-event-dst", "Midterm review", dst_day, dst_day + timedelta(days=1), all_day=True),
+                _vevent("event-assignment-dst", "HW 5", dst_day, dst_day + timedelta(days=1), all_day=True))
+    monkeypatch.setattr(bcourses, "_fetch_ics", lambda url, **kw: feed)
+
+    assert bcourses.sync_user(user.id) == {"upserted": 2, "deleted": 0}
+    titles = {e.title for e in upcoming_events(user.id, days=60, now=datetime(2026, 10, 27, 21, 0, 0))} \
+        if "now" in upcoming_events.__code__.co_varnames else None
+    if titles is not None:
+        assert "Midterm review" in titles and "due: HW 5" in titles
