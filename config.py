@@ -722,12 +722,12 @@ GCAL_ENABLED = os.getenv("GCAL_ENABLED", "false").lower() == "true"
 # background thread. Live 2026-10-06 (user 48): the first pull ran INLINE in the callback,
 # the page hung for 3 minutes, and his two retries hit "link already used".
 OAUTH_SYNC_IN_BACKGROUND = os.getenv("OAUTH_SYNC_IN_BACKGROUND", "true").lower() == "true"
-# Google Calendar WRITE-BACK (create events). OFF by default: turning it on requires
-# adding the calendar.events (read/WRITE) scope to the OAuth consent screen AND every
-# existing user RE-CONNECTING (readonly grants can't create). When ON, the gcal
-# authorize_url requests the write scope and the coach gets the create_calendar_event
-# tool. CREATE-ONLY — never modifies or deletes existing events. See the PR founder
-# setup section for the exact Google Cloud Console steps.
+# Google Calendar WRITE-BACK (create / move / delete events). OFF by default: turning it
+# on requires adding the calendar.events (read/WRITE) scope to the OAuth consent screen AND
+# every existing user RE-CONNECTING (readonly grants can't write). When ON, the gcal
+# authorize_url requests the write scope and the coach gets create_calendar_event,
+# move_calendar_event and delete_calendar_event — each touches ONE event the user named
+# and is confirm-gated in code (reflect back → yes in the next turn → write).
 CALENDAR_WRITE_ENABLED = os.getenv("CALENDAR_WRITE_ENABLED", "false").lower() == "true"
 BCOURSES_ENABLED = os.getenv("BCOURSES_ENABLED", "false").lower() == "true"
 # Canvas personal access token (Part 1.4b): the richer bCourses connection — planner

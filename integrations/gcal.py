@@ -9,6 +9,9 @@ Two layers:
   2. Thin Calendar API client — list_calendars + list_events (incremental via
      syncToken, 410 → caller does a full resync). The sync ORCHESTRATION (upsert
      into the event store, the 30-min job) lives in the sync layer (§1.2), not here.
+  3. Write client (behind CALENDAR_WRITE_ENABLED): create_event, update_event,
+     delete_event — one event at a time, always after the coach tool has reflected it
+     back and the user said yes (agent_tools enforces the confirm in code).
 
 Verified against current Google docs at build time (2026-09-18): auth endpoint
 accounts.google.com/o/oauth2/v2/auth, token oauth2.googleapis.com/token, events.list
@@ -222,16 +225,47 @@ def list_events(access_token: str, calendar_id: str, *, sync_token: str | None =
         return out, next_sync
 
 
-# ─── Calendar API client (WRITE) — create-only, behind CALENDAR_WRITE_ENABLED ──
+# ─── Calendar API client (WRITE) — create / update / delete, behind CALENDAR_WRITE_ENABLED ──
 
 class NotConnected(Exception):
     """No connected gcal for this user (or the token refresh failed) — nothing to write to."""
 
 
 class WriteAccessDenied(Exception):
-    """403 / insufficient scope on events.insert — the grant is readonly (never granted
+    """403 / insufficient scope on a write — the grant is readonly (never granted
     calendar.events write). The user must RE-CONNECT to add write; we surface this as an
     honest 'reconnect to let me' rather than a silent failure or a fake success."""
+
+
+class WriteForbidden(Exception):
+    """403 on update/delete WITH a write-capable grant: the event sits on a calendar the
+    user can't edit (a shared course calendar, an event they're only invited to). Not a
+    reconnect problem — the coach says so and leaves it alone."""
+
+
+class EventGone(Exception):
+    """404/410 on update/delete — the event is no longer on Google (deleted from the
+    phone, or on a calendar this token can't see). The local mirror should drop it too."""
+
+
+def _scope_problem(resp) -> bool:
+    """Is this 401/403 a missing-scope problem (readonly grant) rather than a
+    per-event permission one? Google says 'insufficient authentication scopes' /
+    reason=insufficientPermissions for the former; ACL denials read 'forbidden'."""
+    if resp.status_code == 401:
+        return True
+    try:
+        err = (resp.json() or {}).get("error") or {}
+    except Exception:  # noqa: BLE001 — no JSON body; treat as scope (the create path's rule)
+        return True
+    msg = str(err.get("message") or "").lower()
+    reasons = {str(e.get("reason") or "") for e in (err.get("errors") or [])}
+    if "scope" in msg or reasons & {"insufficientPermissions", "insufficientScopes", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}:
+        return True
+    for d in err.get("details") or []:
+        if str(d.get("reason") or "") == "ACCESS_TOKEN_SCOPE_INSUFFICIENT":
+            return True
+    return False
 
 
 def _rfc3339_utc(dt: datetime) -> str:
@@ -244,9 +278,10 @@ def _rfc3339_utc(dt: datetime) -> str:
 
 def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetime,
                  description: str | None = None) -> dict:
-    """Create ONE timed event on the user's PRIMARY calendar (events.insert). CREATE-ONLY
-    by design — there is deliberately no modify/delete path here, to keep the blast radius
-    of write access to net-new events the coach explicitly added.
+    """Create ONE timed event on the user's PRIMARY calendar (events.insert). Updates
+    and deletes of existing events go through update_event / delete_event below — each
+    touches exactly one event the coach resolved from the local mirror and the user
+    confirmed.
 
     Raises NotConnected if the user has no usable token, WriteAccessDenied on a 403/
     insufficient-scope (readonly grant). Returns the created event JSON (with `id`)."""
@@ -270,6 +305,68 @@ def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetim
         raise WriteAccessDenied(r.status_code)
     r.raise_for_status()
     return r.json()
+
+
+def _event_url(calendar_id: str, event_id: str) -> str:
+    return f"{CAL_API}/calendars/{quote(calendar_id or 'primary', safe='')}/events/{quote(event_id, safe='')}"
+
+
+def _write_token(user_id: int, integration_id: int | None) -> str:
+    token = base.get_valid_access_token(user_id, "gcal", integration_id=integration_id)
+    if not token:
+        raise NotConnected(user_id)
+    return token
+
+
+def _raise_for_write(user_id: int, verb: str, r) -> None:
+    """Map a write response to the honest signals the coach tool relays."""
+    if r.status_code in (404, 410):
+        raise EventGone(r.status_code)
+    if r.status_code in (401, 403):
+        if _scope_problem(r):
+            logger.warning("GCAL_%s_EVENT_DENIED user=%s status=%s", verb, user_id, r.status_code)
+            raise WriteAccessDenied(r.status_code)
+        logger.warning("GCAL_%s_EVENT_FORBIDDEN user=%s status=%s", verb, user_id, r.status_code)
+        raise WriteForbidden(r.status_code)
+    r.raise_for_status()
+
+
+def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str | None = None,
+                 start_dt: datetime | None = None, end_dt: datetime | None = None,
+                 description: str | None = None, integration_id: int | None = None) -> dict:
+    """PATCH one existing event (events.patch): only the fields given change. Start and
+    end are sent together (a moved start with the old end would make Google reject or
+    silently stretch it). Raises NotConnected / WriteAccessDenied (readonly grant) /
+    WriteForbidden (not editable by this user) / EventGone (404). Returns the event JSON."""
+    token = _write_token(user_id, integration_id)
+    body: dict = {}
+    if summary is not None:
+        body["summary"] = summary
+    if start_dt is not None:
+        body["start"] = {"dateTime": _rfc3339_utc(start_dt)}
+    if end_dt is not None:
+        body["end"] = {"dateTime": _rfc3339_utc(end_dt)}
+    if description is not None:
+        body["description"] = description
+    if not body:
+        raise ValueError("nothing to update")
+    r = requests.patch(_event_url(calendar_id, event_id),
+                       headers={"Authorization": f"Bearer {token}"},
+                       json=body, timeout=_timeout())
+    _raise_for_write(user_id, "UPDATE", r)
+    return r.json()
+
+
+def delete_event(user_id: int, calendar_id: str, event_id: str, *, integration_id: int | None = None) -> bool:
+    """DELETE one existing event (events.delete, 204). Raises NotConnected /
+    WriteAccessDenied / WriteForbidden / EventGone (already gone — the caller treats that
+    as done and drops the mirror). Returns True on a real delete."""
+    token = _write_token(user_id, integration_id)
+    r = requests.delete(_event_url(calendar_id, event_id),
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=_timeout())
+    _raise_for_write(user_id, "DELETE", r)
+    return True
 
 
 base.register(GCalProvider())

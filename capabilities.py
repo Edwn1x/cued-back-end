@@ -346,9 +346,9 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         id="block_time",
-        what="i can drop a gym or study block straight onto your google calendar",
-        how="say 'block a lift at 4' or 'add a study block 2-4 before the exam' — i'll confirm, then add it",
-        tools=("create_calendar_event",),
+        what="i can add, move, or delete gym and study blocks straight on your google calendar",
+        how="say 'block a lift at 4', 'push my gym block to 5', or 'take tomorrow's study session off' — i'll confirm, then do it",
+        tools=("create_calendar_event", "move_calendar_event", "delete_calendar_event"),
         enabled=lambda u: config.CALENDAR_WRITE_ENABLED,
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=None,
