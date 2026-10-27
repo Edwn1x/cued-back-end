@@ -332,6 +332,11 @@ def program_context(user, prog: dict | None = None, *, now=None) -> str:
     if prog.get("constraints"):
         lines.append("- honouring: " + "; ".join(prog["constraints"]))
     lines.append(f"- progression: {prog['progression']['text']}")
+    if not prog.get("days_confirmed") and getattr(config, "PROGRAM_DAYS_REPLY_BOUNDS_ENABLED", True):
+        lines.append("- days NOT locked yet (u asked 'those days work, or wanna swap any?' and got no clear answer): "
+                     "if they say the week works, in any words, call adjust_program with no changes to lock it "
+                     "(the gym pings start then); if they want other days, adjust_program with those days. "
+                     "Don't re-ask the question on its own.")
     return "\n".join(lines)
 
 
@@ -436,6 +441,7 @@ def send_program_brief(user_id: int) -> bool:
 
 
 def _brief_pending(session, user) -> bool:
+    """The brief went out, the days aren't confirmed, and it was within PENDING_HOURS."""
     prog = getattr(user, "program", None) or {}
     if not prog or prog.get("days_confirmed"):
         return False
@@ -449,6 +455,47 @@ def _brief_pending(session, user) -> bool:
     return (datetime.now(timezone.utc).replace(tzinfo=None) - row[0]) < timedelta(hours=PENDING_HOURS)
 
 
+def _brief_has_the_floor(session, user) -> bool:
+    """True when the brief is still the newest outbound that asks anything — so a bare yes/no
+    can only mean the days question. A reply from the coach (or a code bubble with its own
+    question) since then takes the floor, the way water_offer.pending_offer works. Live
+    2026-10-27 (user 77): "Ok. Also as a heads up, I will be dropping Eleng 105…" 47 minutes and
+    46 messages after the brief was read as the days yes → "locked in. i'll ping u those days at
+    8am", and the drop itself never reached the model that turn."""
+    from models import Message
+    from engagement_tracker import _not_reaction
+    from water_offer import NO_QUESTION_TYPES
+    last_out = (session.query(Message.message_type)
+                .filter(Message.user_id == user.id, Message.direction == "out", _not_reaction(),
+                        Message.message_type.notin_(NO_QUESTION_TYPES))
+                .order_by(Message.created_at.desc(), Message.id.desc()).first())
+    return bool(last_out and last_out[0] == BRIEF_TYPE)
+
+
+# A bare yes/no to the brief is ONE short clause: the yes-word, then at most a few words and no
+# second sentence. "yes that works" / "ok sounds good" qualify; "Ok. Also as a heads up…" and
+# "yes, and can u add my OH on fridays" do not — those carry something the model must answer.
+_BARE_CLAUSE_TAIL = (r"(?:\s+(?!(?:what|how|when|where|why|can|could|also|but|and|add|wait|actually)\b)[^\s.!?,;]+){0,4}"
+                     r"[.!…]*\s*$")
+
+
+def _alts(rx) -> str:
+    """The alternation inside a ^\\s*( … )\\b regex (water_offer.YES_RE / NO_RE), reused here."""
+    return rx.pattern.split("(", 1)[1].rsplit(")", 1)[0]
+
+
+_BARE_YES_NO_RE = None
+
+
+def _bare_yes_no():
+    global _BARE_YES_NO_RE
+    if _BARE_YES_NO_RE is None:
+        import re
+        from water_offer import YES_RE, NO_RE
+        _BARE_YES_NO_RE = re.compile(r"^\s*(?:" + _alts(YES_RE) + r"|" + _alts(NO_RE) + r")\b" + _BARE_CLAUSE_TAIL, re.I)
+    return _BARE_YES_NO_RE
+
+
 def handle_days_reply(user_id: int, text: str) -> str | None:
     """Code-answer to the brief's "those days work, or wanna swap any?". A yes locks the
     days; a list of days (or "swap thu for fri" / "friday instead of thursday") rebuilds the
@@ -459,6 +506,7 @@ def handle_days_reply(user_id: int, text: str) -> str | None:
     import re
     from models import get_session, User
     from water_offer import YES_RE, NO_RE
+    bounded = bool(getattr(config, "PROGRAM_DAYS_REPLY_BOUNDS_ENABLED", True))
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -466,11 +514,19 @@ def handle_days_reply(user_id: int, text: str) -> str | None:
             return None
         prog = dict(user.program or {})
         current = [d for d in DAYS if d in (prog.get("days") or {})]
+        floor = _brief_has_the_floor(session, user) if bounded else True
     finally:
         session.close()
     body = (text or "").strip()
     low = body.lower()
     days = _days_in(low)
+    # A bare yes/no only counts while the brief still has the floor AND it's one short clause
+    # (see _BARE_CLAUSE_TAIL). A list of days or a swap is unambiguous on its own and keeps
+    # the whole PENDING_HOURS window. Anything else is the model's turn: it has the PROGRAM
+    # block (which says the days aren't locked) and adjust_program, which confirms them.
+    yes_no_ok = (not bounded) or (floor and bool(_bare_yes_no().match(body)))
+    if bounded and not yes_no_ok and not days and (YES_RE.match(body) or NO_RE.match(body)):
+        logger.info("PROGRAM_DAYS_REPLY_NOT_TAKEN user=%s floor=%s body=%r", user_id, floor, body[:80])
     swap = re.search(r"\b(?:swap|switch|move)\s+(\w+)\s+(?:for|to|with)\s+(\w+)|(\w+)\s+instead of\s+(\w+)|(\w+)\s+not\s+(\w+)", low)
     new_days = None
     if swap and len(days) == 2:
@@ -489,7 +545,7 @@ def handle_days_reply(user_id: int, text: str) -> str | None:
         _confirm(user_id, prog)
         logger.info("PROGRAM_DAYS_SWAPPED user=%s days=%s", user_id, list(prog["days"]))
         return f"locked: {describe_week(prog)}. " + _ping_line(prog)
-    if YES_RE.match(body) and not days:
+    if YES_RE.match(body) and not days and yes_no_ok:
         from models import get_session as _gs
         s = _gs()
         try:
@@ -499,7 +555,7 @@ def handle_days_reply(user_id: int, text: str) -> str | None:
         _confirm(user_id, prog)
         logger.info("PROGRAM_DAYS_CONFIRMED user=%s days=%s", user_id, current)
         return "locked in. " + _ping_line(prog)
-    if NO_RE.match(body) and not days:
+    if NO_RE.match(body) and not days and yes_no_ok:
         return "which days then? just list em"
     return None
 
