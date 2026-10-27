@@ -1504,7 +1504,10 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # gym_beats + the heartbeat + the session auto-expire.
     if message_type == "workout_log" and _pb_onboarded:
         confirm_workout_today(user.id)
-        set_session_state(user.id, "at_gym")
+        if config.AT_GYM_SKIPS_PAST_REPORT_ENABLED and is_past_workout_report(body):
+            logger.info("AT_GYM_SKIPPED_PAST_REPORT user=%s body=%r", user.id, (body or "")[:80])
+        else:
+            set_session_state(user.id, "at_gym")
         threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
     if message_type == "workout_request" and _pb_onboarded:
@@ -1862,6 +1865,17 @@ def internal_inbound():
 
 
 _LIFT_KEYWORDS_RE = re.compile(r"\b(hit|lifted|sets?|reps|bench|squat|deadlift|press)\b")
+# A lift text that REPORTS a session already over (or recites PRs) — the day's workout is
+# confirmed, but they are not at the gym now. Live 2026-10-27 (user 77): "All time PRs: Bench:
+# 185, squat: 3 plates. This morning I did 3x10 of 135 on bench…" at 11:41 → session_state
+# at_gym until the 2h auto-expire; gym beats, the heartbeat and the session guards all read it.
+_PAST_WORKOUT_REPORT_RE = re.compile(
+    r"\b(?:this morning|earlier(?: today)?|yesterday|last night|last week|already (?:did|hit|went|lifted|trained)|"
+    r"just got back|got back from|first day back|before class|all[- ]time|prs?|1rm|max(?:es)?|used to)\b", re.I)
+
+
+def is_past_workout_report(body: str) -> bool:
+    return bool(body) and bool(_PAST_WORKOUT_REPORT_RE.search(body))
 
 
 def classify_message(body: str, has_image: bool = False) -> str:
