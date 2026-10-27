@@ -99,6 +99,21 @@ EXERCISE_DEMO_LINKS = {
     "dumbbell_shoulder_press": "https://youtu.be/qEwKCR5JCog",  # ScottHermanFitness — Dumbbell Shoulder Press
     "hammer_curl": "https://youtu.be/zC3nLlEvin4",           # ScottHermanFitness — Dumbbell Hammer Curl
     "seated_cable_row": "https://youtu.be/GZbfZ033f74",      # ScottHermanFitness — Seated Low Row (LF Cable)
+    #
+    # Desk-posture / mobility moves the coach prescribes as reminders (2026-10-27, user 77:
+    # "Can you find me reference videos on how to do these?" for chin tucks, the doorway
+    # stretch and extension over the chair — the coach SEARCHED, then said "couldn't pull
+    # links rn" and sent search terms). Each verified at build time via YouTube oEmbed +
+    # watch-page metadata (title, channel, duration, description); PT / clinic channels,
+    # all about a minute or less, and each shows the VERSION the coach prescribes (seated
+    # chin tuck, forearms on the door frame, arching over the chair back).
+    "chin_tuck": "https://youtu.be/oO9Zernkbxg",                  # Dr. Dawn Thomas Physical Therapy — Seated Chin Tuck (42s)
+    "doorway_pec_stretch": "https://youtu.be/dlQX1pswPwA",        # Maury Regional Physical Therapy (Josh Lunn, DPT) — Doorway Stretch Exercise (48s)
+    "seated_thoracic_extension": "https://youtu.be/7BQSJxR1i60",  # Coast Therapy — Stiff Upper Back? Thoracic Extension over the chair (41s)
+    "wall_angel": "https://youtu.be/kcca7_JGsVk",                 # InSync Physiotherapy — Wall Angels, postural neck and back pain (50s)
+    "cat_cow": "https://youtu.be/WHUevrqeKIg",                    # Cleveland Clinic — how to do a cat-cow (57s)
+    "kneeling_hip_flexor_stretch": "https://youtu.be/K5EZ8ztNEcw",  # Rehab My Patient — Kneeling Hip Flexor Stretch (40s)
+    "dead_hang": "https://youtu.be/bDSqVe4b9pA",                  # Calixpert — How To Do Dead Hang | Correct Form (70s)
 }
 
 # Real-world names / slugs the card and conversation use → the canonical key above.
@@ -112,6 +127,27 @@ EXERCISE_DEMO_LINKS = {
 # (only the chest-supported variation is mapped) — those MISS. Keys here are normalized
 # at module load (same normalize as the input), so spacing/hyphen/case don't matter.
 _ALIASES = {
+    # ── posture / mobility, as the coach phrases them in reminders and texts ──
+    "chin tucks": "chin_tuck", "seated chin tuck": "chin_tuck", "seated chin tucks": "chin_tuck",
+    "chin tuck exercise": "chin_tuck", "neck tucks": "chin_tuck", "chin tuck and hold": "chin_tuck",
+    "doorway stretch": "doorway_pec_stretch", "doorway chest stretch": "doorway_pec_stretch",
+    "doorway pec stretch": "doorway_pec_stretch", "door stretch": "doorway_pec_stretch",
+    "door frame stretch": "doorway_pec_stretch", "door frame chest stretch": "doorway_pec_stretch",
+    "pec stretch in the doorway": "doorway_pec_stretch", "chest stretch in the doorway": "doorway_pec_stretch",
+    "doorway pec and shoulder stretch": "doorway_pec_stretch", "chest stretch in a doorway": "doorway_pec_stretch",
+    "thoracic extension": "seated_thoracic_extension", "seated thoracic extension": "seated_thoracic_extension",
+    "thoracic extension over chair": "seated_thoracic_extension", "chair thoracic extension": "seated_thoracic_extension",
+    "upper back over chair": "seated_thoracic_extension", "lean back over chair": "seated_thoracic_extension",
+    "lean back over ur chair": "seated_thoracic_extension", "lean back over your chair": "seated_thoracic_extension",
+    "lean back over the chair": "seated_thoracic_extension", "upper back extension over chair": "seated_thoracic_extension",
+    "upper back stretch over chair": "seated_thoracic_extension", "arch over the chair": "seated_thoracic_extension",
+    "wall angels": "wall_angel", "wall angel exercise": "wall_angel",
+    "cat cow": "cat_cow", "cat camel": "cat_cow", "cat and cow": "cat_cow", "cat and camel": "cat_cow",
+    "cat cow stretch": "cat_cow", "cat-cow stretch": "cat_cow", "cat camel stretch": "cat_cow",
+    "hip flexor stretch": "kneeling_hip_flexor_stretch", "kneeling hip flexor stretch": "kneeling_hip_flexor_stretch",
+    "half kneeling hip flexor stretch": "kneeling_hip_flexor_stretch", "hip flexor stretches": "kneeling_hip_flexor_stretch",
+    "dead hangs": "dead_hang", "bar hang": "dead_hang", "bar hangs": "dead_hang", "hang from the bar": "dead_hang",
+    "hang from a bar": "dead_hang",
     # pull_up — bodyweight vertical pull (chin-up is the supinated-grip same movement)
     "pullup": "pull_up",
     "pullups": "pull_up",
@@ -336,6 +372,34 @@ def unseen_demos_for(user, exercise_names, limit: int = 1) -> dict[str, str]:
     except Exception:  # noqa: BLE001 — a form-demo hint must never break a turn
         logger.exception("EXERCISE_DEMOS_RESOLVE_FAILED")
         return {}
+
+
+_REMINDER_SPLIT_RE = re.compile(r"[,;\n/+]|\band\b|\bthen\b|\bplus\b")
+_REMINDER_COUNT_RE = re.compile(
+    r"\b\d+\s*(?:x|reps?|sets?|s|sec|secs|seconds?|min|mins|minutes?|rounds?|times)\b|\bx\s*\d+\b|\b\d+\b|"
+    r"\beach side\b|\bper side\b|\bboth sides\b|\bhold\b", re.I)
+_REMINDER_LEAD_RE = re.compile(r"^(?:posture break|stretch break|mobility break|reminder)\b\s*:?\s*", re.I)
+
+
+def movement_phrases(text: str) -> list[str]:
+    """The movement names inside a reminder's text, counts and holds stripped:
+    "posture break: chin tucks x10, doorway chest stretch 30s each side, lean back over
+    chair x10" → ["chin tucks", "doorway chest stretch", "lean back over chair"]. Pure."""
+    out = []
+    for part in _REMINDER_SPLIT_RE.split((text or "").lower()):
+        p = _REMINDER_LEAD_RE.sub("", part.strip())
+        p = _REMINDER_COUNT_RE.sub(" ", p)
+        p = re.sub(r"\s+", " ", p).strip(" :.-")
+        if p:
+            out.append(p)
+    return out
+
+
+def demo_links_for_reminder(user, text: str, limit: int = 3) -> dict[str, str]:
+    """{movement phrase: url} for the library movements a reminder names that the user
+    hasn't been shown yet — the clips ride with the FIRST fire (reminders._fire_one), so a
+    posture break arrives with how-to, not just a line. Pure / fail-open like unseen_demos_for."""
+    return unseen_demos_for(user, movement_phrases(text), limit=limit)
 
 
 def mark_demos_seen(user_id: int, canonical_keys) -> None:
