@@ -743,6 +743,11 @@ def build_loop_context(user, session) -> str:
     if user.protein_target:
         lines.append(f"protein remaining vs target: {user.protein_target - tot_pro}g "
                      f"({tot_pro}/{user.protein_target}g)")
+    if getattr(user, "reported_intake", None):
+        lines.append(f"they said they eat about {user.reported_intake} cal a day"
+                     + (f" / {user.reported_protein_intake}g protein" if getattr(user, "reported_protein_intake", None) else "")
+                     + "; the target started within 20% of that and steps up off the scale — never call it low, "
+                     "it's the feasible first step")
     from timefmt import describe_day_reset
     reset_txt = describe_day_reset(user)
     parts.append(

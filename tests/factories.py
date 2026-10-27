@@ -41,6 +41,7 @@ def make_user(session, **overrides):
         sleep_time="23:00",
         experience="intermediate",
         equipment="full_gym",
+        reported_intake=0,            # the setup intake ask was answered ("no idea") — tests that care override it
         active=True,
     )
     defaults.update(overrides)

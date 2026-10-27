@@ -61,7 +61,7 @@ def test_full_form_fills_every_column_and_leaves_the_coach_nothing_objective_to_
     left = [f for f, _ in _get_missing_fields(u)]
     assert "height_weight" not in left and "workout_days" not in left and "workout_time" not in left
     assert "diet" not in left and "existing_tools" not in left and "avg_steps" not in left and "injuries" not in left
-    assert set(left) <= {"occupation", "activity_level", "cooking_situation", "wake_sleep"}
+    assert set(left) <= {"occupation", "activity_level", "cooking_situation", "current_intake", "wake_sleep"}
 
 
 def test_no_tools_is_an_answer(db, client):

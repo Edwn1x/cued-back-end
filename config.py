@@ -1290,6 +1290,13 @@ ONBOARDING_HALF_ANSWERED_REASK_ENABLED = os.getenv("ONBOARDING_HALF_ANSWERED_REA
 # Under-18 targets: IOM overweight equation at BMI ≥ 25, the teen PA category (10k steps =
 # low active), and a ceiling at the adult path × 1.15 (live 2026-10-17, user 40: 4150 cal).
 TEEN_EER_OVERWEIGHT_ENABLED = os.getenv("TEEN_EER_OVERWEIGHT_ENABLED", "true").lower() == "true"
+# Ten Haaf (the athlete RMR equation) needs a training history, not a plan: "none"/"beginner"
+# stay on Mifflin however many days they plan (live 2026-10-27, user 77: never trained, "6 days"
+# → 3100 cal). Ramp: the first target never sits more than 20% above what they say they eat now
+# (users.reported_intake, asked at setup / set_targets current_intake); the adaptive cycle grows it.
+TEN_HAAF_EXPERIENCE_GATE_ENABLED = os.getenv("TEN_HAAF_EXPERIENCE_GATE_ENABLED", "true").lower() == "true"
+TARGET_RAMP_ENABLED = os.getenv("TARGET_RAMP_ENABLED", "true").lower() == "true"
+INTAKE_ASK_ENABLED = os.getenv("INTAKE_ASK_ENABLED", "true").lower() == "true"   # the setup ask itself
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"

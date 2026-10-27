@@ -302,6 +302,8 @@ def build_profile_payload(session, user, *, now: datetime | None = None) -> dict
             "source": getattr(user, "targets_source", None) or ("computed" if user.calorie_target else None),
             "computed_calories": getattr(user, "calorie_target_computed", None),
             "computed_protein_g": getattr(user, "protein_target_computed", None),
+            "reported_intake": getattr(user, "reported_intake", None) or None,
+            "reported_protein_intake": getattr(user, "reported_protein_intake", None),
         },
         "today": {
             "date": day_start and _iso(day_start),

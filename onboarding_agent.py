@@ -75,6 +75,7 @@ REQUIRED_FIELDS = [
     ("workout_time", "what time they prefer to work out"),
     ("current_split", "whether they already have a workout routine — PPL, upper/lower, full body, bro split, or if they need one built"),
     ("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"),
+    ("current_intake", "roughly how much they eat in a normal day right now — a calorie guess, or 'no idea'"),
     ("diet", "dietary preferences or restrictions — vegetarian, vegan, allergies, halal, or no restrictions"),
     ("injuries", "any injuries or physical limitations"),
     ("wake_sleep", "when they typically wake up and go to bed"),
@@ -188,6 +189,15 @@ def _get_missing_fields(user) -> list:
                 missing.append(("current_split", _split_hint(user)))
     if not user.cooking_situation:
         missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
+    # What they eat NOW (2026-10-27, user 77: ate ~2000, was handed 3100 — "I cannot afford that
+    # much food"). The one input the equations never see; the first target ramps from it
+    # (macro_calculator). 0 = asked, no idea — that is a complete answer, never re-asked.
+    if getattr(config, "INTAKE_ASK_ENABLED", True) and getattr(user, "reported_intake", None) is None:
+        missing.append(("current_intake", "roughly how much they eat in a normal day right now — a calorie "
+                        "guess if they have any idea ('like 2000?'), and 'no idea' is a full answer: ask ONCE, "
+                        "a guess is fine, never push for precision ('roughly how many cals u think u eat in a "
+                        "normal day — a guess is fine, so is no idea'); it's what makes the first number land "
+                        "where they can actually eat"))
     # Known once EITHER typed column is filled: a person who names what they won't
     # eat has told you their diet. Live 2026-09-22 (user 42): "I don't eat mushrooms
     # tofu and raw fish" fit no diet label → null → onboarding parked on `diet` while
@@ -334,6 +344,10 @@ def _build_system_prompt(user) -> str:
         f"Cooking: {user.cooking_situation}" if user.cooking_situation else None,
         (f"Their own daily targets: {user.calorie_target or '?'} cal / {user.protein_target or '?'}g protein"
          if getattr(user, "targets_source", None) == "user" and (user.calorie_target or user.protein_target) else None),
+        (f"Eats now (their estimate): ~{user.reported_intake} cal"
+         + (f" / {user.reported_protein_intake}g protein" if getattr(user, "reported_protein_intake", None) else "") + " a day"
+         if getattr(user, "reported_intake", None) else
+         ("Eats now: no idea (asked — never ask again)" if getattr(user, "reported_intake", None) == 0 else None)),
         f"Injuries: {user.injuries}" if user.injuries else None,
         (f"Wake time: {user.wake_time}" + (" (your estimate from a vague answer — a guess they can fix, never ask again)"
                                              if getattr(user, "sleep_estimated", False) else "")) if user.wake_time else None,
@@ -583,6 +597,9 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "goal": "fat_loss" | "muscle_building" | "fat_loss,muscle_building" (recomp) | "strength" | "endurance" | "general_fitness" or null — ONLY when they say what they're going for ("tryna cut", "want to put on size", "training for a half"),
   "calorie_target": integer or null (ONLY a daily calorie number THEY say they aim for or track to — "staying under 2000 cals" → 2000; never a number the coach said),
   "protein_target": integer or null (same rule — grams of protein per day THEY track to),
+  "current_intake_calories": integer or null (daily calories they say they currently EAT — "i eat like 2000 a day", "probably 1800", a bare "2000" after being asked how much they eat; an AIM ("staying under 2000") is calorie_target, not this; never a number the coach said),
+  "current_intake_protein": integer or null (grams of protein a day they say they currently eat — "i get like 100g"),
+  "current_intake_unknown": true or null (ONLY when asked how much they eat and they say they don't know / no idea / never counted — "no clue", "idk honestly", "never tracked"),
   "cooking_situation": "cook_myself, dining_hall, mostly_eat_out, mix" or null,
   "injuries": "description of injuries" or "none" or null,
   "wake_time": "HH:MM in 24h format" or null,
@@ -654,6 +671,9 @@ Examples:
 "I have no allergies and eat mostly chicken and protein pasta" → {{"diet": "omnivore", ...rest null}}
 "I don't eat mushrooms tofu and raw fish" → {{"diet": "omnivore", "food_dislikes": "mushrooms, tofu, raw fish", ...rest null}}
 "I count my macros staying under 2000 cals and 155 grams of protein" → {{"calorie_target": 2000, "protein_target": 155, ...rest null}}
+"I eat about 100g of protein a day and roughly 2000 calories" → {{"current_intake_calories": 2000, "current_intake_protein": 100, ...rest null}}  (what they EAT, not an aim)
+"like 2000? maybe less" (after being asked how much they eat) → {{"current_intake_calories": 2000, ...rest null}}
+"honestly no idea, never counted" (after being asked how much they eat) → {{"current_intake_unknown": true, ...rest null}}
 "been lifting like 3 years, tryna cut for summer" → {{"experience": "advanced", "goal": "fat_loss", ...rest null}}
 "I do push pull legs" (no statement about how long) → {{"current_split": "ppl", ...rest null}}  (experience stays null)
 "I use Strava and Apple Watch" → {{"existing_tools": "strava,apple_watch", "tools_decision": "acknowledged", ...rest null}}
@@ -668,6 +688,7 @@ Short answer rules:
 - "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
 - A warm-up or work-around they do for a joint IS the injuries answer, even with no pain named: "on leg day I warm up with leg extensions and leg curls first" → injuries="knees — warms up with leg extensions and leg curls before squatting". Not null, not "none".
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
+- "idk", "no idea", "no clue", "never counted" when asked how much they EAT in a day → current_intake_unknown=true (a full answer — never null); a bare number there ("2000", "like 1800") → current_intake_calories
 - "I don't eat X and Y" / "no X" (specific foods) → food_dislikes="X, Y" AND diet="omnivore" — dislikes are not a diet identity
 - "no allergies" → diet="omnivore"
 - "No", "nah", "none", "nothing" when asked about existing_tools → existing_tools="none", tools_decision="none"
@@ -832,6 +853,27 @@ def _store_extracted_data(user_id: int, data: dict):
                     setattr(user, attr, val)
                     user.targets_source = "user"
                     changed = True
+
+        # What they eat now (macro_calculator ramp). A number → reported_intake; "no idea" → 0 (asked,
+        # unknown: the ask closes and is never repeated). A later real number overwrites a 0.
+        if getattr(config, "INTAKE_ASK_ENABLED", True):
+            from macro_calculator import REPORTED_INTAKE_MIN, REPORTED_INTAKE_MAX, REPORTED_PROTEIN_MIN, REPORTED_PROTEIN_MAX
+            try:
+                eats = data.get("current_intake_calories")
+                eats = int(round(float(eats))) if eats is not None else None
+            except (TypeError, ValueError):
+                eats = None
+            if eats is not None and REPORTED_INTAKE_MIN <= eats <= REPORTED_INTAKE_MAX:
+                _set("reported_intake", eats)
+            elif data.get("current_intake_unknown") and getattr(user, "reported_intake", None) is None:
+                _set("reported_intake", 0)
+            try:
+                eats_pro = data.get("current_intake_protein")
+                eats_pro = int(round(float(eats_pro))) if eats_pro is not None else None
+            except (TypeError, ValueError):
+                eats_pro = None
+            if eats_pro is not None and REPORTED_PROTEIN_MIN <= eats_pro <= REPORTED_PROTEIN_MAX:
+                _set("reported_protein_intake", eats_pro)
 
         # Real clock times replace a code-pinned estimate: the summary must not say "my guess"
         # for numbers they gave (live 2026-10-13, user 51: "12-1pm / 2-5am" → still "(my guess)").
@@ -1113,9 +1155,15 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
         elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
             numbers = (f"{user.calorie_target} cal and {user.protein_target}g protein a day to start, ur pick "
                        f"(i'd have said {targets['calories']}/{targets['protein']}g)")
+        elif targets.get("ramp"):
+            r = targets["ramp"]
+            numbers = (f"ur at about {r['from_intake']} cal now, so {targets['calories']} cal and "
+                       f"{targets['protein']}g protein a day to start — ur stats say more like {r['full_calories']} "
+                       f"and {r['full_protein']}g eventually, we step up to it as the scale moves")
         else:
             numbers = f"so {targets['calories']} cal and {targets['protein']}g protein a day to start"
-        one = f"{first}. {numbers}, we adjust in a few weeks. {SUMMARY_CLOSER_SHORT}"
+        tail = "" if targets.get("ramp") and not clamp_note else ", we adjust in a few weeks"
+        one = f"{first}. {numbers}{tail}. {SUMMARY_CLOSER_SHORT}"
         if getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True):
             one += f". {SUMMARY_FOOD_CLAUSE}"      # the rundown is gone: the core loop rides here
         return one + (f"\n{link}" if link else "")
@@ -1125,6 +1173,11 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
     elif getattr(user, "targets_source", None) == "user" and user.calorie_target and user.protein_target:
         numbers = (f"{user.calorie_target} cal and {user.protein_target}g protein a day, ur pick "
                    f"(i'd have said {targets['calories']}/{targets['protein']}g)")
+    elif targets.get("ramp"):
+        r = targets["ramp"]
+        numbers = (f"ur at about {r['from_intake']} cal now, so im thinking {targets['calories']} cal and "
+                   f"{targets['protein']}g protein a day to start — ur stats say more like {r['full_calories']} "
+                   f"eventually, we step up to it")
     else:
         numbers = f"im thinking {targets['calories']} cal and {targets['protein']}g protein a day"
     second = (f"{numbers}. we run this for the first few weeks and adjust off how ur feeling and whether "
@@ -1320,6 +1373,7 @@ PLAIN_ASKS = {
     "current_split": "what split u run and which days u hit what",
     "split_days": "what u hit each day",
     "cooking_situation": "if u cook most nights or it's dining hall",
+    "current_intake": "roughly how many cals u eat in a normal day now (a guess is fine, so is 'no idea')",
     "diet": "anything u don't eat",
     "injuries": "anything that hurts or u gotta work around",
     "wake_sleep": "roughly when ur up and when u crash",
@@ -2392,7 +2446,7 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
         still = [f[0] for f in _get_missing_fields(user_row)]
         logger.info(f"Onboarding complete for {user_row.name} — {targets['calories']} cal, {targets['protein']}g protein, "
                     f"bmr={targets['bmr']} ({targets.get('bmr_formula', 'mifflin')}), tdee={targets['tdee']}, "
-                    f"goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, "
+                    f"goal_pct={targets.get('goal_pct')}, limits={targets.get('goal_limits')}, ramp={targets.get('ramp')}, "
                     f"source={user_row.targets_source}, branch={user_row.coaching_branch}, "
                     f"turns={_coach_turns(user_row.id)}, minutes={minutes}, learned_later={still}")
 
