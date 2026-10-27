@@ -1696,11 +1696,39 @@ _Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|a
                         r"wyd|wya|whats|when's)\b", re.I)
 
 
+# A question lead INSIDE the closing sentence, after a clause break and no "?" — how the
+# coach actually asks: "im assuming ur a berkeley student, what major and any part time job";
+# "i get that ur sleep is all over the place, but on most nights roughly when do u crash".
+# Live 2026-10-27 (user 77): neither counted as a question, so the always-ask backstop glued
+# "also, what u do (im assuming berkeley student — what major, any part time job)?" onto the
+# first and "also, roughly when ur up and when u crash?" onto the second — the user read each
+# question twice. Only the LAST sentence is read this way (that is where the ask lives; a
+# mid-reply statement must not become a "question" for the duplicate-topic guard), and a
+# clause that reports what they TOLD us ("weights are off what u told me") is not an ask.
+_Q_EMBED_RE = re.compile(
+    r"(?:[,;:—–]|\b(?:but|so|and|also|anyway|alr|ok|okay))\s+(?:[\w'’]+\s+){0,5}?"
+    r"(?:(?:what|when|where|which|how|who|whats|when's|wyd)\s+[\w'’]+"          # a wh-word + anything
+    r"|(?:do|does|did|r|are|is|can|could|would|got)\s+(?:u|you|ur|your|it|that|there|any))\b",   # an aux + a pronoun
+    re.I)
+_Q_REPORTED_RE = re.compile(r"\b(?:told|said|mentioned|gave|texted|sent|wrote|meant|means)\b", re.I)
+
+
+def _is_question_sentence(p: str, *, last: bool = False) -> bool:
+    """A '?', a question lead, an 'or' choice — or (closing sentence only) an embedded lead."""
+    if "?" in p or _Q_LEAD_RE.match(p) or re.search(r"\bor\b", p):
+        return True
+    if last and getattr(config, "ONBOARDING_EMBEDDED_QUESTION_ENABLED", True):
+        m = _Q_EMBED_RE.search(p)
+        return bool(m) and not _Q_REPORTED_RE.search(p[m.start():])
+    return False
+
+
 def _question_part(text: str) -> str:
     """The question in a coach text: the sentences with a '?' or a question lead
-    ("do u…", "what…", "u cooking or…"); '' when it asks nothing. Pure."""
+    ("do u…", "what…", "u cooking or…"), plus a lead embedded in the closing sentence
+    (see _Q_EMBED_RE); '' when it asks nothing. Pure."""
     parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text or "") if p.strip()]
-    qs = [p for p in parts if "?" in p or _Q_LEAD_RE.match(p) or re.search(r"\bor\b", p)]
+    qs = [p for i, p in enumerate(parts) if _is_question_sentence(p, last=(i == len(parts) - 1))]
     return " ".join(qs)
 
 
@@ -1793,7 +1821,7 @@ def strip_questions(text: str) -> str:
     """The coach text with its question sentences removed (the reaction stays); '' when
     the whole text was the question."""
     parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text or "") if p.strip()]
-    keep = [p for p in parts if not ("?" in p or _Q_LEAD_RE.match(p) or re.search(r"\bor\b", p))]
+    keep = [p for i, p in enumerate(parts) if not _is_question_sentence(p, last=(i == len(parts) - 1))]
     # a trailing "so food —" style lead-in is part of the question
     keep = [p for p in keep if not re.match(r"^(so|and|anyway|also|oh and)\b[^.!?]{0,12}[—:-]\s*$", p, re.I)]
     return " ".join(keep).strip()
