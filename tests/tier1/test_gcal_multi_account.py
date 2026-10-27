@@ -117,7 +117,7 @@ def test_sync_covers_every_connected_row_with_its_own_state(db, monkeypatch):
     monkeypatch.setattr(gcal, "list_events", _events)
 
     r = gcal_sync.sync_user(u.id)
-    assert r == {"upserted": 2, "deleted": 0, "accounts": 2}
+    assert r == {"upserted": 2, "deleted": 0, "pruned": 0, "accounts": 2}
     assert [t for t, _c, _s in seen] == ["TOK1", "TOK2"]
     from models import get_session, Event
     s = get_session()

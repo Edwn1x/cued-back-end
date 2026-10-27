@@ -205,7 +205,7 @@ def test_list_calendars_failure_falls_back_to_primary(db, monkeypatch):
     monkeypatch.setattr(gcal, "list_events", _list_events)
 
     res = gcal_sync.sync_user(user.id)
-    assert res == {"upserted": 1, "deleted": 0, "accounts": 1}   # accounts: every connected Google login synced
+    assert res == {"upserted": 1, "deleted": 0, "pruned": 0, "accounts": 1}   # accounts: every connected Google login synced
     assert asked == ["primary"]
     assert "ochem midterm" in {e.title for e in upcoming_events(user.id, days=60)}
 

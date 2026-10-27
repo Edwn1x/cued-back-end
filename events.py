@@ -206,19 +206,26 @@ def upsert_external_events(user_id: int, *, source: str, rows: list[dict]) -> di
         session.close()
 
 
-def prune_external_events(user_id: int, *, source: str, keep: set, lo, hi, now=None) -> int:
+def prune_external_events(user_id: int, *, source: str, keep: set, lo, hi, now=None,
+                          external_prefix: str | None = None) -> int:
     """Soft-delete every active `source` event in [lo, hi) whose external_id is not in
     `keep` — the event dropped out of the feed (deleted / unpublished / superseded by
-    a richer source). Only inside the window the caller actually re-pulled: rows
-    outside it were never re-fetched, so their absence means nothing."""
+    a richer source / MOVED to another calendar). Only inside the window the caller
+    actually re-pulled: rows outside it were never re-fetched, so their absence means
+    nothing. `external_prefix` narrows to one calendar's rows ('<calendar_id>:') — a
+    gcal pull is per calendar, so another calendar's rows must not be judged by it."""
     from models import get_session
     n = now or datetime.now(timezone.utc).replace(tzinfo=None)
     session = get_session()
     try:
-        rows = (session.query(Event)
-                .filter(Event.user_id == user_id, Event.source == source,
-                        Event.deleted_at.is_(None),
-                        Event.occurred_at >= lo, Event.occurred_at < hi).all())
+        q = (session.query(Event)
+             .filter(Event.user_id == user_id, Event.source == source,
+                     Event.deleted_at.is_(None),
+                     Event.occurred_at >= lo, Event.occurred_at < hi))
+        if external_prefix:
+            esc = external_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            q = q.filter(Event.external_id.like(f"{esc}%", escape="\\"))
+        rows = q.all()
         count = 0
         for ev in rows:
             if ev.external_id not in keep:
