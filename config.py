@@ -1312,6 +1312,10 @@ PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED = os.getenv("PAST_REPORT_SKIPS_PLANNED_CA
 # "No… It's Tuesday lunch" is flagged to the coach as a CORRECTION to act on, never [silent].
 AT_GYM_SKIPS_PAST_REPORT_ENABLED = os.getenv("AT_GYM_SKIPS_PAST_REPORT_ENABLED", "true").lower() == "true"
 CONTINUATION_CORRECTION_HINT_ENABLED = os.getenv("CONTINUATION_CORRECTION_HINT_ENABLED", "true").lower() == "true"
+# The brief's "those days work?" takes a bare yes/no only while the brief is still the newest asking
+# outbound AND the text is one short clause; a list of days / a swap keeps the 48h window (live
+# 2026-10-27, user 77: "Ok. Also as a heads up, I will be dropping Eleng 105…" 47 min later → "locked in").
+PROGRAM_DAYS_REPLY_BOUNDS_ENABLED = os.getenv("PROGRAM_DAYS_REPLY_BOUNDS_ENABLED", "true").lower() == "true"
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"
