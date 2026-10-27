@@ -584,6 +584,11 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code_entered VARCHAR(32)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)",
     "CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users (referred_by_user_id)",
+    # Repeating-event awareness (calendar series delete/move, 2026-10-27): the Google
+    # master id for every synced instance. Rows synced before this are backfilled from the
+    # instance id ('<master>_<UTC start>') by agent_tools._series_id_of until a full resync.
+    "ALTER TABLE events ADD COLUMN IF NOT EXISTS series_id VARCHAR(200)",
+    "CREATE INDEX IF NOT EXISTS idx_events_series ON events (user_id, series_id)",
 ]
 
 def wait_for_db(retries=10, delay=3):

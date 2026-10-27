@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode, quote
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -276,25 +277,47 @@ def _rfc3339_utc(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _time_nodes(start_dt: datetime, end_dt: datetime, *, all_day: bool, tz: str | None,
+                recurring: bool) -> tuple[dict, dict]:
+    """Google start/end nodes. All-day = {date} with an EXCLUSIVE end date. A repeating
+    event MUST carry timeZone on both nodes (Google rejects it otherwise, and the series
+    has to follow the user's wall clock across DST — 5pm stays 5pm in November). One-off
+    timed events keep the plain UTC 'Z' form."""
+    if all_day:
+        s = start_dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz)).date() if tz else start_dt.date()
+        e = end_dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz)).date() if tz else end_dt.date()
+        if e <= s:
+            e = s + timedelta(days=1)
+        return {"date": s.isoformat()}, {"date": e.isoformat()}
+    if recurring and tz:
+        z = ZoneInfo(tz)
+        return ({"dateTime": start_dt.replace(tzinfo=timezone.utc).astimezone(z).isoformat(), "timeZone": tz},
+                {"dateTime": end_dt.replace(tzinfo=timezone.utc).astimezone(z).isoformat(), "timeZone": tz})
+    return {"dateTime": _rfc3339_utc(start_dt)}, {"dateTime": _rfc3339_utc(end_dt)}
+
+
 def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetime,
-                 description: str | None = None) -> dict:
-    """Create ONE timed event on the user's PRIMARY calendar (events.insert). Updates
-    and deletes of existing events go through update_event / delete_event below — each
-    touches exactly one event the coach resolved from the local mirror and the user
-    confirmed.
+                 description: str | None = None, *, all_day: bool = False, tz: str | None = None,
+                 recurrence: list[str] | None = None, location: str | None = None) -> dict:
+    """Create ONE event on the user's PRIMARY calendar (events.insert): timed or all-day,
+    one-off or repeating (`recurrence` = RRULE lines, e.g. ['RRULE:FREQ=WEEKLY;BYDAY=MO,WE']
+    — start_dt is then the FIRST occurrence). Updates and deletes of existing events go
+    through update_event / delete_event below — each touches exactly one event (or one
+    whole series) the coach resolved from the local mirror and the user confirmed.
 
     Raises NotConnected if the user has no usable token, WriteAccessDenied on a 403/
     insufficient-scope (readonly grant). Returns the created event JSON (with `id`)."""
     token = base.get_valid_access_token(user_id, "gcal")
     if not token:
         raise NotConnected(user_id)
-    body = {
-        "summary": summary,
-        "start": {"dateTime": _rfc3339_utc(start_dt)},
-        "end": {"dateTime": _rfc3339_utc(end_dt)},
-    }
+    start_node, end_node = _time_nodes(start_dt, end_dt, all_day=all_day, tz=tz, recurring=bool(recurrence))
+    body = {"summary": summary, "start": start_node, "end": end_node}
     if description:
         body["description"] = description
+    if location:
+        body["location"] = location
+    if recurrence:
+        body["recurrence"] = list(recurrence)
     r = requests.post(f"{CAL_API}/calendars/primary/events",
                       headers={"Authorization": f"Bearer {token}"},
                       json=body, timeout=_timeout())
@@ -305,6 +328,38 @@ def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetim
         raise WriteAccessDenied(r.status_code)
     r.raise_for_status()
     return r.json()
+
+
+def get_event(user_id: int, calendar_id: str, event_id: str, *, integration_id: int | None = None) -> dict:
+    """events.get — used to read a repeating event's MASTER (its first-occurrence start and
+    its RRULE) before a series move. Raises NotConnected / EventGone / WriteAccessDenied."""
+    token = _write_token(user_id, integration_id)
+    r = requests.get(_event_url(calendar_id, event_id),
+                     headers={"Authorization": f"Bearer {token}"}, timeout=_timeout())
+    _raise_for_write(user_id, "GET", r)
+    return r.json()
+
+
+def list_instances(user_id: int, calendar_id: str, master_id: str, *, time_min: str, time_max: str,
+                   integration_id: int | None = None) -> list[dict]:
+    """events.instances — the REAL expanded occurrences of a repeating event in a window,
+    with the exact ids the 30-min sync will see ('<master>_<UTC start>'). The coach's
+    series writes mirror from this instead of expanding RRULEs locally, so a later sync
+    updates the same rows rather than adding copies."""
+    token = _write_token(user_id, integration_id)
+    out, page = [], None
+    while True:
+        params = {"maxResults": 250, "timeMin": time_min, "timeMax": time_max, "showDeleted": False}
+        if page:
+            params["pageToken"] = page
+        r = requests.get(f"{_event_url(calendar_id, master_id)}/instances",
+                         headers={"Authorization": f"Bearer {token}"}, params=params, timeout=_timeout())
+        _raise_for_write(user_id, "INSTANCES", r)
+        body = r.json()
+        out.extend(body.get("items", []))
+        page = body.get("nextPageToken")
+        if not page or len(out) >= 500:
+            return out
 
 
 def _event_url(calendar_id: str, event_id: str) -> str:
@@ -333,21 +388,29 @@ def _raise_for_write(user_id: int, verb: str, r) -> None:
 
 def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str | None = None,
                  start_dt: datetime | None = None, end_dt: datetime | None = None,
-                 description: str | None = None, integration_id: int | None = None) -> dict:
+                 description: str | None = None, integration_id: int | None = None,
+                 all_day: bool = False, tz: str | None = None, recurrence: list[str] | None = None,
+                 location: str | None = None) -> dict:
     """PATCH one existing event (events.patch): only the fields given change. Start and
     end are sent together (a moved start with the old end would make Google reject or
-    silently stretch it). Raises NotConnected / WriteAccessDenied (readonly grant) /
+    silently stretch it). Patching a repeating event's MASTER id (with tz + its recurrence)
+    moves every occurrence. Raises NotConnected / WriteAccessDenied (readonly grant) /
     WriteForbidden (not editable by this user) / EventGone (404). Returns the event JSON."""
     token = _write_token(user_id, integration_id)
     body: dict = {}
     if summary is not None:
         body["summary"] = summary
-    if start_dt is not None:
-        body["start"] = {"dateTime": _rfc3339_utc(start_dt)}
-    if end_dt is not None:
-        body["end"] = {"dateTime": _rfc3339_utc(end_dt)}
+    if start_dt is not None and end_dt is not None:
+        body["start"], body["end"] = _time_nodes(start_dt, end_dt, all_day=all_day, tz=tz,
+                                                 recurring=bool(recurrence) or bool(tz))
+    elif start_dt is not None or end_dt is not None:
+        raise ValueError("start_dt and end_dt go together")
     if description is not None:
         body["description"] = description
+    if location is not None:
+        body["location"] = location
+    if recurrence is not None:
+        body["recurrence"] = list(recurrence)
     if not body:
         raise ValueError("nothing to update")
     r = requests.patch(_event_url(calendar_id, event_id),
