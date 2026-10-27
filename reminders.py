@@ -498,7 +498,7 @@ def rearm_bailed_gym_reminders(now: datetime | None = None) -> int:
     return created
 
 
-def _interval_gate_reason(user, now: datetime) -> str | None:
+def _interval_gate_reason(user, now: datetime, session=None) -> str | None:
     """Quiet-hours / calendar-block gate for interval (water) reminders — the SAME gates
     the heartbeat applies to proactive nudges (spec §1.3). Interval rows are the coach's
     own rhythm pings, not an explicit "remind me at HH:MM" the user asked for, so a 3am
@@ -508,7 +508,11 @@ def _interval_gate_reason(user, now: datetime) -> str | None:
         return None
     try:
         from heartbeat import _in_standing_quiet_hours
-        if _in_standing_quiet_hours(user, now=now):
+        # `session` lets the layered wake model see TODAY's observed wake (a text, a tapback,
+        # a card open). Without it the window ends at the stated wake+15, so a slot anchored on
+        # the wake minute is quiet every day (live 2026-10-27: the founder texted at 11:01, the
+        # 12:30 water slot — his stated wake — was gated as quiet_hours and pushed to 14:30).
+        if _in_standing_quiet_hours(user, now=now, session=session):
             return "quiet_hours"
     except Exception as e:  # noqa: BLE001 — a gate import/eval failure must never drop the ping
         logger.warning("INTERVAL_GATE_QUIET_FAILED user=%s err=%s", getattr(user, "id", None), e)
@@ -547,7 +551,7 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
         if row.every_hours:
-            reason = _interval_gate_reason(user, now)
+            reason = _interval_gate_reason(user, now, session=session)
             if reason:
                 nxt = _next_for_row(user, row, tz, after=now)
                 row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
