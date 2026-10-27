@@ -1975,11 +1975,13 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import SCHEDULE_RUNDOWN_TOOL
         tools.append(SCHEDULE_RUNDOWN_TOOL)
     if config.CALENDAR_WRITE_ENABLED:
-        # Create-only Google Calendar write-back. OFF by default — needs the write scope
-        # on the consent screen + a user re-consent (readonly grants 403 on insert, which
-        # the tool surfaces as an honest reconnect prompt).
-        from agent_tools import CREATE_CALENDAR_EVENT_TOOL
-        tools.append(CREATE_CALENDAR_EVENT_TOOL)
+        # Google Calendar write-back: create / move / delete, each confirm-gated in code.
+        # OFF by default — needs the write scope on the consent screen + a user re-consent
+        # (readonly grants 403 on a write, which the tools surface as an honest reconnect
+        # prompt). Delete/move only reach events the user can see in context (by [id N]
+        # or title) — the model never passes a raw Google id.
+        from agent_tools import CREATE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL
+        tools.extend([CREATE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL])
     if config.REMINDERS_ENABLED:
         from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL, set_reminder_tool  # noqa: F401
         # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance

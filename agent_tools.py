@@ -4187,8 +4187,8 @@ CREATE_CALENDAR_EVENT_TOOL = {
     "description": (
         "ADD a new event to the user's connected Google Calendar — block a gym session, "
         "a study block, a meal-prep slot ('block a lift at 4pm', 'add a study block 2-4pm "
-        "before the exam'). CREATE-ONLY: you can add net-new events, you CANNOT move or "
-        "delete anything already on their calendar. ALWAYS confirm first: reflect back "
+        "before the exam'). For something already on the calendar use move_calendar_event "
+        "(new time / new title) or delete_calendar_event instead. ALWAYS confirm first: reflect back "
         "exactly what you'll add (title + day + time, WITH am/pm) and get a yes BEFORE "
         "writing — call this with confirmed=false (or omitted) to stage it, then call again "
         "with confirmed=true in the NEXT turn once they've said yes. Code enforces this: a "
@@ -4217,10 +4217,168 @@ CREATE_CALENDAR_EVENT_TOOL = {
     },
 }
 
+_FIND_EVENT_PROPS = {
+    "event_id": {"type": "integer",
+                 "description": "the [id N] shown next to the event in UPCOMING EVENTS / TODAY'S EVENTS — "
+                                "use it when you have it; it's exact"},
+    "query": {"type": "string",
+              "description": "otherwise a keyword from the event's title ('gym', 'study block', 'dentist')"},
+    "date": {"type": "string",
+             "description": "narrow a title match to one local day: 'today', 'tomorrow', or 'YYYY-MM-DD' "
+                            "(a recurring class matches many days without it)"},
+}
+
+DELETE_CALENDAR_EVENT_TOOL = {
+    "name": "delete_calendar_event",
+    "description": (
+        "DELETE one event from the user's connected Google Calendar ('take the gym block off', "
+        "'delete tomorrow's study session', 'cancel that'). Find it by event_id (the [id N] in your "
+        "context) or by a title keyword + date. Deletes exactly ONE event; if several match it "
+        "lists them and you ask which. ALWAYS confirm first: reflect back exactly which event "
+        "(title + day + time, WITH am/pm) and get a yes BEFORE deleting — call with "
+        "confirmed=false (or omitted) to stage it, then confirmed=true in the NEXT turn once "
+        "they've said yes. Code refuses a confirm with nothing staged or in the same turn. "
+        "A bCourses/Canvas deadline can't be deleted from here (it isn't theirs to delete); "
+        "something you logged on your own radar (log_event) is just taken off the radar. "
+        "If the result says the connection is read-only or the event isn't theirs to edit, "
+        "relay that honestly — never say it's gone when it isn't."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            **_FIND_EVENT_PROPS,
+            "confirmed": {"type": "boolean",
+                          "description": "false/omitted = stage it and confirm with the user first; "
+                                         "true = they've agreed, actually delete it"},
+        },
+    },
+}
+
+MOVE_CALENDAR_EVENT_TOOL = {
+    "name": "move_calendar_event",
+    "description": (
+        "MOVE or RENAME one existing event on the user's connected Google Calendar ('push my "
+        "gym block to 5', 'move the study session to tomorrow 2-4', 'rename it to legs'). Find "
+        "it by event_id (the [id N] in your context) or by a title keyword + date, then give the "
+        "new time and/or title. Changes exactly ONE event; if several match it lists them and you "
+        "ask which. ALWAYS confirm first: reflect back the old → new (day + time, WITH am/pm) and "
+        "get a yes BEFORE writing — call with confirmed=false (or omitted) to stage it, then "
+        "confirmed=true in the NEXT turn once they've said yes. Code refuses a confirm with "
+        "nothing staged or in the same turn. A bare hour ('to 5') is ambiguous — ask am or pm. "
+        "Times are LOCAL, 24-hour 'HH:MM'. A bCourses/Canvas deadline can't be moved from here. "
+        "If the result says the connection is read-only or the event isn't theirs to edit, relay "
+        "that honestly — never say it moved when it didn't."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            **_FIND_EVENT_PROPS,
+            "new_date": {"type": "string",
+                         "description": "the new local day: 'today', 'tomorrow', or 'YYYY-MM-DD' "
+                                        "(omit to keep the event's day)"},
+            "new_starts_at": {"type": "string", "description": "new local start 'HH:MM' (24h); omit to keep"},
+            "new_ends_at": {"type": "string", "description": "new local end 'HH:MM' (24h); omit to keep the length"},
+            "duration_minutes": {"type": "integer", "description": "new length in minutes (alternative to new_ends_at)"},
+            "new_summary": {"type": "string", "description": "new title; omit to keep"},
+            "confirmed": {"type": "boolean",
+                          "description": "false/omitted = stage it and confirm with the user first; "
+                                         "true = they've agreed, actually change it"},
+        },
+    },
+}
+
+
+def _calendar_user_tz(user_id: int) -> tuple[str, ZoneInfo]:
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        tz_str = (user.user_timezone if user else None) or "America/Los_Angeles"
+    finally:
+        session.close()
+    try:
+        return tz_str, ZoneInfo(tz_str)
+    except Exception:
+        return "America/Los_Angeles", ZoneInfo("America/Los_Angeles")
+
+
+def _ampm(dt_local) -> str:
+    return dt_local.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm")
+
+
+def _when_local(start_utc, end_utc, tz, *, all_day: bool = False) -> str:
+    """'Tue Oct 27 4:00pm–5:00pm' — the reflect-back string every calendar write uses."""
+    s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    if all_day:
+        return s_loc.strftime("%a %b %-d") + " (all day)"
+    out = s_loc.strftime("%a %b %-d ") + _ampm(s_loc)
+    if end_utc:
+        out += "–" + _ampm(end_utc.replace(tzinfo=timezone.utc).astimezone(tz))
+    return out
+
+
+def _bare_hour_hint(start_utc, tz) -> str:
+    s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    if 1 <= s_loc.hour % 12 <= 11 and s_loc.minute == 0:
+        return (" If they only said a bare hour (no am/pm), ask which — "
+                f"\"{s_loc.strftime('%-I')}am or {s_loc.strftime('%-I')}pm?\" — don't assume.")
+    return ""
+
+
+def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, verb: str,
+                  tool: str, reflect: str, match_keys: tuple, hint: str = "") -> str | None:
+    """Confirm-before-write, enforced in CODE (live 2026-10-02: the model called create with
+    confirmed=true on the first go and wrote an 8am block for a bare "8" said at 4am; the
+    user meant 8pm). The staged proposal is persisted on the user; confirmed=true is honoured
+    only when it matches that proposal (same kind + match_keys) AND arrives in a later turn
+    (a different inbound message id) — i.e. the user has actually seen the reflect-back and
+    replied. Returns None when the write may proceed, else the message to hand the model.
+    `verb` = 'created' / 'deleted' / 'moved' (past tense, for 'not <verb> yet')."""
+    proposal = dict(proposal)
+    proposal.setdefault("kind", "create")
+    proposal["turn"] = str(message_id) if message_id is not None else None
+    proposal["staged_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    if not confirmed:
+        _set_pending_calendar_event(user_id, proposal)
+        return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back "
+                f"(with am/pm), and once they say yes call {tool} again with confirmed=true in that "
+                f"next turn.{hint}")
+    pending = _get_pending_calendar_event(user_id)
+    if not pending:
+        _set_pending_calendar_event(user_id, proposal)
+        return (f"not {verb} — nothing was staged. reflect it back first: {reflect}. "
+                f"once they say yes, call again with confirmed=true.{hint}")
+    same = ((pending.get("kind") or "create") == proposal["kind"]
+            and all(pending.get(k) == proposal.get(k) for k in match_keys))
+    staged_at = _parse_iso(pending.get("staged_at"))
+    stale = staged_at is None or (datetime.now(timezone.utc).replace(tzinfo=None) - staged_at) > timedelta(hours=3)
+    if not same or stale:
+        _set_pending_calendar_event(user_id, proposal)
+        why = "the proposal changed" if not same else "the earlier one is stale"
+        return (f"not {verb} — {why}. reflect the new one back: {reflect}. "
+                f"once they say yes, call again with confirmed=true.{hint}")
+    if message_id is not None and pending.get("turn") == str(message_id):
+        return (f"not {verb} — you staged this in the SAME turn; the user hasn't seen it yet. "
+                f"reflect it back ({reflect}) and wait for their yes; confirm in the next turn.")
+    return None
+
+
+def _primary_calendar_key(user_id: int) -> str:
+    """The calendar id the sync layer keys this account's primary events under —
+    integration.external_id is the primary calendar's address (gcal._account_sub), so a
+    coach-created event mirrored as '<that>:<id>' is the SAME row the next sync updates.
+    'primary' only when the address is unknown (then the next sync adds its own copy)."""
+    from integrations import base as _base
+    session = get_session()
+    try:
+        integ = _base.get_integration(session, user_id, "gcal")
+        return (integ.external_id if integ and integ.external_id else None) or "primary"
+    finally:
+        session.close()
+
 
 def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Create a timed event on the user's PRIMARY Google Calendar (create-only) after an
-    explicit confirm, then mirror it into the local Event store so context/heartbeat see it
+    """Create a timed event on the user's PRIMARY Google Calendar after an explicit
+    confirm, then mirror it into the local Event store so context/heartbeat see it
     immediately. Honest degrade: not-connected and readonly-only (403) both return a clear
     signal, never a fake success."""
     from integrations import gcal
@@ -4233,13 +4391,7 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     if not starts_hhmm:
         return "error: starts_at required (local 'HH:MM')"
 
-    session = get_session()
-    try:
-        user = session.get(User, user_id)
-        tz_str = (user.user_timezone if user else None) or "America/Los_Angeles"
-    finally:
-        session.close()
-
+    tz_str, tz = _calendar_user_tz(user_id)
     start_utc = _parse_local_dt(tz_str, ti.get("date"), starts_hhmm)
     if start_utc is None:
         return "error: couldn't read the start time — give it as local 'HH:MM'"
@@ -4254,52 +4406,17 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     if end_utc <= start_utc:
         end_utc = start_utc + timedelta(minutes=60)
 
-    # Reflect-back window (local time) for the confirm string.
-    try:
-        tz = ZoneInfo(tz_str)
-    except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
-    s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
-    e_loc = end_utc.replace(tzinfo=timezone.utc).astimezone(tz)
-    when = (s_loc.strftime("%a %b %-d %-I:%M%p").replace("AM", "am").replace("PM", "pm")
-            + "–" + e_loc.strftime("%-I:%M%p").replace("AM", "am").replace("PM", "pm"))
-
-    # Confirm-before-write, enforced in CODE (live 2026-10-02: the model called this with
-    # confirmed=true on the first go and wrote an 8am block for a bare "8" said at 4am; the
-    # user meant 8pm). The staged proposal is persisted on the user; confirmed=true is
-    # honoured only when it matches that proposal AND arrives in a later turn (a different
-    # inbound message id) — i.e. the user has actually seen the reflect-back and replied.
+    when = _when_local(start_utc, end_utc, tz)
     desc = (ti.get("description") or "").strip() or None
-    proposal = {"summary": summary, "start_utc": start_utc.isoformat(), "end_utc": end_utc.isoformat(),
-                "description": desc, "when": when, "turn": str(message_id) if message_id is not None else None,
-                "staged_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
-    hour_hint = ""
-    if 1 <= s_loc.hour % 12 <= 11 and s_loc.minute == 0:
-        hour_hint = (" If they only said a bare hour (no am/pm), ask which — "
-                     f"\"{s_loc.strftime('%-I')}am or {s_loc.strftime('%-I')}pm?\" — don't assume.")
-    if not bool(ti.get("confirmed")):
-        _set_pending_calendar_event(user_id, proposal)
-        return (f"not created yet — confirm with the user first: adding '{summary}' {when} "
-                f"to their calendar. reflect that back (with am/pm), and once they say yes call "
-                f"create_calendar_event again with confirmed=true in that next turn.{hour_hint}")
-
-    pending = _get_pending_calendar_event(user_id)
-    if not pending:
-        _set_pending_calendar_event(user_id, proposal)
-        return (f"not created — nothing was staged. reflect it back first: adding '{summary}' {when}. "
-                f"once they say yes, call again with confirmed=true.{hour_hint}")
-    same = (pending.get("summary") == summary and pending.get("start_utc") == start_utc.isoformat()
-            and pending.get("end_utc") == end_utc.isoformat())
-    staged_at = _parse_iso(pending.get("staged_at"))
-    stale = staged_at is None or (datetime.now(timezone.utc).replace(tzinfo=None) - staged_at) > timedelta(hours=3)
-    if not same or stale:
-        _set_pending_calendar_event(user_id, proposal)
-        why = "the proposal changed" if not same else "the earlier one is stale"
-        return (f"not created — {why}. reflect the new one back: adding '{summary}' {when}. "
-                f"once they say yes, call again with confirmed=true.{hour_hint}")
-    if message_id is not None and pending.get("turn") == str(message_id):
-        return (f"not created — you staged this in the SAME turn; the user hasn't seen it yet. "
-                f"reflect it back ('{summary}' {when}) and wait for their yes; confirm in the next turn.")
+    proposal = {"kind": "create", "summary": summary, "start_utc": start_utc.isoformat(),
+                "end_utc": end_utc.isoformat(), "description": desc, "when": when}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="created", tool="create_calendar_event",
+                         reflect=f"adding '{summary}' {when} to their calendar",
+                         match_keys=("summary", "start_utc", "end_utc"),
+                         hint=_bare_hour_hint(start_utc, tz))
+    if gate:
+        return gate
 
     try:
         ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc)
@@ -4315,19 +4432,361 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
         logger.warning("CREATE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
         return f"error: couldn't add it to the calendar ({e}); tell them it didn't go through"
 
-    # Mirror into the local Event store keyed the SAME way gcal_sync keys primary events
-    # (source='gcal', external_id='primary:<id>'), so the next sync updates this row
-    # instead of duplicating it, and context/heartbeat see it right away.
+    # Mirror into the local Event store keyed the SAME way gcal_sync keys this account's
+    # primary-calendar events (source='gcal', external_id='<primary calendar id>:<id>'),
+    # so the next sync updates this row instead of adding a copy, and context/heartbeat
+    # see it right away.
     eid = ev.get("id")
     try:
         from events import upsert_external_event
-        upsert_external_event(user_id, source="gcal", external_id=f"primary:{eid}",
+        upsert_external_event(user_id, source="gcal", external_id=f"{_primary_calendar_key(user_id)}:{eid}",
                               title=summary, occurred_at=start_utc, ends_at=end_utc, all_day=False)
     except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
         logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
     _set_pending_calendar_event(user_id, None)
     logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s summary=%r when=%s", user_id, eid, summary[:40], when)
     return f"ok: added '{summary}' {when} to their google calendar"
+
+
+# ─── delete / move: resolve ONE event from the local mirror, confirm, write, re-mirror ──
+
+_EDITABLE_SOURCES = ("gcal", "model", "regex")   # bcourses/canvas items aren't theirs to edit
+
+
+def _find_calendar_events(user_id: int, ti: dict, tz: ZoneInfo) -> list:
+    """Candidates for a delete/move: by local Event id (exact), else a title keyword within
+    the next 60 days (today's remaining events included), optionally pinned to one local
+    day. Returns plain dicts (id, source, external_id, title, occurred_at, ends_at, all_day)
+    so no detached ORM rows leak out."""
+    from sqlalchemy import or_
+    from events import CALENDAR_SOURCES
+
+    def _row(e):
+        return {"id": e.id, "source": e.source, "external_id": e.external_id,
+                "title": (e.title or e.raw_text or e.event_type or "event").strip(),
+                "occurred_at": e.occurred_at, "ends_at": e.ends_at, "all_day": bool(getattr(e, "all_day", False))}
+
+    session = get_session()
+    try:
+        eid = ti.get("event_id")
+        if eid not in (None, "", 0):
+            try:
+                eid = int(eid)
+            except (TypeError, ValueError):
+                return []
+            e = active(session, Event, user_id=user_id).filter(Event.id == eid).one_or_none()
+            return [_row(e)] if e else []
+        query = (ti.get("query") or "").strip()
+        if not query:
+            return []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        qy = (active(session, Event, user_id=user_id)
+              .filter(Event.source.in_(CALENDAR_SOURCES),
+                      Event.occurred_at >= now - timedelta(hours=18),
+                      Event.occurred_at < now + timedelta(days=60)))
+        like = f"%{query}%"
+        qy = qy.filter(or_(Event.title.ilike(like), Event.raw_text.ilike(like)))
+        if (ti.get("date") or "").strip():
+            d = _resolve_local_date(tz, ti.get("date"))
+            lo = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+            qy = qy.filter(Event.occurred_at >= lo, Event.occurred_at < lo + timedelta(days=1))
+        out, seen_gids = [], set()
+        for e in qy.order_by(Event.occurred_at, Event.id).limit(16).all():
+            # One Google event can be mirrored twice ('<address>:<id>' from sync and
+            # 'primary:<id>' from an older coach create) — that's ONE candidate, not "which one?".
+            if e.source == "gcal":
+                gid = _split_external_id(e.external_id)[1]
+                if gid in seen_gids:
+                    continue
+                seen_gids.add(gid)
+            out.append(_row(e))
+            if len(out) >= 8:
+                break
+        return out
+    finally:
+        session.close()
+
+
+def _resolve_one_event(user_id: int, ti: dict, tz: ZoneInfo, *, verb: str):
+    """(event, None) when exactly one editable event matches; (None, message) otherwise."""
+    if not ti.get("event_id") and not (ti.get("query") or "").strip():
+        return None, "error: say which event — pass event_id (the [id N] in your context) or a title keyword in query"
+    rows = _find_calendar_events(user_id, ti, tz)
+    if not rows:
+        what = f"id {ti.get('event_id')}" if ti.get("event_id") else f"'{ti.get('query')}'"
+        if ti.get("date"):
+            what += f" on {ti.get('date')}"
+        return None, (f"no event matching {what} on their calendar (checked the full synced calendar). "
+                      "tell them you can't find it and ask what it's called / when it is — don't guess.")
+    if len(rows) > 1:
+        lines = "\n".join(f"[id {r['id']}] {r['title']} — {_when_local(r['occurred_at'], r['ends_at'], tz, all_day=r['all_day'])}"
+                          for r in rows)
+        return None, (f"several match — ask which one they mean, then call again with its event_id:\n{lines}")
+    ev = rows[0]
+    if ev["source"] not in _EDITABLE_SOURCES:
+        src = {"bcourses": "bCourses", "canvas": "Canvas"}.get(ev["source"], ev["source"])
+        return None, (f"can't be {verb} — '{ev['title']}' comes from {src} (a course deadline), not their "
+                      "google calendar; it isn't theirs to change. say so plainly.")
+    return ev, None
+
+
+def _gcal_rows(user_id: int) -> list[int]:
+    """Connected gcal integration row ids, primary first — a delete/move tries each account's
+    token when the event's calendar isn't on the primary account (second Google login)."""
+    from integrations import base as _base
+    session = get_session()
+    try:
+        return [r.id for r in _base.rows_for(session, user_id, "gcal") if r.status == "connected"]
+    finally:
+        session.close()
+
+
+def _split_external_id(external_id: str | None) -> tuple[str, str]:
+    """'<calendar_id>:<event_id>' → both halves. A Google event id has no ':' and a calendar
+    id can (it's an address, '#' and '@' but never ':') — so split on the LAST ':'."""
+    ext = external_id or ""
+    if ":" not in ext:
+        return "primary", ext
+    cal, _, evid = ext.rpartition(":")
+    return cal or "primary", evid
+
+
+def _soft_delete_local_event(user_id: int, event_id: int) -> None:
+    session = get_session()
+    try:
+        e = session.get(Event, event_id)
+        if e and e.user_id == user_id and e.deleted_at is None:
+            e.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            session.commit()
+    finally:
+        session.close()
+
+
+def _soft_delete_gcal_copies(user_id: int, google_event_id: str) -> int:
+    """Drop every local gcal row for this Google event id — the same event can be mirrored
+    under '<address>:<id>' (sync) and 'primary:<id>' (older coach creates)."""
+    if not google_event_id:
+        return 0
+    session = get_session()
+    try:
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source == "gcal", Event.external_id.like(f"%:{google_event_id}")).all())
+        n = datetime.now(timezone.utc).replace(tzinfo=None)
+        for e in rows:
+            if e.external_id.rpartition(":")[2] == google_event_id:
+                e.deleted_at = n
+        if rows:
+            session.commit()
+        return len(rows)
+    finally:
+        session.close()
+
+
+def _write_degrade(exc, *, verb: str) -> str | None:
+    """The honest message for a failed Google write, or None if `exc` isn't one of ours."""
+    from integrations import gcal
+    if isinstance(exc, gcal.NotConnected):
+        return (f"can't — no google calendar connected yet (nothing to {verb} on). offer to send the "
+                "connect link (send_connect_link).")
+    if isinstance(exc, gcal.WriteAccessDenied):
+        return (f"i can read your calendar but can't change it yet — the connection is read-only. "
+                f"tell them that honestly (\"reconnect and i can {verb} it\") and offer to re-send the "
+                f"connect link (send_connect_link). do NOT say it was {verb}d.")
+    if isinstance(exc, gcal.WriteForbidden):
+        return (f"google wouldn't let us {verb} that one — it's on a calendar they don't own or an event "
+                f"they were only invited to. tell them plainly it isn't theirs to {verb} from here; "
+                f"do NOT say it was {verb}d.")
+    return None
+
+
+def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Delete ONE event the user named, after an explicit confirm. gcal events are deleted on
+    Google and dropped from the local mirror; coach-logged radar items (log_event) are just
+    soft-deleted locally; bCourses/Canvas items are refused (not theirs)."""
+    from integrations import gcal
+
+    ti = tool_input or {}
+    _, tz = _calendar_user_tz(user_id)
+    ev, msg = _resolve_one_event(user_id, ti, tz, verb="deleted")
+    if msg:
+        return msg
+    when = _when_local(ev["occurred_at"], ev["ends_at"], tz, all_day=ev["all_day"])
+    on_google = ev["source"] == "gcal"
+    where = "their google calendar" if on_google else "your radar (something you logged, not their google calendar)"
+    proposal = {"kind": "delete", "event_id": ev["id"], "external_id": ev["external_id"], "title": ev["title"], "when": when}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="deleted", tool="delete_calendar_event",
+                         reflect=f"removing '{ev['title']}' ({when}) from {where}",
+                         match_keys=("event_id",))
+    if gate:
+        return gate
+
+    if on_google:
+        cal_id, gid = _split_external_id(ev["external_id"])
+        rows = _gcal_rows(user_id) or [None]
+        gone = False
+        for i, rid in enumerate(rows):
+            try:
+                gcal.delete_event(user_id, cal_id, gid, integration_id=rid)
+                break
+            except gcal.EventGone:
+                gone = True
+                if i + 1 < len(rows):
+                    continue          # maybe it lives on the other connected Google account
+                break                 # already gone everywhere we can see — treat as done
+            except Exception as e:  # noqa: BLE001 — a write failure must never read as success
+                degrade = _write_degrade(e, verb="delete")
+                if degrade:
+                    return degrade
+                logger.warning("DELETE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+                return f"error: couldn't delete it from the calendar ({e}); tell them it didn't go through"
+        _soft_delete_gcal_copies(user_id, gid)
+        _soft_delete_local_event(user_id, ev["id"])
+        _set_pending_calendar_event(user_id, None)
+        logger.info("DELETE_CALENDAR_EVENT user=%s gcal_id=%s title=%r when=%s already_gone=%s",
+                    user_id, gid, ev["title"][:40], when, gone)
+        if gone:
+            return (f"ok: '{ev['title']}' ({when}) was already gone from their google calendar — "
+                    "dropped it on my side too. say it's gone.")
+        return f"ok: deleted '{ev['title']}' ({when}) from their google calendar"
+
+    _soft_delete_local_event(user_id, ev["id"])
+    _set_pending_calendar_event(user_id, None)
+    logger.info("DELETE_RADAR_EVENT user=%s event=%s title=%r", user_id, ev["id"], ev["title"][:40])
+    return (f"ok: took '{ev['title']}' ({when}) off your radar. it was something you logged on your side, "
+            "not on their google calendar — say 'took it off my radar', not 'deleted from your calendar'.")
+
+
+def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Move (new day/time) and/or rename ONE event the user named, after an explicit confirm.
+    gcal events are PATCHed on Google and the local mirror updated in place; coach-logged
+    radar items are updated locally; bCourses/Canvas items are refused."""
+    from integrations import gcal
+
+    ti = tool_input or {}
+    tz_str, tz = _calendar_user_tz(user_id)
+    ev, msg = _resolve_one_event(user_id, ti, tz, verb="moved")
+    if msg:
+        return msg
+    if ev["all_day"] and (ti.get("new_starts_at") or ti.get("new_ends_at")):
+        return (f"can't give '{ev['title']}' a time — it's an all-day event. you can move it to another "
+                "day (new_date) or rename it; a timed copy would be a new event (create_calendar_event).")
+
+    new_summary = (ti.get("new_summary") or "").strip() or None
+    old_start, old_end = ev["occurred_at"], ev["ends_at"]
+    old_len = (old_end - old_start) if (old_end and old_end > old_start) else timedelta(minutes=60)
+    old_loc = old_start.replace(tzinfo=timezone.utc).astimezone(tz)
+
+    # New day: given, else the event's own day. New start: given, else keep the old clock time
+    # on the new day. New end: given, else duration_minutes, else keep the old length.
+    new_date = (ti.get("new_date") or "").strip() or old_loc.strftime("%Y-%m-%d")
+    if ev["all_day"]:
+        d = _resolve_local_date(tz, new_date)
+        new_start = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        new_end = new_start + old_len
+    else:
+        start_hhmm = ti.get("new_starts_at") or old_loc.strftime("%H:%M")
+        new_start = _parse_local_dt(tz_str, new_date, start_hhmm)
+        if new_start is None:
+            return "error: couldn't read the new start time — give it as local 'HH:MM'"
+        new_end = _parse_local_dt(tz_str, new_date, ti.get("new_ends_at"))
+        if new_end is None:
+            try:
+                dur = int(ti.get("duration_minutes") or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            new_end = new_start + (timedelta(minutes=max(5, min(dur, 24 * 60))) if dur else old_len)
+        if new_end <= new_start:
+            new_end = new_start + old_len
+
+    time_changed = (new_start != old_start) or (new_end != old_end)
+    title_changed = bool(new_summary) and new_summary != ev["title"]
+    if not time_changed and not title_changed:
+        return (f"nothing to change — '{ev['title']}' is already {_when_local(old_start, old_end, tz, all_day=ev['all_day'])}. "
+                "ask what they want different (new time, new day, or a new title).")
+
+    old_when = _when_local(old_start, old_end, tz, all_day=ev["all_day"])
+    new_when = _when_local(new_start, new_end, tz, all_day=ev["all_day"])
+    final_title = new_summary or ev["title"]
+    bits = []
+    if time_changed:
+        bits.append(f"from {old_when} to {new_when}")
+    if title_changed:
+        bits.append(f"renamed '{ev['title']}' → '{new_summary}'")
+    on_google = ev["source"] == "gcal"
+    reflect = f"moving '{ev['title']}' {' and '.join(bits)}" + ("" if on_google else " (on your radar, not their google calendar)")
+    proposal = {"kind": "move", "event_id": ev["id"], "external_id": ev["external_id"], "title": final_title,
+                "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(), "when": new_when}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="moved", tool="move_calendar_event", reflect=reflect,
+                         match_keys=("event_id", "title", "start_utc", "end_utc"),
+                         hint=_bare_hour_hint(new_start, tz) if (time_changed and not ev["all_day"]) else "")
+    if gate:
+        return gate
+
+    if on_google:
+        cal_id, gid = _split_external_id(ev["external_id"])
+        rows = _gcal_rows(user_id) or [None]
+        for i, rid in enumerate(rows):
+            try:
+                if ev["all_day"]:
+                    # all-day events carry {date}, not {dateTime}; patch the date pair directly
+                    _patch_all_day(gcal, user_id, cal_id, gid, new_start, new_end, tz, new_summary, rid)
+                else:
+                    gcal.update_event(user_id, cal_id, gid, summary=new_summary if title_changed else None,
+                                      start_dt=new_start if time_changed else None,
+                                      end_dt=new_end if time_changed else None, integration_id=rid)
+                break
+            except gcal.EventGone:
+                if i + 1 < len(rows):
+                    continue
+                _soft_delete_gcal_copies(user_id, gid)
+                _set_pending_calendar_event(user_id, None)
+                return (f"can't move '{ev['title']}' — it's no longer on their google calendar (deleted from "
+                        "the phone?). dropped it on my side. offer to add it fresh at the new time "
+                        "(create_calendar_event).")
+            except Exception as e:  # noqa: BLE001
+                degrade = _write_degrade(e, verb="move")
+                if degrade:
+                    return degrade
+                logger.warning("MOVE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+                return f"error: couldn't change it on the calendar ({e}); tell them it didn't go through"
+        logger.info("MOVE_CALENDAR_EVENT user=%s gcal_id=%s %r %s -> %s", user_id, gid, final_title[:40], old_when, new_when)
+
+    # Local mirror: update in place (same row id, same external_id) so context/heartbeat
+    # see the new time immediately and the next sync finds nothing to change.
+    session = get_session()
+    try:
+        e = session.get(Event, ev["id"])
+        if e and e.user_id == user_id:
+            e.title = final_title[:300]
+            e.raw_text = e.title
+            e.occurred_at, e.ends_at = new_start, new_end
+            session.commit()
+    finally:
+        session.close()
+    _set_pending_calendar_event(user_id, None)
+    if on_google:
+        return f"ok: '{final_title}' is now {new_when} on their google calendar"
+    return (f"ok: '{final_title}' is now {new_when} on your radar (something you logged, not their "
+            "google calendar — say 'moved it on my side').")
+
+
+def _patch_all_day(gcal, user_id, cal_id, gid, new_start, new_end, tz, new_summary, rid):
+    """All-day move: Google wants {date: YYYY-MM-DD} start + an EXCLUSIVE end date."""
+    import requests as _rq
+    token = gcal._write_token(user_id, rid)
+    s = new_start.replace(tzinfo=timezone.utc).astimezone(tz).date()
+    e = new_end.replace(tzinfo=timezone.utc).astimezone(tz).date()
+    if e <= s:
+        e = s + timedelta(days=1)
+    body = {"start": {"date": s.isoformat()}, "end": {"date": e.isoformat()}}
+    if new_summary:
+        body["summary"] = new_summary
+    r = _rq.patch(gcal._event_url(cal_id, gid), headers={"Authorization": f"Bearer {token}"},
+                  json=body, timeout=gcal._timeout())
+    gcal._raise_for_write(user_id, "UPDATE", r)
+    return r.json()
 
 
 def _parse_iso(s):
@@ -4362,6 +4821,8 @@ def _set_pending_calendar_event(user_id: int, proposal: dict | None) -> None:
 
 _HANDLERS = {
     "create_calendar_event": handle_create_calendar_event,
+    "delete_calendar_event": handle_delete_calendar_event,
+    "move_calendar_event": handle_move_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
     "get_referral_code": handle_get_referral_code,

@@ -12,7 +12,7 @@ refresh tokens die after 7 days (see `connect_offers.py` and the memory note
 | scope | used for | class |
 |---|---|---|
 | `calendar.calendarlist.readonly` | list the user's calendars (so secondary calendars sync) | sensitive |
-| `calendar.events` (read/write) — only while `CALENDAR_WRITE_ENABLED` | read upcoming events; create ONE event when the user asks ("put a gym block tmrw at 4") | sensitive |
+| `calendar.events` (read/write) — only while `CALENDAR_WRITE_ENABLED` | read upcoming events; create, move, or delete ONE event when the user asks ("put a gym block tmrw at 4", "push it to 5", "take it off") | sensitive |
 | `calendar.events.readonly` — only when write is off | read upcoming events | sensitive |
 | `googlehealth.activity_and_fitness.readonly` | steps, active minutes, calories | **restricted** |
 | `googlehealth.health_metrics_and_measurements.readonly` | resting HR, HRV, weight | **restricted** |
@@ -84,12 +84,18 @@ scope that lets us find which calendars to read. We request no calendar settings
 
 **calendar.events** — The coach reads the next 60 days of events to (1) schedule
 workouts in free windows, (2) avoid texting during classes and exams, and (3) plan meals
-and check-ins around deadlines. The write half is used for exactly one user-facing action:
-when the user asks the coach to put a training block on their calendar ("add gym tomorrow
-at 4"), the coach reflects it back, waits for a yes, and creates that single event on the
-primary calendar. We never modify or delete existing events. The narrower
-`calendar.events.readonly` cannot create events; `calendar.events.owned` would not read
-shared course calendars the user doesn't own.
+and check-ins around deadlines. The write half is used only on the user's explicit ask,
+one event at a time: "add gym tomorrow at 4" creates that single event on the primary
+calendar; "push my gym block to 5" or "take tomorrow's study session off" moves or deletes
+the one event the user named. In every case the coach reflects the exact change back, waits
+for a yes, and only then writes. The coach never edits an event the user didn't name, never
+bulk-edits, and never touches events on calendars the user can't edit. The narrower
+`calendar.events.readonly` cannot write; `calendar.events.owned` would not read shared
+course calendars the user doesn't own.
+
+(The justification submitted and approved on 2026-10-12 said "we never modify or delete
+existing events". Move/delete shipped after that under the same scope; if Google ever asks
+for an updated justification, the paragraph above is the current one.)
 
 (If asked about Google Health scopes before CASA is done, answer that they are in use only
 for test users and will be submitted separately with the security assessment.)
@@ -112,8 +118,10 @@ Record a phone screen (or a Mac Messages window) plus a browser. Show the app na
    read (this demonstrates read use). (30 s)
 5. Ask "put a gym block tomorrow at 4". Show the coach reflecting it back ("want me to
    add gym 4–5pm tomorrow?"), reply "yes", then open Google Calendar in the browser and
-   show the new event (this demonstrates the single write use). (45 s)
-6. Show that nothing else changed in the calendar (scroll the day). (10 s)
+   show the new event (this demonstrates the write use). (45 s)
+6. Show that nothing else changed in the calendar (scroll the day). Optional: "push it to
+   5" → coach reflects back "4–5pm → 5–6pm?", "yes", the event moves; "take it off" →
+   reflect-back, "yes", the event is gone. (10–40 s)
 7. Open https://cued.fit/privacy.html and scroll to **Google User Data** so the Limited
    Use paragraph is on screen. (15 s)
 8. Optional: in Messages, text "disconnect my calendar" and show the coach confirming,
