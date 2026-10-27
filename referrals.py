@@ -1,9 +1,11 @@
 """
 Referral codes (founder, 2026-10-27): a frat challenge — who can get the most sign-ups.
 
-- Every signed-up user has a code (users.referral_code): their first name + two digits
-  ("NAU42"), made the first time anything needs it (ensure_code) and for everyone at once
-  from the admin page (backfill). Only an account has one — there is nothing to hand out
+- Every signed-up user has a code (users.referral_code): their first name + four digits
+  ("NAU4821" — founder 2026-10-27: four, harder to guess or impersonate), made the first
+  time anything needs it (ensure_code) and for everyone at once from the admin page
+  (backfill). A code with fewer digits (the first hour's two-digit ones) is regenerated on
+  touch. Only an account has one — there is nothing to hand out
   before sign-up.
 - They get it by ASKING the coach ("what's my referral code") → the get_referral_code
   tool (agent_tools), which also returns how many sign-ups they've been credited with.
@@ -29,10 +31,11 @@ import config
 
 logger = logging.getLogger("cued.referrals")
 
-# A code is 2–10 letters then 2–3 digits ("NAU42"). normalize() forgives case, spaces and
-# dashes ("nau 42", "Nau-42"). Letters are ASCII only: the name part is normalised the
-# same way at generation time.
-_CODE_RE = re.compile(r"^([A-Za-z]{2,10})(\d{2,3})$")
+# A code is 2–10 letters then 4–5 digits ("NAU4821"). normalize() forgives case, spaces
+# and dashes ("nau 4821", "Nau-4821"). Letters are ASCII only: the name part is
+# normalised the same way at generation time.
+_CODE_RE = re.compile(r"^([A-Za-z]{2,10})(\d{4,5})$")
+_MIN_DIGITS = 4
 _FALLBACK_PREFIX = "CUED"
 _MAX_PREFIX = 8
 
@@ -53,8 +56,14 @@ def _prefix_from_name(name: str | None) -> str:
 
 
 def _candidate(prefix: str, attempt: int, rng: random.Random) -> str:
-    digits = rng.randint(10, 99) if attempt < 10 else rng.randint(100, 999)
+    digits = rng.randint(1000, 9999) if attempt < 20 else rng.randint(10000, 99999)
     return f"{prefix}{digits}"
+
+
+def _is_current(code: str | None) -> bool:
+    """True for a code in today's shape (>= 4 digits); the first hour's 2-digit codes aren't."""
+    m = re.match(r"^[A-Z]+(\d+)$", code or "")
+    return bool(m) and len(m.group(1)) >= _MIN_DIGITS
 
 
 def ensure_code(user_id: int, *, rng: random.Random | None = None) -> str | None:
@@ -68,8 +77,9 @@ def ensure_code(user_id: int, *, rng: random.Random | None = None) -> str | None
         user = session.get(User, user_id)
         if not user:
             return None
-        if user.referral_code:
+        if user.referral_code and _is_current(user.referral_code):
             return user.referral_code
+        old = user.referral_code
         prefix = _prefix_from_name(user.name)
         for attempt in range(40):
             code = _candidate(prefix, attempt, rng)
@@ -82,10 +92,11 @@ def ensure_code(user_id: int, *, rng: random.Random | None = None) -> str | None
             except IntegrityError:          # lost a race on the unique index — pick again
                 session.rollback()
                 user = session.get(User, user_id)
-                if user.referral_code:
+                if user.referral_code and _is_current(user.referral_code):
                     return user.referral_code
                 continue
-            logger.info("REFERRAL_CODE_SET user=%s code=%s attempt=%s", user_id, code, attempt)
+            logger.info("REFERRAL_CODE_SET user=%s code=%s attempt=%s%s", user_id, code, attempt,
+                        f" replaced={old}" if old else "")
             return code
         logger.error("REFERRAL_CODE_EXHAUSTED user=%s prefix=%s", user_id, prefix)
         return None
@@ -94,12 +105,13 @@ def ensure_code(user_id: int, *, rng: random.Random | None = None) -> str | None
 
 
 def backfill(limit: int = 500) -> int:
-    """Give every code-less user a code (idempotent; the admin page calls it on load)."""
+    """Give every code-less user a code, and a 4-digit one to anyone still on a 2-digit
+    code (idempotent; the admin page calls it on load)."""
     from models import get_session, User
     session = get_session()
     try:
-        ids = [r[0] for r in session.query(User.id).filter(User.referral_code.is_(None))
-               .order_by(User.id).limit(limit).all()]
+        ids = [r[0] for r in session.query(User.id, User.referral_code).order_by(User.id).all()
+               if not _is_current(r[1])][:limit]
     finally:
         session.close()
     done = 0
@@ -112,7 +124,7 @@ def backfill(limit: int = 500) -> int:
 
 
 def normalize(raw: str | None) -> str | None:
-    """"nau 42" / "Nau-42" / " NAU42 " → "NAU42"; anything not code-shaped → None."""
+    """"nau 4821" / "Nau-4821" / " NAU4821 " → "NAU4821"; anything not code-shaped → None."""
     cleaned = re.sub(r"[\s\-_.]", "", (raw or "")).strip()
     m = _CODE_RE.match(cleaned)
     if not m:

@@ -44,13 +44,13 @@ def _by_phone(db, phone):
 
 # ── codes ───────────────────────────────────────────────────────────────────
 
-def test_code_is_name_plus_two_digits_and_unique(db):
+def test_code_is_name_plus_four_digits_and_unique(db):
     import referrals
     a = make_user(db, name="Nau")
     b = make_user(db, name="Nau")
     ca = referrals.ensure_code(a.id, rng=random.Random(1))
     cb = referrals.ensure_code(b.id, rng=random.Random(1))      # same seed → same first pick → must dodge
-    assert ca.startswith("NAU") and ca[3:].isdigit() and len(ca) == 5
+    assert ca.startswith("NAU") and ca[3:].isdigit() and len(ca) == 7
     assert cb.startswith("NAU") and cb != ca
     assert referrals.ensure_code(a.id) == ca, "stable once set"
     assert referrals.lookup(ca.lower()) == (a.id, "Nau")
@@ -66,10 +66,11 @@ def test_code_prefix_falls_back_for_short_or_non_ascii_names(db):
 
 def test_normalize_forgives_case_spaces_and_dashes():
     import referrals
-    assert referrals.normalize("nau42") == "NAU42"
-    assert referrals.normalize(" Nau 42 ") == "NAU42"
-    assert referrals.normalize("NAU-42") == "NAU42"
-    assert referrals.normalize("nau_42.") == "NAU42"
+    assert referrals.normalize("nau4821") == "NAU4821"
+    assert referrals.normalize(" Nau 4821 ") == "NAU4821"
+    assert referrals.normalize("NAU-4821") == "NAU4821"
+    assert referrals.normalize("nau_4821.") == "NAU4821"
+    assert referrals.normalize("nau42") is None, "two digits is the retired shape"
     assert referrals.normalize("no") is None
     assert referrals.normalize("hey there") is None
     assert referrals.normalize("1234") is None
@@ -98,10 +99,10 @@ def test_signup_without_a_code_or_with_an_unknown_one_is_not_credited(db, client
     u = _by_phone(db, "+15105550198")
     assert u.referred_by_user_id is None and u.referral_code_entered is None
 
-    status, data = _signup(client, "+15105550197", referral_code="ZZZ99")
+    status, data = _signup(client, "+15105550197", referral_code="ZZZ9999")
     assert status == 200 and data["referral"] == {"credited": False, "referrer": None}
     u = _by_phone(db, "+15105550197")
-    assert u.referred_by_user_id is None and u.referral_code_entered == "ZZZ99", "kept for the 'but i typed it' check"
+    assert u.referred_by_user_id is None and u.referral_code_entered == "ZZZ9999", "kept for the 'but i typed it' check"
 
 
 def test_signup_code_is_capped_and_never_blocks(db, client):
@@ -118,7 +119,22 @@ def test_credit_signup_ignores_own_code_and_a_missing_user(db):
     assert r["credited"] is False and r["entered"] == own
     db.expire_all()
     assert db.get(type(me), me.id).referred_by_user_id is None
-    assert referrals.credit_signup(999999, "NAU42")["credited"] is False
+    assert referrals.credit_signup(999999, "NAU4821")["credited"] is False
+
+
+def test_a_two_digit_code_is_regenerated_on_touch_and_by_backfill(db):
+    import referrals
+    from models import User
+    a = make_user(db, name="Nau", referral_code="NAU42")
+    b = make_user(db, name="Sam", referral_code="SAM07")
+    c = make_user(db, name="Kim", referral_code="KIM4821")
+    new_a = referrals.ensure_code(a.id)
+    assert new_a != "NAU42" and new_a.startswith("NAU") and len(new_a) == 7
+    assert referrals.lookup("NAU42") is None, "the old shape no longer credits anyone"
+    assert referrals.backfill() == 1, "only Sam was left on the old shape"
+    db.expire_all()
+    assert len(db.get(User, b.id).referral_code) == 7
+    assert db.get(User, c.id).referral_code == "KIM4821", "a current code is left alone"
 
 
 def test_no_referral_question_in_the_text_thread(db, anthropic_stub, sms_capture):
@@ -190,13 +206,13 @@ def test_admin_referrals_page_ranks_referrers_and_backfills_codes(db, client):
         make_user(db, name=f"Kid{n}", referred_by_user_id=top.id, onboarding_step=3)
     make_user(db, name="KidD", referred_by_user_id=second.id, onboarding_step=2)
     lone = make_user(db, name="Lone")
-    make_user(db, name="Typo", referral_code_entered="NAU99")
+    make_user(db, name="Typo", referral_code_entered="NAU9999")
     r = client.get("/admin/referrals")
     assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert html.index(">Nau<") < html.index(">Sam<"), "most sign-ups first"
     assert "KidD</a> (in setup)" in html
-    assert "NAU99 (no match)" in html
+    assert "NAU9999 (no match)" in html
     db.expire_all()
     assert db.get(User, lone.id).referral_code, "the page backfills codes for everyone"
     board = referrals.leaderboard(db)
