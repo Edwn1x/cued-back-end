@@ -298,15 +298,18 @@ def _time_nodes(start_dt: datetime, end_dt: datetime, *, all_day: bool, tz: str 
 
 def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetime,
                  description: str | None = None, *, all_day: bool = False, tz: str | None = None,
-                 recurrence: list[str] | None = None, location: str | None = None) -> dict:
-    """Create ONE event on the user's PRIMARY calendar (events.insert): timed or all-day,
-    one-off or repeating (`recurrence` = RRULE lines, e.g. ['RRULE:FREQ=WEEKLY;BYDAY=MO,WE']
-    — start_dt is then the FIRST occurrence). Updates and deletes of existing events go
-    through update_event / delete_event below — each touches exactly one event (or one
-    whole series) the coach resolved from the local mirror and the user confirmed.
+                 recurrence: list[str] | None = None, location: str | None = None,
+                 calendar_id: str = "primary", color_id: str | None = None) -> dict:
+    """Create ONE event (events.insert) on `calendar_id` (default the primary; any calendar
+    the user can write to, picked by name in the tool): timed or all-day, one-off or repeating
+    (`recurrence` = RRULE/EXDATE lines — start_dt is then the FIRST occurrence), optional
+    Google colour (colorId 1–11). Updates and deletes of existing events go through
+    update_event / delete_event below — each touches exactly one event (or one whole series)
+    the coach resolved from the local mirror and the user confirmed.
 
     Raises NotConnected if the user has no usable token, WriteAccessDenied on a 403/
-    insufficient-scope (readonly grant). Returns the created event JSON (with `id`)."""
+    insufficient-scope (readonly grant), WriteForbidden when the calendar isn't writable.
+    Returns the created event JSON (with `id`)."""
     token = base.get_valid_access_token(user_id, "gcal")
     if not token:
         raise NotConnected(user_id)
@@ -318,15 +321,53 @@ def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetim
         body["location"] = location
     if recurrence:
         body["recurrence"] = list(recurrence)
-    r = requests.post(f"{CAL_API}/calendars/primary/events",
+    if color_id:
+        body["colorId"] = str(color_id)
+    r = requests.post(f"{CAL_API}/calendars/{quote(calendar_id or 'primary', safe='')}/events",
                       headers={"Authorization": f"Bearer {token}"},
                       json=body, timeout=_timeout())
     if r.status_code in (401, 403):
+        if calendar_id not in (None, "", "primary") and not _scope_problem(r):
+            logger.warning("GCAL_CREATE_EVENT_FORBIDDEN user=%s cal=%s", user_id, calendar_id)
+            raise WriteForbidden(r.status_code)
         # 403 insufficient permission (readonly grant) — and 401 with a valid token here
         # means the same missing-write-scope class of problem. Either way: reconnect.
         logger.warning("GCAL_CREATE_EVENT_DENIED user=%s status=%s", user_id, r.status_code)
         raise WriteAccessDenied(r.status_code)
     r.raise_for_status()
+    return r.json()
+
+
+def writable_calendars(user_id: int, *, integration_id: int | None = None) -> list[dict]:
+    """The user's calendars they can ADD to (calendarList, accessRole owner/writer), as
+    [{id, name, primary}]. Raises NotConnected; a calendarList 403 (events.readonly-only
+    grant) → just the primary."""
+    token = _write_token(user_id, integration_id)
+    try:
+        cals = list_calendars(token)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("GCAL_WRITABLE_CALENDARS_FAILED user=%s err=%s", user_id, e)
+        return [{"id": "primary", "name": "primary", "primary": True}]
+    out = []
+    for c in cals:
+        if c.get("accessRole") not in ("owner", "writer") or c.get("hidden"):
+            continue
+        out.append({"id": c.get("id"), "name": (c.get("summaryOverride") or c.get("summary") or c.get("id") or "").strip(),
+                    "primary": bool(c.get("primary"))})
+    out.sort(key=lambda c: (not c["primary"], c["name"].lower()))
+    return out
+
+
+def move_event_calendar(user_id: int, calendar_id: str, event_id: str, destination_id: str, *,
+                        integration_id: int | None = None) -> dict:
+    """events.move — put an existing event (or a repeating event's MASTER = the whole
+    series) on another of the user's calendars. The event keeps its id. Raises
+    NotConnected / WriteAccessDenied / WriteForbidden / EventGone."""
+    token = _write_token(user_id, integration_id)
+    r = requests.post(f"{_event_url(calendar_id, event_id)}/move",
+                      headers={"Authorization": f"Bearer {token}"},
+                      params={"destination": destination_id}, timeout=_timeout())
+    _raise_for_write(user_id, "MOVE", r)
     return r.json()
 
 
@@ -390,7 +431,7 @@ def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str 
                  start_dt: datetime | None = None, end_dt: datetime | None = None,
                  description: str | None = None, integration_id: int | None = None,
                  all_day: bool = False, tz: str | None = None, recurrence: list[str] | None = None,
-                 location: str | None = None) -> dict:
+                 location: str | None = None, color_id: str | None = None) -> dict:
     """PATCH one existing event (events.patch): only the fields given change. Start and
     end are sent together (a moved start with the old end would make Google reject or
     silently stretch it). Patching a repeating event's MASTER id (with tz + its recurrence)
@@ -411,6 +452,8 @@ def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str 
         body["location"] = location
     if recurrence is not None:
         body["recurrence"] = list(recurrence)
+    if color_id is not None:
+        body["colorId"] = str(color_id)
     if not body:
         raise ValueError("nothing to update")
     r = requests.patch(_event_url(calendar_id, event_id),
