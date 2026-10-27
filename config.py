@@ -1297,6 +1297,10 @@ TEEN_EER_OVERWEIGHT_ENABLED = os.getenv("TEEN_EER_OVERWEIGHT_ENABLED", "true").l
 TEN_HAAF_EXPERIENCE_GATE_ENABLED = os.getenv("TEN_HAAF_EXPERIENCE_GATE_ENABLED", "true").lower() == "true"
 TARGET_RAMP_ENABLED = os.getenv("TARGET_RAMP_ENABLED", "true").lower() == "true"
 INTAKE_ASK_ENABLED = os.getenv("INTAKE_ASK_ENABLED", "true").lower() == "true"   # the setup ask itself
+# A question the coach asks mid-sentence after a comma, no "?" ("…berkeley student, what major and
+# any part time job") counts as the reply's question, so the always-ask backstop doesn't glue a
+# second copy on (live 2026-10-27, user 77: two doubled asks in one setup).
+ONBOARDING_EMBEDDED_QUESTION_ENABLED = os.getenv("ONBOARDING_EMBEDDED_QUESTION_ENABLED", "true").lower() == "true"
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"
