@@ -573,13 +573,12 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS workout_times JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS program JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS training_decisions JSON",
-    # Referral codes (referrals.py, 2026-10-27): code per user, who referred them, the
-    # once-only onboarding ask. Codes are generated in Python (referrals.backfill /
+    # Referral codes (referrals.py, 2026-10-27): code per user, who referred them, what
+    # they typed on the site. Codes are generated in Python (referrals.backfill /
     # ensure_code), not here.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(16)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_user_id INTEGER",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_asked_at TIMESTAMP",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_resolved_at TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code_entered VARCHAR(32)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)",
     "CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users (referred_by_user_id)",
 ]

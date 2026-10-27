@@ -1872,6 +1872,22 @@ def _ensure_referral_code(user_id: int) -> None:
         logger.warning("REFERRAL_CODE_AT_SIGNUP_FAILED user=%s err=%s", user_id, e)
 
 
+def _credit_referral(user_id: int, raw_code: str | None) -> dict | None:
+    """The friend's code typed on the site's sign-up chat → referrals.credit_signup. Returns
+    the small dict the success screen can show ({"credited", "referrer"}) or None."""
+    if not raw_code:
+        return None
+    try:
+        import referrals
+        if not referrals.enabled():
+            return None
+        r = referrals.credit_signup(user_id, raw_code)
+        return {"credited": bool(r.get("credited")), "referrer": r.get("referrer_name")}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REFERRAL_CREDIT_AT_SIGNUP_FAILED user=%s err=%s", user_id, e)
+        return None
+
+
 @app.route("/signup", methods=["GET"])
 def signup_form():
     """Retired 2026-10-15: the backend no longer hosts a sign-up form. Old links land on
@@ -2254,6 +2270,7 @@ def waitlist_signup():
     raw_email = (data.get("email") or "").strip() or None
     source = (data.get("source") or "").strip()[:40] or None
     timezone_str = (data.get("timezone") or "America/Los_Angeles").strip()[:50]
+    referral_code = (str(data.get("referral_code") or "")).strip()[:32] or None   # a friend's code (referrals.py)
 
     # Validation
     if not name or len(name) > 100:
@@ -2370,6 +2387,7 @@ def waitlist_signup():
         session.commit()
         uid = user.id
         _ensure_referral_code(uid)
+        referral = _credit_referral(uid, referral_code)
         logger.info(
             "%s phone=%s name=%r source=%r email=%r goal=%r experience=%r form_stats=%s",
             "SIGNUP_LIVE_NEW" if live else "WAITLIST_NEW",
@@ -2405,7 +2423,7 @@ def waitlist_signup():
         logger.info("SIGNUP_LIVE_PROVISIONED user=%s imessage_link=%s hook_deferred=%s",
                     uid, "yes" if imessage_link else "no", hook_deferred)
         return jsonify({"status": "ok", "live": True, "imessage_link": imessage_link,
-                        "hook_deferred": hook_deferred}), 200
+                        "hook_deferred": hook_deferred, "referral": referral}), 200
     except Exception as e:
         logger.error(f"/waitlist error: {e}", exc_info=True)
         return jsonify({"status": "error",

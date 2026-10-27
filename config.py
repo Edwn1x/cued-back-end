@@ -635,12 +635,10 @@ RSF_POLL_MINUTES = int(os.getenv("RSF_POLL_MINUTES", "5"))
 # SEND_GYM_LINE_LINK_TOOL → gym_beats.send_line_link). The real capability behind
 # "here's the line link" so the coach never fakes the offer. Default ON.
 SEND_GYM_LINE_LINK_TOOL_ENABLED = os.getenv("SEND_GYM_LINE_LINK_TOOL_ENABLED", "true").lower() == "true"
-# Referral codes (referrals.py, founder 2026-10-27 — the frat sign-up challenge). Master
-# switch: the get_referral_code tool + the code line in the onboarding prompt + the
-# onboarding ask. REFERRAL_ASK_ENABLED alone turns off the last onboarding question
-# ("did a friend send u here?") while codes stay askable. Default ON.
+# Referral codes (referrals.py, founder 2026-10-27 — the frat sign-up challenge): the
+# get_referral_code tool, the code line in the onboarding prompt, and crediting the code a
+# new sign-up typed on the site (/waitlist). Default ON.
 REFERRALS_ENABLED = os.getenv("REFERRALS_ENABLED", "true").lower() == "true"
-REFERRAL_ASK_ENABLED = os.getenv("REFERRAL_ASK_ENABLED", "true").lower() == "true"
 # Live 2026-10-17 16:48 PT: the coach put a 👎 tapback on the founder's "I had to get here to
 # find out bruh". Meant as sympathy; on iMessage a thumbs-down on someone's complaint reads
 # as disagreeing with them. The tool refuses 'dislike' and asks for a line of text instead.

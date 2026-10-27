@@ -3,9 +3,9 @@ Referral codes (referrals.py, founder 2026-10-27 — the frat sign-up challenge)
 
 - Every account has a code (name + two digits), made at signup / on first need, unique.
 - The coach hands it out ONLY via get_referral_code (tool on when REFERRALS_ENABLED).
-- The last onboarding question is code's ("did a friend send u here?"): the final-answer
-  reaction carries it, the next inbound settles it — a matching code credits the friend,
-  anything else is no credit — then the summary + completion. Asked once.
+- The site's sign-up chat asks for a friend's code as its last optional field and posts
+  it as `referral_code`; /waitlist credits the referrer when it matches, keeps what was
+  typed either way. Nothing is asked in the text thread.
 - /admin/referrals is the leaderboard.
 """
 from __future__ import annotations
@@ -17,28 +17,29 @@ import pytest
 
 import config
 from tests.factories import make_user
-from tests.tier1.test_berkeley_friend_onboarding import _is_extract, _new_signup
-from tests.tier1.test_onboarding_restructure_1 import _bodies, _row, _coach_said, _flags, reactions  # noqa: F401 — fixtures
 
 
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.setattr(config, "REFERRALS_ENABLED", True)
-    monkeypatch.setattr(config, "REFERRAL_ASK_ENABLED", True)
-    monkeypatch.setattr(config, "PROGRAM_BRIEF_ENABLED", False)
+    monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
+    import app as appmod
+    monkeypatch.setattr(appmod, "start_onboarding", lambda user, reason="x": None)
 
 
-def _complete_profile(db, **over):
-    kw = dict(onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142, occupation="student",
-              activity_level="lightly active", avg_steps=10000, workout_days="3", workout_time="18:00",
-              current_split="ppl", cooking_situation="mix", diet="omnivore", injuries="none",
-              wake_time="09:00", sleep_time="01:00")
-    kw.update(over)
-    return _new_signup(db, **kw)
+def _signup(client, phone, **over):
+    body = {"name": "Nate", "phone": phone, "source": "hero", "timezone": "America/Los_Angeles",
+            "age": 21, "gender": "male", "goal": ["fat_loss"], "experience": "intermediate",
+            "equipment": "full_gym", "sms_consent": True}
+    body.update(over)
+    r = client.post("/waitlist", data=json.dumps(body), content_type="application/json")
+    return r.status_code, r.get_json()
 
 
-def _no_extract(reply="yeah fitbit's solid"):
-    return lambda kw: json.dumps({"existing_tools": "fitbit"}) if _is_extract(kw) else reply
+def _by_phone(db, phone):
+    from models import User
+    db.expire_all()
+    return db.query(User).filter(User.phone == phone).one()
 
 
 # ── codes ───────────────────────────────────────────────────────────────────
@@ -63,176 +64,90 @@ def test_code_prefix_falls_back_for_short_or_non_ascii_names(db):
     assert referrals._prefix_from_name("Christopher Jr") == "CHRISTOP"
 
 
-def test_signup_creates_the_code(db, client, monkeypatch):
-    monkeypatch.setattr(config, "PHOTON_PROVISIONING_ENABLED", False)
-    import app as appmod
-    monkeypatch.setattr(appmod, "start_onboarding", lambda user, reason="x": None)
-    body = {"name": "Nate", "phone": "+15105550199", "source": "hero", "timezone": "America/Los_Angeles",
-            "age": 21, "gender": "male", "goal": ["fat_loss"], "experience": "intermediate",
-            "equipment": "full_gym", "sms_consent": True}
-    r = client.post("/waitlist", data=json.dumps(body), content_type="application/json")
-    assert r.status_code in (200, 201), r.get_json()
-    from models import User
-    u = db.query(User).filter(User.phone == "+15105550199").one()
-    assert u.referral_code and u.referral_code.startswith("NATE")
-
-
-def test_find_code_token_shapes():
+def test_normalize_forgives_case_spaces_and_dashes():
     import referrals
-    assert referrals.find_code_token("nau42") == "NAU42"
-    assert referrals.find_code_token("Nau-42!") == "NAU42"
-    assert referrals.find_code_token("no") is None
-    assert referrals.find_code_token("its NAU 42 i think") is None, "spaced → only a candidate"
-    assert referrals.candidate_tokens("its NAU 42 i think") == ["NAU42"]
-    assert referrals.find_code_token("i bench 135 for 5") is None
-    assert referrals.candidate_tokens("i bench 135 for 5") == ["BENCH135"]
-    assert referrals.candidate_tokens("nah my friend nau told me") == []
+    assert referrals.normalize("nau42") == "NAU42"
+    assert referrals.normalize(" Nau 42 ") == "NAU42"
+    assert referrals.normalize("NAU-42") == "NAU42"
+    assert referrals.normalize("nau_42.") == "NAU42"
+    assert referrals.normalize("no") is None
+    assert referrals.normalize("hey there") is None
+    assert referrals.normalize("1234") is None
+    assert referrals.normalize("") is None and referrals.normalize(None) is None
 
 
-def test_spaced_code_credits_when_real_but_a_spaced_near_miss_is_just_a_no(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    friend = make_user(db, name="Nau")
-    code = referrals.ensure_code(friend.id)
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(user, f"ya its {code[:3].lower()} {code[3:]}") is True
-    assert _bodies(sms_capture)[0] == "bet, Nau gets the credit"
-    assert _row(db, user.id).referred_by_user_id == friend.id
+# ── the sign-up ──────────────────────────────────────────────────────────────
 
-    other = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(other, "nah but i bench 135 for 5") is True
-    assert _bodies(sms_capture)[0].startswith("ok so"), "no 'unknown code' ack for a near-miss"
-    assert _row(db, other.id).referred_by_user_id is None
-
-
-# ── the last onboarding question ─────────────────────────────────────────────
-
-def test_final_answer_gets_the_ask_in_the_reaction_bubble_not_the_summary(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
-    user = _complete_profile(db)                         # only existing_tools missing
-    _coach_said(user, "any apps or a watch u use")
-    sms_capture.clear()
-    anthropic_stub.reply_with(_no_extract())
-    assert oa.handle_onboarding_reply(user, "i use a fitbit") is False
-    bodies = _bodies(sms_capture)
-    assert len(bodies) == 1 and bodies[0] == f"yeah fitbit's solid {referrals.ASK_TEXT}"
-    row = _row(db, user.id)
-    assert row.referral_asked_at and not row.referral_resolved_at and row.onboarding_step == 2
-    assert "Code is about to ask them one last quick question" in anthropic_stub.calls[-1]["messages"][0]["content"]
-
-
-def test_a_friends_code_credits_them_then_the_summary_completes(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
+def test_signup_creates_a_code_and_credits_the_friends_code(db, client):
+    import referrals
     friend = make_user(db, name="Jayden")
     code = referrals.ensure_code(friend.id)
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    _coach_said(user, referrals.ASK_TEXT)
-    sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    assert oa.handle_onboarding_reply(user, code.lower()) is True
-    bodies = _bodies(sms_capture)
-    assert bodies[0] == "bet, Jayden gets the credit"
-    assert bodies[1].startswith("ok so"), "the summary follows the ack"
-    row = _row(db, user.id)
-    assert row.referred_by_user_id == friend.id and row.referral_resolved_at and row.onboarding_step == 3
-    assert referrals.stats(friend.id)["signups"] == 1 and referrals.stats(friend.id)["completed"] == 1
+    status, data = _signup(client, "+15105550199", referral_code=f" {code[:3].lower()}-{code[3:]} ")
+    assert status == 200, data
+    assert data["referral"] == {"credited": True, "referrer": "Jayden"}
+    u = _by_phone(db, "+15105550199")
+    assert u.referral_code and u.referral_code.startswith("NATE")
+    assert u.referred_by_user_id == friend.id and u.referral_code_entered == f"{code[:3].lower()}-{code[3:]}"
+    st = referrals.stats(friend.id)
+    assert (st["signups"], st["completed"], st["names"]) == (1, 0, ["Nate"])
 
 
-def test_no_means_no_credit_and_straight_to_the_summary(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    _coach_said(user, referrals.ASK_TEXT)
-    sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    assert oa.handle_onboarding_reply(user, "no") is True
-    bodies = _bodies(sms_capture)
-    assert bodies[0].startswith("ok so"), bodies
-    row = _row(db, user.id)
-    assert row.referred_by_user_id is None and row.referral_resolved_at and row.onboarding_step == 3
+def test_signup_without_a_code_or_with_an_unknown_one_is_not_credited(db, client):
+    status, data = _signup(client, "+15105550198")
+    assert status == 200 and data["referral"] is None
+    u = _by_phone(db, "+15105550198")
+    assert u.referred_by_user_id is None and u.referral_code_entered is None
+
+    status, data = _signup(client, "+15105550197", referral_code="ZZZ99")
+    assert status == 200 and data["referral"] == {"credited": False, "referrer": None}
+    u = _by_phone(db, "+15105550197")
+    assert u.referred_by_user_id is None and u.referral_code_entered == "ZZZ99", "kept for the 'but i typed it' check"
 
 
-def test_unknown_and_own_codes_are_not_credited(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(user, "ZZZ99") is True
-    assert _bodies(sms_capture)[0] == referrals.UNKNOWN_CODE_TEXT
-    assert _row(db, user.id).referred_by_user_id is None
+def test_signup_code_is_capped_and_never_blocks(db, client):
+    status, data = _signup(client, "+15105550196", referral_code="x" * 500)
+    assert status == 200 and data["referral"]["credited"] is False
+    assert len(_by_phone(db, "+15105550196").referral_code_entered) == 32
 
-    me = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
+
+def test_credit_signup_ignores_own_code_and_a_missing_user(db):
+    import referrals
+    me = make_user(db, name="Nau")
     own = referrals.ensure_code(me.id)
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(me, own) is True
-    assert _bodies(sms_capture)[0] == referrals.OWN_CODE_TEXT
-    assert _row(db, me.id).referred_by_user_id is None
+    r = referrals.credit_signup(me.id, own)
+    assert r["credited"] is False and r["entered"] == own
+    db.expire_all()
+    assert db.get(type(me), me.id).referred_by_user_id is None
+    assert referrals.credit_signup(999999, "NAU42")["credited"] is False
 
 
-def test_a_question_about_the_code_is_answered_once_and_the_ask_stays_open(db, anthropic_stub, sms_capture):
-    import onboarding_agent as oa, referrals
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    _coach_said(user, referrals.ASK_TEXT)
-    sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    assert oa.handle_onboarding_reply(user, "wait what's a referral code?") is False
-    assert _bodies(sms_capture) == [referrals.EXPLAIN_TEXT]
-    assert _row(db, user.id).referral_resolved_at is None
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(user, "oh ok no then?") is True, "a second question doesn't loop"
-    assert _bodies(sms_capture)[0].startswith("ok so")
-
-
-def test_continuation_without_a_code_keeps_the_ask_open(db, anthropic_stub, sms_capture, reactions):
-    import onboarding_agent as oa, referrals
-    user = _complete_profile(db, existing_tools="none", referral_asked_at=referrals._naive_utcnow())
-    _coach_said(user, referrals.ASK_TEXT)
-    sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "ok")
-    assert oa.handle_onboarding_reply(user, "and i mostly lift at night", continuation=True) is False
-    assert _bodies(sms_capture) == [] and reactions == [(user.id, "like")]
-    row = _row(db, user.id)
-    assert row.referral_resolved_at is None and row.onboarding_step == 2
-
-
-def test_early_exit_asks_too_then_completes_early(db, anthropic_stub, sms_capture, caplog):
-    import logging
-    import onboarding_agent as oa, referrals
-    caplog.set_level(logging.INFO)
-    # card-critical basics in, diet/cooking/sleep still unknown, and they ask for the workout
-    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=10, weight_lbs=170, workout_days="4",
-                       injuries="none", current_split="ppl")
-    sms_capture.clear()
-    anthropic_stub.reply_with(lambda kw: "{}" if _is_extract(kw) else "say less, card's coming")
-    assert oa.handle_onboarding_reply(user, "can i just get my workout for today") is False
-    assert _bodies(sms_capture)[-1].endswith(referrals.ASK_TEXT)
-    assert "mode=referral_ask" in caplog.text and "early=True" in caplog.text
-    sms_capture.clear()
-    assert oa.handle_onboarding_reply(user, "no") is True
-    assert "ONBOARDING_EARLY_EXIT" in caplog.text
-    assert _row(db, user.id).onboarding_step == 3
-
-
-def test_ask_flag_off_completes_directly(db, anthropic_stub, sms_capture, monkeypatch):
+def test_no_referral_question_in_the_text_thread(db, anthropic_stub, sms_capture):
+    """The ask lives on the site. Onboarding's completion turn is unchanged: reaction + summary."""
     import onboarding_agent as oa
-    monkeypatch.setattr(config, "REFERRAL_ASK_ENABLED", False)
-    user = _complete_profile(db)
+    from tests.tier1.test_berkeley_friend_onboarding import _is_extract, _new_signup
+    from tests.tier1.test_onboarding_restructure_1 import _bodies, _coach_said, _row
+    user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=142, occupation="student",
+                       activity_level="lightly active", avg_steps=10000, workout_days="3", workout_time="18:00",
+                       current_split="ppl", cooking_situation="mix", diet="omnivore", injuries="none",
+                       wake_time="09:00", sleep_time="01:00")
     _coach_said(user, "any apps or a watch u use")
     sms_capture.clear()
-    anthropic_stub.reply_with(_no_extract())
+    anthropic_stub.reply_with(lambda kw: json.dumps({"existing_tools": "fitbit"}) if _is_extract(kw) else "yeah fitbit's solid")
     assert oa.handle_onboarding_reply(user, "i use a fitbit") is True
     bodies = _bodies(sms_capture)
     assert bodies[0] == "yeah fitbit's solid" and bodies[1].startswith("ok so")
-    assert _row(db, user.id).referral_asked_at is None
+    assert not any("referral" in b.lower() for b in bodies)
+    assert _row(db, user.id).onboarding_step == 3
 
 
 def test_onboarding_prompt_carries_their_code_only_for_the_ask(db):
     import onboarding_agent as oa, referrals
-    user = _complete_profile(db)
-    prompt = oa._build_system_prompt(_row(db, user.id))
+    from tests.tier1.test_berkeley_friend_onboarding import _new_signup
+    user = _new_signup(db, onboarding_step=2)
+    db.expire_all()
+    prompt = oa._build_system_prompt(db.get(type(user), user.id))
     code = referrals.ensure_code(user.id)
-    assert f"Their referral code: {code}" in prompt and "ONLY if they ask" in prompt
+    assert f"Their referral code: {code}" in prompt and "ONLY if they ask" in prompt and "sign-up chat at cued.fit" in prompt
 
 
 # ── the coach tool ───────────────────────────────────────────────────────────
@@ -246,7 +161,7 @@ def test_tool_returns_code_and_credited_count(db):
     make_user(db, name="Gone", referred_by_user_id=me.id, onboarding_step=3, archived_at=referrals._naive_utcnow())
     out = handle_get_referral_code(me.id, {})
     code = referrals.ensure_code(me.id)
-    assert f"their referral code is {code}" in out
+    assert f"their referral code is {code}" in out and "sign-up chat at cued.fit" in out
     assert "credited sign-ups so far: 2 (1 finished setup): Jayden, Alex" in out
 
 
@@ -268,17 +183,21 @@ def test_voice_prompt_names_the_tool():
 
 def test_admin_referrals_page_ranks_referrers_and_backfills_codes(db, client):
     import referrals
+    from models import User
     top = make_user(db, name="Nau")
     second = make_user(db, name="Sam")
     for n in ("A", "B", "C"):
         make_user(db, name=f"Kid{n}", referred_by_user_id=top.id, onboarding_step=3)
     make_user(db, name="KidD", referred_by_user_id=second.id, onboarding_step=2)
     lone = make_user(db, name="Lone")
+    make_user(db, name="Typo", referral_code_entered="NAU99")
     r = client.get("/admin/referrals")
     assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert html.index(">Nau<") < html.index(">Sam<"), "most sign-ups first"
     assert "KidD</a> (in setup)" in html
-    assert _row(db, lone.id).referral_code, "the page backfills codes for everyone"
+    assert "NAU99 (no match)" in html
+    db.expire_all()
+    assert db.get(User, lone.id).referral_code, "the page backfills codes for everyone"
     board = referrals.leaderboard(db)
     assert [(b["name"], b["signups"], b["completed"]) for b in board] == [("Nau", 3, 3), ("Sam", 1, 0)]

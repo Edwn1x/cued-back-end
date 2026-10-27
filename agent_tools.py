@@ -3924,8 +3924,8 @@ GET_REFERRAL_CODE_TOOL = {
         "with. Call it whenever they ask for their code ('what's my referral code', 'how do i "
         "refer someone', 'how do my friends join', 'how many people have i referred') — never "
         "state a code or a count from memory, only what this returns. How it works, for your "
-        "reply: a friend signs up at cued.fit and types the code when cued asks at the end of "
-        "their own setup. Takes no arguments."
+        "reply: a friend types the code in the sign-up chat at cued.fit (it's the last question "
+        "there). Takes no arguments."
     ),
     "input_schema": {"type": "object", "properties": {}},
 }
@@ -3939,8 +3939,8 @@ def handle_get_referral_code(user_id: int, tool_input: dict, *, message_id=None)
     st = referrals.stats(user_id)
     if not st.get("code"):
         return "error: couldn't make a code just now — say so plainly, they can ask again later"
-    line = (f"their referral code is {st['code']} (say it exactly like that, uppercase). a friend signs "
-            f"up at cued.fit and types it when cued asks at the end of setup. credited sign-ups so far: "
+    line = (f"their referral code is {st['code']} (say it exactly like that, uppercase). a friend types "
+            f"it in the sign-up chat at cued.fit (last question). credited sign-ups so far: "
             f"{st['signups']}")
     if st["signups"]:
         line += f" ({st['completed']} finished setup): " + ", ".join(st["names"])

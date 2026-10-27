@@ -249,7 +249,7 @@ CAPABILITIES: list[Capability] = [
     ),
     Capability(
         id="referral_code",
-        what="you've got a referral code — a friend types it when i ask at the end of their setup and you get the credit",
+        what="you've got a referral code — a friend types it when they sign up at cued.fit and you get the credit",
         how="ask me 'what's my referral code' any time; i'll tell you the code and how many people it's brought in",
         tools=("get_referral_code",),
         enabled=lambda u: config.REFERRALS_ENABLED,

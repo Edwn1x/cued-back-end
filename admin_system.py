@@ -895,19 +895,19 @@ _REFERRALS_BODY = """
       {% endfor %}
     </table>
   </div>
-  <p style="color:var(--text3);font-size:12px;margin-top:8px">A sign-up is credited when the new user types a friend's code at the last onboarding question. Users get their own code by asking the coach ("what's my referral code").</p>
+  <p style="color:var(--text3);font-size:12px;margin-top:8px">A sign-up is credited when the new user types a friend's code in the sign-up chat on cued.fit (last question). Users get their own code by asking the coach ("what's my referral code").</p>
 </div>
 <div class="section">
   <div class="section-title">Every code</div>
   <div class="table-wrap">
     <table>
-      <tr><th>User</th><th>Code</th><th>Referred by</th><th>Asked at setup</th></tr>
+      <tr><th>User</th><th>Code</th><th>Referred by</th><th>Typed at sign-up</th></tr>
       {% for u in users %}
       <tr>
         <td><a href="/admin/user/{{ u.id }}">{{ u.name }}</a></td>
         <td><code>{{ u.code }}</code></td>
         <td>{{ u.referred_by }}</td>
-        <td style="font-size:12px;color:var(--text3)">{{ u.asked }}</td>
+        <td style="font-size:12px;color:var(--text3)">{{ u.entered }}</td>
       </tr>
       {% endfor %}
     </table>
@@ -931,19 +931,17 @@ def referrals_page():
         names = {u.id: u.name for u in rows}
         users = []
         for u in rows:
-            if u.referral_asked_at:
-                asked = ("credited" if u.referred_by_user_id else
-                         ("answered, no code" if u.referral_resolved_at else "asked, no answer yet"))
-            else:
-                asked = "—"
+            entered = u.referral_code_entered or "—"
+            if u.referral_code_entered and not u.referred_by_user_id:
+                entered += " (no match)"
             users.append({"id": u.id, "name": u.name, "code": u.referral_code or "—",
                           "referred_by": names.get(u.referred_by_user_id, "—") if u.referred_by_user_id else "—",
-                          "asked": asked})
+                          "entered": entered})
         coded = sum(1 for u in rows if u.referral_code)
     finally:
         session.close()
     return _render("referrals", "Referrals",
-                   "Who's bringing people in. Codes are asked for from the coach; credit lands at the last onboarding question.",
+                   "Who's bringing people in. Codes are asked for from the coach; credit lands from the code typed at sign-up.",
                    _REFERRALS_BODY, board=board, users=users, coded=coded,
                    total=sum(r["signups"] for r in board))
 

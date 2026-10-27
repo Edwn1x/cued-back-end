@@ -8,11 +8,12 @@ Referral codes (founder, 2026-10-27): a frat challenge — who can get the most 
 - They get it by ASKING the coach ("what's my referral code") → the get_referral_code
   tool (agent_tools), which also returns how many sign-ups they've been credited with.
   During onboarding the code sits in the system prompt for the same ask.
-- The LAST onboarding question is code-authored (ASK_TEXT, onboarding_agent): did a friend
-  send them, and if so whose code. The next inbound is parsed here (resolve_reply): a token
-  that matches another user's code credits that user (users.referred_by_user_id); anything
-  else means no credit. Either way it is asked once (users.referral_asked_at /
-  referral_resolved_at) and never again.
+- The sign-up chat on cued.fit asks for a friend's code as its last optional field (site:
+  index.html, after the gmail ask) and posts it as `referral_code`. /waitlist hands it to
+  credit_signup: a match on another user's code credits that user
+  (users.referred_by_user_id); what they typed is kept either way
+  (users.referral_code_entered) so a "but i typed it" can be checked. Nothing is asked in
+  the text thread.
 - /admin/referrals (admin_system) is the leaderboard.
 """
 
@@ -28,19 +29,10 @@ import config
 
 logger = logging.getLogger("cued.referrals")
 
-ASK_TEXT = "last thing: did a friend send u here? if so drop their referral code, if not just say no"
-EXPLAIN_TEXT = ("it's a code a friend who's already on cued gets from me, so they get credit for u "
-                "joining. got one? if not just say no")
-CREDITED_TEXT = "bet, {name} gets the credit"
-OWN_CODE_TEXT = "that's ur own code lol, no credit for that one"
-UNKNOWN_CODE_TEXT = "hm, that code doesn't match anyone, no stress"
-
-# A code is 2–10 letters then 2–3 digits. Typed as one token ("NAU42", "Nau-42") it is
-# unmistakably a code; with a space ("nau 42") it only counts when it matches a real one
-# ("i bench 135 for 5" must never read as a code). Letters are ASCII only: the name part
-# is normalised the same way at generation time.
-_CODE_RE = re.compile(r"\b([A-Za-z]{2,10})-?(\d{2,3})\b")
-_SPACED_CODE_RE = re.compile(r"\b([A-Za-z]{2,10})\s(\d{2,3})\b")
+# A code is 2–10 letters then 2–3 digits ("NAU42"). normalize() forgives case, spaces and
+# dashes ("nau 42", "Nau-42"). Letters are ASCII only: the name part is normalised the
+# same way at generation time.
+_CODE_RE = re.compile(r"^([A-Za-z]{2,10})(\d{2,3})$")
 _FALLBACK_PREFIX = "CUED"
 _MAX_PREFIX = 8
 
@@ -51,11 +43,6 @@ def _naive_utcnow() -> datetime:
 
 def enabled() -> bool:
     return bool(getattr(config, "REFERRALS_ENABLED", True))
-
-
-def ask_enabled() -> bool:
-    """The onboarding ask specifically (the code + tool stay on when this is off)."""
-    return enabled() and bool(getattr(config, "REFERRAL_ASK_ENABLED", True))
 
 
 def _prefix_from_name(name: str | None) -> str:
@@ -124,94 +111,61 @@ def backfill(limit: int = 500) -> int:
     return done
 
 
-def find_code_token(text: str) -> str | None:
-    """The first one-token thing in the text shaped like a code, upper-cased — or None."""
-    m = _CODE_RE.search(text or "")
+def normalize(raw: str | None) -> str | None:
+    """"nau 42" / "Nau-42" / " NAU42 " → "NAU42"; anything not code-shaped → None."""
+    cleaned = re.sub(r"[\s\-_.]", "", (raw or "")).strip()
+    m = _CODE_RE.match(cleaned)
     if not m:
         return None
     return f"{m.group(1).upper()}{m.group(2)}"
 
 
-def candidate_tokens(text: str) -> list[str]:
-    """Every code-shaped thing in the text, one-token forms first, then spaced ones."""
-    out = []
-    for rx in (_CODE_RE, _SPACED_CODE_RE):
-        for m in rx.finditer(text or ""):
-            tok = f"{m.group(1).upper()}{m.group(2)}"
-            if tok not in out:
-                out.append(tok)
-    return out
-
-
 def lookup(code: str):
     """(user_id, name) for a code, or None."""
     from models import get_session, User
-    if not code:
+    norm = normalize(code)
+    if not norm:
         return None
     session = get_session()
     try:
-        row = (session.query(User.id, User.name)
-               .filter(User.referral_code == code.upper()).first())
+        row = session.query(User.id, User.name).filter(User.referral_code == norm).first()
         return (row[0], row[1]) if row else None
     finally:
         session.close()
 
 
-def pending(user) -> bool:
-    """The ask went out and nothing has answered it yet."""
-    return bool(getattr(user, "referral_asked_at", None)) and not getattr(user, "referral_resolved_at", None)
-
-
-def mark_asked(user_id: int) -> None:
+def credit_signup(user_id: int, raw_code: str | None) -> dict:
+    """Apply the code a NEW sign-up typed on the site. Keeps what they typed
+    (referral_code_entered), credits the referrer when it matches someone else's code.
+    Returns {"entered", "credited", "referrer_id", "referrer_name"} — never raises."""
     from models import get_session, User
-    session = get_session()
-    try:
-        u = session.get(User, user_id)
-        if u and not u.referral_asked_at:
-            u.referral_asked_at = _naive_utcnow()
-            session.commit()
-            logger.info("REFERRAL_ASKED user=%s", user_id)
-    finally:
-        session.close()
-
-
-def resolve_reply(user_id: int, text: str) -> str | None:
-    """Settle the pending ask from this inbound. Credits the referrer when the text
-    carries another user's code; stamps referral_resolved_at either way (asked once).
-    Returns the one-line ack to send, or None when there's nothing to say (a 'no')."""
-    from models import get_session, User
-    strict = find_code_token(text)
-    candidates = candidate_tokens(text)
+    out = {"entered": None, "credited": False, "referrer_id": None, "referrer_name": None}
+    entered = (raw_code or "").strip()[:32] or None
+    if not entered:
+        return out
+    out["entered"] = entered
+    norm = normalize(entered)
     session = get_session()
     try:
         u = session.get(User, user_id)
         if not u:
-            return None
-        u.referral_resolved_at = _naive_utcnow()
-        if not candidates:
+            return out
+        u.referral_code_entered = entered
+        row = (session.query(User.id, User.name).filter(User.referral_code == norm).first()
+               if norm else None)
+        if not row or row[0] == user_id:
             session.commit()
-            logger.info("REFERRAL_RESOLVED user=%s credited=none body=%r", user_id, (text or "")[:40])
-            return None
-        row = token = None
-        for token in candidates:
-            row = session.query(User.id, User.name).filter(User.referral_code == token).first()
-            if row:
-                break
-        if not row:
-            session.commit()
-            if not strict:          # only a spaced near-miss ("bench 135") — not a code at all
-                logger.info("REFERRAL_RESOLVED user=%s credited=none body=%r", user_id, (text or "")[:40])
-                return None
-            logger.info("REFERRAL_RESOLVED user=%s credited=none unknown_code=%s", user_id, strict)
-            return UNKNOWN_CODE_TEXT
-        if row[0] == user_id:
-            session.commit()
-            logger.info("REFERRAL_RESOLVED user=%s credited=none own_code=%s", user_id, token)
-            return OWN_CODE_TEXT
+            logger.info("REFERRAL_SIGNUP_NO_MATCH user=%s entered=%r norm=%s%s", user_id, entered, norm,
+                        " (own code)" if row else "")
+            return out
         u.referred_by_user_id = row[0]
         session.commit()
-        logger.info("REFERRAL_CREDITED user=%s referrer=%s code=%s", user_id, row[0], token)
-        return CREDITED_TEXT.format(name=row[1])
+        out.update(credited=True, referrer_id=row[0], referrer_name=row[1])
+        logger.info("REFERRAL_CREDITED user=%s referrer=%s code=%s", user_id, row[0], norm)
+        return out
+    except Exception as e:  # noqa: BLE001 — never block a sign-up on the credit
+        logger.warning("REFERRAL_CREDIT_FAILED user=%s err=%s", user_id, e)
+        return out
     finally:
         session.close()
 
