@@ -17,13 +17,27 @@ from models import get_session, User, Integration
 from integrations import base, gcal
 import time
 
-from events import upsert_external_events, delete_external_event
+from events import upsert_external_events, delete_external_event, prune_external_events
 
 logger = logging.getLogger("cued.integrations.gcal_sync")
 
 SOURCE = "gcal"
 SYNC_HORIZON_DAYS = 60
 MAX_EVENT_HOURS = 24          # skip semester-long blocks — noise
+
+# How this sync actually runs in prod (checked 2026-10-27, user 77 after a dozen ticks:
+# integration.meta['gcal_sync'] == {}): the full pull asks Google for orderBy=startTime, and
+# an ORDERED events.list never carries a nextSyncToken — so the incremental branch below has
+# never run and every tick is a FULL 60-day pull per calendar. That is the behaviour we KEEP
+# on purpose: a sync token from a windowed request pins that window (timeMin/timeMax can't be
+# re-sent with it), so after SYNC_HORIZON_DAYS nothing new would ever arrive. What a full pull
+# was missing is the other half of correctness — rows that silently VANISH from the window
+# (an event the user MOVED to another calendar has no status=cancelled tombstone on the old
+# one; neither does one whose calendar was un-shared) stayed in the mirror forever. Live
+# 2026-10-27: user 77 moved three coach-created office-hour blocks onto his "Class schedule"
+# calendar; the main-calendar copies lingered as ghosts through the next sync. So: after
+# every full pull of a calendar, prune that calendar's rows in the pulled window that the
+# pull didn't return (bcourses has done this since day one).
 
 
 def _parse_dt(node, tz) -> tuple[datetime | None, bool]:
@@ -84,12 +98,13 @@ def sync_user(user_id: int) -> dict:
         session.close()
     if not row_ids:
         return {"skipped": "not connected"}
-    total = {"upserted": 0, "deleted": 0, "accounts": 0}
+    total = {"upserted": 0, "deleted": 0, "pruned": 0, "accounts": 0}
     for rid in row_ids:
         r = _sync_row(user_id, rid)
         if "upserted" in r:
             total["upserted"] += r["upserted"]
             total["deleted"] += r["deleted"]
+            total["pruned"] += r.get("pruned", 0)
             total["accounts"] += 1
     if not total["accounts"]:
         return {"skipped": "not connected"}
@@ -123,7 +138,9 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
     now = datetime.now(timezone.utc)
     time_min = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     time_max = (now + timedelta(days=SYNC_HORIZON_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    upserted = deleted = unchanged = 0
+    win_lo = now.replace(tzinfo=None)
+    win_hi = (now + timedelta(days=SYNC_HORIZON_DAYS)).replace(tzinfo=None)
+    upserted = deleted = unchanged = pruned = 0
     t0 = time.monotonic()
 
     for cal in cals:
@@ -131,12 +148,14 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
         if not cid or cal.get("hidden"):
             continue
         token_for_cal = sync_state.get(cid)
+        full_pull = not token_for_cal
         try:
             if token_for_cal:
                 gevents, next_sync = gcal.list_events(token, cid, sync_token=token_for_cal)
             else:
                 gevents, next_sync = gcal.list_events(token, cid, time_min=time_min, time_max=time_max)
         except gcal.SyncTokenExpired:
+            full_pull = True
             gevents, next_sync = gcal.list_events(token, cid, time_min=time_min, time_max=time_max)
         except Exception as e:
             logger.warning("GCAL_CAL_SYNC_FAILED user=%s cal=%s err=%s", user_id, cid, e)
@@ -159,6 +178,20 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
         c = upsert_external_events(user_id, source=SOURCE, rows=batch)
         upserted += c["inserted"] + c["updated"]
         unchanged += c["unchanged"]
+        if full_pull:
+            # A full pull is the whole truth for this calendar's window: anything we hold
+            # that Google didn't return is gone (moved / un-shared / deleted without a
+            # tombstone we saw). An EMPTY pull is not trusted as "they cleared everything"
+            # — a transient empty 200 would wipe the mirror — so that case is logged, not pruned.
+            if gevents:
+                keep = {r["external_id"] for r in batch}
+                n_pruned = prune_external_events(user_id, source=SOURCE, keep=keep, lo=win_lo, hi=win_hi,
+                                                 external_prefix=f"{cid}:")
+                if n_pruned:
+                    logger.info("GCAL_PRUNED user=%s cal=%s rows=%s", user_id, cid, n_pruned)
+                pruned += n_pruned
+            else:
+                logger.info("GCAL_PRUNE_SKIPPED_EMPTY user=%s cal=%s", user_id, cid)
         if next_sync:
             sync_state[cid] = next_sync
 
@@ -173,9 +206,9 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
             session.commit()
     finally:
         session.close()
-    logger.info("GCAL_SYNC user=%s row=%s upserted=%s unchanged=%s deleted=%s took=%.1fs",
-                user_id, integration_id, upserted, unchanged, deleted, time.monotonic() - t0)
-    return {"upserted": upserted, "deleted": deleted, "unchanged": unchanged}
+    logger.info("GCAL_SYNC user=%s row=%s upserted=%s unchanged=%s deleted=%s pruned=%s took=%.1fs",
+                user_id, integration_id, upserted, unchanged, deleted, pruned, time.monotonic() - t0)
+    return {"upserted": upserted, "deleted": deleted + pruned, "unchanged": unchanged, "pruned": pruned}
 
 
 def sync_all() -> int:
