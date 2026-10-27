@@ -3917,6 +3917,36 @@ def handle_send_gym_line_link(user_id: int, tool_input: dict, *, message_id=None
     return send_line_link(user_id)
 
 
+GET_REFERRAL_CODE_TOOL = {
+    "name": "get_referral_code",
+    "description": (
+        "Look up the user's own referral code and how many sign-ups it has been credited "
+        "with. Call it whenever they ask for their code ('what's my referral code', 'how do i "
+        "refer someone', 'how do my friends join', 'how many people have i referred') — never "
+        "state a code or a count from memory, only what this returns. How it works, for your "
+        "reply: a friend types the code in the sign-up chat at cued.fit (it's the last question "
+        "there). Takes no arguments."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def handle_get_referral_code(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Their code + credited sign-ups (referrals.stats)."""
+    import referrals
+    if not referrals.enabled():
+        return "error: referral codes are off right now — say so plainly"
+    st = referrals.stats(user_id)
+    if not st.get("code"):
+        return "error: couldn't make a code just now — say so plainly, they can ask again later"
+    line = (f"their referral code is {st['code']} (say it exactly like that, uppercase). a friend types "
+            f"it in the sign-up chat at cued.fit (last question). credited sign-ups so far: "
+            f"{st['signups']}")
+    if st["signups"]:
+        line += f" ({st['completed']} finished setup): " + ", ".join(st["names"])
+    return line
+
+
 FIND_STUDY_SPACE_TOOL = {
     "name": "find_study_space",
     "description": (
@@ -4334,6 +4364,7 @@ _HANDLERS = {
     "create_calendar_event": handle_create_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
+    "get_referral_code": handle_get_referral_code,
     "find_study_space": handle_find_study_space,
     "send_study_room_link": handle_send_study_room_link,
     "send_stat_card": handle_send_stat_card,

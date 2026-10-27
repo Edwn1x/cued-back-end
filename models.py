@@ -226,6 +226,12 @@ class User(Base):
     # (agent_tools.handle_create_calendar_event): confirm-before-write enforced in CODE.
     pending_calendar_event = Column(JSON, default=None)
     signup_source = Column(String(40), default=None)       # "hero"|"nav"|... — accept any string ≤40 chars; don't validate
+    # Referral codes (referrals.py, 2026-10-27 frat challenge): their shareable code
+    # ("NAU42", made at signup), who sent them (credited from the code typed on the site's
+    # sign-up chat), and what they typed, matched or not.
+    referral_code = Column(String(16), unique=True, default=None)
+    referred_by_user_id = Column(Integer, default=None)
+    referral_code_entered = Column(String(32), default=None)
     waitlist_status = Column(String(20), default=None)     # None = not on waitlist (legacy + activated). "pending" = currently on waitlist.
     activated_at = Column(DateTime, default=None)          # stamped when admin promotes from waitlist; source of truth for "ever activated"
 

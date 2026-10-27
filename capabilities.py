@@ -248,6 +248,17 @@ CAPABILITIES: list[Capability] = [
         section="campus", rundown="i can find empty library rooms to book for study sessions",
     ),
     Capability(
+        id="referral_code",
+        what="you've got a referral code — a friend types it when they sign up at cued.fit and you get the credit",
+        how="ask me 'what's my referral code' any time; i'll tell you the code and how many people it's brought in",
+        tools=("get_referral_code",),
+        enabled=lambda u: config.REFERRALS_ENABLED,
+        relevance=lambda u: 3,
+        used=None,
+        reveal_when="they mention a friend who wants in, ask how friends sign up, or ask about their code",
+        section="extras", rundown="u have a referral code too, ask me for it whenever", rundown_order=90,
+    ),
+    Capability(
         id="stat_cards",
         what="i can drop a quick card in the chat: how packed rsf is, where your macros are today, what your week looks like",
         how="just ask, like 'how packed is rsf' or 'how am i doing today'",

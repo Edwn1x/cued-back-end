@@ -343,6 +343,16 @@ def _build_system_prompt(user) -> str:
     ]
     profile = "\n".join(p for p in profile_parts if p)
     try:
+        import referrals
+        if referrals.enabled() and getattr(user, "id", None):
+            code = referrals.ensure_code(user.id)
+            if code:
+                profile += (f"\n\nTheir referral code: {code} — ONLY if they ask for it (a friend types it in "
+                            f"the sign-up chat at cued.fit, last question). Never bring it up yourself, never "
+                            f"invent a different one.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REFERRAL_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    try:
         from workouts.routine import describe_routine
         rd = describe_routine(getattr(user, "custom_templates", None))
         if rd:
