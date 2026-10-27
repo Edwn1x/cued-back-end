@@ -521,6 +521,31 @@ def _interval_gate_reason(user, now: datetime) -> str | None:
     return None
 
 
+def _send_demo_links_once(user, row: Reminder) -> bool:
+    """The first time a reminder that names library movements fires, a second bubble carries
+    the verified how-to clips (exercise_demos: PT channels, about a minute each); the demos
+    are then marked seen so no later fire repeats them. Live 2026-10-27 (user 77): the 2pm
+    posture break went out as a line, he asked for reference videos, the coach searched and
+    said "couldn't pull links". Fail-open, flag-gated; never affects the reminder itself."""
+    if not getattr(config, "REMINDER_DEMO_LINKS_ENABLED", True) or not config.EXERCISE_DEMOS_ENABLED:
+        return False
+    try:
+        from exercise_demos import demo_links_for_reminder, mark_demos_seen, _resolve
+        from sms import send_sms
+        demos = demo_links_for_reminder(user, row.text)
+        if not demos:
+            return False
+        lines = "\n".join(f"{name}\n{url}" for name, url in demos.items())
+        send_sms(user.phone, f"how-to clips, about a minute each:\n{lines}", user_id=user.id, message_type="reminder")
+        keys = [k for k in (_resolve(n) for n in demos) if k]
+        mark_demos_seen(user.id, keys)
+        logger.info("REMINDER_DEMO_LINKS_SENT user=%s id=%s keys=%s", user.id, row.id, keys)
+        return True
+    except Exception as e:  # noqa: BLE001 — the clips are extra; the reminder already went
+        logger.warning("REMINDER_DEMO_LINKS_FAILED user=%s id=%s err=%s", getattr(user, "id", None), row.id, e)
+        return False
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -573,6 +598,8 @@ def _fire_one(rid: int, now: datetime) -> bool:
             from engagement_tracker import WATER_REMINDER_TYPE
             send_sms(user.phone, text, user_id=user.id,
                      message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
+            if not row.every_hours:
+                _send_demo_links_once(user, row)
         row.last_sent_at = now
         row.sent_count = (row.sent_count or 0) + 1
         if row.every_hours or row.recur_days:
