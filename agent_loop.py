@@ -962,6 +962,15 @@ def build_loop_context(user, session) -> str:
             _rb = None
         if _rb:
             parts.append(_rb)
+        # A meal / photo mid-setup (onboarding_meals.py): log it as normal, no targets, no
+        # setup questions — code asks the next one after the line.
+        try:
+            from onboarding_meals import context_block as _meal_block
+            _mb = _meal_block(user)
+        except Exception:  # noqa: BLE001
+            _mb = None
+        if _mb:
+            parts.append(_mb)
 
     return "\n\n".join(parts)
 

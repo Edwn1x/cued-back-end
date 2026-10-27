@@ -28,6 +28,10 @@ ONBOARDING_REENGAGE_SECOND_HOURS = int(os.getenv("ONBOARDING_REENGAGE_SECOND_HOU
 # (log_meal + the numbers) until a meal is logged, then code asks the next intake field.
 ONBOARDING_REENGAGE_MODEL_COPY_ENABLED = os.getenv("ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", "true").lower() == "true"
 ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED = os.getenv("ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED", "true").lower() == "true"
+# Meals mid-setup (onboarding_meals.py, founder 2026-10-27): a meal text / any photo from a
+# user still in onboarding runs the normal agent loop (log_meal etc.), then code asks the
+# next intake field. Off → the intake agent answers every mid-setup text, as before.
+ONBOARDING_MEALS_ENABLED = os.getenv("ONBOARDING_MEALS_ENABLED", "true").lower() == "true"
 ONBOARDING_REENGAGE_FOOD_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FOOD_FIRST_HOURS", "48"))
 # Founder 2026-10-25: "have the first nudges go out tmr morning, like 10am" — an ISO UTC instant
 # before which the sweep sends nothing (flag on, job armed, first tick at/after this sends).

@@ -871,6 +871,52 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                     return
                 # the loop failed → the intake agent answers, as before
 
+        # A meal (or any photo) from a user still in setup (onboarding_meals.py, founder
+        # 2026-10-27): the normal loop logs it and says the numbers, stats in the same text
+        # land on the profile, then code asks the next intake field. Flow continues.
+        if (user.onboarding_step or 0) < 3 and config.SINGLE_AGENT_LOOP_ENABLED:
+            import onboarding_meals
+            try:
+                meal_turn = onboarding_meals.is_meal_turn(combined_body, has_image=bool(image_url or images),
+                                                          user_id=user.id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ONBOARDING_MEAL_CHECK_FAILED user=%s err=%s", user.id, e)
+                meal_turn = False
+            if meal_turn:
+                onboarding_meals.begin_turn(user.id)
+                try:
+                    response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
+                                                   image_data_list=images, continuation=continuation)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("ONBOARDING_MEAL_LOOP_FAILED user=%s err=%s", user.id, e, exc_info=True)
+                    response_text = None
+                finally:
+                    onboarding_meals.end_turn(user.id)
+                if response_text is not None:
+                    from agent_tools import pop_turn_state, REACTION_ONLY_SENTINEL
+                    if (response_text or "").strip().lower() == REACTION_ONLY_SENTINEL:
+                        response_text = ""
+                    turn = pop_turn_state(user.id)
+                    if response_text:
+                        send_sms(user.phone, response_text, user_id=user.id, message_type=message_type,
+                                 reply_to_sid=turn.get("reply_to"))
+                    onboarding_meals.absorb_stats(user.id, combined_body)
+                    session.expire_all()
+                    fresh = session.get(User, user.id)
+                    nxt = None
+                    if not (response_text or "").rstrip().endswith("?"):
+                        nxt = onboarding_meals.continue_line(fresh)
+                        if nxt:
+                            send_sms(user.phone, nxt, user_id=user.id, message_type="onboarding")
+                    if not response_text and not nxt:
+                        typing_stop(user.id)
+                    logger.info("ONBOARDING_MEAL_TURN user=%s reply=%r next_ask=%s", user.id,
+                                (response_text or "")[:60], bool(nxt))
+                    threading.Thread(target=extract_and_store_memory, args=(user.id, combined_body, response_text),
+                                     daemon=True).start()
+                    return
+                # the loop failed → the intake agent answers, as before
+
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             from onboarding_agent import coach_turn_text, latest_message_id
