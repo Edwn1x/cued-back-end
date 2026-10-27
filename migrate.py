@@ -404,6 +404,9 @@ MIGRATIONS = [
     # Stated lifts for first-card calibration (user 33's bench-135-did-35 card, 2026-09-23)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS lift_anchors JSON",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS reported_maintenance INTEGER",
+    # What they eat NOW (2026-10-27, user 77 ate ~2000, was handed 3100): the first target ramps from it
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS reported_intake INTEGER",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS reported_protein_intake INTEGER",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger VARCHAR(30)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger_status VARCHAR(12)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS food_logger_since TIMESTAMP",

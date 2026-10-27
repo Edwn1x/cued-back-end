@@ -16,6 +16,25 @@ Base rate (2026-09-14, founder's call after the literature check):
 A workout_days RANGE counts as its lower bound ("4-5" → 4 → Mifflin): Ten Haaf
 runs higher, so only a clear 5+ earns it.
 
+Ten Haaf also needs a training HISTORY (2026-10-27, live user 77): the equation was fit
+on people already training like athletes. A complete beginner who PLANS six days is not
+that population yet — "none" / "beginner" (under 6 months) stay on Mifflin whatever
+they plan; intermediate+ (or an unknown experience) keep the 5+ rule. Live: 6'2"/165,
+22M, never trained, "6 days" → Ten Haaf 2039 × 1.375 → 2804 → 3100 to build; Mifflin
+gives 1818 → 2500 → 2750. The 350 kcal gap was the athlete equation on a non-athlete.
+
+Reported current intake (same review): what they EAT NOW is the one input the equations
+never see, and it is where feasibility lives — user 77 ate ~2000 and was handed 3100
+("I cannot afford that much food"). Setup asks it (onboarding_agent, stored on
+users.reported_intake; 0 = asked, doesn't know); the coach can record it mid-coaching
+(set_targets current_intake). When the goal number sits more than RAMP_MAX_STEP above
+what they eat, the FIRST target is reported × (1 + RAMP_MAX_STEP), rounded to 50, and
+protein runs at the low end of the evidence range (0.8 g/lb) instead of 1.0; the full
+number rides in the result as `ramp` so the summary can say where this is heading. The
+biweekly adaptive cycle steps the target from there off the scale (adaptive_targets
+clamps ±150 from the CURRENT target, so a ramped start grows). Downward (a cut whose
+target is far below what they eat) is NOT ramped — the deficit ceilings already bound it.
+
 Under 18 (2026-09-22, founder's call after the user-32 review): the adult equations
 were validated on adults and run LOW for a growing teenager. Live: a 16-year-old at
 5'2"/180 got Mifflin ~1560 × sedentary → 1870 maintenance → the 1400 floor, while
@@ -40,6 +59,13 @@ import config
 logger = logging.getLogger("cued.macros")
 
 TEN_HAAF_MIN_DAYS = 5
+TEN_HAAF_UNTRAINED = ("none", "beginner")   # experience levels that stay on Mifflin whatever they plan
+RAMP_MAX_STEP = 0.20         # first target ≤ reported intake × 1.20 when the goal number is above it
+PROTEIN_RAMP_G_PER_LB = 0.8  # protein while ramped: the low end of the 0.8–1 g/lb range
+REPORTED_INTAKE_MIN = 800    # a reported daily intake outside this is a typo / not a number we act on
+REPORTED_INTAKE_MAX = 6000
+REPORTED_PROTEIN_MIN = 20
+REPORTED_PROTEIN_MAX = 400
 TEEN_MAX_AGE = 17            # < 18 → IOM EER (ages 9–18)
 PROTEIN_MAX_SHARE = 0.35     # protein kcal ≤ 35% of the calorie target
 REFERENCE_BMI = 25.0         # protein per-lb rule runs on min(actual, weight at BMI 25)
@@ -277,6 +303,30 @@ def _effective_avg_steps(user, session=None):
     return static
 
 
+def _untrained(user) -> bool:
+    """True for a stated "none" / "beginner" experience (under 6 months): the Ten Haaf
+    population is people already training, so these stay on Mifflin however many days
+    they plan. An unknown experience keeps today's behaviour."""
+    if not getattr(config, "TEN_HAAF_EXPERIENCE_GATE_ENABLED", True):
+        return False
+    exp = (getattr(user, "experience", None) or "").strip().lower()
+    return exp in TEN_HAAF_UNTRAINED
+
+
+def reported_intake(user) -> int | None:
+    """users.reported_intake when it is a usable number (0 = asked, doesn't know → None)."""
+    try:
+        v = int(getattr(user, "reported_intake", None) or 0)
+    except (TypeError, ValueError):
+        return None
+    return v if REPORTED_INTAKE_MIN <= v <= REPORTED_INTAKE_MAX else None
+
+
+def ramp_cap(reported: int) -> int:
+    """The highest FIRST target for someone eating `reported` a day: +RAMP_MAX_STEP, to 50."""
+    return int(round(reported * (1 + RAMP_MAX_STEP) / 50.0) * 50)
+
+
 def calculate_targets(user, session=None) -> dict:
     """
     Calculate calorie and protein targets based on user profile.
@@ -329,7 +379,7 @@ def calculate_targets(user, session=None) -> dict:
         else:
             tdee = tdee_iom
         multiplier = None
-    elif days_count >= TEN_HAAF_MIN_DAYS:
+    elif days_count >= TEN_HAAF_MIN_DAYS and not _untrained(user):
         bmr_formula = "ten_haaf"
         bmr = (11.936 * weight_kg + 587.728 * (height_cm / 100.0) - 8.129 * age
                + 191.027 * (1 if is_male else 0) + 29.279)
@@ -367,17 +417,34 @@ def calculate_targets(user, session=None) -> dict:
     # calories. See the module header.
     ref_lbs = reference_weight_lbs(user.weight_lbs or 150, height_cm)
     if "muscle" in goal or "strength" in goal or "fat_loss" in goal:
-        protein = round(ref_lbs * 1.0)
+        g_per_lb = 1.0
     elif "endurance" in goal:
-        protein = round(ref_lbs * 0.7)
+        g_per_lb = 0.7
     else:
-        protein = round(ref_lbs * 0.8)
-    protein = min(protein, int(calories * PROTEIN_MAX_SHARE / 4))
-    protein = max(protein, PROTEIN_FLOOR)
+        g_per_lb = 0.8
+
+    def _protein_for(cal: int, per_lb: float) -> int:
+        p = round(ref_lbs * per_lb)
+        p = min(p, int(cal * PROTEIN_MAX_SHARE / 4))
+        return max(p, PROTEIN_FLOOR)
+
+    protein = _protein_for(calories, g_per_lb)
+
+    # Ramp (module header): the first target never sits more than RAMP_MAX_STEP above
+    # what they say they eat now. Upward only — a goal number far above their intake is
+    # the infeasible case (live user 77: ate ~2000, handed 3100).
+    ramp = None
+    eats = reported_intake(user) if getattr(config, "TARGET_RAMP_ENABLED", True) else None
+    if eats and calories > ramp_cap(eats):
+        full_cal, full_pro = calories, protein
+        calories = max(ramp_cap(eats), CALORIE_FLOOR)
+        protein = _protein_for(calories, min(g_per_lb, PROTEIN_RAMP_G_PER_LB))
+        ramp = {"from_intake": eats, "full_calories": full_cal, "full_protein": full_pro}
 
     return {
         "calories": calories,
         "protein": protein,
+        "ramp": ramp,
         "tdee": tdee,
         "bmr": round(bmr),
         "bmr_formula": bmr_formula,
@@ -420,14 +487,16 @@ def recompute_targets(user_id: int) -> dict:
             # is prefixed so that block can say "a fix on our side", not "the scale".
             from models import TargetAdjustment
             limits = f", limit: {', '.join(t['goal_limits'])}" if t["goal_limits"] else ""
+            ramp = (f", stepped from their ~{t['ramp']['from_intake']} intake (full {t['ramp']['full_calories']})"
+                    if t.get("ramp") else "")
             session.add(TargetAdjustment(
                 user_id=user_id, old_target=old[0], new_target=new[0], changed=True,
                 reason=(f"calculator update ({t['bmr_formula']} maintenance {t['tdee']}, "
-                        f"{t['goal_pct']:+.0%} goal rule{limits}); protein {old[1]} → {new[1]}g")[:300],
+                        f"{t['goal_pct']:+.0%} goal rule{limits}{ramp}); protein {old[1]} → {new[1]}g")[:300],
             ))
         session.commit()
-        logger.info("TARGETS_RECOMPUTED user=%s %s -> %s formula=%s tdee=%s pct=%+.2f limits=%s",
-                    user_id, old, new, t["bmr_formula"], t["tdee"], t["goal_pct"], t["goal_limits"])
+        logger.info("TARGETS_RECOMPUTED user=%s %s -> %s formula=%s tdee=%s pct=%+.2f limits=%s ramp=%s",
+                    user_id, old, new, t["bmr_formula"], t["tdee"], t["goal_pct"], t["goal_limits"], t.get("ramp"))
         return {"old": old, "new": new, "changed": changed, "tdee": t["tdee"],
                 "formula": t["bmr_formula"]}
     finally:
@@ -458,7 +527,7 @@ REPORTED_MAINTENANCE_PCT = 0.25
 
 
 def apply_target_override(user_id: int, *, calories=None, protein=None, note: str = None,
-                          maintenance=None) -> dict:
+                          maintenance=None, intake=None, protein_intake=None) -> dict:
     """Code-owned. Bounds each requested value against calculate_targets(user);
     writes accepted ones to users.calorie_target / protein_target, stamps
     targets_source='user' and the computed pair beside them. Returns
@@ -472,16 +541,57 @@ def apply_target_override(user_id: int, *, calories=None, protein=None, note: st
     calories — the result carries "maintenance": {"accepted": True, "basis_calories": N}.
     Outside that range it is rejected with the computed TDEE and the band is unchanged.
     A stored reported_maintenance keeps centring the band on later calls, and the
-    adaptive cycle seeds from it (adaptive_targets)."""
+    adaptive cycle seeds from it (adaptive_targets).
+
+    `intake` / `protein_intake`: what they say they EAT NOW (not a number they aim for).
+    Stored on users.reported_intake / reported_protein_intake when plausible; the
+    calculator then ramps (module header), and — unless the targets are their own pick —
+    the code-owned target is rewritten to the ramped number right here, so "i eat like
+    2000" lands as a real change, not advice. The result carries
+    "intake": {"accepted": True, "reported": 2000, "calories": 2400, "protein": 132,
+               "full_calories": 3100, "rewritten": True}."""
     from models import get_session, User
     session = get_session()
     try:
         user = session.get(User, user_id)
         if not user:
             return {"error": "user not found"}
-        computed = calculate_targets(user)
         accepted, rejected = {}, {}
         maint_result = None
+        intake_result = None
+        if intake is not None or protein_intake is not None:
+            intake_result = {"accepted": False}
+            try:
+                if intake is not None:
+                    v = int(round(float(intake)))
+                    if REPORTED_INTAKE_MIN <= v <= REPORTED_INTAKE_MAX:
+                        user.reported_intake = v
+                        intake_result.update(accepted=True, reported=v)
+                    else:
+                        intake_result.update(reported=v, min=REPORTED_INTAKE_MIN, max=REPORTED_INTAKE_MAX)
+                if protein_intake is not None:
+                    pv = int(round(float(protein_intake)))
+                    if REPORTED_PROTEIN_MIN <= pv <= REPORTED_PROTEIN_MAX:
+                        user.reported_protein_intake = pv
+                        intake_result["reported_protein"] = pv
+                        if intake is None:
+                            intake_result["accepted"] = True
+            except (TypeError, ValueError):
+                intake_result = {"accepted": False, "reason": "not a number"}
+        computed = calculate_targets(user)
+        if intake_result and intake_result.get("accepted"):
+            intake_result.update(calories=computed["calories"], protein=computed["protein"],
+                                 full_calories=(computed["ramp"] or {}).get("full_calories", computed["calories"]),
+                                 full_protein=(computed["ramp"] or {}).get("full_protein", computed["protein"]),
+                                 rewritten=False)
+            user.calorie_target_computed = computed["calories"]
+            user.protein_target_computed = computed["protein"]
+            if getattr(user, "targets_source", None) != "user" and (
+                    user.calorie_target != computed["calories"] or user.protein_target != computed["protein"]):
+                intake_result.update(previous=(user.calorie_target, user.protein_target), rewritten=True)
+                user.calorie_target = computed["calories"]
+                user.protein_target = computed["protein"]
+                user.targets_source = "computed"
         if maintenance is not None:
             try:
                 m = int(round(float(maintenance)))
@@ -531,10 +641,12 @@ def apply_target_override(user_id: int, *, calories=None, protein=None, note: st
             logger.info("TARGETS_USER_CHOSEN user=%s accepted=%s computed=%s/%s basis=%s note=%s",
                         user_id, accepted, computed["calories"], computed["protein"], basis_cal,
                         (note or "")[:80])
-        if accepted or (maint_result and maint_result.get("accepted")):
+        if accepted or (maint_result and maint_result.get("accepted")) or (intake_result and intake_result.get("accepted")):
             session.commit()
         if maint_result:
             logger.info("TARGETS_REPORTED_MAINTENANCE user=%s %s", user_id, maint_result)
+        if intake_result:
+            logger.info("TARGETS_REPORTED_INTAKE user=%s %s", user_id, intake_result)
         if rejected:
             logger.info("TARGETS_OVERRIDE_REJECTED user=%s rejected=%s", user_id, rejected)
         out = {"accepted": accepted, "rejected": rejected,
@@ -542,6 +654,8 @@ def apply_target_override(user_id: int, *, calories=None, protein=None, note: st
                "current": {"calories": user.calorie_target, "protein": user.protein_target}}
         if maint_result is not None:
             out["maintenance"] = maint_result
+        if intake_result is not None:
+            out["intake"] = intake_result
         return out
     finally:
         session.close()

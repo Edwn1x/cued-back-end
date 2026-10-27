@@ -584,7 +584,12 @@ SET_TARGETS_TOOL = {
         "maintain at 2200', 'my tdee is like 2.1k'), pass it as `maintenance` — within reason "
         "of the computed estimate, code stores it and centres the calorie band on it, so a "
         "target that follows from THEIR maintenance is allowed even when it's outside the band "
-        "around ours. Returns 'ok: …' or 'error: …' — only claim a change after 'ok'."
+        "around ours. If they say what they EAT NOW ('i eat like 2000 a day', 'i get maybe 100g "
+        "protein', 'i can't afford that much food' with a number), pass it as `current_intake` / "
+        "`current_protein_intake`: code records it and, when the target sits more than 20% above "
+        "it, steps the target down to +20% of what they eat (and protein to 0.8 g/lb) — the result "
+        "says the new numbers and the full number this is heading to; say both, plainly, and that it "
+        "steps up as the scale moves. Returns 'ok: …' or 'error: …' — only claim a change after 'ok'."
     ),
     "input_schema": {
         "type": "object",
@@ -593,6 +598,10 @@ SET_TARGETS_TOOL = {
             "protein_g": {"type": "integer", "description": "requested daily protein in grams"},
             "maintenance": {"type": "integer",
                             "description": "the daily maintenance/TDEE they report from their app or prior tracking, when they cite one"},
+            "current_intake": {"type": "integer",
+                               "description": "daily calories they say they currently EAT (not a number they aim for)"},
+            "current_protein_intake": {"type": "integer",
+                                       "description": "grams of protein they say they currently eat a day"},
             "reason": {"type": "string", "description": "their words for why, in brief"},
         },
         "required": [],
@@ -605,13 +614,34 @@ def handle_set_targets(user_id: int, tool_input: dict, *, message_id=None) -> st
     cal = tool_input.get("calories")
     pro = tool_input.get("protein_g")
     maint = tool_input.get("maintenance")
-    if cal is None and pro is None and maint is None:
-        return "error: give calories, protein_g, and/or maintenance"
+    eats = tool_input.get("current_intake")
+    eats_pro = tool_input.get("current_protein_intake")
+    if cal is None and pro is None and maint is None and eats is None and eats_pro is None:
+        return "error: give calories, protein_g, maintenance, and/or current_intake"
     r = apply_target_override(user_id, calories=cal, protein=pro, note=tool_input.get("reason"),
-                              maintenance=maint)
+                              maintenance=maint, intake=eats, protein_intake=eats_pro)
     if "error" in r:
         return f"error: {r['error']}"
     parts = []
+    it = r.get("intake")
+    if it:
+        if it.get("accepted") and it.get("rewritten"):
+            prev = it.get("previous") or (None, None)
+            parts.append(f"ok: noted they eat about {it.get('reported', '?')} cal"
+                         f"{(' / ' + str(it['reported_protein']) + 'g') if it.get('reported_protein') else ''} a day; "
+                         f"target stepped {prev[0]}/{prev[1]}g → {it['calories']} cal / {it['protein']}g to start "
+                         f"(the full number for their stats is {it['full_calories']} / {it['full_protein']}g; it steps up "
+                         "from here as the scale moves). Say the new numbers and that this is where it's heading")
+        elif it.get("accepted"):
+            why = (" (their own pick stands)" if r["current"]["calories"] != it["calories"]
+                   else " (already within 20% of what they eat — no step needed)")
+            parts.append(f"ok: noted they eat about {it.get('reported', it.get('reported_protein', '?'))} a day; "
+                         f"target stays {r['current']['calories']} cal / {r['current']['protein']}g{why}")
+        elif "min" in it:
+            parts.append(f"error: current_intake {it['reported']} isn't a daily number we can act on "
+                         f"(accept {it['min']}–{it['max']}); ask what a normal day looks like instead")
+        else:
+            parts.append("error: current_intake must be a number")
     m = r.get("maintenance")
     if m:
         if m.get("accepted"):
