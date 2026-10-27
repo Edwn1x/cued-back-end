@@ -55,6 +55,22 @@ def _external_id(calendar_id: str, gevent: dict) -> str:
     return f"{calendar_id}:{gevent.get('id')}"
 
 
+def event_row(calendar_id: str, gevent: dict, tz) -> dict | None:
+    """One Google event (an expanded instance, singleEvents=true) → the event-store row
+    shape upsert_external_events takes. None = skip (no start, or a semester-long block).
+    Shared with the coach's calendar write tools so a coach-created series mirrors
+    exactly the way the 30-min sync would (same ids, same fields)."""
+    start_utc, all_day = _parse_dt(gevent.get("start"), tz)
+    end_utc, _ = _parse_dt(gevent.get("end"), tz)
+    if start_utc is None:
+        return None
+    if end_utc and (end_utc - start_utc) > timedelta(hours=MAX_EVENT_HOURS):
+        return None
+    return {"external_id": _external_id(calendar_id, gevent), "title": gevent.get("summary") or "(busy)",
+            "occurred_at": start_utc, "ends_at": end_utc, "all_day": all_day,
+            "series_id": gevent.get("recurringEventId") or None}
+
+
 def sync_user(user_id: int) -> dict:
     """Sync one user's calendars into the event store — every connected Google account
     (primary + any second login), each with its own token and sync state. Returns a
@@ -136,14 +152,9 @@ def _sync_row(user_id: int, integration_id: int) -> dict:
             if _should_skip(ge):
                 delete_external_event(user_id, source=SOURCE, external_id=ext)  # e.g. now-declined
                 continue
-            start_utc, all_day = _parse_dt(ge.get("start"), tz)
-            end_utc, _ = _parse_dt(ge.get("end"), tz)
-            if start_utc is None:
-                continue
-            if end_utc and (end_utc - start_utc) > timedelta(hours=MAX_EVENT_HOURS):
-                continue
-            batch.append({"external_id": ext, "title": ge.get("summary") or "(busy)",
-                          "occurred_at": start_utc, "ends_at": end_utc, "all_day": all_day})
+            row = event_row(cid, ge, tz)
+            if row is not None:
+                batch.append(row)
         # One session + one commit per calendar; rows that didn't change aren't rewritten.
         c = upsert_external_events(user_id, source=SOURCE, rows=batch)
         upserted += c["inserted"] + c["updated"]

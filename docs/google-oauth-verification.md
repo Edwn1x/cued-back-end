@@ -86,10 +86,13 @@ scope that lets us find which calendars to read. We request no calendar settings
 workouts in free windows, (2) avoid texting during classes and exams, and (3) plan meals
 and check-ins around deadlines. The write half is used only on the user's explicit ask,
 one event at a time: "add gym tomorrow at 4" creates that single event on the primary
-calendar; "push my gym block to 5" or "take tomorrow's study session off" moves or deletes
-the one event the user named. In every case the coach reflects the exact change back, waits
-for a yes, and only then writes. The coach never edits an event the user didn't name, never
-bulk-edits, and never touches events on calendars the user can't edit. The narrower
+calendar (one-off, all-day, or repeating — "office hours every tue 2–3 till dec 12");
+"push my gym block to 5" or "take tomorrow's study session off" moves or deletes the one
+event the user named; "delete all my eleng discussions" / "remove everything eleng 105
+related" removes the repeating event(s) the user named, every occurrence at once. In every
+case the coach reflects the exact change back (for a series or a bulk delete, with the
+count), waits for a yes, and only then writes. The coach never edits an event the user
+didn't name and never touches events on calendars the user can't edit. The narrower
 `calendar.events.readonly` cannot write; `calendar.events.owned` would not read shared
 course calendars the user doesn't own.
 

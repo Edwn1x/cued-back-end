@@ -124,7 +124,7 @@ def record_event(user_id: int, event_type: str, *, ends_at=None, source="regex",
 
 def upsert_external_event(user_id: int, *, source: str, external_id: str, title: str,
                           occurred_at, ends_at=None, all_day: bool = False,
-                          event_type: str = "scheduled") -> int:
+                          event_type: str = "scheduled", series_id: str | None = None) -> int:
     """Insert or update a synced calendar event, keyed by (user_id, source,
     external_id). A re-pull updates the existing row (title/time change) instead of
     duplicating it; a previously soft-deleted row is revived if the event reappears.
@@ -145,6 +145,7 @@ def upsert_external_event(user_id: int, *, source: str, external_id: str, title:
         ev.ends_at = ends_at
         ev.all_day = bool(all_day)
         ev.event_type = event_type
+        ev.series_id = series_id or None
         ev.deleted_at = None              # revive if it had been cancelled before
         session.commit()
         return ev.id
@@ -177,22 +178,25 @@ def upsert_external_events(user_id: int, *, source: str, rows: list[dict]) -> di
             title = (r.get("title") or "")[:300]
             etype = r.get("event_type") or "scheduled"
             all_day = bool(r.get("all_day"))
+            series_id = r.get("series_id") or None
             ev = existing.get(r["external_id"])
             if ev is None:
                 ev = Event(user_id=user_id, source=source, external_id=r["external_id"], event_type=etype,
                            title=title, raw_text=title, occurred_at=r["occurred_at"], ends_at=r.get("ends_at"),
-                           all_day=all_day, deleted_at=None)
+                           all_day=all_day, series_id=series_id, deleted_at=None)
                 session.add(ev)
                 existing[r["external_id"]] = ev
                 counts["inserted"] += 1
                 continue
             same = (ev.title == title and ev.occurred_at == r["occurred_at"] and ev.ends_at == r.get("ends_at")
-                    and bool(ev.all_day) == all_day and ev.event_type == etype and ev.deleted_at is None)
+                    and bool(ev.all_day) == all_day and ev.event_type == etype and ev.deleted_at is None
+                    and (ev.series_id or None) == series_id)
             if same:
                 counts["unchanged"] += 1
                 continue
             ev.title, ev.raw_text = title, title
             ev.occurred_at, ev.ends_at, ev.all_day, ev.event_type = r["occurred_at"], r.get("ends_at"), all_day, etype
+            ev.series_id = series_id
             ev.deleted_at = None
             counts["updated"] += 1
         if counts["inserted"] or counts["updated"]:

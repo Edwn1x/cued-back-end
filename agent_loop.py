@@ -456,7 +456,8 @@ def build_loop_context(user, session) -> str:
                 # does (live: founder 2026-09-24).
                 if e.ends_at:
                     when += f"–{_t(e.ends_at, relative=False)}"
-            return f"[id {e.id}] {label} — {when}"
+            rep = " (repeats)" if getattr(e, "series_id", None) else ""
+            return f"[id {e.id}] {label} — {when}{rep}"
         parts.append("## UPCOMING EVENTS (next 7 days — logged ahead of time; you may "
                      "reference or prep them)\n"
                      + "\n".join(_fmt_upcoming(e) for e in ups))

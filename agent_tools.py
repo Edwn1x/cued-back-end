@@ -3821,10 +3821,11 @@ def handle_lookup_events(user_id: int, tool_input: dict, *, message_id=None) -> 
     def _fmt(e):
         loc = e.occurred_at.replace(tzinfo=timezone.utc).astimezone(tz)
         title = (e.title or e.raw_text or e.event_type or "event").strip()
+        rep = " (repeats)" if (getattr(e, "series_id", None) or _series_id_of(None, e.external_id if e.source == "gcal" else None)) else ""
         if getattr(e, "all_day", False):
-            return f"{title} — {loc.strftime('%a %b %-d')} (all day)"
+            return f"{title} — {loc.strftime('%a %b %-d')} (all day){rep}"
         when = loc.strftime("%a %b %-d, %-I:%M%p").replace("AM", "am").replace("PM", "pm")
-        return f"{title} — {when}"
+        return f"{title} — {when}{rep}"
 
     return "ok: found:\n" + "\n".join(_fmt(e) for e in rows)
 
@@ -4215,35 +4216,57 @@ def flush_stat_cards(user_id: int, turn: dict) -> int:
 CREATE_CALENDAR_EVENT_TOOL = {
     "name": "create_calendar_event",
     "description": (
-        "ADD a new event to the user's connected Google Calendar — block a gym session, "
-        "a study block, a meal-prep slot ('block a lift at 4pm', 'add a study block 2-4pm "
-        "before the exam'). For something already on the calendar use move_calendar_event "
-        "(new time / new title) or delete_calendar_event instead. ALWAYS confirm first: reflect back "
-        "exactly what you'll add (title + day + time, WITH am/pm) and get a yes BEFORE "
-        "writing — call this with confirmed=false (or omitted) to stage it, then call again "
-        "with confirmed=true in the NEXT turn once they've said yes. Code enforces this: a "
-        "confirmed=true call with nothing staged, or in the same turn as the staging, is "
-        "refused. A bare hour ('at 8') is ambiguous — stage your best guess and ASK am or pm "
-        "in the reflect-back; never assume. Times are the user's LOCAL time, 24-hour 'HH:MM'. "
-        "If the user only connected read access, this returns "
-        "a 'reconnect to let me add to it' message — relay that honestly, do NOT claim you "
-        "added it. This writes to their real Google Calendar AND mirrors into your own "
-        "context so it shows up right away."
+        "ADD a new event to the user's connected Google Calendar — a gym session, a study "
+        "block, a dentist appointment, a club meeting, anything ('block a lift at 4pm', 'add "
+        "office hours every tue 2-3', 'put my flight on fri'). One-off, REPEATING (repeat + "
+        "repeat_days + optional repeat_until + skip_dates), or ALL-DAY (all_day=true); on any of "
+        "their calendars (`calendar` by name) and in a colour (`color`) if they ask — do it all in "
+        "ONE call, one confirm. For something "
+        "already on the calendar use move_calendar_event or delete_calendar_event instead. "
+        "ALWAYS confirm first: reflect back exactly what you'll add (title + day + time WITH "
+        "am/pm, and for a repeating one the days + until when) and get a yes BEFORE writing — "
+        "call with confirmed=false (or omitted) to stage it, then confirmed=true in the NEXT "
+        "turn once they've said yes. Code enforces this: a confirmed=true call with nothing "
+        "staged, or in the same turn as the staging, is refused. A bare hour ('at 8') is "
+        "ambiguous — stage your best guess and ASK am or pm; never assume. A repeating event "
+        "with no end — ask 'till when?' once (end of semester is usual) unless they said. Times "
+        "are LOCAL, 24-hour 'HH:MM'. If the result says the connection is read-only, relay that "
+        "honestly, do NOT claim you added it. This writes to their real Google Calendar AND "
+        "mirrors into your own context so it shows up right away."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "summary": {"type": "string", "description": "the event title, e.g. 'gym — push' or 'study for orgo'"},
-            "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h)"},
+            "summary": {"type": "string", "description": "the event title, e.g. 'gym — push', 'CS61A office hours', 'dentist'"},
+            "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h); omit only for all_day"},
             "ends_at": {"type": "string", "description": "local end time 'HH:MM' (24h, optional if duration_minutes given)"},
             "duration_minutes": {"type": "integer", "description": "length in minutes if no ends_at (default 60)"},
-            "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+            "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD' — for a repeating "
+                                                      "event, the first day it can start (it snaps to the first matching repeat_day)"},
+            "all_day": {"type": "boolean", "description": "true = an all-day event (no times)"},
+            "repeat": {"type": "string", "enum": ["none", "daily", "weekdays", "weekly"],
+                       "description": "'weekly' = on repeat_days every week (default: the start day); 'weekdays' = mon–fri; "
+                                      "'daily' = every day; omit/'none' = one-off"},
+            "repeat_days": {"type": "array", "items": {"type": "string"},
+                            "description": "for repeat='weekly': days like ['mon','wed','fri']"},
+            "repeat_until": {"type": "string", "description": "last day of the repeat, 'YYYY-MM-DD' (omit = no end)"},
+            "skip_dates": {"type": "array", "items": {"type": "string"},
+                           "description": "for a repeating event: dates to skip, 'YYYY-MM-DD' each (thanksgiving, a holiday)"},
+            "location": {"type": "string", "description": "optional place, e.g. 'RSF', 'Soda 405'"},
             "description": {"type": "string", "description": "optional longer note for the event body"},
+            "calendar": {"type": "string",
+                         "description": "which of THEIR google calendars to put it on, by name ('Class schedule', "
+                                        "'Personal'); omit = their main calendar. An unknown name returns the list "
+                                        "of their calendars so you can ask"},
+            "color": {"type": "string",
+                      "description": "event colour, google's names or plain ones: yellow/banana, red/tomato, "
+                                     "orange/tangerine, green/basil, light green/sage, blue/blueberry, teal/peacock, "
+                                     "purple/grape, lavender, pink/flamingo, gray/graphite"},
             "confirmed": {"type": "boolean",
                           "description": "false/omitted = stage it and confirm with the user first; "
                                          "true = they've agreed, actually create it"},
         },
-        "required": ["summary", "starts_at"],
+        "required": ["summary"],
     },
 }
 
@@ -4252,34 +4275,41 @@ _FIND_EVENT_PROPS = {
                  "description": "the [id N] shown next to the event in UPCOMING EVENTS / TODAY'S EVENTS — "
                                 "use it when you have it; it's exact"},
     "query": {"type": "string",
-              "description": "otherwise a keyword from the event's title ('gym', 'study block', 'dentist')"},
+              "description": "otherwise a keyword from the event's title ('gym', 'study block', 'dentist', 'eleng 105')"},
     "date": {"type": "string",
              "description": "narrow a title match to one local day: 'today', 'tomorrow', or 'YYYY-MM-DD' "
-                            "(a recurring class matches many days without it)"},
+                            "(a repeating event matches many days without it)"},
 }
 
 DELETE_CALENDAR_EVENT_TOOL = {
     "name": "delete_calendar_event",
     "description": (
-        "DELETE one event from the user's connected Google Calendar ('take the gym block off', "
-        "'delete tomorrow's study session', 'cancel that'). Find it by event_id (the [id N] in your "
-        "context) or by a title keyword + date. Deletes exactly ONE event; if several match it "
-        "lists them and you ask which. ALWAYS confirm first: reflect back exactly which event "
-        "(title + day + time, WITH am/pm) and get a yes BEFORE deleting — call with "
-        "confirmed=false (or omitted) to stage it, then confirmed=true in the NEXT turn once "
-        "they've said yes. Code refuses a confirm with nothing staged or in the same turn. "
-        "A bCourses/Canvas deadline can't be deleted from here (it isn't theirs to delete); "
-        "something you logged on your own radar (log_event) is just taken off the radar. "
-        "If the result says the connection is read-only or the event isn't theirs to edit, "
-        "relay that honestly — never say it's gone when it isn't."
+        "DELETE from the user's connected Google Calendar. Three scopes: scope='one' (default) = "
+        "exactly one event ('take tomorrow's gym block off'); scope='series' = EVERY occurrence of "
+        "a repeating event ('delete all my eleng discussions', 'cancel the whole thing'); "
+        "scope='all_matching' = every event whose title matches `query`, repeating or not "
+        "('remove everything eleng 105 related'). Find one event by event_id (the [id N] in your "
+        "context) or a title keyword + date; all_matching needs only `query`. If the event you "
+        "named repeats and you didn't give a scope, the result ASKS 'just this one or all of "
+        "them?' — put that question to the user, then call again with the scope. Several "
+        "one-off matches → listed, you ask which. ALWAYS confirm first: reflect back exactly what "
+        "goes (title + day + time, or 'all N eleng 105 events through dec') and get a yes BEFORE "
+        "deleting — confirmed=false (or omitted) stages, confirmed=true in the NEXT turn once "
+        "they've said yes; code refuses a confirm with nothing staged or in the same turn. "
+        "bCourses/Canvas deadlines can't be deleted from here (not theirs); something you logged "
+        "on your own radar (log_event) is just taken off the radar. Relay read-only / not-theirs "
+        "results honestly — never say it's gone when it isn't."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             **_FIND_EVENT_PROPS,
+            "scope": {"type": "string", "enum": ["one", "series", "all_matching"],
+                      "description": "'one' = this event only; 'series' = every occurrence of this repeating event; "
+                                     "'all_matching' = every event matching query"},
             "confirmed": {"type": "boolean",
                           "description": "false/omitted = stage it and confirm with the user first; "
-                                         "true = they've agreed, actually delete it"},
+                                         "true = they've agreed, actually delete"},
         },
     },
 }
@@ -4287,35 +4317,135 @@ DELETE_CALENDAR_EVENT_TOOL = {
 MOVE_CALENDAR_EVENT_TOOL = {
     "name": "move_calendar_event",
     "description": (
-        "MOVE or RENAME one existing event on the user's connected Google Calendar ('push my "
-        "gym block to 5', 'move the study session to tomorrow 2-4', 'rename it to legs'). Find "
-        "it by event_id (the [id N] in your context) or by a title keyword + date, then give the "
-        "new time and/or title. Changes exactly ONE event; if several match it lists them and you "
-        "ask which. ALWAYS confirm first: reflect back the old → new (day + time, WITH am/pm) and "
-        "get a yes BEFORE writing — call with confirmed=false (or omitted) to stage it, then "
-        "confirmed=true in the NEXT turn once they've said yes. Code refuses a confirm with "
-        "nothing staged or in the same turn. A bare hour ('to 5') is ambiguous — ask am or pm. "
-        "Times are LOCAL, 24-hour 'HH:MM'. A bCourses/Canvas deadline can't be moved from here. "
-        "If the result says the connection is read-only or the event isn't theirs to edit, relay "
-        "that honestly — never say it moved when it didn't."
+        "MOVE, RENAME, RECOLOUR, or put on another calendar — on the user's connected Google "
+        "Calendar ('push my gym block to 5', 'move the study session to tomorrow 2-4', 'rename it "
+        "to legs', 'make office hours wed instead of tue', 'put it on my Class schedule calendar', "
+        "'make it yellow'). scope='one' (default) = this occurrence only; scope='series' = EVERY "
+        "occurrence of a repeating event (new time, new days via new_repeat_days, new title, new "
+        "length, new calendar, new colour). "
+        "Find it by event_id (the [id N] in your context) or a title keyword + date, then give "
+        "what changes. If the event repeats and you didn't give a scope, the result ASKS 'just "
+        "this one or all of them?' — put that to the user, then call again with the scope. "
+        "ALWAYS confirm first: reflect back old → new (day + time WITH am/pm; for a series, the "
+        "days) and get a yes BEFORE writing — confirmed=false (or omitted) stages, confirmed=true "
+        "in the NEXT turn once they've said yes; code refuses a confirm with nothing staged or in "
+        "the same turn. A bare hour ('to 5') is ambiguous — ask am or pm. Times are LOCAL, "
+        "24-hour 'HH:MM'. bCourses/Canvas deadlines can't be moved from here. Relay read-only / "
+        "not-theirs results honestly — never say it moved when it didn't."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             **_FIND_EVENT_PROPS,
+            "scope": {"type": "string", "enum": ["one", "series"],
+                      "description": "'one' = this occurrence only; 'series' = every occurrence of this repeating event"},
             "new_date": {"type": "string",
-                         "description": "the new local day: 'today', 'tomorrow', or 'YYYY-MM-DD' "
-                                        "(omit to keep the event's day)"},
+                         "description": "the new local day (scope='one'): 'today', 'tomorrow', or 'YYYY-MM-DD'; omit to keep"},
             "new_starts_at": {"type": "string", "description": "new local start 'HH:MM' (24h); omit to keep"},
             "new_ends_at": {"type": "string", "description": "new local end 'HH:MM' (24h); omit to keep the length"},
             "duration_minutes": {"type": "integer", "description": "new length in minutes (alternative to new_ends_at)"},
+            "new_repeat_days": {"type": "array", "items": {"type": "string"},
+                                "description": "scope='series' only: the new weekdays, e.g. ['tue','thu']"},
             "new_summary": {"type": "string", "description": "new title; omit to keep"},
+            "new_calendar": {"type": "string",
+                             "description": "move it onto another of THEIR google calendars, by name ('Class schedule'); "
+                                            "an unknown name returns the list so you can ask"},
+            "new_color": {"type": "string", "description": "new colour (yellow, red, green, blue, purple, orange, …)"},
             "confirmed": {"type": "boolean",
                           "description": "false/omitted = stage it and confirm with the user first; "
                                          "true = they've agreed, actually change it"},
         },
     },
 }
+
+
+# ─── shared helpers: tz, reflect-back strings, repeat rules, series ids ───────
+
+_DAY_CODES = {"mo": "MO", "mon": "MO", "monday": "MO", "m": "MO",
+              "tu": "TU", "tue": "TU", "tues": "TU", "tuesday": "TU",
+              "we": "WE", "wed": "WE", "weds": "WE", "wednesday": "WE", "w": "WE",
+              "th": "TH", "thu": "TH", "thur": "TH", "thurs": "TH", "thursday": "TH",
+              "fr": "FR", "fri": "FR", "friday": "FR", "f": "FR",
+              "sa": "SA", "sat": "SA", "saturday": "SA",
+              "su": "SU", "sun": "SU", "sunday": "SU"}
+_CODE_ORDER = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+_CODE_NAME = {"MO": "mon", "TU": "tue", "WE": "wed", "TH": "thu", "FR": "fri", "SA": "sat", "SU": "sun"}
+_INSTANCE_RE = re.compile(r"^(?P<master>.+)_(?P<ts>\d{8}(T\d{6}Z)?)$")
+# Google's event palette (colorId 1–11) by its names and the plain words people use.
+_COLOR_IDS = {"lavender": "1", "light purple": "1", "sage": "2", "light green": "2", "mint": "2",
+              "grape": "3", "purple": "3", "violet": "3", "flamingo": "4", "pink": "4", "salmon": "4",
+              "banana": "5", "yellow": "5", "tangerine": "6", "orange": "6", "peacock": "7", "teal": "7",
+              "turquoise": "7", "cyan": "7", "light blue": "7", "graphite": "8", "gray": "8", "grey": "8",
+              "black": "8", "blueberry": "9", "blue": "9", "dark blue": "9", "navy": "9", "indigo": "9",
+              "basil": "10", "green": "10", "dark green": "10", "tomato": "11", "red": "11"}
+_COLOR_NAME = {"1": "lavender", "2": "sage (light green)", "3": "grape (purple)", "4": "flamingo (pink)", "5": "banana (yellow)",
+               "6": "tangerine (orange)", "7": "peacock (teal)", "8": "graphite (gray)", "9": "blueberry (blue)",
+               "10": "basil (green)", "11": "tomato (red)"}
+
+
+def _color_id(name) -> tuple[str | None, str | None]:
+    """'yellow' → ('5', None); unknown → (None, error message)."""
+    if not name:
+        return None, None
+    key = str(name).strip().lower().replace("-", " ").replace("colour", "").replace("color", "").strip()
+    if key in _COLOR_IDS:
+        return _COLOR_IDS[key], None
+    if key.isdigit() and key in _COLOR_NAME:
+        return key, None
+    for k, v in _COLOR_IDS.items():            # 'bright yellow' / 'yellowish'
+        if k in key:
+            return v, None
+    return None, (f"error: don't know the colour {name!r} — google's are "
+                  + ", ".join(sorted(set(_COLOR_NAME.values()))) + ". ask which, or skip the colour")
+
+
+def _resolve_calendar(user_id: int, name) -> tuple[str | None, str | None, str | None]:
+    """A calendar NAME the user said ('Class schedule') → (calendar_id, display_name, None), or
+    (None, None, message) listing their calendars when it doesn't match. Empty name → primary
+    (the sync's key for it). Match: exact → starts-with → contains → every word contained."""
+    from integrations import gcal
+    if not (name or "").strip():
+        return _primary_calendar_key(user_id), None, None
+    want = name.strip().lower()
+    if want in ("primary", "main", "default", "my calendar"):
+        return _primary_calendar_key(user_id), None, None
+    try:
+        cals = gcal.writable_calendars(user_id)
+    except gcal.NotConnected:
+        return None, None, ("can't — no google calendar connected yet. offer to send the connect link "
+                            "(send_connect_link).")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RESOLVE_CALENDAR_FAILED user=%s err=%s", user_id, e)
+        return None, None, f"error: couldn't list their calendars ({e}); try again without `calendar`"
+    names = [(c["name"].lower(), c) for c in cals]
+    for pred in (lambda n: n == want, lambda n: n.startswith(want), lambda n: want in n,
+                 lambda n: all(w in n for w in want.split())):
+        hits = [c for n, c in names if pred(n)]
+        if len(hits) == 1:
+            return hits[0]["id"], hits[0]["name"], None
+        if len(hits) > 1:
+            return None, None, (f"several of their calendars match {name!r}: "
+                                + ", ".join(f"'{c['name']}'" for c in hits) + ". ask which.")
+    listing = ", ".join(f"'{c['name']}'" + (" (main)" if c["primary"] else "") for c in cals) or "just the main one"
+    return None, None, (f"no calendar of theirs called {name!r}. their calendars they can add to: {listing}. "
+                        "ask which one they mean (or use the main one).")
+
+
+def _exdates(skip_dates, start_local: datetime, tz, tz_str: str, *, all_day: bool) -> tuple[list[str], list[str]]:
+    """'YYYY-MM-DD' skips → EXDATE lines matching the DTSTART form (TZID local time for a timed
+    series, VALUE=DATE for all-day). → (lines, human dates). Unparseable → ValueError."""
+    lines, human = [], []
+    for d in skip_dates or []:
+        try:
+            dd = _resolve_local_date(tz, str(d), strict=True)
+        except ValueError:
+            raise ValueError(f"skip_dates must be 'YYYY-MM-DD' (got {d!r})")
+        if all_day:
+            lines.append(f"EXDATE;VALUE=DATE:{dd.strftime('%Y%m%d')}")
+        else:
+            lines.append(f"EXDATE;TZID={tz_str}:{dd.strftime('%Y%m%d')}T{start_local.strftime('%H%M%S')}")
+        human.append(dd.strftime("%b %-d"))
+    return lines, human
 
 
 def _calendar_user_tz(user_id: int) -> tuple[str, ZoneInfo]:
@@ -4346,12 +4476,135 @@ def _when_local(start_utc, end_utc, tz, *, all_day: bool = False) -> str:
     return out
 
 
+def _time_span_local(start_utc, end_utc, tz) -> str:
+    s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    out = _ampm(s_loc)
+    if end_utc:
+        out += "–" + _ampm(end_utc.replace(tzinfo=timezone.utc).astimezone(tz))
+    return out
+
+
 def _bare_hour_hint(start_utc, tz) -> str:
     s_loc = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
     if 1 <= s_loc.hour % 12 <= 11 and s_loc.minute == 0:
         return (" If they only said a bare hour (no am/pm), ask which — "
                 f"\"{s_loc.strftime('%-I')}am or {s_loc.strftime('%-I')}pm?\" — don't assume.")
     return ""
+
+
+def _parse_days(val) -> list[str]:
+    """['mon','wed','fri'] / 'mon, wed, fri' / 'MWF' → ['MO','WE','FR'] in week order. Unknown → []."""
+    if not val:
+        return []
+    if isinstance(val, str):
+        s = val.strip().lower()
+        parts = re.split(r"[,/ &+]+|\band\b", s)
+        if len(parts) == 1 and parts[0] and all(c in "mtwrfsu" for c in parts[0]) and len(parts[0]) <= 7:
+            letters = {"m": "MO", "t": "TU", "w": "WE", "r": "TH", "f": "FR", "s": "SA", "u": "SU"}
+            codes = [letters[c] for c in parts[0]]
+        else:
+            codes = [_DAY_CODES.get(p.strip()) for p in parts if p.strip()]
+    else:
+        codes = [_DAY_CODES.get(str(p).strip().lower()) for p in val]
+    if any(c is None for c in codes):
+        return []
+    return [c for c in _CODE_ORDER if c in set(codes)]
+
+
+def _repeat_rule(repeat, days_in, start_local_date, until_in, tz, *, all_day: bool):
+    """→ (rrule_line | None, human | '', first_date, codes). Snaps the start to the first
+    matching weekday on/after the given date. until = local end of that day in UTC."""
+    rep = (repeat or "none").strip().lower()
+    if rep in ("", "none", "no", "once"):
+        return None, "", "", start_local_date, []
+    if rep == "weekdays":
+        codes = ["MO", "TU", "WE", "TH", "FR"]
+    elif rep == "weekly":
+        codes = _parse_days(days_in) or [_CODE_ORDER[start_local_date.weekday()]]
+    elif rep == "daily":
+        codes = []
+    else:
+        raise ValueError(f"unknown repeat {rep!r} — use none / daily / weekdays / weekly")
+    first = start_local_date
+    if codes:
+        for _ in range(7):
+            if _CODE_ORDER[first.weekday()] in codes:
+                break
+            first += timedelta(days=1)
+    rule = "RRULE:FREQ=DAILY" if rep == "daily" else f"RRULE:FREQ=WEEKLY;BYDAY={','.join(codes)}"
+    human = "every day" if rep == "daily" else ("every weekday" if rep == "weekdays"
+                                               else "every " + "/".join(_CODE_NAME[c] for c in codes))
+    until_date = None
+    if (until_in or "").strip():
+        try:
+            until_date = _resolve_local_date(tz, until_in, strict=True)
+        except ValueError:
+            raise ValueError("repeat_until must be 'YYYY-MM-DD'")
+        if until_date < first:
+            raise ValueError("repeat_until is before the first occurrence")
+        if all_day:
+            rule += f";UNTIL={until_date.strftime('%Y%m%d')}"
+        else:
+            end_local = datetime(until_date.year, until_date.month, until_date.day, 23, 59, 59, tzinfo=tz)
+            rule += ";UNTIL=" + end_local.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        until = f"through {until_date.strftime('%b %-d')}"
+    else:
+        until = "(no end date)"
+    return rule, human, until, first, codes
+
+
+def _rewrite_byday(recurrence: list[str] | None, codes: list[str]) -> list[str]:
+    """Swap the BYDAY of the series' weekly RRULE (keep UNTIL/COUNT/INTERVAL and any EXDATE lines)."""
+    out, done = [], False
+    for line in recurrence or []:
+        if line.upper().startswith("RRULE:"):
+            parts = [p for p in line[6:].split(";") if p and not p.upper().startswith("BYDAY=")]
+            if not any(p.upper().startswith("FREQ=") for p in parts):
+                parts.insert(0, "FREQ=WEEKLY")
+            parts = ["FREQ=WEEKLY" if p.upper().startswith("FREQ=") else p for p in parts]
+            parts.append("BYDAY=" + ",".join(codes))
+            out.append("RRULE:" + ";".join(parts))
+            done = True
+        else:
+            out.append(line)
+    if not done:
+        out.append("RRULE:FREQ=WEEKLY;BYDAY=" + ",".join(codes))
+    return out
+
+
+def _describe_rrule(recurrence: list[str] | None) -> str:
+    for line in recurrence or []:
+        if line.upper().startswith("RRULE:"):
+            kv = dict(p.split("=", 1) for p in line[6:].split(";") if "=" in p)
+            freq = (kv.get("FREQ") or "").upper()
+            if freq == "DAILY":
+                h = "every day"
+            elif freq == "WEEKLY":
+                codes = [c for c in _CODE_ORDER if c in (kv.get("BYDAY") or "").upper().split(",")]
+                h = "every " + ("/".join(_CODE_NAME[c] for c in codes) if codes else "week")
+            else:
+                h = f"every {freq.lower()}"
+            u = kv.get("UNTIL")
+            if u:
+                try:
+                    h += " through " + datetime.strptime(u[:8], "%Y%m%d").strftime("%b %-d")
+                except ValueError:
+                    pass
+            elif kv.get("COUNT"):
+                h += f" ({kv['COUNT']}x)"
+            return h
+    return "repeating"
+
+
+def _series_id_of(series_col: str | None, external_id: str | None) -> str | None:
+    """The Google master id for an instance: the stored recurringEventId, else derived from
+    the instance id ('<master>_<UTC start>' — the form every synced instance has; rows synced
+    before series_id existed rely on this)."""
+    if series_col:
+        return series_col
+    _, gid = _split_external_id(external_id)
+    m = _INSTANCE_RE.match(gid or "")
+    return m.group("master") if m else None
 
 
 def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, verb: str,
@@ -4406,160 +4659,6 @@ def _primary_calendar_key(user_id: int) -> str:
         session.close()
 
 
-def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Create a timed event on the user's PRIMARY Google Calendar after an explicit
-    confirm, then mirror it into the local Event store so context/heartbeat see it
-    immediately. Honest degrade: not-connected and readonly-only (403) both return a clear
-    signal, never a fake success."""
-    from integrations import gcal
-
-    ti = tool_input or {}
-    summary = (ti.get("summary") or "").strip()
-    if not summary:
-        return "error: summary required"
-    starts_hhmm = ti.get("starts_at")
-    if not starts_hhmm:
-        return "error: starts_at required (local 'HH:MM')"
-
-    tz_str, tz = _calendar_user_tz(user_id)
-    start_utc = _parse_local_dt(tz_str, ti.get("date"), starts_hhmm)
-    if start_utc is None:
-        return "error: couldn't read the start time — give it as local 'HH:MM'"
-    end_utc = _parse_local_dt(tz_str, ti.get("date"), ti.get("ends_at"))
-    if end_utc is None:
-        try:
-            dur = int(ti.get("duration_minutes") or 60)
-        except (TypeError, ValueError):
-            dur = 60
-        dur = max(5, min(dur, 24 * 60))
-        end_utc = start_utc + timedelta(minutes=dur)
-    if end_utc <= start_utc:
-        end_utc = start_utc + timedelta(minutes=60)
-
-    when = _when_local(start_utc, end_utc, tz)
-    desc = (ti.get("description") or "").strip() or None
-    proposal = {"kind": "create", "summary": summary, "start_utc": start_utc.isoformat(),
-                "end_utc": end_utc.isoformat(), "description": desc, "when": when}
-    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
-                         verb="created", tool="create_calendar_event",
-                         reflect=f"adding '{summary}' {when} to their calendar",
-                         match_keys=("summary", "start_utc", "end_utc"),
-                         hint=_bare_hour_hint(start_utc, tz))
-    if gate:
-        return gate
-
-    try:
-        ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc)
-    except gcal.NotConnected:
-        return ("can't add it — no google calendar connected yet. offer to send the connect "
-                "link (send_connect_link) so you can start adding things.")
-    except gcal.WriteAccessDenied:
-        return ("i can read your calendar but can't add to it yet — the connection is "
-                "read-only. tell them that honestly (\"reconnect and i can add to it\") and "
-                "offer to re-send the connect link (send_connect_link) so they can grant add "
-                "access. do NOT say it was added.")
-    except Exception as e:  # noqa: BLE001 — a write failure must never read as success
-        logger.warning("CREATE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
-        return f"error: couldn't add it to the calendar ({e}); tell them it didn't go through"
-
-    # Mirror into the local Event store keyed the SAME way gcal_sync keys this account's
-    # primary-calendar events (source='gcal', external_id='<primary calendar id>:<id>'),
-    # so the next sync updates this row instead of adding a copy, and context/heartbeat
-    # see it right away.
-    eid = ev.get("id")
-    try:
-        from events import upsert_external_event
-        upsert_external_event(user_id, source="gcal", external_id=f"{_primary_calendar_key(user_id)}:{eid}",
-                              title=summary, occurred_at=start_utc, ends_at=end_utc, all_day=False)
-    except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
-        logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
-    _set_pending_calendar_event(user_id, None)
-    logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s summary=%r when=%s", user_id, eid, summary[:40], when)
-    return f"ok: added '{summary}' {when} to their google calendar"
-
-
-# ─── delete / move: resolve ONE event from the local mirror, confirm, write, re-mirror ──
-
-_EDITABLE_SOURCES = ("gcal", "model", "regex")   # bcourses/canvas items aren't theirs to edit
-
-
-def _find_calendar_events(user_id: int, ti: dict, tz: ZoneInfo) -> list:
-    """Candidates for a delete/move: by local Event id (exact), else a title keyword within
-    the next 60 days (today's remaining events included), optionally pinned to one local
-    day. Returns plain dicts (id, source, external_id, title, occurred_at, ends_at, all_day)
-    so no detached ORM rows leak out."""
-    from sqlalchemy import or_
-    from events import CALENDAR_SOURCES
-
-    def _row(e):
-        return {"id": e.id, "source": e.source, "external_id": e.external_id,
-                "title": (e.title or e.raw_text or e.event_type or "event").strip(),
-                "occurred_at": e.occurred_at, "ends_at": e.ends_at, "all_day": bool(getattr(e, "all_day", False))}
-
-    session = get_session()
-    try:
-        eid = ti.get("event_id")
-        if eid not in (None, "", 0):
-            try:
-                eid = int(eid)
-            except (TypeError, ValueError):
-                return []
-            e = active(session, Event, user_id=user_id).filter(Event.id == eid).one_or_none()
-            return [_row(e)] if e else []
-        query = (ti.get("query") or "").strip()
-        if not query:
-            return []
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        qy = (active(session, Event, user_id=user_id)
-              .filter(Event.source.in_(CALENDAR_SOURCES),
-                      Event.occurred_at >= now - timedelta(hours=18),
-                      Event.occurred_at < now + timedelta(days=60)))
-        like = f"%{query}%"
-        qy = qy.filter(or_(Event.title.ilike(like), Event.raw_text.ilike(like)))
-        if (ti.get("date") or "").strip():
-            d = _resolve_local_date(tz, ti.get("date"))
-            lo = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
-            qy = qy.filter(Event.occurred_at >= lo, Event.occurred_at < lo + timedelta(days=1))
-        out, seen_gids = [], set()
-        for e in qy.order_by(Event.occurred_at, Event.id).limit(16).all():
-            # One Google event can be mirrored twice ('<address>:<id>' from sync and
-            # 'primary:<id>' from an older coach create) — that's ONE candidate, not "which one?".
-            if e.source == "gcal":
-                gid = _split_external_id(e.external_id)[1]
-                if gid in seen_gids:
-                    continue
-                seen_gids.add(gid)
-            out.append(_row(e))
-            if len(out) >= 8:
-                break
-        return out
-    finally:
-        session.close()
-
-
-def _resolve_one_event(user_id: int, ti: dict, tz: ZoneInfo, *, verb: str):
-    """(event, None) when exactly one editable event matches; (None, message) otherwise."""
-    if not ti.get("event_id") and not (ti.get("query") or "").strip():
-        return None, "error: say which event — pass event_id (the [id N] in your context) or a title keyword in query"
-    rows = _find_calendar_events(user_id, ti, tz)
-    if not rows:
-        what = f"id {ti.get('event_id')}" if ti.get("event_id") else f"'{ti.get('query')}'"
-        if ti.get("date"):
-            what += f" on {ti.get('date')}"
-        return None, (f"no event matching {what} on their calendar (checked the full synced calendar). "
-                      "tell them you can't find it and ask what it's called / when it is — don't guess.")
-    if len(rows) > 1:
-        lines = "\n".join(f"[id {r['id']}] {r['title']} — {_when_local(r['occurred_at'], r['ends_at'], tz, all_day=r['all_day'])}"
-                          for r in rows)
-        return None, (f"several match — ask which one they mean, then call again with its event_id:\n{lines}")
-    ev = rows[0]
-    if ev["source"] not in _EDITABLE_SOURCES:
-        src = {"bcourses": "bCourses", "canvas": "Canvas"}.get(ev["source"], ev["source"])
-        return None, (f"can't be {verb} — '{ev['title']}' comes from {src} (a course deadline), not their "
-                      "google calendar; it isn't theirs to change. say so plainly.")
-    return ev, None
-
-
 def _gcal_rows(user_id: int) -> list[int]:
     """Connected gcal integration row ids, primary first — a delete/move tries each account's
     token when the event's calendar isn't on the primary account (second Google login)."""
@@ -4579,6 +4678,50 @@ def _split_external_id(external_id: str | None) -> tuple[str, str]:
         return "primary", ext
     cal, _, evid = ext.rpartition(":")
     return cal or "primary", evid
+
+
+def _mirror_series(user_id: int, cal_id: str, master_id: str, tz_str: str, *, integration_id=None) -> int:
+    """Mirror a repeating event's REAL occurrences (events.instances) over the sync horizon —
+    the same ids and row shape the 30-min sync produces, so it later updates these rows
+    instead of adding copies. Returns the number mirrored."""
+    from integrations import gcal, gcal_sync
+    from events import upsert_external_events
+    now = datetime.now(timezone.utc)
+    inst = gcal.list_instances(user_id, cal_id, master_id,
+                               time_min=(now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                               time_max=(now + timedelta(days=gcal_sync.SYNC_HORIZON_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                               integration_id=integration_id)
+    tz = ZoneInfo(tz_str)
+    rows = []
+    for ge in inst:
+        if ge.get("status") == "cancelled":
+            continue
+        r = gcal_sync.event_row(cal_id, ge, tz)
+        if r is not None:
+            r["series_id"] = r.get("series_id") or master_id
+            rows.append(r)
+    upsert_external_events(user_id, source="gcal", rows=rows)
+    return len(rows)
+
+
+def _soft_delete_series_rows(user_id: int, cal_id: str, master_id: str) -> int:
+    """Every local row of a repeating event: stored series_id, or the instance-id prefix for
+    rows synced before series_id existed."""
+    from sqlalchemy import or_
+    session = get_session()
+    try:
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source == "gcal",
+                        or_(Event.series_id == master_id, Event.external_id.like(f"%:{master_id}\\_%", escape="\\")))
+                .all())
+        n = datetime.now(timezone.utc).replace(tzinfo=None)
+        for e in rows:
+            e.deleted_at = n
+        if rows:
+            session.commit()
+        return len(rows)
+    finally:
+        session.close()
 
 
 def _soft_delete_local_event(user_id: int, event_id: int) -> None:
@@ -4629,52 +4772,328 @@ def _write_degrade(exc, *, verb: str) -> str | None:
     return None
 
 
-def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Delete ONE event the user named, after an explicit confirm. gcal events are deleted on
-    Google and dropped from the local mirror; coach-logged radar items (log_event) are just
-    soft-deleted locally; bCourses/Canvas items are refused (not theirs)."""
+# ─── create ──────────────────────────────────────────────────────────────────
+
+def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Create an event on the user's PRIMARY Google Calendar after an explicit confirm — timed
+    or all-day, one-off or repeating — then mirror it (a series: its real occurrences) into the
+    local Event store so context/heartbeat see it immediately. Honest degrade: not-connected
+    and readonly-only (403) both return a clear signal, never a fake success."""
     from integrations import gcal
 
     ti = tool_input or {}
+    summary = (ti.get("summary") or "").strip()
+    if not summary:
+        return "error: summary required"
+    all_day = bool(ti.get("all_day"))
+    starts_hhmm = ti.get("starts_at")
+    if not starts_hhmm and not all_day:
+        return "error: starts_at required (local 'HH:MM') — or all_day=true"
+
+    tz_str, tz = _calendar_user_tz(user_id)
+    if all_day:
+        d0 = _resolve_local_date(tz, ti.get("date"))
+    else:
+        start_utc0 = _parse_local_dt(tz_str, ti.get("date"), starts_hhmm)
+        if start_utc0 is None:
+            return "error: couldn't read the start time — give it as local 'HH:MM'"
+        d0 = start_utc0.replace(tzinfo=timezone.utc).astimezone(tz).date()
+
+    try:
+        rrule, rhuman, runtil, first_date, _codes = _repeat_rule(ti.get("repeat"), ti.get("repeat_days"), d0,
+                                                                 ti.get("repeat_until"), tz, all_day=all_day)
+    except ValueError as e:
+        return f"error: {e}"
+    date_iso = first_date.isoformat()
+
+    if all_day:
+        start_utc = datetime(first_date.year, first_date.month, first_date.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc = start_utc + timedelta(days=1)
+    else:
+        start_utc = _parse_local_dt(tz_str, date_iso, starts_hhmm)
+        end_utc = _parse_local_dt(tz_str, date_iso, ti.get("ends_at"))
+        if end_utc is None:
+            try:
+                dur = int(ti.get("duration_minutes") or 60)
+            except (TypeError, ValueError):
+                dur = 60
+            dur = max(5, min(dur, 24 * 60))
+            end_utc = start_utc + timedelta(minutes=dur)
+        if end_utc <= start_utc:
+            end_utc = start_utc + timedelta(minutes=60)
+
+    when = _when_local(start_utc, end_utc, tz, all_day=all_day)
+    color_id, cerr = _color_id(ti.get("color"))
+    if cerr:
+        return cerr
+    cal_id, cal_name, calerr = _resolve_calendar(user_id, ti.get("calendar"))
+    if calerr:
+        return calerr
+    recurrence = [rrule] if rrule else []
+    skipped = []
+    if rrule and ti.get("skip_dates"):
+        try:
+            ex, skipped = _exdates(ti.get("skip_dates"), start_utc.replace(tzinfo=timezone.utc).astimezone(tz), tz, tz_str, all_day=all_day)
+        except ValueError as e:
+            return f"error: {e}"
+        recurrence += ex
+    extras = []
+    if cal_name:
+        extras.append(f"on their '{cal_name}' calendar")
+    if color_id:
+        extras.append(_COLOR_NAME[color_id].split(" (")[0] + (f" ({ti.get('color')})" if str(ti.get("color")).lower() != _COLOR_NAME[color_id].split(" (")[0] else ""))
+    if skipped:
+        extras.append("skipping " + ", ".join(skipped))
+    extra_txt = (", " + ", ".join(extras)) if extras else ""
+    where = f"their '{cal_name}' calendar" if cal_name else "their calendar"
+    if rrule:
+        span = "(all day)" if all_day else _time_span_local(start_utc, end_utc, tz)
+        reflect = (f"adding '{summary}' {rhuman} {span} {runtil}, starting "
+                   f"{start_utc.replace(tzinfo=timezone.utc).astimezone(tz).strftime('%a %b %-d')}, to {where}{extra_txt}")
+    else:
+        reflect = f"adding '{summary}' {when} to {where}{extra_txt}"
+    desc = (ti.get("description") or "").strip() or None
+    loc = (ti.get("location") or "").strip() or None
+    proposal = {"kind": "create", "summary": summary, "start_utc": start_utc.isoformat(),
+                "end_utc": end_utc.isoformat(), "description": desc, "when": when, "rrule": rrule, "all_day": all_day,
+                "calendar_id": cal_id, "color_id": color_id, "exdates": ",".join(skipped)}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="created", tool="create_calendar_event", reflect=reflect,
+                         match_keys=("summary", "start_utc", "end_utc", "rrule", "all_day", "calendar_id", "color_id", "exdates"),
+                         hint="" if all_day else _bare_hour_hint(start_utc, tz))
+    if gate:
+        return gate
+
+    try:
+        ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc, all_day=all_day,
+                               tz=tz_str, recurrence=recurrence or None, location=loc,
+                               calendar_id=cal_id if cal_name else "primary", color_id=color_id)
+    except gcal.NotConnected:
+        return ("can't add it — no google calendar connected yet. offer to send the connect "
+                "link (send_connect_link) so you can start adding things.")
+    except gcal.WriteAccessDenied:
+        return ("i can read your calendar but can't add to it yet — the connection is "
+                "read-only. tell them that honestly (\"reconnect and i can add to it\") and "
+                "offer to re-send the connect link (send_connect_link) so they can grant add "
+                "access. do NOT say it was added.")
+    except gcal.WriteForbidden:
+        return (f"google wouldn't let us add to their '{cal_name}' calendar (they can see it but not write to it). "
+                "offer the main calendar instead; do NOT say it was added.")
+    except Exception as e:  # noqa: BLE001 — a write failure must never read as success
+        logger.warning("CREATE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+        return f"error: couldn't add it to the calendar ({e}); tell them it didn't go through"
+
+    # Mirror into the local Event store keyed the SAME way gcal_sync keys that calendar's
+    # events (source='gcal', external_id='<calendar id>:<id>'), so the next sync updates
+    # these rows instead of adding copies, and context/heartbeat see them right away. A
+    # series mirrors its real occurrences (events.instances).
+    eid = ev.get("id")
+    cal_key = cal_id or _primary_calendar_key(user_id)
+    mirrored = 1
+    try:
+        if rrule:
+            mirrored = _mirror_series(user_id, cal_key, eid, tz_str)
+        else:
+            from events import upsert_external_event
+            upsert_external_event(user_id, source="gcal", external_id=f"{cal_key}:{eid}",
+                                  title=summary, occurred_at=start_utc, ends_at=end_utc, all_day=all_day)
+    except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
+        logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
+        mirrored = None
+    _set_pending_calendar_event(user_id, None)
+    logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s cal=%s summary=%r when=%s rrule=%s color=%s",
+                user_id, eid, cal_key if cal_name else "primary", summary[:40], when, rrule, color_id)
+    where = f"their '{cal_name}' calendar" if cal_name else "their google calendar"
+    if rrule:
+        span = "(all day)" if all_day else _time_span_local(start_utc, end_utc, tz)
+        first = start_utc.replace(tzinfo=timezone.utc).astimezone(tz).strftime('%a %b %-d')
+        tail = (f"; {mirrored} on the calendar over the next two months" if mirrored is not None
+                else "; my mirror will catch up on the next sync (within 30 min)")
+        return f"ok: added '{summary}' {rhuman} {span} {runtil} to {where}{extra_txt} (first one {first}{tail})"
+    return f"ok: added '{summary}' {when} to {where}{extra_txt}"
+
+
+# ─── delete / move: resolve from the local mirror, confirm, write, re-mirror ─────
+
+_EDITABLE_SOURCES = ("gcal", "model", "regex")   # bcourses/canvas items aren't theirs to edit
+
+
+def _find_calendar_events(user_id: int, ti: dict, tz: ZoneInfo, *, limit: int = 8, collapse_series: bool = False) -> list:
+    """Candidates for a delete/move: by local Event id (exact), else a title keyword within
+    the next 60 days (today's remaining events included), optionally pinned to one local
+    day. Returns plain dicts (id, source, external_id, series_id, title, occurred_at, ends_at,
+    all_day) so no detached ORM rows leak out. collapse_series=True keeps ONE row per repeating
+    event (the next occurrence) — for 'all matching' counts/listing."""
+    from sqlalchemy import or_
+    from events import CALENDAR_SOURCES
+
+    def _row(e):
+        sid = _series_id_of(getattr(e, "series_id", None), e.external_id) if e.source == "gcal" else None
+        return {"id": e.id, "source": e.source, "external_id": e.external_id, "series_id": sid,
+                "title": (e.title or e.raw_text or e.event_type or "event").strip(),
+                "occurred_at": e.occurred_at, "ends_at": e.ends_at, "all_day": bool(getattr(e, "all_day", False))}
+
+    session = get_session()
+    try:
+        eid = ti.get("event_id")
+        if eid not in (None, "", 0):
+            try:
+                eid = int(eid)
+            except (TypeError, ValueError):
+                return []
+            e = active(session, Event, user_id=user_id).filter(Event.id == eid).one_or_none()
+            return [_row(e)] if e else []
+        query = (ti.get("query") or "").strip()
+        if not query:
+            return []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        qy = (active(session, Event, user_id=user_id)
+              .filter(Event.source.in_(CALENDAR_SOURCES),
+                      Event.occurred_at >= now - timedelta(hours=18),
+                      Event.occurred_at < now + timedelta(days=60)))
+        like = f"%{query}%"
+        qy = qy.filter(or_(Event.title.ilike(like), Event.raw_text.ilike(like)))
+        if (ti.get("date") or "").strip():
+            d = _resolve_local_date(tz, ti.get("date"))
+            lo = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+            qy = qy.filter(Event.occurred_at >= lo, Event.occurred_at < lo + timedelta(days=1))
+        out, seen_gids, seen_series = [], set(), set()
+        for e in qy.order_by(Event.occurred_at, Event.id).limit(2000 if collapse_series else 16).all():
+            # One Google event can be mirrored twice ('<address>:<id>' from sync and
+            # 'primary:<id>' from an older coach create) — that's ONE candidate, not "which one?".
+            if e.source == "gcal":
+                gid = _split_external_id(e.external_id)[1]
+                if gid in seen_gids:
+                    continue
+                seen_gids.add(gid)
+            r = _row(e)
+            if collapse_series and r["series_id"]:
+                if r["series_id"] in seen_series:
+                    continue
+                seen_series.add(r["series_id"])
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
+    finally:
+        session.close()
+
+
+def _fmt_candidate(r, tz) -> str:
+    line = f"[id {r['id']}] {r['title']} — {_when_local(r['occurred_at'], r['ends_at'], tz, all_day=r['all_day'])}"
+    if r.get("series_id"):
+        line += " (repeats)"
+    return line
+
+
+def _resolve_one_event(user_id: int, ti: dict, tz: ZoneInfo, *, verb: str):
+    """(event, None) when exactly one editable event matches; (None, message) otherwise."""
+    if not ti.get("event_id") and not (ti.get("query") or "").strip():
+        return None, "error: say which event — pass event_id (the [id N] in your context) or a title keyword in query"
+    rows = _find_calendar_events(user_id, ti, tz)
+    if not rows:
+        what = f"id {ti.get('event_id')}" if ti.get("event_id") else f"'{ti.get('query')}'"
+        if ti.get("date"):
+            what += f" on {ti.get('date')}"
+        return None, (f"no event matching {what} on their calendar (checked the full synced calendar). "
+                      "tell them you can't find it and ask what it's called / when it is — don't guess.")
+    if len(rows) > 1:
+        # Many occurrences of ONE repeating event → that's one thing, not "which one?"; the
+        # scope question (this one / all of them) is asked by the caller.
+        series = {r["series_id"] for r in rows}
+        if len(series) == 1 and None not in series:
+            return rows[0], None
+        lines = "\n".join(_fmt_candidate(r, tz) for r in rows)
+        return None, (f"several match — ask which one they mean, then call again with its event_id "
+                      f"(or, if they mean all of them, scope='all_matching'):\n{lines}")
+    ev = rows[0]
+    if ev["source"] not in _EDITABLE_SOURCES:
+        src = {"bcourses": "bCourses", "canvas": "Canvas"}.get(ev["source"], ev["source"])
+        return None, (f"can't be {verb} — '{ev['title']}' comes from {src} (a course deadline), not their "
+                      "google calendar; it isn't theirs to change. say so plainly.")
+    return ev, None
+
+
+def _series_scope_question(ev, tz, *, verb: str) -> str:
+    when = _when_local(ev["occurred_at"], ev["ends_at"], tz, all_day=ev["all_day"])
+    return (f"'{ev['title']}' is a repeating event (next: {when}). ask them: just this one, or every "
+            f"occurrence? then call again with scope='one' or scope='series' (nothing {verb} yet).")
+
+
+def _delete_on_google(user_id: int, cal_id: str, gid: str, rows: list) -> tuple[bool, str | None]:
+    """Try each connected account's token. → (already_gone, degrade_message)."""
+    from integrations import gcal
+    gone = False
+    for i, rid in enumerate(rows):
+        try:
+            gcal.delete_event(user_id, cal_id, gid, integration_id=rid)
+            return False, None
+        except gcal.EventGone:
+            gone = True
+            if i + 1 < len(rows):
+                continue          # maybe it lives on the other connected Google account
+            return True, None     # already gone everywhere we can see — treat as done
+        except Exception as e:  # noqa: BLE001 — a write failure must never read as success
+            degrade = _write_degrade(e, verb="delete")
+            if degrade:
+                return gone, degrade
+            logger.warning("DELETE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+            return gone, f"error: couldn't delete it from the calendar ({e}); tell them it didn't go through"
+    return gone, None
+
+
+def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Delete after an explicit confirm: ONE event, a whole repeating SERIES, or ALL events
+    matching a keyword. gcal events are deleted on Google and dropped from the local mirror;
+    coach-logged radar items (log_event) are just soft-deleted locally; bCourses/Canvas items
+    are refused (not theirs)."""
+    ti = tool_input or {}
+    scope = (ti.get("scope") or "").strip().lower()
+    if scope == "all_matching":
+        return _delete_all_matching(user_id, ti, message_id=message_id)
     _, tz = _calendar_user_tz(user_id)
     ev, msg = _resolve_one_event(user_id, ti, tz, verb="deleted")
     if msg:
         return msg
-    when = _when_local(ev["occurred_at"], ev["ends_at"], tz, all_day=ev["all_day"])
     on_google = ev["source"] == "gcal"
-    where = "their google calendar" if on_google else "your radar (something you logged, not their google calendar)"
-    proposal = {"kind": "delete", "event_id": ev["id"], "external_id": ev["external_id"], "title": ev["title"], "when": when}
+    series = ev["series_id"] if on_google else None
+    if series and scope not in ("one", "series"):
+        return _series_scope_question(ev, tz, verb="deleted")
+    if scope == "series" and not series:
+        scope = "one"
+    when = _when_local(ev["occurred_at"], ev["ends_at"], tz, all_day=ev["all_day"])
+    if scope == "series":
+        reflect = f"removing EVERY occurrence of '{ev['title']}' (next: {when}) from their google calendar"
+    else:
+        where = "their google calendar" if on_google else "your radar (something you logged, not their google calendar)"
+        reflect = f"removing '{ev['title']}' ({when}) from {where}"
+    proposal = {"kind": "delete", "event_id": ev["id"], "external_id": ev["external_id"], "title": ev["title"],
+                "when": when, "scope": "series" if scope == "series" else "one"}
     gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
-                         verb="deleted", tool="delete_calendar_event",
-                         reflect=f"removing '{ev['title']}' ({when}) from {where}",
-                         match_keys=("event_id",))
+                         verb="deleted", tool="delete_calendar_event", reflect=reflect,
+                         match_keys=("event_id", "scope"))
     if gate:
         return gate
 
     if on_google:
         cal_id, gid = _split_external_id(ev["external_id"])
         rows = _gcal_rows(user_id) or [None]
-        gone = False
-        for i, rid in enumerate(rows):
-            try:
-                gcal.delete_event(user_id, cal_id, gid, integration_id=rid)
-                break
-            except gcal.EventGone:
-                gone = True
-                if i + 1 < len(rows):
-                    continue          # maybe it lives on the other connected Google account
-                break                 # already gone everywhere we can see — treat as done
-            except Exception as e:  # noqa: BLE001 — a write failure must never read as success
-                degrade = _write_degrade(e, verb="delete")
-                if degrade:
-                    return degrade
-                logger.warning("DELETE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
-                return f"error: couldn't delete it from the calendar ({e}); tell them it didn't go through"
-        _soft_delete_gcal_copies(user_id, gid)
+        target = series if scope == "series" else gid
+        gone, degrade = _delete_on_google(user_id, cal_id, target, rows)
+        if degrade:
+            return degrade
+        if scope == "series":
+            n = _soft_delete_series_rows(user_id, cal_id, series)
+        else:
+            _soft_delete_gcal_copies(user_id, gid)
+            n = 1
         _soft_delete_local_event(user_id, ev["id"])
         _set_pending_calendar_event(user_id, None)
-        logger.info("DELETE_CALENDAR_EVENT user=%s gcal_id=%s title=%r when=%s already_gone=%s",
-                    user_id, gid, ev["title"][:40], when, gone)
+        logger.info("DELETE_CALENDAR_EVENT user=%s gcal_id=%s scope=%s title=%r when=%s rows=%s already_gone=%s",
+                    user_id, target, scope or "one", ev["title"][:40], when, n, gone)
+        if scope == "series":
+            return (f"ok: deleted every occurrence of '{ev['title']}' from their google calendar "
+                    f"({n} were on the calendar over the next two months)" + (" — it was already gone" if gone else ""))
         if gone:
             return (f"ok: '{ev['title']}' ({when}) was already gone from their google calendar — "
                     "dropped it on my side too. say it's gone.")
@@ -4683,21 +5102,146 @@ def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     _soft_delete_local_event(user_id, ev["id"])
     _set_pending_calendar_event(user_id, None)
     logger.info("DELETE_RADAR_EVENT user=%s event=%s title=%r", user_id, ev["id"], ev["title"][:40])
-    return (f"ok: took '{ev['title']}' ({when}) off your radar. it was something you logged on your side, "
+    return (f"ok: took '{ev['title']}' ({when}) off your radar. it was something you logged on their side, "
             "not on their google calendar — say 'took it off my radar', not 'deleted from your calendar'.")
 
 
+def _delete_all_matching(user_id: int, ti: dict, *, message_id=None) -> str:
+    """'remove everything eleng 105 related': every editable event whose title matches —
+    each repeating series deleted ONCE at its master, one-offs one by one — after a single
+    confirm that names the count. Course-feed items are counted and skipped."""
+    query = (ti.get("query") or "").strip()
+    if not query:
+        return "error: scope='all_matching' needs query (a title keyword)"
+    _, tz = _calendar_user_tz(user_id)
+    cands = _find_calendar_events(user_id, {"query": query, "date": ti.get("date")}, tz, limit=200, collapse_series=True)
+    skipped = [c for c in cands if c["source"] not in _EDITABLE_SOURCES]
+    cands = [c for c in cands if c["source"] in _EDITABLE_SOURCES]
+    if not cands:
+        if skipped:
+            return (f"nothing deletable matches '{query}' — the {len(skipped)} match(es) come from bCourses/Canvas "
+                    "(course deadlines, not theirs to delete). say so.")
+        return f"no event matching '{query}' on their calendar (checked the full synced calendar). don't guess."
+    series = [c for c in cands if c["series_id"]]
+    singles = [c for c in cands if not c["series_id"]]
+    titles = sorted({c["title"] for c in cands})
+    desc = []
+    if series:
+        desc.append(f"{len(series)} repeating event{'s' if len(series) > 1 else ''} (every occurrence)")
+    if singles:
+        desc.append(f"{len(singles)} one-off{'s' if len(singles) > 1 else ''}")
+    summary = f"everything matching '{query}': {', '.join(desc)} — " + "; ".join(titles[:6]) + (" …" if len(titles) > 6 else "")
+    reflect = f"removing {summary} from their google calendar"
+    if skipped:
+        reflect += f" (skipping {len(skipped)} bCourses/Canvas item{'s' if len(skipped) > 1 else ''} — not theirs to delete)"
+    key = ",".join(sorted(c["series_id"] or c["external_id"] or str(c["id"]) for c in cands))
+    proposal = {"kind": "delete_all", "query": query.lower(), "targets": key, "count": len(cands)}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="deleted", tool="delete_calendar_event", reflect=reflect,
+                         match_keys=("query", "targets"))
+    if gate:
+        return gate
+
+    rows = _gcal_rows(user_id) or [None]
+    done, failed, local_rows = [], [], 0
+    for c in cands:
+        if c["source"] != "gcal":
+            _soft_delete_local_event(user_id, c["id"])
+            done.append(c["title"]); local_rows += 1
+            continue
+        cal_id, gid = _split_external_id(c["external_id"])
+        target = c["series_id"] or gid
+        gone, degrade = _delete_on_google(user_id, cal_id, target, rows)
+        if degrade:
+            if degrade.startswith("error") or "read-only" in degrade:
+                if not done:
+                    return degrade
+                failed.append(c["title"])
+                continue
+            failed.append(c["title"])     # forbidden (not theirs) — skip this one, keep going
+            continue
+        if c["series_id"]:
+            local_rows += _soft_delete_series_rows(user_id, cal_id, c["series_id"])
+        else:
+            local_rows += max(1, _soft_delete_gcal_copies(user_id, gid))
+        done.append(c["title"])
+    _set_pending_calendar_event(user_id, None)
+    logger.info("DELETE_ALL_MATCHING user=%s query=%r done=%s failed=%s rows=%s", user_id, query, len(done), len(failed), local_rows)
+    out = (f"ok: deleted everything matching '{query}' from their google calendar — {len(done)} event"
+           f"{'s' if len(done) != 1 else ''} ({local_rows} occurrences over the next two months): " + "; ".join(sorted(set(done))[:6]))
+    if failed:
+        out += f". couldn't delete {len(failed)} (not theirs to change): " + "; ".join(sorted(set(failed))[:4])
+    if skipped:
+        out += f". left {len(skipped)} bCourses/Canvas item{'s' if len(skipped) > 1 else ''} alone (course deadlines)."
+    return out
+
+
+def _move_extras(user_id: int, ti: dict, *, on_google: bool, current_cal_id: str | None):
+    """new_calendar / new_color for a move → (dest_cal_id or None, dest_name or None, color_id or None,
+    error). A radar item (not on Google) can't take either."""
+    want_cal = (ti.get("new_calendar") or "").strip()
+    want_color = (ti.get("new_color") or "").strip()
+    if not on_google and (want_cal or want_color):
+        return None, None, None, ("that one is on your radar (something you logged), not their google calendar — "
+                                  "no calendar or colour to change. only its time/title can move.")
+    color_id, cerr = _color_id(want_color)
+    if cerr:
+        return None, None, None, cerr
+    dest_id = dest_name = None
+    if want_cal:
+        dest_id, dest_name, calerr = _resolve_calendar(user_id, want_cal)
+        if calerr:
+            return None, None, None, calerr
+        primary_key = _primary_calendar_key(user_id)
+        same = (dest_id == current_cal_id) or (current_cal_id in ("primary", primary_key) and dest_id == primary_key)
+        if same:
+            dest_id = dest_name = None       # already there — not a change
+    return dest_id, dest_name, color_id, None
+
+
+def _rekey_local_calendar(user_id: int, rows_filter, dest_id: str) -> None:
+    """After events.move: the same Google ids now live under the destination calendar, so
+    re-prefix the local external_ids (keeping the rows, so context stays warm). A key clash
+    (the destination already synced it) just drops the stale row instead."""
+    from sqlalchemy.exc import IntegrityError
+    session = get_session()
+    try:
+        for e in rows_filter(active(session, Event, user_id=user_id).filter(Event.source == "gcal")).all():
+            gid = _split_external_id(e.external_id)[1]
+            e.external_id = f"{dest_id}:{gid}"
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            n = datetime.now(timezone.utc).replace(tzinfo=None)
+            for e in rows_filter(active(session, Event, user_id=user_id).filter(Event.source == "gcal")).all():
+                e.deleted_at = n
+            session.commit()
+    finally:
+        session.close()
+
+
 def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Move (new day/time) and/or rename ONE event the user named, after an explicit confirm.
-    gcal events are PATCHed on Google and the local mirror updated in place; coach-logged
-    radar items are updated locally; bCourses/Canvas items are refused."""
+    """Move (new day/time) and/or rename ONE event — or every occurrence of a repeating one —
+    after an explicit confirm. gcal events are PATCHed on Google and the local mirror updated
+    in place (a series: re-mirrored from its real occurrences); coach-logged radar items are
+    updated locally; bCourses/Canvas items are refused."""
     from integrations import gcal
 
     ti = tool_input or {}
+    scope = (ti.get("scope") or "").strip().lower()
     tz_str, tz = _calendar_user_tz(user_id)
     ev, msg = _resolve_one_event(user_id, ti, tz, verb="moved")
     if msg:
         return msg
+    on_google = ev["source"] == "gcal"
+    series = ev["series_id"] if on_google else None
+    if series and scope not in ("one", "series"):
+        return _series_scope_question(ev, tz, verb="moved")
+    if scope == "series" and not series:
+        scope = "one"
+    if scope == "series":
+        return _move_series(user_id, ti, ev, series, tz_str, tz, message_id=message_id)
     if ev["all_day"] and (ti.get("new_starts_at") or ti.get("new_ends_at")):
         return (f"can't give '{ev['title']}' a time — it's an all-day event. you can move it to another "
                 "day (new_date) or rename it; a timed copy would be a new event (create_calendar_event).")
@@ -4731,9 +5275,13 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
 
     time_changed = (new_start != old_start) or (new_end != old_end)
     title_changed = bool(new_summary) and new_summary != ev["title"]
-    if not time_changed and not title_changed:
+    cal_id, gid = _split_external_id(ev["external_id"]) if on_google else (None, None)
+    dest_id, dest_name, color_id, xerr = _move_extras(user_id, ti, on_google=on_google, current_cal_id=cal_id)
+    if xerr:
+        return xerr
+    if not (time_changed or title_changed or dest_id or color_id):
         return (f"nothing to change — '{ev['title']}' is already {_when_local(old_start, old_end, tz, all_day=ev['all_day'])}. "
-                "ask what they want different (new time, new day, or a new title).")
+                "ask what they want different (new time, new day, a new title, calendar, or colour).")
 
     old_when = _when_local(old_start, old_end, tz, all_day=ev["all_day"])
     new_when = _when_local(new_start, new_end, tz, all_day=ev["all_day"])
@@ -4743,29 +5291,34 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
         bits.append(f"from {old_when} to {new_when}")
     if title_changed:
         bits.append(f"renamed '{ev['title']}' → '{new_summary}'")
-    on_google = ev["source"] == "gcal"
+    if dest_id:
+        bits.append(f"onto their '{dest_name}' calendar")
+    if color_id:
+        bits.append(f"colour → {_COLOR_NAME[color_id]}")
     reflect = f"moving '{ev['title']}' {' and '.join(bits)}" + ("" if on_google else " (on your radar, not their google calendar)")
+    if series:
+        reflect += " — just this one occurrence"
     proposal = {"kind": "move", "event_id": ev["id"], "external_id": ev["external_id"], "title": final_title,
-                "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(), "when": new_when}
+                "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(), "when": new_when, "scope": "one",
+                "calendar_id": dest_id, "color_id": color_id}
     gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
                          verb="moved", tool="move_calendar_event", reflect=reflect,
-                         match_keys=("event_id", "title", "start_utc", "end_utc"),
+                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "calendar_id", "color_id"),
                          hint=_bare_hour_hint(new_start, tz) if (time_changed and not ev["all_day"]) else "")
     if gate:
         return gate
 
     if on_google:
-        cal_id, gid = _split_external_id(ev["external_id"])
         rows = _gcal_rows(user_id) or [None]
         for i, rid in enumerate(rows):
             try:
-                if ev["all_day"]:
-                    # all-day events carry {date}, not {dateTime}; patch the date pair directly
-                    _patch_all_day(gcal, user_id, cal_id, gid, new_start, new_end, tz, new_summary, rid)
-                else:
+                if time_changed or title_changed or color_id:
                     gcal.update_event(user_id, cal_id, gid, summary=new_summary if title_changed else None,
                                       start_dt=new_start if time_changed else None,
-                                      end_dt=new_end if time_changed else None, integration_id=rid)
+                                      end_dt=new_end if time_changed else None, integration_id=rid,
+                                      all_day=ev["all_day"], tz=tz_str if ev["all_day"] else None, color_id=color_id)
+                if dest_id:
+                    gcal.move_event_calendar(user_id, cal_id, gid, dest_id, integration_id=rid)
                 break
             except gcal.EventGone:
                 if i + 1 < len(rows):
@@ -4781,7 +5334,8 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
                     return degrade
                 logger.warning("MOVE_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
                 return f"error: couldn't change it on the calendar ({e}); tell them it didn't go through"
-        logger.info("MOVE_CALENDAR_EVENT user=%s gcal_id=%s %r %s -> %s", user_id, gid, final_title[:40], old_when, new_when)
+        logger.info("MOVE_CALENDAR_EVENT user=%s gcal_id=%s %r %s -> %s cal=%s color=%s",
+                    user_id, gid, final_title[:40], old_when, new_when, dest_id, color_id)
 
     # Local mirror: update in place (same row id, same external_id) so context/heartbeat
     # see the new time immediately and the next sync finds nothing to change.
@@ -4795,28 +5349,156 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
             session.commit()
     finally:
         session.close()
+    if on_google and dest_id:
+        _rekey_local_calendar(user_id, lambda q: q.filter(Event.external_id.like(f"%:{gid}")), dest_id)
     _set_pending_calendar_event(user_id, None)
     if on_google:
-        return f"ok: '{final_title}' is now {new_when} on their google calendar"
+        where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
+        extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
+        return f"ok: '{final_title}' is now {new_when} on {where}{extra}" + (" (just that occurrence)" if series else "")
     return (f"ok: '{final_title}' is now {new_when} on your radar (something you logged, not their "
             "google calendar — say 'moved it on my side').")
 
 
-def _patch_all_day(gcal, user_id, cal_id, gid, new_start, new_end, tz, new_summary, rid):
-    """All-day move: Google wants {date: YYYY-MM-DD} start + an EXCLUSIVE end date."""
-    import requests as _rq
-    token = gcal._write_token(user_id, rid)
-    s = new_start.replace(tzinfo=timezone.utc).astimezone(tz).date()
-    e = new_end.replace(tzinfo=timezone.utc).astimezone(tz).date()
-    if e <= s:
-        e = s + timedelta(days=1)
-    body = {"start": {"date": s.isoformat()}, "end": {"date": e.isoformat()}}
-    if new_summary:
-        body["summary"] = new_summary
-    r = _rq.patch(gcal._event_url(cal_id, gid), headers={"Authorization": f"Bearer {token}"},
-                  json=body, timeout=gcal._timeout())
-    gcal._raise_for_write(user_id, "UPDATE", r)
-    return r.json()
+def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, tz: ZoneInfo, *, message_id=None) -> str:
+    """Every occurrence: patch the MASTER (new wall-clock time / length / title / weekdays),
+    then re-mirror from its real instances. Google needs the master's own start (its first
+    occurrence) — read it first, then set the new time on that date."""
+    from integrations import gcal, gcal_sync
+
+    new_summary = (ti.get("new_summary") or "").strip() or None
+    codes = _parse_days(ti.get("new_repeat_days")) if ti.get("new_repeat_days") else []
+    if ti.get("new_repeat_days") and not codes:
+        return "error: couldn't read new_repeat_days — use day names like ['tue','thu']"
+    if ti.get("new_date"):
+        return ("for a repeating event give the new time (new_starts_at) and/or the new weekdays "
+                "(new_repeat_days), not new_date — or move just this one occurrence with scope='one'")
+
+    cal_id, _gid = _split_external_id(ev["external_id"])
+    rows = _gcal_rows(user_id) or [None]
+    master, rid_used = None, None
+    for i, rid in enumerate(rows):
+        try:
+            master = gcal.get_event(user_id, cal_id, master_id, integration_id=rid)
+            rid_used = rid
+            break
+        except gcal.EventGone:
+            if i + 1 < len(rows):
+                continue
+            _soft_delete_series_rows(user_id, cal_id, master_id)
+            _set_pending_calendar_event(user_id, None)
+            return (f"can't move '{ev['title']}' — that repeating event is no longer on their google calendar. "
+                    "dropped it on my side. offer to add it fresh (create_calendar_event with repeat).")
+        except Exception as e:  # noqa: BLE001
+            degrade = _write_degrade(e, verb="move")
+            if degrade:
+                return degrade
+            logger.warning("MOVE_SERIES_GET_FAILED user=%s err=%s", user_id, e)
+            return f"error: couldn't read the repeating event ({e}); tell them it didn't go through"
+
+    m_start, m_all_day = gcal_sync._parse_dt(master.get("start"), tz)
+    m_end, _ = gcal_sync._parse_dt(master.get("end"), tz)
+    if m_start is None:
+        return "error: the repeating event has no start on google; tell them it didn't go through"
+    all_day = bool(m_all_day)
+    old_len = (m_end - m_start) if (m_end and m_end > m_start) else (timedelta(days=1) if all_day else timedelta(minutes=60))
+    m_loc = m_start.replace(tzinfo=timezone.utc).astimezone(tz)
+    recurrence = list(master.get("recurrence") or [])
+    old_days = _describe_rrule(recurrence)
+
+    if all_day and (ti.get("new_starts_at") or ti.get("new_ends_at")):
+        return (f"'{ev['title']}' is an all-day repeating event — you can change its weekdays (new_repeat_days) "
+                "or title; a timed version would be a new event (create_calendar_event).")
+
+    first_date = m_loc.date()
+    if codes:
+        for _ in range(7):
+            if _CODE_ORDER[first_date.weekday()] in codes:
+                break
+            first_date += timedelta(days=1)
+    if all_day:
+        new_start = datetime(first_date.year, first_date.month, first_date.day, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        new_end = new_start + old_len
+    else:
+        hhmm = ti.get("new_starts_at") or m_loc.strftime("%H:%M")
+        new_start = _parse_local_dt(tz_str, first_date.isoformat(), hhmm)
+        if new_start is None:
+            return "error: couldn't read the new start time — give it as local 'HH:MM'"
+        new_end = _parse_local_dt(tz_str, first_date.isoformat(), ti.get("new_ends_at"))
+        if new_end is None:
+            try:
+                dur = int(ti.get("duration_minutes") or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            new_end = new_start + (timedelta(minutes=max(5, min(dur, 24 * 60))) if dur else old_len)
+        if new_end <= new_start:
+            new_end = new_start + old_len
+    new_rec = _rewrite_byday(recurrence, codes) if codes else recurrence
+    time_changed = (new_start != m_start) or (new_end != m_end)
+    days_changed = bool(codes) and new_rec != recurrence
+    title_changed = bool(new_summary) and new_summary != (master.get("summary") or ev["title"])
+    dest_id, dest_name, color_id, xerr = _move_extras(user_id, ti, on_google=True, current_cal_id=cal_id)
+    if xerr:
+        return xerr
+    if not (time_changed or days_changed or title_changed or dest_id or color_id):
+        return (f"nothing to change — '{ev['title']}' already repeats {old_days} at "
+                f"{'(all day)' if all_day else _time_span_local(m_start, m_end, tz)}. ask what they want different.")
+
+    final_title = new_summary or ev["title"]
+    old_span = "(all day)" if all_day else _time_span_local(m_start, m_end, tz)
+    new_span = "(all day)" if all_day else _time_span_local(new_start, new_end, tz)
+    bits = []
+    if time_changed:
+        bits.append(f"{old_span} → {new_span}")
+    if days_changed:
+        bits.append(f"{old_days} → {_describe_rrule(new_rec)}")
+    if title_changed:
+        bits.append(f"renamed → '{new_summary}'")
+    if dest_id:
+        bits.append(f"onto their '{dest_name}' calendar")
+    if color_id:
+        bits.append(f"colour → {_COLOR_NAME[color_id]}")
+    reflect = f"moving EVERY occurrence of '{ev['title']}' ({old_days}): " + "; ".join(bits)
+    proposal = {"kind": "move", "event_id": ev["id"], "external_id": ev["external_id"], "title": final_title,
+                "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(),
+                "when": new_span, "scope": "series", "rrule": new_rec, "calendar_id": dest_id, "color_id": color_id}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="moved", tool="move_calendar_event", reflect=reflect,
+                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "rrule", "calendar_id", "color_id"),
+                         hint=_bare_hour_hint(new_start, tz) if (time_changed and not all_day) else "")
+    if gate:
+        return gate
+
+    try:
+        if time_changed or days_changed or title_changed or color_id:
+            gcal.update_event(user_id, cal_id, master_id, summary=new_summary if title_changed else None,
+                              start_dt=new_start if (time_changed or days_changed) else None,
+                              end_dt=new_end if (time_changed or days_changed) else None,
+                              recurrence=new_rec if days_changed else None,
+                              integration_id=rid_used, all_day=all_day, tz=tz_str, color_id=color_id)
+        if dest_id:
+            gcal.move_event_calendar(user_id, cal_id, master_id, dest_id, integration_id=rid_used)
+    except Exception as e:  # noqa: BLE001
+        degrade = _write_degrade(e, verb="move")
+        if degrade:
+            return degrade
+        logger.warning("MOVE_SERIES_FAILED user=%s err=%s", user_id, e)
+        return f"error: couldn't change the repeating event ({e}); tell them it didn't go through"
+
+    # Re-mirror: drop the old occurrences, pull the real new ones (from the new calendar if moved).
+    new_cal = dest_id or cal_id
+    try:
+        _soft_delete_series_rows(user_id, cal_id, master_id)
+        n = _mirror_series(user_id, new_cal, master_id, tz_str, integration_id=rid_used)
+    except Exception as e:  # noqa: BLE001 — the write succeeded; the 30-min sync will catch up
+        logger.warning("MOVE_SERIES_MIRROR_FAILED user=%s err=%s", user_id, e)
+        n = None
+    _set_pending_calendar_event(user_id, None)
+    logger.info("MOVE_SERIES user=%s master=%s %r %s", user_id, master_id, final_title[:40], "; ".join(bits))
+    where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
+    extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
+    return (f"ok: every '{final_title}' is now {new_span} {_describe_rrule(new_rec)} on {where}{extra}"
+            + (f" ({n} over the next two months)" if n is not None else ""))
 
 
 def _parse_iso(s):
