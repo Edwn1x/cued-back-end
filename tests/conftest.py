@@ -169,6 +169,16 @@ def anthropic_stub(_appmod, request, monkeypatch):
     yield controller
 
 
+@pytest.fixture(autouse=True)
+def _referral_ask_off(_appmod, monkeypatch):
+    """The last onboarding question ("did a friend send u here?", referrals.py, 2026-10-27)
+    is ON in prod and inserts one turn before the summary. Off here by default so the
+    many tests that drive onboarding to completion keep asserting the summary turn;
+    tests/tier1/test_referrals.py turns it on explicitly."""
+    import config
+    monkeypatch.setattr(config, "REFERRAL_ASK_ENABLED", False)
+
+
 @pytest.fixture
 def client(_appmod):
     return _appmod.app.test_client()

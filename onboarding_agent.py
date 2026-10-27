@@ -343,6 +343,16 @@ def _build_system_prompt(user) -> str:
     ]
     profile = "\n".join(p for p in profile_parts if p)
     try:
+        import referrals
+        if referrals.enabled() and getattr(user, "id", None):
+            code = referrals.ensure_code(user.id)
+            if code:
+                profile += (f"\n\nTheir referral code: {code} — ONLY if they ask for it (a friend who signs up "
+                            f"at cued.fit types it when cued asks at the end of their own setup). Never bring "
+                            f"it up yourself, never invent a different one.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REFERRAL_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    try:
         from workouts.routine import describe_routine
         rd = describe_routine(getattr(user, "custom_templates", None))
         if rd:
@@ -1794,7 +1804,7 @@ def _build_card_ask(user, incoming_message: str, system_prompt: str, card_missin
 
 
 def _build_completion_reaction(user, incoming_message: str, system_prompt: str, *, early: bool,
-                               assumption_note: str | None = None) -> str:
+                               assumption_note: str | None = None, referral_ask: bool = False) -> str:
     """The friend's bubble right before the code summary closes onboarding: react to /
     answer what they said, no question, no numbers (the summary has the numbers).
     assumption_note — the last answer was a vague sleep answer and code pinned a guess:
@@ -1806,7 +1816,9 @@ def _build_completion_reaction(user, incoming_message: str, system_prompt: str, 
         f"they said, or answer their question, fully. "
         + (f"{assumption_note} That clause IS the bubble — the summary right after repeats the "
            f"guess, so nothing to ask. " if assumption_note else "")
-        + f"Code is about to send their numbers right after your bubble"
+        + (f"Code is about to ask them one last quick question in this same text (whether a friend sent "
+           f"them), then send their numbers" if referral_ask else
+           f"Code is about to send their numbers right after your bubble")
         + (", then their first workout card (they asked for it — say it's coming, one clause)" if early else "")
         + ". So: no question, no numbers besides a stated guess, no summary, no 'locked in'. No greeting. "
         "Output the bubble text only — no notes to yourself, no restating these instructions, no draft."
@@ -2184,6 +2196,48 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     wants_workout = _wants_workout(incoming_message)
     card_missing = [f for f in missing_after if f[0] in CARD_CRITICAL]
     early = bool(missing_after) and wants_workout and not card_missing
+    # The LAST question is code's (referrals.py, founder 2026-10-27): "did a friend send u
+    # here?" goes out with the reaction to their final answer; the next inbound settles it
+    # (a matching code credits the friend) and only then do the summary + completion go.
+    import referrals
+    referral_pending = referrals.ask_enabled() and referrals.pending(user_row)
+    if referral_pending:
+        if continuation and not referrals.find_code_token(incoming_message):
+            # More of the thought that preceded the ask — the ask is still on the floor.
+            logger.info("ONBOARDING_REFERRAL_ASK_STILL_OPEN user=%s", user_row.id)
+            _react_thumbs(user_row.id)
+            return False
+        if ("?" in (incoming_message or "") and not referrals.candidate_tokens(incoming_message)
+                and (prev_coach or "").strip() != referrals.EXPLAIN_TEXT):
+            # "what's a referral code?" — answer it once, in code; the ask stays open.
+            send_sms(user_row.phone, referrals.EXPLAIN_TEXT, user_id=user_row.id, message_type="onboarding")
+            logger.info("ONBOARDING_REFERRAL_EXPLAINED user=%s", user_row.id)
+            return False
+        ack = referrals.resolve_reply(user_row.id, incoming_message)
+        if ack:
+            send_sms(user_row.phone, ack, user_id=user_row.id, message_type="onboarding")
+        early = bool(missing_after)          # only ever pending after a normal or early close
+        if early:
+            logger.info("ONBOARDING_EARLY_EXIT user=%s wants_workout=True learned_later=%s",
+                        user_row.id, [f[0] for f in missing_after])
+        return _complete_onboarding(user_row, incoming_message, early=early)
+    if (not missing_after or early) and referrals.ask_enabled() and not getattr(user_row, "referral_asked_at", None):
+        text = ""
+        if not (continuation and prev_coach) and not _is_bare_answer(incoming_message, code_found):
+            try:
+                text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early,
+                                                  assumption_note=assumption_note, referral_ask=True)
+            except Exception as e:  # noqa: BLE001 — the ask still goes out
+                logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
+                text = ""
+            if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+                text = _reconcile_sleep_guess(user_row, text)
+        text = f"{text.strip()} {referrals.ASK_TEXT}" if text and text.strip() else referrals.ASK_TEXT
+        send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        referrals.mark_asked(user_row.id)
+        logger.info("ONBOARDING_REPLY mode=referral_ask user=%s early=%s still_unknown=%s",
+                    user_row.id, early, [f[0] for f in missing_after])
+        return False
     if not missing_after or early:
         # A continuation turn (the text landed while the previous reply was going out)
         # that completes onboarding: the previous reply was the reaction — a second

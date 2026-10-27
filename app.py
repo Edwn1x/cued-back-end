@@ -1862,6 +1862,16 @@ def classify_message(body: str, has_image: bool = False) -> str:
 
 
 # ─── User Signup Endpoint ───────────────────────────
+def _ensure_referral_code(user_id: int) -> None:
+    """Every account gets its referral code at creation (referrals.py); never blocks signup."""
+    try:
+        import referrals
+        if referrals.enabled():
+            referrals.ensure_code(user_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REFERRAL_CODE_AT_SIGNUP_FAILED user=%s err=%s", user_id, e)
+
+
 @app.route("/signup", methods=["GET"])
 def signup_form():
     """Retired 2026-10-15: the backend no longer hosts a sign-up form. Old links land on
@@ -1953,6 +1963,7 @@ def signup_submit():
         )
         session.add(user)
         session.commit()
+        _ensure_referral_code(user.id)
 
         # Photon shared-pool consent gate (live 2026-09-12, user 28): a new shared
         # user can't be MESSAGED until they text their assigned line once, so the
@@ -2358,6 +2369,7 @@ def waitlist_signup():
         session.add(user)
         session.commit()
         uid = user.id
+        _ensure_referral_code(uid)
         logger.info(
             "%s phone=%s name=%r source=%r email=%r goal=%r experience=%r form_stats=%s",
             "SIGNUP_LIVE_NEW" if live else "WAITLIST_NEW",

@@ -228,6 +228,7 @@ tr.clickable{cursor:pointer}tr.clickable:hover td{background:rgba(124,110,255,.0
   <a class="nav {{ 'here' if active_nav == 'heartbeat' }}" href="/admin/heartbeat">Heartbeat</a>
   <a class="nav {{ 'here' if active_nav == 'consolidation' }}" href="/admin/consolidation">Memory Jobs</a>
   <a class="nav {{ 'here' if active_nav == 'adoption' }}" href="/admin/adoption">Adoption</a>
+  <a class="nav {{ 'here' if active_nav == 'referrals' }}" href="/admin/referrals">Referrals</a>
   <span style="margin-left:auto;font-size:11px;color:var(--text3)">{{ rendered_at }}</span>
 </div>
 <div class="content">
@@ -865,6 +866,86 @@ def adoption_page():
     return _render("adoption", "Adoption",
                    "Are people connecting and accepting what setup proposes? Offered → accepted, per step.",
                    _ADOPTION_BODY, a=a)
+
+
+# ─── /admin/referrals ───────────────────────────────────────────────────────
+
+_REFERRALS_BODY = """
+<div class="grid grid-3" style="margin-bottom:18px">
+  <div class="info-card"><h3>Credited sign-ups</h3><div style="font-size:26px;font-weight:600">{{ total }}</div></div>
+  <div class="info-card"><h3>Referrers</h3><div style="font-size:26px;font-weight:600">{{ board|length }}</div></div>
+  <div class="info-card"><h3>Users with a code</h3><div style="font-size:26px;font-weight:600">{{ coded }}</div></div>
+</div>
+<div class="section">
+  <div class="section-title">Leaderboard — most credited sign-ups first</div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>#</th><th>Referrer</th><th>Code</th><th>Sign-ups</th><th>Finished setup</th><th>Who</th></tr>
+      {% for r in board %}
+      <tr>
+        <td>{{ r.rank }}</td>
+        <td style="color:var(--text);font-weight:500"><a href="/admin/user/{{ r.user_id }}">{{ r.name }}</a></td>
+        <td><code>{{ r.code }}</code></td>
+        <td><span class="badge badge-green">{{ r.signups }}</span></td>
+        <td>{{ r.completed }}</td>
+        <td style="font-size:12px">{% for k in r.referred %}<a href="/admin/user/{{ k.id }}">{{ k.name }}</a>{{ '' if k.completed else ' (in setup)' }}{{ ', ' if not loop.last }}{% endfor %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="color:var(--text3)">no credited sign-ups yet</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  <p style="color:var(--text3);font-size:12px;margin-top:8px">A sign-up is credited when the new user types a friend's code at the last onboarding question. Users get their own code by asking the coach ("what's my referral code").</p>
+</div>
+<div class="section">
+  <div class="section-title">Every code</div>
+  <div class="table-wrap">
+    <table>
+      <tr><th>User</th><th>Code</th><th>Referred by</th><th>Asked at setup</th></tr>
+      {% for u in users %}
+      <tr>
+        <td><a href="/admin/user/{{ u.id }}">{{ u.name }}</a></td>
+        <td><code>{{ u.code }}</code></td>
+        <td>{{ u.referred_by }}</td>
+        <td style="font-size:12px;color:var(--text3)">{{ u.asked }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+"""
+
+
+@admin_system_bp.route("/admin/referrals")
+def referrals_page():
+    import referrals
+    from models import User
+    try:
+        referrals.backfill()
+    except Exception as e:  # noqa: BLE001 — the page still renders
+        logger.warning("REFERRAL_BACKFILL_FAILED err=%s", e)
+    session = get_session()
+    try:
+        board = referrals.leaderboard(session)
+        rows = session.query(User).filter(User.archived_at.is_(None)).order_by(User.id).all()
+        names = {u.id: u.name for u in rows}
+        users = []
+        for u in rows:
+            if u.referral_asked_at:
+                asked = ("credited" if u.referred_by_user_id else
+                         ("answered, no code" if u.referral_resolved_at else "asked, no answer yet"))
+            else:
+                asked = "—"
+            users.append({"id": u.id, "name": u.name, "code": u.referral_code or "—",
+                          "referred_by": names.get(u.referred_by_user_id, "—") if u.referred_by_user_id else "—",
+                          "asked": asked})
+        coded = sum(1 for u in rows if u.referral_code)
+    finally:
+        session.close()
+    return _render("referrals", "Referrals",
+                   "Who's bringing people in. Codes are asked for from the coach; credit lands at the last onboarding question.",
+                   _REFERRALS_BODY, board=board, users=users, coded=coded,
+                   total=sum(r["signups"] for r in board))
 
 
 # ─── /admin/user/<id>/debug ────────────────────────────────────────────────

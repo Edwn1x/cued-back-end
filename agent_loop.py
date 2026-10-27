@@ -2030,6 +2030,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # heading-out flow sends) so the coach never fakes 'here's the line link'.
         from agent_tools import SEND_GYM_LINE_LINK_TOOL
         tools.append(SEND_GYM_LINE_LINK_TOOL)
+    if config.REFERRALS_ENABLED:
+        # Their referral code + credited sign-ups (referrals.py) — the real capability
+        # behind "what's my referral code", so the coach never invents one.
+        from agent_tools import GET_REFERRAL_CODE_TOOL
+        tools.append(GET_REFERRAL_CODE_TOOL)
     if config.FIND_STUDY_SPACE_TOOL_ENABLED:
         # Campus libraries: bookable study rooms (LibCal grid) + library hours/tags, and
         # the booking link as its own bubble (needs CalNet — we never book for them).
