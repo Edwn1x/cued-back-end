@@ -202,7 +202,8 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
         )
         system = [{"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()}]
         client = make_client()
-        resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=400, system=system,
+        resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=1000, system=system,
+                                      thinking={"type": "adaptive"}, output_config={"effort": "low"},
                                       messages=[{"role": "user", "content": instruction}])
         try:
             track(user.id, "onboarding.reengage", config.AGENT_LOOP_MODEL, resp)

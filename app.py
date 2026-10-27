@@ -610,11 +610,12 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
     try:
         response = client.messages.create(
             model=config.COACH_MODEL,
-            # 3000: the prompt's own ask (≤400 words structured) is ~550-700 tokens
-            # WITH headers — the old 600 cap sat INSIDE the asked-for range. The
-            # 400-word instruction stays the real length governor; doubled for the
-            # Opus tokenizer (~30% more tokens for the same text) + headroom.
-            max_tokens=3000,
+            # Opus 5.5 (2026-10-26): thinking is always on and bills against max_tokens,
+            # so the cap carries the reasoning AND the ≤400-word summary (~700 tokens
+            # with headers). Effort low keeps the reasoning short for a fold job.
+            max_tokens=4000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
             messages=[{"role": "user", "content": prompt}],
         )
         track_usage(user_id, "maybe_update_coaching_summary",
@@ -626,7 +627,17 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
             logger.warning("BG_JOB_TRUNCATED site=maybe_update_coaching_summary user=%s "
                            "max_tokens=%d — keeping prior summary and watermark", user_id, 3000)
             return
-        summary = response.content[0].text.strip()
+        # Read text by block TYPE, never by position: on Opus 5.5 content[0] is a
+        # thinking block with no .text — the old content[0].text raised, the write
+        # below never ran, the watermark never advanced, and the job re-ran at full
+        # cost on EVERY reply (user 77: 27 runs in one afternoon, 2026-10-27).
+        from agent_loop import _join_text
+        summary = (_join_text(response.content) or "").strip()
+        if not summary:
+            logger.warning("BG_JOB_EMPTY site=maybe_update_coaching_summary user=%s blocks=%s "
+                           "— keeping prior summary and watermark",
+                           user_id, [getattr(b, "type", None) for b in response.content])
+            return
 
         session = get_session()
         try:

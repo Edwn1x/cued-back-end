@@ -400,7 +400,10 @@ def _compose(user, row: Reminder) -> str:
                 f"a few words, no question, no explanation, and not the same wording every time."
             )
         client = make_client()
-        resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=300,
+        # Opus 5.5: thinking always on and counted in max_tokens — effort low keeps it
+        # short; the cap has room for reasoning + a <20-word line.
+        resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=800,
+                                      thinking={"type": "adaptive"}, output_config={"effort": "low"},
                                       system=system, messages=[{"role": "user", "content": instruction}])
         try:
             track(user.id, "reminder.compose", config.AGENT_LOOP_MODEL, resp)
