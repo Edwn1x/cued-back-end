@@ -3939,7 +3939,7 @@ def handle_get_referral_code(user_id: int, tool_input: dict, *, message_id=None)
     st = referrals.stats(user_id)
     if not st.get("code"):
         return "error: couldn't make a code just now — say so plainly, they can ask again later"
-    line = (f"their referral code is {st['code']} (say it exactly like that, uppercase). a friend types "
+    line = (f"their referral code is {st['code']} (say it exactly like that, uppercase, all the digits). a friend types "
             f"it in the sign-up chat at cued.fit (last question). credited sign-ups so far: "
             f"{st['signups']}")
     if st["signups"]:
