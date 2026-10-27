@@ -1307,6 +1307,11 @@ ONBOARDING_EMBEDDED_QUESTION_ENABLED = os.getenv("ONBOARDING_EMBEDDED_QUESTION_E
 # setup card — it logs on its own and the waiting card is re-planned to the next day in place.
 SETUP_CARD_PROGRAM_DAY_ENABLED = os.getenv("SETUP_CARD_PROGRAM_DAY_ENABLED", "true").lower() == "true"
 PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED = os.getenv("PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED", "true").lower() == "true"
+# Live 2026-10-27 (user 77): a lift text that REPORTS a finished session ("this morning I did 3x10…",
+# "all time PRs…") confirms the day's workout but no longer sets session_state at_gym; a mid-turn
+# "No… It's Tuesday lunch" is flagged to the coach as a CORRECTION to act on, never [silent].
+AT_GYM_SKIPS_PAST_REPORT_ENABLED = os.getenv("AT_GYM_SKIPS_PAST_REPORT_ENABLED", "true").lower() == "true"
+CONTINUATION_CORRECTION_HINT_ENABLED = os.getenv("CONTINUATION_CORRECTION_HINT_ENABLED", "true").lower() == "true"
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"

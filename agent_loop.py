@@ -1293,28 +1293,54 @@ def _which_class_block(user, text: str, session, *, now: datetime = None) -> str
 CONTINUATION_HDR = "## CONTINUATION — THIS TEXT LANDED WHILE UR LAST REPLY WAS BEING WRITTEN"
 
 
+# "No… It's Tuesday lunch" / "not X, Y" / "that was dinner" — a continuation that CORRECTS something
+# already said or logged, not the tail of the thought in flight. Live 2026-10-27 (user 77): the
+# coach had said "today's breakfast was the sandwich w pepper jack, so i'll add a slice of cheese";
+# his "No… It's Tuesday lunch" landed mid-turn, the continuation turn logged his lifts (the other
+# message's unfinished business) and never touched the meal — eaten_at stayed 9am, no acknowledgement.
+_CONTINUATION_CORRECTION_RE = re.compile(
+    r"^\s*(?:no+\b|nah\b|nope\b|not\b|wrong\b|actually\b|that(?:'s| was| is)\b|it(?:'s| was)\b|i meant\b|"
+    r"i said\b|u (?:got|logged|have) (?:it|that) wrong\b)", re.I)
+
+
 def _continuation_block(user, combined_body: str, session) -> str | None:
-    """The block for a continuation turn: what the previous reply said (it went out after
-    this text was already in the thread), and the rule — [silent] when it's covered. None
-    only on error (never breaks a turn)."""
+    """The block for a continuation turn: what the previous replies said (they went out after
+    this text was already in the thread), and the rule — [silent] when it's covered; a
+    correction is acted on, never skipped. None only on error (never breaks a turn)."""
     try:
         from models import Message
         from agent_tools import REACTION_ONLY_SENTINEL
-        last_out = (session.query(Message)
-                    .filter(Message.user_id == user.id, Message.direction == "out")
-                    .order_by(Message.id.desc()).first())
-        prev = (last_out.body or "").strip().replace("\n", " / ")[:300] if last_out else ""
+        outs = (session.query(Message)
+                .filter(Message.user_id == user.id, Message.direction == "out")
+                .order_by(Message.id.desc()).limit(3).all())
+        prev = (outs[0].body or "").strip().replace("\n", " / ")[:300] if outs else ""
+        earlier = [(o.body or "").strip().replace("\n", " / ")[:200] for o in outs[1:] if (o.body or "").strip()]
+        body = (combined_body or "").strip()
         name = user.name or "they"
+        correction = bool(getattr(config, "CONTINUATION_CORRECTION_HINT_ENABLED", True) and _CONTINUATION_CORRECTION_RE.search(body))
         lines = [CONTINUATION_HDR,
                  f"{name} sent this before seeing ur last reply — it's the tail of the thought u were "
-                 f"already answering, NOT a fresh prompt: \"{(combined_body or '').strip()[:300]}\""]
+                 f"already answering, NOT a fresh prompt: \"{body[:300]}\""]
         if prev:
             lines.append(f"ur last reply went out AFTER it, with this text already in the thread: \"{prev}\"")
+        if earlier:
+            lines.append("the replies just before that (code may have sent some of these): "
+                         + " | ".join(f"\"{e}\"" for e in earlier))
+        if correction:
+            lines.append(
+                "This reads as a CORRECTION (\"no… it's X\", \"not that, Y\") — of something u said or logged "
+                "EARLIER, not necessarily ur last reply: find what it corrects in RECENT CONVERSATION / TODAY'S "
+                "MEALS (a logged meal's name or time, a number, a date), FIX it with the tool (manage_log for a "
+                "meal — eaten_at/description —, log_event for a date) and confirm in ONE short line naming the "
+                f"fix. Never {REACTION_ONLY_SENTINEL} on a correction, and never answer only the other message "
+                "and leave this unaddressed.")
         lines.append(
             f"If that reply already covers it, or it needs no answer, reply exactly {REACTION_ONLY_SENTINEL} "
             f"— code puts a 👍 on their text and that's the whole reply. If it adds something new (a "
             f"correction, a question u didn't answer), answer ONLY that in one short line. Don't react to "
             f"its mood or timing as if it just arrived, and don't restate anything u already said.")
+        if correction:
+            lines.append(f"({REACTION_ONLY_SENTINEL} does NOT apply here — see CORRECTION above.)")
         return "\n".join(lines)
     except Exception as e:  # noqa: BLE001 — a hint must never break a turn
         logger.warning("CONTINUATION_BLOCK_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
