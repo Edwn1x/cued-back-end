@@ -198,12 +198,14 @@ def _system(user_name: str, tz_name: str | None) -> list:
     ]
 
 
-def _call(user_id: int, site: str, system: list, instruction: str, *, max_tokens: int = 900):
+def _call(user_id: int, site: str, system: list, instruction: str, *, max_tokens: int = 1500):
     from agent_loop import _join_text
     from cost_tracking import track
     from llm_client import make_client
     client = make_client()
+    # Opus 5.5: thinking always on and counted in max_tokens — effort low + headroom.
     resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=max_tokens, system=system,
+                                  thinking={"type": "adaptive"}, output_config={"effort": "low"},
                                   messages=[{"role": "user", "content": instruction}])
     try:
         track(user_id, site, config.AGENT_LOOP_MODEL, resp)
