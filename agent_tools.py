@@ -159,11 +159,17 @@ LOG_WORKOUT_TOOL = {
         "distance in distance_miles and time in duration_min, never in reps. (Live: a 2-mile "
         "run was logged as split_day=full_body with reps=2 and knocked the pointer off push.) "
         "Logging a second time on the same day for the same split day ADDS to that session "
-        "(e.g. 'i went' then 'bench 135x3x8') — you never need to delete and re-log."
+        "(e.g. 'i went' then 'bench 135x3x8') — you never need to delete and re-log. "
+        "already_done=true when they REPORT a session they already finished ('this morning i did', "
+        "'earlier', 'just got back from the gym') rather than logging live from the gym: a card "
+        "planned for later never absorbs a report — the report gets its own log and the waiting "
+        "card is re-planned to the next day (the result says so)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
+            "already_done": {"type": "boolean",
+                             "description": "true for a report of a finished session (past tense), false/omitted for live logging"},
             "split_day": {"type": "string",
                           "description": "ONLY the day the user literally named: push/pull/legs/upper/lower/full_body, or one of their own body-part days from SPLIT in your context (chest_biceps, back_triceps, legs_shoulders, chest, arms …). Omit if they didn't. Never for cardio."},
             "cardio": {"type": "boolean",
@@ -667,16 +673,40 @@ def handle_set_targets(user_id: int, tool_input: dict, *, message_id=None) -> st
     return "; ".join(parts)
 
 
-def _log_into_open_session(user_id: int, exercises: list, notes: str | None) -> str | None:
+# A text that REPORTS a session already finished, not one being logged from the gym. Live
+# 2026-10-27 (user 77): "All time PRs: Bench: 185, squat: 3 plates. This morning I did 3x10 of
+# 135 on bench and 30 lbs tricep extension." — logged into the push setup card planned for the
+# next morning, which then read as a session in progress.
+_PAST_REPORT_RE = re.compile(
+    r"\b(?:this morning|earlier(?: today)?|already (?:did|hit|went|lifted|trained|got)|just got back|got back from|"
+    r"yesterday|last night|first day back|was my first|before class|this afternoon)\b", re.I)
+
+
+def _is_past_report(tool_input: dict, message_id) -> bool:
+    if tool_input.get("already_done"):
+        return True
+    body = _inbound_body(message_id) or ""
+    return bool(_PAST_REPORT_RE.search(body))
+
+
+def _log_into_open_session(user_id: int, exercises: list, notes: str | None, *, past_report: bool = False) -> str | None:
     """If a card/session is open, the model's extracted sets land there (source
     'text'), matched by name to the session's exercises; unmatched names become
-    new exercises. Returns the tool result, or None when no session is open."""
+    new exercises. Returns the tool result, or None when no session is open — or when the
+    only open session is a PLANNED card nobody has started and this is a report of a session
+    already done elsewhere (`past_report`): that card is for later, the report is its own log."""
     from workouts.session_ops import active_session_id, recently_closed_session_id
     from workouts.templates import slug_for_name, machine_slug_for
     from card_page import apply_set_update
     from models import WorkoutSession, SetLog
     ws_id = active_session_id(user_id)
     straggler = False
+    if ws_id and past_report and getattr(config, "PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED", True):
+        from workouts.start import planned_untouched_session
+        held = planned_untouched_session(user_id)
+        if held and held[0] == ws_id:
+            logger.info("LOG_WORKOUT_PAST_REPORT_SKIPS_PLANNED_CARD user=%s session=%s key=%s", user_id, ws_id, held[1])
+            ws_id = None
     if not ws_id:
         # "I also did crunches 100x10" a minute after the card closed: it's THAT session's
         # work, not a second legacy row (live 2026-10-18 00:54, user 40).
@@ -794,8 +824,10 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
     if cardio:
         split_day = None  # never a split day, whatever the model passed
     elif not date_str:
-        # One truth: an open card/session absorbs a text log ("bench 190x4 done").
-        routed = _log_into_open_session(user_id, exercises, notes)
+        # One truth: an open card/session absorbs a text log ("bench 190x4 done") — unless the
+        # only open one is a planned card for later and this is a report (see _is_past_report).
+        routed = _log_into_open_session(user_id, exercises, notes,
+                                        past_report=_is_past_report(tool_input, message_id))
         if routed:
             return routed
 
@@ -881,9 +913,19 @@ def handle_log_workout(user_id: int, tool_input: dict, *, message_id=None) -> st
         _record_pointer_advance(wid, before, pointer)
     logger.info("LOG_WORKOUT_TOOL user=%s workout_id=%s split_day=%s pointer=%s",
                 user_id, wid, split_day, pointer)
+    replan_note = ""
+    if is_today:
+        # A setup card waiting for a day they've now done is re-planned in place (one code line
+        # goes out with the updated bubble) — the model adds nothing about the card.
+        from workouts.start import replan_setup_card
+        rp = replan_setup_card(user_id)
+        if rp:
+            from workouts.templates import day_label as _dl
+            replan_note = (f"; their waiting setup card was {_dl(rp['replanned_from'])} day — code re-planned it to "
+                           f"{_dl(rp['template_key'])} day and told them (bubble updated); don't repeat that")
     return (f"ok: logged workout (id={wid}, {len(exercises)} exercises"
             + (f", dated {date_str}" if when is not None else "") + ")"
-            + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else ""))
+            + (f", split pointer now {pointer['day']} ({pointer['source']})" if pointer else "") + replan_note)
 
 
 def _pointer_ser(p):

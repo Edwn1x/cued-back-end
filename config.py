@@ -1301,6 +1301,12 @@ INTAKE_ASK_ENABLED = os.getenv("INTAKE_ASK_ENABLED", "true").lower() == "true"  
 # any part time job") counts as the reply's question, so the always-ask backstop doesn't glue a
 # second copy on (live 2026-10-27, user 77: two doubled asks in one setup).
 ONBOARDING_EMBEDDED_QUESTION_ENABLED = os.getenv("ONBOARDING_EMBEDDED_QUESTION_ENABLED", "true").lower() == "true"
+# First card (live 2026-10-27, user 77): with no split pointer the card is the PROGRAM's day for the
+# next session (today's mapped day unless they've trained today, else the next mapped weekday), not
+# the cycle's first day; a past-tense report ("this morning i did…") never lands inside a planned
+# setup card — it logs on its own and the waiting card is re-planned to the next day in place.
+SETUP_CARD_PROGRAM_DAY_ENABLED = os.getenv("SETUP_CARD_PROGRAM_DAY_ENABLED", "true").lower() == "true"
+PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED = os.getenv("PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED", "true").lower() == "true"
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"
