@@ -28,9 +28,59 @@ logger = logging.getLogger("cued.workouts")
 NO_SPLIT = {None, "", "none"}
 
 
-def infer_template(user) -> str | None:
+def trained_today(user, *, now: datetime | None = None) -> bool:
+    """A session they finished today (a done card, or a logged non-cardio workout row) — the
+    thing a first card must not be built for. Reads the local day; never raises."""
+    try:
+        from timefmt import local_day_bounds
+        from models import Workout
+        day0, day1 = local_day_bounds(user, now=now)
+        session = get_session()
+        try:
+            done = (session.query(WorkoutSession.id)
+                    .filter(WorkoutSession.user_id == user.id, WorkoutSession.status == "done",
+                            WorkoutSession.finished_at >= day0, WorkoutSession.finished_at < day1).first())
+            if done:
+                return True
+            logged = (session.query(Workout.id)
+                      .filter(Workout.user_id == user.id, Workout.deleted_at.is_(None), Workout.completed.is_(True),
+                              Workout.workout_type != "cardio", Workout.date >= day0, Workout.date < day1).first())
+            return logged is not None
+        finally:
+            session.close()
+    except Exception as e:  # noqa: BLE001
+        logger.info("TRAINED_TODAY_CHECK_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
+
+
+def program_next_key(user, *, now: datetime | None = None) -> str | None:
+    """The code-built program's day for the NEXT session: today's mapped day when today is a
+    training day they haven't trained yet, else the first mapped weekday after today. None
+    without a program. Live 2026-10-27 (user 77): the brief said "mon push · tue pull · wed
+    legs"; the first card, built on a Tuesday with no pointer, was "push · tue" — the
+    cycle's first day — for a day he had already trained that morning."""
+    prog = getattr(user, "program", None)
+    days = (prog or {}).get("days") if isinstance(prog, dict) else None
+    if not days:
+        return None
+    from zoneinfo import ZoneInfo
+    from workouts.program import DAYS
+    tz = ZoneInfo(getattr(user, "user_timezone", None) or "America/Los_Angeles")
+    local = (now or datetime.now(timezone.utc)).astimezone(tz)
+    today = DAYS[local.weekday()]
+    if today in days and not trained_today(user, now=now):
+        return normalize_template_key(days[today])
+    for i in range(1, 8):
+        d = DAYS[(local.weekday() + i) % 7]
+        if d in days:
+            return normalize_template_key(days[d])
+    return None
+
+
+def infer_template(user, *, now: datetime | None = None) -> str | None:
     """Named day → itself. Else the day AFTER the split pointer in the user's cycle;
-    no pointer → the cycle's first day. No split at all (never trained / asked us to
+    no pointer → the program's day for the next session (program_next_key) when a program
+    exists, else the cycle's first day. No split at all (never trained / asked us to
     build one) → full_body, the starting program. A split we can't map (a "custom"
     routine with no days, an unknown label) → None: the caller tells the model, who
     asks what days they run. Live 2026-09-22 (user 43): a stated bro split silently
@@ -43,6 +93,10 @@ def infer_template(user) -> str | None:
     last = user.split_pointer_day
     if last in cycle:
         return cycle[(cycle.index(last) + 1) % len(cycle)]
+    if getattr(config, "SETUP_CARD_PROGRAM_DAY_ENABLED", True):
+        key = program_next_key(user, now=now)
+        if key in cycle:
+            return key
     return cycle[0]
 
 
@@ -65,7 +119,7 @@ def _when(workout_time) -> str:
 
 
 def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estimated: bool = False,
-               setup: bool = False, workout_time=None) -> str:
+               setup: bool = False, workout_time=None, replan_from: str | None = None) -> str:
     """The one text before the card. `first` = their first card ever: there is no
     "usual" yet, so say where the numbers came from and point at the edit affordance.
     `estimated` = nothing known about their lifts, the loads are from their stats.
@@ -76,12 +130,19 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
     if setup:
         when = _when(workout_time)
         later = f" so ur set for {when}" if when else " so ur set for when u lift"
+        if replan_from:
+            # They just reported today's session: the setup card they were holding was for a
+            # day they've now done, so it's re-planned in place (live 2026-10-27, user 77).
+            return (f"u already got {day_label(replan_from)} in today, so ur card's now {day_label(key)} day"
+                    f"{' for ' + when if when else ' for next time'}. same deal: the sets r for when u lift")
+        # "just open it": live 2026-10-27 (user 77) tapped a set row at home two minutes after
+        # "tap it now" and a 165×5 he never did was logged as done.
         if loaded:
             w = float(lead["sets"][0]["planned_weight"])
             src = ("weights are my best guess from ur stats" if estimated else "weights are off what u told me")
             return (f"here's ur first card, {day_label(key)} day. starting u at {_fmt(w)} on {lead['label']} — {src}. "
-                    f"tap it now{later}. fix any number that's off, i'll remember.")
-        return f"here's ur first card, {day_label(key)} day. tap it now{later}."
+                    f"tap it now{later} (just open it — the sets r for when u lift). fix any number that's off, i'll remember.")
+        return f"here's ur first card, {day_label(key)} day. tap it now{later} (just open it — the sets r for when u lift)."
     if first and loaded:
         w = float(lead["sets"][0]["planned_weight"])
         src = ("first card, so the weights are my best guess from ur stats" if estimated
@@ -250,7 +311,8 @@ def one_off_templates(rows: list[dict]) -> list:
 
 
 def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False,
-                          setup: bool = False, one_off: list[dict] | None = None) -> dict:
+                          setup: bool = False, one_off: list[dict] | None = None,
+                          replan_from: str | None = None) -> dict:
     """→ {"session_id", "template_key", "surface": "card"|"messages"|"refused", "sets", "first", "setup"}.
     Raises ValueError on an unknown template, and NeedsAnchors (a ValueError) on a trained
     user's first loaded card when nothing is known about their lifts — unless `no_anchors`
@@ -261,7 +323,9 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
     WITH logged sets raises ValueError telling the model to finalize it (reset_workout_session)
     or keep logging — logged work is never discarded to send a new card.
     `setup` = the onboarding setup step (workouts/card_setup.py): 'tap it now' intro, no
-    per-exercise fallback."""
+    per-exercise fallback. `replan_from` = the day key of an untouched setup card being
+    re-planned in place after they reported today's session (replan_setup_card): the intro
+    says so, and the extension line / tour offer don't repeat."""
     session = get_session()
     try:
         user = session.get(User, user_id)
@@ -377,12 +441,13 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         from workouts import card_setup
         from photon_cards import CardError
         # Extension framing (once in full, then a one-liner) until the card has ever been opened.
-        card_setup.send_extension_intro_if_due(user_id, phone)
+        if not replan_from:
+            card_setup.send_extension_intro_if_due(user_id, phone)
         if not setup:
             from workouts.review import pre_session_plan
             intro = pre_session_plan(ws.id, first=first, estimated=estimated)
         send_sms(phone, intro or intro_line(state["exercises"], key, first=first, estimated=estimated,
-                                            setup=setup, workout_time=workout_time),
+                                            setup=setup, workout_time=workout_time, replan_from=replan_from),
                  user_id=user_id, message_type="workout_intro")
         try:
             send_workout_card(ws.id, reuse_from=reuse_from)
@@ -390,7 +455,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         except CardError as e:
             logger.warning("WORKOUT_CARD_REFUSED user=%s session=%s err=%s — %s", user_id, ws.id, e,
                            "setup: one line, no exercise texts" if setup else "per-exercise messages instead")
-        if surface == "card":
+        if surface == "card" and not replan_from:
             card_setup.send_breakdown_if_due(user_id, phone, setup=setup)   # the tour offer, once ever
     if surface == "messages":
         if setup:
@@ -411,6 +476,47 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
             # the tool result tells the model so it adds nothing (live 2026-10-22, user 40: the plan
             # said leg press 175, the model's extra line said 165).
             "plan_text": bool(intro), "card": card_numbers(state)}
+
+
+def planned_untouched_session(user_id: int) -> tuple[int, str] | None:
+    """(session_id, template_key) of a PLANNED session with no completed set — the setup card
+    they're holding for later; None otherwise."""
+    session = get_session()
+    try:
+        ws = (session.query(WorkoutSession)
+              .filter(WorkoutSession.user_id == user_id, WorkoutSession.status == "planned")
+              .order_by(WorkoutSession.id.desc()).first())
+        if ws is None or not _untouched(session, ws.id):
+            return None
+        return ws.id, ws.template_key
+    finally:
+        session.close()
+
+
+def replan_setup_card(user_id: int) -> dict | None:
+    """After a standalone log of TODAY's session while an untouched setup card waits: the card
+    was built for a day they've now done (or the pointer has moved past it), so re-plan it in
+    place — same bubble, the next day, one line saying so. None when there is no such card or
+    its day is already right. Live 2026-10-27 (user 77): "this morning I did 3x10 of 135 on
+    bench" landed INSIDE the push setup card built a minute earlier; the card stayed push."""
+    if not getattr(config, "PAST_REPORT_SKIPS_PLANNED_CARD_ENABLED", True):
+        return None
+    held = planned_untouched_session(user_id)
+    if not held:
+        return None
+    sid, old_key = held
+    user = _user_row(user_id)
+    new_key = infer_template(user)
+    if not new_key or new_key == old_key:
+        return None
+    try:
+        r = start_workout_session(user_id, new_key, setup=True, no_anchors=True, replan_from=old_key)
+    except ValueError as e:
+        logger.info("SETUP_CARD_REPLAN_SKIPPED user=%s old=%s new=%s why=%s", user_id, old_key, new_key, e)
+        return None
+    logger.info("SETUP_CARD_REPLANNED user=%s old_session=%s old=%s new_session=%s new=%s surface=%s",
+                user_id, sid, old_key, r.get("session_id"), new_key, r.get("surface"))
+    return dict(r, replanned_from=old_key)
 
 
 def card_numbers(state: dict) -> list[str]:

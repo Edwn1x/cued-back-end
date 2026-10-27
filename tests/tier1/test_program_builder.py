@@ -112,7 +112,10 @@ def test_apply_program_stores_it_and_mirrors_the_columns(db):
     assert row.program["split"] == "upper_lower" and row.program["version"] == 1
     assert row.current_split == "upper_lower" and row.confirmed_training_split == "upper_lower"
     assert row.confirmed_training_days == "mon,tue,thu,fri" and row.workout_days == "4"       # a count stays a count until they confirm
-    assert infer_template(row) == "upper"                                                     # the next card is a real day
+    from datetime import datetime, timezone
+    monday = datetime(2026, 10, 26, 17, 0, tzinfo=timezone.utc)                                # a Monday, 10am PT
+    assert infer_template(row, now=monday) == "upper"                                         # the next card is the program's day
+    assert infer_template(row, now=datetime(2026, 10, 27, 17, 0, tzinfo=timezone.utc)) == "lower"   # Tuesday → lower
     # their swap: the days become theirs
     apply_program(u.id, weekdays=["mon", "wed", "fri", "sat"], source="brief")
     db.expire_all(); row = db.get(User, u.id)
