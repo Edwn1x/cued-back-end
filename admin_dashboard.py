@@ -231,6 +231,28 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     </div>
   </div>
 
+  <!-- Engaged-day numbers (admin_engagement.py) — the accurate read, beside the legacy
+       text-in cards above, never replacing them. Full definitions on the Retention page. -->
+  <div class="grid grid-4">
+    <div class="stat-card">
+      <div class="stat-label">Engaged Today</div>
+      <div class="stat-val accent">{{ eng.today.engaged }}</div>
+      <div class="stat-sub">{{ eng.today.core }} logged something · {{ eng.today.pull }} came to us · {{ eng.today.texted }} texted (their local day)</div>
+    </div>
+    {% for w in eng.windows if w.days in (7, 30) %}
+    <div class="stat-card">
+      <div class="stat-label">Engaged ({{ w.days }}d)</div>
+      <div class="stat-val {{ 'green' if w.engaged_rate != '—' and (w.engaged * 100 // (w.eligible or 1)) >= (50 if w.days == 7 else 30) else 'yellow' }}">{{ w.engaged_rate }}</div>
+      <div class="stat-sub">{{ w.engaged }} / {{ w.eligible }} engaged · {{ w.core }} logged · vs {{ w.texted }} texted</div>
+    </div>
+    {% endfor %}
+    <div class="stat-card">
+      <div class="stat-label">Depth</div>
+      <div class="stat-val">{{ eng.depth_days_per_week }}</div>
+      <div class="stat-sub">median engaged days / week, last {{ eng.window_days }}d · pull {{ eng.pull_rate }}</div>
+    </div>
+  </div>
+
   <div class="grid grid-4">
     <div class="stat-card">
       <div class="stat-label">Messages Sent</div>
@@ -800,6 +822,67 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     </table>
   </div>
   <p style="color:var(--text3);font-size:11px">Industry average day-30 retention: 3%. Coaching apps with high personalization can reach 40–60%. That's the target.</p>
+
+  <!-- Engaged-day retention (admin_engagement.py): the same windows with a definition that
+       counts what the product is for, beside the legacy "any inbound text" rows. -->
+  <div class="section-title" style="margin-top:36px">Engaged, not just texting</div>
+  <p style="color:var(--text3);font-size:12px;margin-bottom:12px">
+    <b>Texted</b> = any inbound (the rows above). <b>Engaged</b> = a core action, or came to us unprompted
+    (a text with no outbound of ours in the prior {{ eng.gap_min }} min, a card open, a tapback, a stat-card view).
+    <b>Core</b> = logged a meal, a set, or a weigh-in. A bare reply to a ping is none of these.
+  </p>
+  <div class="table-wrap" style="margin-bottom:24px">
+    <table>
+      <tr><th>Window</th><th>Eligible</th><th>Texted (legacy)</th><th>Engaged</th><th>Core action</th></tr>
+      {% for w in eng.windows %}
+      <tr>
+        <td>Last {{ w.days }} days</td>
+        <td>{{ w.eligible }}</td>
+        <td>{{ w.texted }} <span style="color:var(--text3)">({{ w.texted_rate }})</span></td>
+        <td><b>{{ w.engaged }}</b> <span style="color:var(--text3)">({{ w.engaged_rate }})</span></td>
+        <td>{{ w.core }} <span style="color:var(--text3)">({{ w.core_rate }})</span></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="grid grid-4" style="margin-bottom:24px">
+    <div class="stat-card">
+      <div class="stat-label">Depth</div>
+      <div class="stat-val accent">{{ eng.depth_days_per_week }}</div>
+      <div class="stat-sub">median engaged days / week, last {{ eng.window_days }}d ({{ eng.depth_users }} users with any)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pull</div>
+      <div class="stat-val blue">{{ eng.pull_rate }}</div>
+      <div class="stat-sub">{{ eng.pull_days }} of {{ eng.engaged_days }} engaged days they came to us</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Nudge replies</div>
+      <div class="stat-val">{{ eng.nudge_rate }}</div>
+      <div class="stat-sub">{{ eng.nudges_answered }} of {{ eng.nudges }} proactive texts answered within {{ eng.reply_min }} min</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Presence log</div>
+      <div class="stat-val" style="font-size:18px">{{ eng.presence_since or 'not yet' }}</div>
+      <div class="stat-sub">card opens / tapbacks counted from this date; earlier card-only days are invisible</div>
+    </div>
+  </div>
+
+  <div class="section-title">Weekly cohorts — engaged in week N after activation</div>
+  <div class="table-wrap" style="margin-bottom:12px">
+    <table>
+      <tr><th>Cohort</th><th>Users</th>{% for wk in eng.cohort_weeks %}<th>{{ wk }}</th>{% endfor %}</tr>
+      {% for c in eng.cohorts %}
+      <tr{% if loop.last %} style="font-weight:600"{% endif %}>
+        <td>{{ c.label }}</td><td>{{ c.users }}</td>
+        <td>{{ c.w0 }}</td><td>{{ c.w1 }}</td><td>{{ c.w2 }}</td><td>{{ c.w4 }}</td>
+      </tr>
+      {% endfor %}
+      {% if not eng.cohorts %}<tr><td colspan="6" class="empty">No activated users yet.</td></tr>{% endif %}
+    </table>
+  </div>
+  <p style="color:var(--text3);font-size:11px">W0 = their first 7 days, W1 = days 8–14, W4 = days 29–35. A week counts only once it has fully elapsed for that user, so a fresh cohort shows "—" until then.</p>
 </div>
 
 </main>

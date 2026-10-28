@@ -591,6 +591,20 @@ MIGRATIONS = [
     # instance id ('<master>_<UTC start>') by agent_tools._series_id_of until a full resync.
     "ALTER TABLE events ADD COLUMN IF NOT EXISTS series_id VARCHAR(200)",
     "CREATE INDEX IF NOT EXISTS idx_events_series ON events (user_id, series_id)",
+    # Engaged-day retention (admin_engagement.py, 2026-10-27): presence events per user per
+    # local day — card opens / tapbacks / stat-card views leave no Message row and
+    # users.last_active_at keeps only the latest stamp. Upserted by activity_days.record.
+    """CREATE TABLE IF NOT EXISTS activity_days (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        day VARCHAR(10) NOT NULL,
+        signal VARCHAR(16) NOT NULL,
+        first_at TIMESTAMP NOT NULL,
+        last_at TIMESTAMP NOT NULL,
+        count INTEGER DEFAULT 1,
+        CONSTRAINT uq_activity_days_user_day_signal UNIQUE (user_id, day, signal)
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_activity_days_user_id ON activity_days (user_id)",
 ]
 
 def wait_for_db(retries=10, delay=3):

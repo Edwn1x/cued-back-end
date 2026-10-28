@@ -630,3 +630,24 @@ def test_wake_resolved_is_logged_for_today_sources(db, model_on, caplog):
                    and "hm=10:40" in r.getMessage() for r in caplog.records)
     finally:
         s.close()
+
+
+# ─── presence ledger (activity_days, 2026-10-27) ─────────────────────────────
+
+def test_touch_last_active_writes_the_activity_day_ledger(db):
+    from datetime import timedelta
+    from tests.factories import make_user
+    from models import ActivityDay
+    from wake_model import touch_last_active
+    u = make_user(db, user_timezone="America/Los_Angeles")
+    at = datetime(2026, 10, 27, 23, 30, tzinfo=timezone.utc).replace(tzinfo=None)   # 16:30 Pacific
+    touch_last_active(u.id, at=at, signal="card_open")
+    touch_last_active(u.id, at=at + timedelta(hours=1), signal="card_open")           # same local day → upsert
+    touch_last_active(u.id, at=at + timedelta(hours=10), signal="card_open")          # 02:30 next local day → new row
+    touch_last_active(u.id, at=at)                                                     # default signal = inbound
+    touch_last_active(u.id, at=at, signal="nonsense")                                  # dropped, never raised
+    db.expire_all()
+    rows = db.query(ActivityDay).filter(ActivityDay.user_id == u.id).order_by(ActivityDay.day, ActivityDay.signal).all()
+    assert [(r.day, r.signal, r.count) for r in rows] == [
+        ("2026-10-27", "card_open", 2), ("2026-10-27", "inbound", 1), ("2026-10-28", "card_open", 1)]
+    assert rows[0].first_at == at and rows[0].last_at == at + timedelta(hours=1)
