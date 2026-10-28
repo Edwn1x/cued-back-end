@@ -951,6 +951,14 @@ WATER_REMINDERS_ENABLED = os.getenv("WATER_REMINDERS_ENABLED", "false").lower() 
 # (live incidents). Explicit "remind me at HH:MM" rows always fire (the user asked).
 # Protective by default; inert in tests because standing quiet is off there and no events exist.
 WATER_REMINDER_GATES_ENABLED = os.getenv("WATER_REMINDER_GATES_ENABLED", "true").lower() == "true"
+# Interval (water) gate v2 (live 2026-10-27, user 77: asked at 11:47, Phys 111A lab 12–7pm + a 7–8pm
+# discussion → every 2h slot slid, first ping 9pm). Ongoing blocks only (no 90-min lookahead); a block
+# ≥ LONG_BLOCK_MIN doesn't gate; an exam title always does; a gated ping re-arms to block end +
+# CATCHUP_MIN instead of the next grid slot; a ping deferred MAX_DEFER_H hours fires through a short block.
+INTERVAL_GATE_V2_ENABLED = os.getenv("INTERVAL_GATE_V2_ENABLED", "true").lower() == "true"
+INTERVAL_GATE_LONG_BLOCK_MIN = int(os.getenv("INTERVAL_GATE_LONG_BLOCK_MIN", "120"))
+INTERVAL_GATE_CATCHUP_MIN = int(os.getenv("INTERVAL_GATE_CATCHUP_MIN", "5"))
+INTERVAL_GATE_MAX_DEFER_H = float(os.getenv("INTERVAL_GATE_MAX_DEFER_H", "4"))
 # Quiet = sleep-30min .. wake+15min from the user's own 'HH:MM' profile times, else the global window.
 QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED", "false").lower() == "true"
 # MORNING OPEN / EVENING CLOSE standing conditions: the rhythm the disabled legacy briefings left behind.

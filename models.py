@@ -1204,6 +1204,7 @@ class Reminder(Base):
     every_hours = Column(Integer, default=None)
     window_start = Column(String(5), default=None)
     window_end = Column(String(5), default=None)
+    deferred_since = Column(DateTime, default=None)   # first gate of the CURRENT slide; cleared on send (reminders._interval_gate max-defer)
 
 
 class HeldOutbound(Base):

@@ -350,6 +350,31 @@ def calendar_block_soon(user_id: int, minutes: int = 90, *, now=None) -> bool:
     return False
 
 
+def current_blocks(user_id: int, *, now=None) -> list[dict]:
+    """The TIMED calendar blocks ongoing right now (source in CALENDAR_SOURCES, not all-day),
+    newest start first: [{"start", "end", "title", "minutes"}] in naive UTC. Unlike
+    calendar_block_soon there is no lookahead — this answers "are they in something NOW".
+    Interval (water) pings read it (reminders._interval_gate): a one-line ping needs no
+    runway, and the LENGTH of the block decides whether it gates at all."""
+    from models import active
+    n = _now_naive_utc(now)
+    session = get_session()
+    try:
+        rows = (active(session, Event, user_id=user_id)
+                .filter(Event.source.in_(CALENDAR_SOURCES), Event.all_day.isnot(True),
+                        Event.occurred_at <= n)
+                .order_by(Event.occurred_at.desc()).limit(50).all())
+        out = []
+        for e in rows:
+            end = event_end(e)
+            if e.occurred_at and end > n:
+                out.append({"start": e.occurred_at, "end": end, "title": (e.title or e.raw_text or "").strip(),
+                            "minutes": int((end - e.occurred_at).total_seconds() // 60)})
+        return out
+    finally:
+        session.close()
+
+
 def event_end(ev) -> datetime:
     """Effective end of an event, naive UTC: ends_at, else occurred_at + the same
     default duration in_class uses. Lifecycle state (upcoming/passed) is COMPUTED

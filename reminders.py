@@ -498,27 +498,92 @@ def rearm_bailed_gym_reminders(now: datetime | None = None) -> int:
     return created
 
 
-def _interval_gate_reason(user, now: datetime) -> str | None:
-    """Quiet-hours / calendar-block gate for interval (water) reminders — the SAME gates
-    the heartbeat applies to proactive nudges (spec §1.3). Interval rows are the coach's
-    own rhythm pings, not an explicit "remind me at HH:MM" the user asked for, so a 3am
-    ping or one mid-exam is noise. Returns the reason (defer) or None (fire). `now` is
-    naive UTC. Inert unless WATER_REMINDER_GATES_ENABLED."""
+_EXAM_TITLE_RE = re.compile(r"\b(?:exam|midterm|finals?|quiz|test)\b", re.I)
+
+
+def _interval_gate(user, now: datetime, row: Reminder | None = None) -> dict:
+    """Why an interval (water) ping should wait, and until when:
+      {"reason": None}                              → fire
+      {"reason": "quiet_hours", "until": None}      → overnight, re-arm to the grid
+      {"reason": "exam"|"calendar_block", "until": block_end}
+    `now` is naive UTC. Inert ({"reason": None}) unless WATER_REMINDER_GATES_ENABLED.
+
+    v1 reused the heartbeat's gate: a block ONGOING OR STARTING WITHIN 90 MIN deferred the
+    ping to the next grid slot, whatever the block was. Live 2026-10-27 (user 77): asked for
+    water every 2h at 11:47; Phys 111A lab 12–7pm then a 7–8pm discussion → every slot from
+    1pm slid, first ping at 9pm. v2 (INTERVAL_GATE_V2_ENABLED):
+      - ongoing only — a one-line ping needs no runway;
+      - a block of INTERVAL_GATE_LONG_BLOCK_MIN or more (a lab, a shift, a study block) does
+        NOT gate — a water nudge during it is the point; shorter blocks (a lecture, a
+        meeting) still do;
+      - an exam/midterm/final/quiz title always gates, whatever the length;
+      - a ping that has been deferred INTERVAL_GATE_MAX_DEFER_H hours (row.deferred_since)
+        fires through a short block anyway — never through quiet hours or an exam.
+    The caller re-arms a calendar gate to block_end + INTERVAL_GATE_CATCHUP_MIN (not the next
+    grid slot) — see _fire_one."""
+    none = {"reason": None, "until": None}
     if not config.WATER_REMINDER_GATES_ENABLED or user is None:
-        return None
+        return none
     try:
         from heartbeat import _in_standing_quiet_hours
         if _in_standing_quiet_hours(user, now=now):
-            return "quiet_hours"
+            return {"reason": "quiet_hours", "until": None}
     except Exception as e:  # noqa: BLE001 — a gate import/eval failure must never drop the ping
         logger.warning("INTERVAL_GATE_QUIET_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    if not getattr(config, "INTERVAL_GATE_V2_ENABLED", True):
+        try:
+            from events import calendar_block_soon
+            if calendar_block_soon(user.id, now=now):
+                return {"reason": "calendar_block", "until": None}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("INTERVAL_GATE_CALENDAR_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return none
     try:
-        from events import calendar_block_soon
-        if calendar_block_soon(user.id, now=now):
-            return "calendar_block"
+        from events import current_blocks
+        blocks = current_blocks(user.id, now=now)
     except Exception as e:  # noqa: BLE001
         logger.warning("INTERVAL_GATE_CALENDAR_FAILED user=%s err=%s", getattr(user, "id", None), e)
-    return None
+        return none
+    if not blocks:
+        return none
+    exam = next((b for b in blocks if _EXAM_TITLE_RE.search(b["title"] or "")), None)
+    if exam:
+        return {"reason": "exam", "until": exam["end"]}
+    long_min = int(getattr(config, "INTERVAL_GATE_LONG_BLOCK_MIN", 120))
+    short = [b for b in blocks if b["minutes"] < long_min]
+    if not short:
+        return none                                   # only long blocks → a nudge during it is the point
+    since = getattr(row, "deferred_since", None) if row is not None else None
+    max_h = float(getattr(config, "INTERVAL_GATE_MAX_DEFER_H", 4))
+    if since and (now - since) >= timedelta(hours=max_h):
+        logger.info("INTERVAL_GATE_MAX_DEFER_OVERRIDE user=%s id=%s deferred_since=%s block=%r",
+                    getattr(user, "id", None), getattr(row, "id", None), since, short[0]["title"][:40])
+        return none
+    until = max(b["end"] for b in short)
+    return {"reason": "calendar_block", "until": until}
+
+
+def _interval_gate_reason(user, now: datetime, row: Reminder | None = None) -> str | None:
+    """Back-compat: the reason only (defer) or None (fire)."""
+    return _interval_gate(user, now, row)["reason"]
+
+
+def _catchup_fire_at(user, row: Reminder, tz: ZoneInfo, now: datetime, until: datetime | None) -> datetime | None:
+    """Where a calendar-gated ping lands: just after the block ends, if that comes before the
+    next grid slot and isn't quiet hours; else the next grid slot."""
+    grid = _next_for_row(user, row, tz, after=now)
+    if not until:
+        return grid
+    cand = until + timedelta(minutes=int(getattr(config, "INTERVAL_GATE_CATCHUP_MIN", 5)))
+    if cand <= now or (grid is not None and cand >= grid):
+        return grid
+    try:
+        from heartbeat import _in_standing_quiet_hours
+        if _in_standing_quiet_hours(user, now=cand):
+            return grid
+    except Exception:  # noqa: BLE001
+        return grid
+    return cand
 
 
 def _send_demo_links_once(user, row: Reminder) -> bool:
@@ -572,13 +637,18 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
         if row.every_hours:
-            reason = _interval_gate_reason(user, now)
-            if reason:
-                nxt = _next_for_row(user, row, tz, after=now)
+            gate = _interval_gate(user, now, row)
+            if gate["reason"]:
+                if gate["reason"] in ("calendar_block", "exam") and getattr(config, "INTERVAL_GATE_V2_ENABLED", True):
+                    nxt = _catchup_fire_at(user, row, tz, now, gate.get("until"))
+                else:
+                    nxt = _next_for_row(user, row, tz, after=now)
+                if getattr(row, "deferred_since", None) is None:
+                    row.deferred_since = now
                 row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
                 session.commit()
-                logger.info("REMINDER_GATED user=%s id=%s reason=%s next=%s", row.user_id, rid,
-                            reason, row.fire_at if row.active else None)
+                logger.info("REMINDER_GATED user=%s id=%s reason=%s until=%s next=%s deferred_since=%s", row.user_id, rid,
+                            gate["reason"], gate.get("until"), row.fire_at if row.active else None, row.deferred_since)
                 return False
         # Water pings go out as the character GIF when the flag is on (water_gif.py,
         # founder 2026-10-26) — no model call, no line. The plain line below is the
@@ -602,6 +672,7 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 _send_demo_links_once(user, row)
         row.last_sent_at = now
         row.sent_count = (row.sent_count or 0) + 1
+        row.deferred_since = None
         if row.every_hours or row.recur_days:
             row.fire_at = _next_for_row(user, row, tz, after=now) or row.fire_at
         else:
