@@ -79,7 +79,7 @@ def _google(monkeypatch, *, master=None, instances=None):
         calls.append(("POST", url, json if json is not None else params))
         return _Resp(200, {"id": "new1", **(json or {})})
 
-    def _patch(url, headers=None, json=None, timeout=None):
+    def _patch(url, headers=None, json=None, params=None, timeout=None):
         calls.append(("PATCH", url, json))
         return _Resp(200, {**(master or {}), **(json or {})})
 
@@ -295,4 +295,4 @@ def test_radar_item_cannot_take_calendar_or_colour(db, monkeypatch):
     r = _event(u.id, "quiz", 2, 9, source="model")
     _google(monkeypatch)
     out = handle_move_calendar_event(u.id, {"event_id": r, "new_color": "yellow"}, message_id="m1")
-    assert "on your radar" in out and "no calendar or colour" in out
+    assert "on your radar" in out and "no calendar, colour" in out

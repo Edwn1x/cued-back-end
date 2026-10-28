@@ -244,6 +244,10 @@ class WriteForbidden(Exception):
     reconnect problem — the coach says so and leaves it alone."""
 
 
+class NotAnInvitation(Exception):
+    """RSVP on an event the user isn't a guest of — nothing to answer."""
+
+
 class EventGone(Exception):
     """404/410 on update/delete — the event is no longer on Google (deleted from the
     phone, or on a calendar this token can't see). The local mirror should drop it too."""
@@ -296,10 +300,36 @@ def _time_nodes(start_dt: datetime, end_dt: datetime, *, all_day: bool, tz: str 
     return {"dateTime": _rfc3339_utc(start_dt)}, {"dateTime": _rfc3339_utc(end_dt)}
 
 
+def _detail_fields(body: dict, *, reminders=None, busy=None, visibility=None, guests=None, meet=False) -> dict:
+    """Event-detail fields shared by create/update. reminders = minutes-before list ([] = none,
+    None = leave as is); busy True/False → transparency opaque/transparent; visibility
+    default/private/public; guests = attendee emails; meet = request a Google Meet link.
+    Returns the query params the write needs (conferenceDataVersion, sendUpdates)."""
+    params: dict = {}
+    if reminders is not None:
+        body["reminders"] = {"useDefault": False,
+                             "overrides": [{"method": "popup", "minutes": int(m)} for m in reminders][:5]}
+    if busy is not None:
+        body["transparency"] = "opaque" if busy else "transparent"
+    if visibility:
+        body["visibility"] = visibility
+    if guests is not None:
+        body["attendees"] = [{"email": e} for e in guests]
+        params["sendUpdates"] = "all"
+    if meet:
+        import uuid
+        body["conferenceData"] = {"createRequest": {"requestId": uuid.uuid4().hex,
+                                                    "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+        params["conferenceDataVersion"] = 1
+    return params
+
+
 def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetime,
                  description: str | None = None, *, all_day: bool = False, tz: str | None = None,
                  recurrence: list[str] | None = None, location: str | None = None,
-                 calendar_id: str = "primary", color_id: str | None = None) -> dict:
+                 calendar_id: str = "primary", color_id: str | None = None,
+                 reminders: list[int] | None = None, busy: bool | None = None, visibility: str | None = None,
+                 guests: list[str] | None = None, meet: bool = False) -> dict:
     """Create ONE event (events.insert) on `calendar_id` (default the primary; any calendar
     the user can write to, picked by name in the tool): timed or all-day, one-off or repeating
     (`recurrence` = RRULE/EXDATE lines — start_dt is then the FIRST occurrence), optional
@@ -323,9 +353,10 @@ def create_event(user_id: int, summary: str, start_dt: datetime, end_dt: datetim
         body["recurrence"] = list(recurrence)
     if color_id:
         body["colorId"] = str(color_id)
+    params = _detail_fields(body, reminders=reminders, busy=busy, visibility=visibility, guests=guests, meet=meet)
     r = requests.post(f"{CAL_API}/calendars/{quote(calendar_id or 'primary', safe='')}/events",
                       headers={"Authorization": f"Bearer {token}"},
-                      json=body, timeout=_timeout())
+                      params=params or None, json=body, timeout=_timeout())
     if r.status_code in (401, 403):
         if calendar_id not in (None, "", "primary") and not _scope_problem(r):
             logger.warning("GCAL_CREATE_EVENT_FORBIDDEN user=%s cal=%s", user_id, calendar_id)
@@ -431,7 +462,9 @@ def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str 
                  start_dt: datetime | None = None, end_dt: datetime | None = None,
                  description: str | None = None, integration_id: int | None = None,
                  all_day: bool = False, tz: str | None = None, recurrence: list[str] | None = None,
-                 location: str | None = None, color_id: str | None = None) -> dict:
+                 location: str | None = None, color_id: str | None = None,
+                 reminders: list[int] | None = None, busy: bool | None = None, visibility: str | None = None,
+                 attendees: list[dict] | None = None, meet: bool = False, notify_guests: bool = True) -> dict:
     """PATCH one existing event (events.patch): only the fields given change. Start and
     end are sent together (a moved start with the old end would make Google reject or
     silently stretch it). Patching a repeating event's MASTER id (with tz + its recurrence)
@@ -454,13 +487,45 @@ def update_event(user_id: int, calendar_id: str, event_id: str, *, summary: str 
         body["recurrence"] = list(recurrence)
     if color_id is not None:
         body["colorId"] = str(color_id)
+    params = _detail_fields(body, reminders=reminders, busy=busy, visibility=visibility, meet=meet)
+    if attendees is not None:
+        body["attendees"] = attendees          # the FULL list (Google replaces it) — caller merges
     if not body:
         raise ValueError("nothing to update")
+    if notify_guests:
+        # What the Calendar UI does by default on "send update to guests?" — a no-op for an
+        # event with no guests; for a meeting it's how everyone learns the time changed.
+        params["sendUpdates"] = "all"
     r = requests.patch(_event_url(calendar_id, event_id),
                        headers={"Authorization": f"Bearer {token}"},
-                       json=body, timeout=_timeout())
+                       params=params or None, json=body, timeout=_timeout())
     _raise_for_write(user_id, "UPDATE", r)
     return r.json()
+
+
+def rsvp_event(user_id: int, calendar_id: str, event_id: str, response: str, *,
+               integration_id: int | None = None) -> dict:
+    """Answer an invitation: set OUR attendee row's responseStatus (accepted / declined /
+    tentative) and let the organizer know (sendUpdates=all). events.get first — the attendee
+    list must be sent whole. Raises NotAnInvitation if we're not on the guest list (it's the
+    user's own event, or a calendar they merely subscribe to)."""
+    if response not in ("accepted", "declined", "tentative"):
+        raise ValueError(response)
+    ev = get_event(user_id, calendar_id, event_id, integration_id=integration_id)
+    attendees = list(ev.get("attendees") or [])
+    mine = [a for a in attendees if a.get("self")]
+    if not mine:
+        raise NotAnInvitation(event_id)
+    for a in mine:
+        a["responseStatus"] = response
+    token = _write_token(user_id, integration_id)
+    r = requests.patch(_event_url(calendar_id, event_id),
+                       headers={"Authorization": f"Bearer {token}"},
+                       params={"sendUpdates": "all"}, json={"attendees": attendees}, timeout=_timeout())
+    _raise_for_write(user_id, "RSVP", r)
+    out = r.json()
+    out["_organizer"] = (ev.get("organizer") or {}).get("displayName") or (ev.get("organizer") or {}).get("email")
+    return out
 
 
 def delete_event(user_id: int, calendar_id: str, event_id: str, *, integration_id: int | None = None) -> bool:
@@ -470,6 +535,7 @@ def delete_event(user_id: int, calendar_id: str, event_id: str, *, integration_i
     token = _write_token(user_id, integration_id)
     r = requests.delete(_event_url(calendar_id, event_id),
                         headers={"Authorization": f"Bearer {token}"},
+                        params={"sendUpdates": "all"},      # guests get the cancellation, like the UI
                         timeout=_timeout())
     _raise_for_write(user_id, "DELETE", r)
     return True

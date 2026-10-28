@@ -113,15 +113,15 @@ def _google(monkeypatch, *, master=None, instances=None):
             return _Resp(200, {"items": instances or []})
         return _Resp(200, master or {})
 
-    def _post(url, headers=None, json=None, timeout=None):
+    def _post(url, headers=None, json=None, params=None, timeout=None):
         calls.append(("POST", url, json))
         return _Resp(200, {"id": "ser1", **(json or {})})
 
-    def _patch(url, headers=None, json=None, timeout=None):
+    def _patch(url, headers=None, json=None, params=None, timeout=None):
         calls.append(("PATCH", url, json))
         return _Resp(200, {**(master or {}), **(json or {})})
 
-    def _delete(url, headers=None, timeout=None):
+    def _delete(url, headers=None, params=None, timeout=None):
         calls.append(("DELETE", url, None))
         return _Resp(204)
 
@@ -171,7 +171,7 @@ def test_repeat_rule_snaps_start_and_puts_until_in_utc():
     assert "BYDAY=SA" in rule                                  # default = the start day
     assert _repeat_rule(None, None, sat, None, tz, all_day=False)[0] is None
     with pytest.raises(ValueError):
-        _repeat_rule("monthly", None, sat, None, tz, all_day=False)
+        _repeat_rule("yearly", None, sat, None, tz, all_day=False)
     with pytest.raises(ValueError):
         _repeat_rule("daily", None, sat, "2026-10-01", tz, all_day=False)   # until before start
 

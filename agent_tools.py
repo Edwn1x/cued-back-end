@@ -4261,9 +4261,10 @@ CREATE_CALENDAR_EVENT_TOOL = {
         "ADD a new event to the user's connected Google Calendar — a gym session, a study "
         "block, a dentist appointment, a club meeting, anything ('block a lift at 4pm', 'add "
         "office hours every tue 2-3', 'put my flight on fri'). One-off, REPEATING (repeat + "
-        "repeat_days + optional repeat_until + skip_dates), or ALL-DAY (all_day=true); on any of "
-        "their calendars (`calendar` by name) and in a colour (`color`) if they ask — do it all in "
-        "ONE call, one confirm. For something "
+        "repeat_days + optional repeat_until/repeat_count + repeat_interval + skip_dates), or ALL-DAY "
+        "(all_day=true); on any of their calendars (`calendar` by name), in a colour, with a room, "
+        "reminders, guests (emails → real invites), a google meet link, shown as free, or private — "
+        "whatever they asked, all in ONE call, one confirm. For something "
         "already on the calendar use move_calendar_event or delete_calendar_event instead. "
         "ALWAYS confirm first: reflect back exactly what you'll add (title + day + time WITH "
         "am/pm, and for a repeating one the days + until when) and get a yes BEFORE writing — "
@@ -4286,12 +4287,21 @@ CREATE_CALENDAR_EVENT_TOOL = {
             "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD' — for a repeating "
                                                       "event, the first day it can start (it snaps to the first matching repeat_day)"},
             "all_day": {"type": "boolean", "description": "true = an all-day event (no times)"},
-            "repeat": {"type": "string", "enum": ["none", "daily", "weekdays", "weekly"],
+            "repeat": {"type": "string", "enum": ["none", "daily", "weekdays", "weekly", "monthly"],
                        "description": "'weekly' = on repeat_days every week (default: the start day); 'weekdays' = mon–fri; "
-                                      "'daily' = every day; omit/'none' = one-off"},
+                                      "'daily' = every day; 'monthly' = same date each month; omit/'none' = one-off"},
             "repeat_days": {"type": "array", "items": {"type": "string"},
                             "description": "for repeat='weekly': days like ['mon','wed','fri']"},
             "repeat_until": {"type": "string", "description": "last day of the repeat, 'YYYY-MM-DD' (omit = no end)"},
+            "repeat_count": {"type": "integer", "description": "instead of repeat_until: how many times it happens"},
+            "repeat_interval": {"type": "integer", "description": "every N weeks/days/months (default 1; 2 = every other week)"},
+            "reminders": {"type": "array", "items": {"type": "integer"},
+                          "description": "popup reminders, minutes before: [30], [10, 60]; [] = none"},
+            "busy": {"type": "boolean", "description": "false = show as free (doesn't block their schedule); default busy"},
+            "visibility": {"type": "string", "enum": ["default", "private", "public"]},
+            "guests": {"type": "array", "items": {"type": "string"},
+                       "description": "email addresses to invite — they get a real invite email, so say so in the reflect-back"},
+            "meet_link": {"type": "boolean", "description": "true = attach a google meet link; the result gives you the link to send"},
             "skip_dates": {"type": "array", "items": {"type": "string"},
                            "description": "for a repeating event: dates to skip, 'YYYY-MM-DD' each (thanksgiving, a holiday)"},
             "location": {"type": "string", "description": "optional place, e.g. 'RSF', 'Soda 405'"},
@@ -4362,9 +4372,11 @@ MOVE_CALENDAR_EVENT_TOOL = {
         "MOVE, RENAME, RECOLOUR, or put on another calendar — on the user's connected Google "
         "Calendar ('push my gym block to 5', 'move the study session to tomorrow 2-4', 'rename it "
         "to legs', 'make office hours wed instead of tue', 'put it on my Class schedule calendar', "
-        "'make it yellow'). scope='one' (default) = this occurrence only; scope='series' = EVERY "
-        "occurrence of a repeating event (new time, new days via new_repeat_days, new title, new "
-        "length, new calendar, new colour). "
+        "'make it yellow', 'change the room to Soda 405', 'remind me 30 min before', 'invite "
+        "sam@berkeley.edu', 'add a meet link', 'mark it free'). scope='one' (default) = this "
+        "occurrence only; scope='series' = EVERY occurrence of a repeating event (new time, new days "
+        "via new_repeat_days, new title, new length, new calendar, new colour, room, note, reminders, "
+        "guests, meet link, busy/free, visibility). "
         "Find it by event_id (the [id N] in your context) or a title keyword + date, then give "
         "what changes. If the event repeats and you didn't give a scope, the result ASKS 'just "
         "this one or all of them?' — put that to the user, then call again with the scope. "
@@ -4393,10 +4405,45 @@ MOVE_CALENDAR_EVENT_TOOL = {
                              "description": "move it onto another of THEIR google calendars, by name ('Class schedule'); "
                                             "an unknown name returns the list so you can ask"},
             "new_color": {"type": "string", "description": "new colour (yellow, red, green, blue, purple, orange, …)"},
+            "new_location": {"type": "string", "description": "new room / place"},
+            "new_description": {"type": "string", "description": "new note for the event body"},
+            "new_reminders": {"type": "array", "items": {"type": "integer"},
+                              "description": "popup reminders, minutes before: [30], [10, 60]; [] = none"},
+            "new_busy": {"type": "boolean", "description": "false = show as free; true = busy"},
+            "new_visibility": {"type": "string", "enum": ["default", "private", "public"]},
+            "add_guests": {"type": "array", "items": {"type": "string"},
+                           "description": "email addresses to invite (added to any existing guests; they get an email)"},
+            "add_meet_link": {"type": "boolean", "description": "true = attach a google meet link"},
             "confirmed": {"type": "boolean",
                           "description": "false/omitted = stage it and confirm with the user first; "
                                          "true = they've agreed, actually change it"},
         },
+    },
+}
+
+
+RSVP_CALENDAR_EVENT_TOOL = {
+    "name": "rsvp_calendar_event",
+    "description": (
+        "ANSWER an invitation on the user's Google Calendar — accept, decline, or 'maybe' — "
+        "('say yes to the frat meeting', 'decline sam's thing on thu', 'i'm a maybe for the study "
+        "group'). Only for events someone INVITED them to; their own events have nothing to RSVP "
+        "to (the result says so). Find it by event_id (the [id N] in your context) or a title "
+        "keyword + date. ALWAYS confirm first — the organizer gets notified — reflect back the "
+        "event (title + day + time) and the answer, get a yes, then call again with confirmed=true "
+        "in the NEXT turn. Declining takes it off their schedule on your side too."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            **_FIND_EVENT_PROPS,
+            "response": {"type": "string", "enum": ["accepted", "declined", "tentative"],
+                         "description": "accepted = yes; declined = no; tentative = maybe"},
+            "confirmed": {"type": "boolean",
+                          "description": "false/omitted = stage it and confirm with the user first; "
+                                         "true = they've agreed, actually send the answer"},
+        },
+        "required": ["response"],
     },
 }
 
@@ -4553,30 +4600,60 @@ def _parse_days(val) -> list[str]:
     return [c for c in _CODE_ORDER if c in set(codes)]
 
 
-def _repeat_rule(repeat, days_in, start_local_date, until_in, tz, *, all_day: bool):
-    """→ (rrule_line | None, human | '', first_date, codes). Snaps the start to the first
-    matching weekday on/after the given date. until = local end of that day in UTC."""
+def _ordinal(n: int) -> str:
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def _repeat_rule(repeat, days_in, start_local_date, until_in, tz, *, all_day: bool,
+                 interval=None, count=None):
+    """→ (rrule_line | None, human | '', until_human, first_date, codes). Snaps the start to
+    the first matching weekday on/after the given date. until = local end of that day in UTC;
+    count = 'N times' instead (not both). interval = every N days/weeks/months."""
     rep = (repeat or "none").strip().lower()
     if rep in ("", "none", "no", "once"):
         return None, "", "", start_local_date, []
+    try:
+        interval = int(interval) if interval not in (None, "", 0, "0") else 1
+        count = int(count) if count not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        raise ValueError("repeat_interval and repeat_count must be whole numbers")
+    if interval < 1 or interval > 52:
+        raise ValueError("repeat_interval must be 1–52")
+    if count is not None and (count < 1 or count > 400):
+        raise ValueError("repeat_count must be 1–400")
+    if count is not None and (until_in or "").strip():
+        raise ValueError("give repeat_until OR repeat_count, not both")
     if rep == "weekdays":
         codes = ["MO", "TU", "WE", "TH", "FR"]
     elif rep == "weekly":
         codes = _parse_days(days_in) or [_CODE_ORDER[start_local_date.weekday()]]
-    elif rep == "daily":
+    elif rep in ("daily", "monthly"):
         codes = []
     else:
-        raise ValueError(f"unknown repeat {rep!r} — use none / daily / weekdays / weekly")
+        raise ValueError(f"unknown repeat {rep!r} — use none / daily / weekdays / weekly / monthly")
     first = start_local_date
     if codes:
         for _ in range(7):
             if _CODE_ORDER[first.weekday()] in codes:
                 break
             first += timedelta(days=1)
-    rule = "RRULE:FREQ=DAILY" if rep == "daily" else f"RRULE:FREQ=WEEKLY;BYDAY={','.join(codes)}"
-    human = "every day" if rep == "daily" else ("every weekday" if rep == "weekdays"
-                                               else "every " + "/".join(_CODE_NAME[c] for c in codes))
+    if rep == "daily":
+        rule = "RRULE:FREQ=DAILY"
+        human = "every day" if interval == 1 else f"every {interval} days"
+    elif rep == "monthly":
+        rule = "RRULE:FREQ=MONTHLY"
+        human = ("every month" if interval == 1 else f"every {interval} months") + f" on the {_ordinal(first.day)}"
+    else:
+        rule = f"RRULE:FREQ=WEEKLY;BYDAY={','.join(codes)}"
+        days_h = "weekday" if rep == "weekdays" else "/".join(_CODE_NAME[c] for c in codes)
+        human = f"every {days_h}" if interval == 1 else f"every {interval} weeks on {days_h}"
+    if interval > 1:
+        rule += f";INTERVAL={interval}"
     until_date = None
+    if count is not None:
+        rule += f";COUNT={count}"
+        until = f"({count} times)"
+        return rule, human, until, first, codes
     if (until_in or "").strip():
         try:
             until_date = _resolve_local_date(tz, until_in, strict=True)
@@ -4619,11 +4696,18 @@ def _describe_rrule(recurrence: list[str] | None) -> str:
         if line.upper().startswith("RRULE:"):
             kv = dict(p.split("=", 1) for p in line[6:].split(";") if "=" in p)
             freq = (kv.get("FREQ") or "").upper()
+            try:
+                iv = int(kv.get("INTERVAL") or 1)
+            except ValueError:
+                iv = 1
             if freq == "DAILY":
-                h = "every day"
+                h = "every day" if iv == 1 else f"every {iv} days"
             elif freq == "WEEKLY":
                 codes = [c for c in _CODE_ORDER if c in (kv.get("BYDAY") or "").upper().split(",")]
-                h = "every " + ("/".join(_CODE_NAME[c] for c in codes) if codes else "week")
+                days_h = "/".join(_CODE_NAME[c] for c in codes) if codes else "week"
+                h = f"every {days_h}" if iv == 1 else f"every {iv} weeks on {days_h}"
+            elif freq == "MONTHLY":
+                h = "every month" if iv == 1 else f"every {iv} months"
             else:
                 h = f"every {freq.lower()}"
             u = kv.get("UNTIL")
@@ -4647,6 +4731,87 @@ def _series_id_of(series_col: str | None, external_id: str | None) -> str | None
     _, gid = _split_external_id(external_id)
     m = _INSTANCE_RE.match(gid or "")
     return m.group("master") if m else None
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_DETAIL_KEYS_CREATE = {"reminders": "reminders", "busy": "busy", "visibility": "visibility",
+                       "guests": "guests", "meet": "meet_link"}
+_DETAIL_KEYS_MOVE = {"reminders": "new_reminders", "busy": "new_busy", "visibility": "new_visibility",
+                     "guests": "add_guests", "meet": "add_meet_link",
+                     "location": "new_location", "description": "new_description"}
+
+
+def _parse_details(ti: dict, keys: dict) -> tuple[dict, list[str], str | None]:
+    """The optional event details a create or move can carry → (details, reflect bits, error).
+    details holds only what was given: reminders (minutes list, [] = none), busy (bool),
+    visibility, guests (emails), meet (bool), location, description."""
+    d: dict = {}
+    bits: list[str] = []
+    k = keys.get("reminders")
+    if k and k in ti and ti[k] is not None:
+        raw = ti[k]
+        if isinstance(raw, str):
+            raw = [] if raw.strip().lower() in ("none", "no", "off", "") else re.findall(r"\d+", raw)
+        if isinstance(raw, (int, float)):
+            raw = [raw]
+        try:
+            mins = sorted({int(m) for m in raw if 0 <= int(m) <= 40320})
+        except (TypeError, ValueError):
+            return {}, [], f"error: {k} must be minutes-before, e.g. [30] or [10, 60] ([] = no reminders)"
+        d["reminders"] = mins
+        bits.append("no reminder" if not mins else
+                    "reminder " + " + ".join((f"{m // 60}h" if m % 60 == 0 and m else f"{m} min") for m in mins) + " before")
+    k = keys.get("busy")
+    if k and k in ti and ti[k] is not None:
+        d["busy"] = bool(ti[k])
+        bits.append("shown as busy" if d["busy"] else "marked free (won't block their schedule)")
+    k = keys.get("visibility")
+    if k and (ti.get(k) or "").strip():
+        v = str(ti[k]).strip().lower()
+        if v not in ("default", "private", "public"):
+            return {}, [], f"error: {k} must be default / private / public"
+        d["visibility"] = v
+        if v != "default":
+            bits.append(v)
+    k = keys.get("guests")
+    if k and ti.get(k):
+        raw = ti[k] if isinstance(ti[k], list) else re.split(r"[,\s]+", str(ti[k]))
+        emails = [str(e).strip().lower() for e in raw if str(e).strip()]
+        bad = [e for e in emails if not _EMAIL_RE.match(e)]
+        if bad:
+            return {}, [], (f"error: {k} needs email addresses, not {', '.join(bad[:3])!r} — ask for the email "
+                            "(a name alone can't be invited)")
+        d["guests"] = sorted(set(emails))
+        bits.append("inviting " + ", ".join(d["guests"]) + " (they get an email)")
+    k = keys.get("meet")
+    if k and ti.get(k):
+        d["meet"] = True
+        bits.append("with a google meet link")
+    k = keys.get("location")
+    if k and (ti.get(k) or "").strip():
+        d["location"] = str(ti[k]).strip()[:300]
+        bits.append(f"room → {d['location']}")
+    k = keys.get("description")
+    if k and (ti.get(k) or "").strip():
+        d["description"] = str(ti[k]).strip()[:2000]
+        bits.append("note updated")
+    return d, bits, None
+
+
+def _details_key(d: dict) -> str:
+    import json
+    return json.dumps(d, sort_keys=True) if d else ""
+
+
+def _merge_guests(existing: list[dict] | None, new_emails: list[str]) -> list[dict]:
+    """Google replaces the attendee list on patch — send the whole thing, new guests appended."""
+    out = [dict(a) for a in (existing or [])]
+    have = {str(a.get("email") or "").lower() for a in out}
+    for e in new_emails:
+        if e not in have:
+            out.append({"email": e})
+            have.add(e)
+    return out
 
 
 def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, verb: str,
@@ -4843,9 +5008,14 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
 
     try:
         rrule, rhuman, runtil, first_date, _codes = _repeat_rule(ti.get("repeat"), ti.get("repeat_days"), d0,
-                                                                 ti.get("repeat_until"), tz, all_day=all_day)
+                                                                 ti.get("repeat_until"), tz, all_day=all_day,
+                                                                 interval=ti.get("repeat_interval"),
+                                                                 count=ti.get("repeat_count"))
     except ValueError as e:
         return f"error: {e}"
+    details, detail_bits, derr = _parse_details(ti, _DETAIL_KEYS_CREATE)
+    if derr:
+        return derr
     date_iso = first_date.isoformat()
 
     if all_day:
@@ -4886,6 +5056,9 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
         extras.append(_COLOR_NAME[color_id].split(" (")[0] + (f" ({ti.get('color')})" if str(ti.get("color")).lower() != _COLOR_NAME[color_id].split(" (")[0] else ""))
     if skipped:
         extras.append("skipping " + ", ".join(skipped))
+    if loc_txt := (ti.get("location") or "").strip():
+        extras.append(f"at {loc_txt}")
+    extras += detail_bits
     extra_txt = (", " + ", ".join(extras)) if extras else ""
     where = f"their '{cal_name}' calendar" if cal_name else "their calendar"
     if rrule:
@@ -4898,10 +5071,12 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     loc = (ti.get("location") or "").strip() or None
     proposal = {"kind": "create", "summary": summary, "start_utc": start_utc.isoformat(),
                 "end_utc": end_utc.isoformat(), "description": desc, "when": when, "rrule": rrule, "all_day": all_day,
-                "calendar_id": cal_id, "color_id": color_id, "exdates": ",".join(skipped)}
+                "calendar_id": cal_id, "color_id": color_id, "exdates": ",".join(skipped),
+                "details": _details_key(details)}
     gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
                          verb="created", tool="create_calendar_event", reflect=reflect,
-                         match_keys=("summary", "start_utc", "end_utc", "rrule", "all_day", "calendar_id", "color_id", "exdates"),
+                         match_keys=("summary", "start_utc", "end_utc", "rrule", "all_day", "calendar_id", "color_id",
+                                     "exdates", "details"),
                          hint="" if all_day else _bare_hour_hint(start_utc, tz))
     if gate:
         return gate
@@ -4909,7 +5084,10 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     try:
         ev = gcal.create_event(user_id, summary, start_utc, end_utc, description=desc, all_day=all_day,
                                tz=tz_str, recurrence=recurrence or None, location=loc,
-                               calendar_id=cal_id if cal_name else "primary", color_id=color_id)
+                               calendar_id=cal_id if cal_name else "primary", color_id=color_id,
+                               reminders=details.get("reminders"), busy=details.get("busy"),
+                               visibility=details.get("visibility"), guests=details.get("guests"),
+                               meet=bool(details.get("meet")))
     except gcal.NotConnected:
         return ("can't add it — no google calendar connected yet. offer to send the connect "
                 "link (send_connect_link) so you can start adding things.")
@@ -4932,8 +5110,13 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     eid = ev.get("id")
     cal_key = cal_id or _primary_calendar_key(user_id)
     mirrored = 1
+    free = details.get("busy") is False
     try:
-        if rrule:
+        if free:
+            # The sync deliberately skips "free" (transparent) events — they don't block time, so
+            # the coach doesn't plan around them. Mirroring one now would only vanish next tick.
+            mirrored = 0
+        elif rrule:
             mirrored = _mirror_series(user_id, cal_key, eid, tz_str)
         else:
             from events import upsert_external_event
@@ -4942,6 +5125,14 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     except Exception as e:  # noqa: BLE001 — the write succeeded; mirroring is best-effort
         logger.warning("CREATE_CALENDAR_EVENT_MIRROR_FAILED user=%s err=%s", user_id, e)
         mirrored = None
+    tail_notes = []
+    if ev.get("hangoutLink"):
+        tail_notes.append(f"meet link: {ev['hangoutLink']} — send it to them")
+    if details.get("guests"):
+        tail_notes.append("invites emailed to " + ", ".join(details["guests"]))
+    if free:
+        tail_notes.append("it's marked free, so i won't plan around it")
+    tail_txt = (". " + "; ".join(tail_notes)) if tail_notes else ""
     _set_pending_calendar_event(user_id, None)
     logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s cal=%s summary=%r when=%s rrule=%s color=%s",
                 user_id, eid, cal_key if cal_name else "primary", summary[:40], when, rrule, color_id)
@@ -4951,8 +5142,8 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
         first = start_utc.replace(tzinfo=timezone.utc).astimezone(tz).strftime('%a %b %-d')
         tail = (f"; {mirrored} on the calendar over the next two months" if mirrored is not None
                 else "; my mirror will catch up on the next sync (within 30 min)")
-        return f"ok: added '{summary}' {rhuman} {span} {runtil} to {where}{extra_txt} (first one {first}{tail})"
-    return f"ok: added '{summary}' {when} to {where}{extra_txt}"
+        return f"ok: added '{summary}' {rhuman} {span} {runtil} to {where}{extra_txt} (first one {first}{tail}){tail_txt}"
+    return f"ok: added '{summary}' {when} to {where}{extra_txt}{tail_txt}"
 
 
 # ─── delete / move: resolve from the local mirror, confirm, write, re-mirror ─────
@@ -5219,26 +5410,31 @@ def _delete_all_matching(user_id: int, ti: dict, *, message_id=None) -> str:
 
 
 def _move_extras(user_id: int, ti: dict, *, on_google: bool, current_cal_id: str | None):
-    """new_calendar / new_color for a move → (dest_cal_id or None, dest_name or None, color_id or None,
-    error). A radar item (not on Google) can't take either."""
+    """new_calendar / new_color / the detail fields for a move → (dest_cal_id or None, dest_name or
+    None, color_id or None, details dict, detail bits, error). A radar item (not on Google) can't
+    take any of them."""
     want_cal = (ti.get("new_calendar") or "").strip()
     want_color = (ti.get("new_color") or "").strip()
-    if not on_google and (want_cal or want_color):
-        return None, None, None, ("that one is on your radar (something you logged), not their google calendar — "
-                                  "no calendar or colour to change. only its time/title can move.")
+    details, bits, derr = _parse_details(ti, _DETAIL_KEYS_MOVE)
+    if derr:
+        return None, None, None, {}, [], derr
+    if not on_google and (want_cal or want_color or details):
+        return None, None, None, {}, [], ("that one is on your radar (something you logged), not their google "
+                                          "calendar — no calendar, colour, room, reminders or guests to change. "
+                                          "only its time/title can move.")
     color_id, cerr = _color_id(want_color)
     if cerr:
-        return None, None, None, cerr
+        return None, None, None, {}, [], cerr
     dest_id = dest_name = None
     if want_cal:
         dest_id, dest_name, calerr = _resolve_calendar(user_id, want_cal)
         if calerr:
-            return None, None, None, calerr
+            return None, None, None, {}, [], calerr
         primary_key = _primary_calendar_key(user_id)
         same = (dest_id == current_cal_id) or (current_cal_id in ("primary", primary_key) and dest_id == primary_key)
         if same:
             dest_id = dest_name = None       # already there — not a change
-    return dest_id, dest_name, color_id, None
+    return dest_id, dest_name, color_id, details, bits, None
 
 
 def _rekey_local_calendar(user_id: int, rows_filter, dest_id: str) -> None:
@@ -5318,12 +5514,12 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
     time_changed = (new_start != old_start) or (new_end != old_end)
     title_changed = bool(new_summary) and new_summary != ev["title"]
     cal_id, gid = _split_external_id(ev["external_id"]) if on_google else (None, None)
-    dest_id, dest_name, color_id, xerr = _move_extras(user_id, ti, on_google=on_google, current_cal_id=cal_id)
+    dest_id, dest_name, color_id, details, detail_bits, xerr = _move_extras(user_id, ti, on_google=on_google, current_cal_id=cal_id)
     if xerr:
         return xerr
-    if not (time_changed or title_changed or dest_id or color_id):
+    if not (time_changed or title_changed or dest_id or color_id or details):
         return (f"nothing to change — '{ev['title']}' is already {_when_local(old_start, old_end, tz, all_day=ev['all_day'])}. "
-                "ask what they want different (new time, new day, a new title, calendar, or colour).")
+                "ask what they want different (new time, new day, a new title, calendar, colour, room, reminders, guests).")
 
     old_when = _when_local(old_start, old_end, tz, all_day=ev["all_day"])
     new_when = _when_local(new_start, new_end, tz, all_day=ev["all_day"])
@@ -5337,28 +5533,38 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
         bits.append(f"onto their '{dest_name}' calendar")
     if color_id:
         bits.append(f"colour → {_COLOR_NAME[color_id]}")
+    bits += detail_bits
     reflect = f"moving '{ev['title']}' {' and '.join(bits)}" + ("" if on_google else " (on your radar, not their google calendar)")
     if series:
         reflect += " — just this one occurrence"
     proposal = {"kind": "move", "event_id": ev["id"], "external_id": ev["external_id"], "title": final_title,
                 "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(), "when": new_when, "scope": "one",
-                "calendar_id": dest_id, "color_id": color_id}
+                "calendar_id": dest_id, "color_id": color_id, "details": _details_key(details)}
     gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
                          verb="moved", tool="move_calendar_event", reflect=reflect,
-                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "calendar_id", "color_id"),
+                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "calendar_id", "color_id", "details"),
                          hint=_bare_hour_hint(new_start, tz) if (time_changed and not ev["all_day"]) else "")
     if gate:
         return gate
 
+    patched = {}
     if on_google:
         rows = _gcal_rows(user_id) or [None]
         for i, rid in enumerate(rows):
             try:
-                if time_changed or title_changed or color_id:
-                    gcal.update_event(user_id, cal_id, gid, summary=new_summary if title_changed else None,
-                                      start_dt=new_start if time_changed else None,
-                                      end_dt=new_end if time_changed else None, integration_id=rid,
-                                      all_day=ev["all_day"], tz=tz_str if ev["all_day"] else None, color_id=color_id)
+                attendees = None
+                if details.get("guests"):
+                    cur = gcal.get_event(user_id, cal_id, gid, integration_id=rid)
+                    attendees = _merge_guests(cur.get("attendees"), details["guests"])
+                if time_changed or title_changed or color_id or details:
+                    patched = gcal.update_event(user_id, cal_id, gid, summary=new_summary if title_changed else None,
+                                                start_dt=new_start if time_changed else None,
+                                                end_dt=new_end if time_changed else None, integration_id=rid,
+                                                all_day=ev["all_day"], tz=tz_str if ev["all_day"] else None, color_id=color_id,
+                                                reminders=details.get("reminders"), busy=details.get("busy"),
+                                                visibility=details.get("visibility"), attendees=attendees,
+                                                meet=bool(details.get("meet")), location=details.get("location"),
+                                                description=details.get("description"))
                 if dest_id:
                     gcal.move_event_calendar(user_id, cal_id, gid, dest_id, integration_id=rid)
                 break
@@ -5393,11 +5599,20 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
         session.close()
     if on_google and dest_id:
         _rekey_local_calendar(user_id, lambda q: q.filter(Event.external_id.like(f"%:{gid}")), dest_id)
+    if on_google and details.get("busy") is False:
+        _soft_delete_gcal_copies(user_id, gid)        # free events don't block time; the sync skips them too
     _set_pending_calendar_event(user_id, None)
     if on_google:
         where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
         extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
-        return f"ok: '{final_title}' is now {new_when} on {where}{extra}" + (" (just that occurrence)" if series else "")
+        out = f"ok: '{final_title}' is now {new_when} on {where}{extra}" + (" (just that occurrence)" if series else "")
+        if detail_bits:
+            out += " — " + "; ".join(detail_bits)
+        if patched.get("hangoutLink") and details.get("meet"):
+            out += f". meet link: {patched['hangoutLink']} — send it to them"
+        if details.get("busy") is False:
+            out += ". it's marked free now, so i won't plan around it"
+        return out
     return (f"ok: '{final_title}' is now {new_when} on your radar (something you logged, not their "
             "google calendar — say 'moved it on my side').")
 
@@ -5479,10 +5694,10 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
     time_changed = (new_start != m_start) or (new_end != m_end)
     days_changed = bool(codes) and new_rec != recurrence
     title_changed = bool(new_summary) and new_summary != (master.get("summary") or ev["title"])
-    dest_id, dest_name, color_id, xerr = _move_extras(user_id, ti, on_google=True, current_cal_id=cal_id)
+    dest_id, dest_name, color_id, details, detail_bits, xerr = _move_extras(user_id, ti, on_google=True, current_cal_id=cal_id)
     if xerr:
         return xerr
-    if not (time_changed or days_changed or title_changed or dest_id or color_id):
+    if not (time_changed or days_changed or title_changed or dest_id or color_id or details):
         return (f"nothing to change — '{ev['title']}' already repeats {old_days} at "
                 f"{'(all day)' if all_day else _time_span_local(m_start, m_end, tz)}. ask what they want different.")
 
@@ -5500,24 +5715,33 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
         bits.append(f"onto their '{dest_name}' calendar")
     if color_id:
         bits.append(f"colour → {_COLOR_NAME[color_id]}")
+    bits += detail_bits
     reflect = f"moving EVERY occurrence of '{ev['title']}' ({old_days}): " + "; ".join(bits)
     proposal = {"kind": "move", "event_id": ev["id"], "external_id": ev["external_id"], "title": final_title,
                 "start_utc": new_start.isoformat(), "end_utc": new_end.isoformat(),
-                "when": new_span, "scope": "series", "rrule": new_rec, "calendar_id": dest_id, "color_id": color_id}
+                "when": new_span, "scope": "series", "rrule": new_rec, "calendar_id": dest_id, "color_id": color_id,
+                "details": _details_key(details)}
     gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
                          verb="moved", tool="move_calendar_event", reflect=reflect,
-                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "rrule", "calendar_id", "color_id"),
+                         match_keys=("event_id", "title", "start_utc", "end_utc", "scope", "rrule", "calendar_id",
+                                     "color_id", "details"),
                          hint=_bare_hour_hint(new_start, tz) if (time_changed and not all_day) else "")
     if gate:
         return gate
 
+    patched = {}
     try:
-        if time_changed or days_changed or title_changed or color_id:
-            gcal.update_event(user_id, cal_id, master_id, summary=new_summary if title_changed else None,
-                              start_dt=new_start if (time_changed or days_changed) else None,
-                              end_dt=new_end if (time_changed or days_changed) else None,
-                              recurrence=new_rec if days_changed else None,
-                              integration_id=rid_used, all_day=all_day, tz=tz_str, color_id=color_id)
+        if time_changed or days_changed or title_changed or color_id or details:
+            attendees = _merge_guests(master.get("attendees"), details["guests"]) if details.get("guests") else None
+            patched = gcal.update_event(user_id, cal_id, master_id, summary=new_summary if title_changed else None,
+                                        start_dt=new_start if (time_changed or days_changed) else None,
+                                        end_dt=new_end if (time_changed or days_changed) else None,
+                                        recurrence=new_rec if days_changed else None,
+                                        integration_id=rid_used, all_day=all_day, tz=tz_str, color_id=color_id,
+                                        reminders=details.get("reminders"), busy=details.get("busy"),
+                                        visibility=details.get("visibility"), attendees=attendees,
+                                        meet=bool(details.get("meet")), location=details.get("location"),
+                                        description=details.get("description"))
         if dest_id:
             gcal.move_event_calendar(user_id, cal_id, master_id, dest_id, integration_id=rid_used)
     except Exception as e:  # noqa: BLE001
@@ -5531,7 +5755,7 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
     new_cal = dest_id or cal_id
     try:
         _soft_delete_series_rows(user_id, cal_id, master_id)
-        n = _mirror_series(user_id, new_cal, master_id, tz_str, integration_id=rid_used)
+        n = 0 if details.get("busy") is False else _mirror_series(user_id, new_cal, master_id, tz_str, integration_id=rid_used)
     except Exception as e:  # noqa: BLE001 — the write succeeded; the 30-min sync will catch up
         logger.warning("MOVE_SERIES_MIRROR_FAILED user=%s err=%s", user_id, e)
         n = None
@@ -5539,8 +5763,80 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
     logger.info("MOVE_SERIES user=%s master=%s %r %s", user_id, master_id, final_title[:40], "; ".join(bits))
     where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
     extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
-    return (f"ok: every '{final_title}' is now {new_span} {_describe_rrule(new_rec)} on {where}{extra}"
-            + (f" ({n} over the next two months)" if n is not None else ""))
+    out = (f"ok: every '{final_title}' is now {new_span} {_describe_rrule(new_rec)} on {where}{extra}"
+           + (f" ({n} over the next two months)" if n is not None else ""))
+    if detail_bits:
+        out += " — " + "; ".join(detail_bits)
+    if patched.get("hangoutLink") and details.get("meet"):
+        out += f". meet link: {patched['hangoutLink']} — send it to them"
+    if details.get("busy") is False:
+        out += ". it's marked free now, so i won't plan around it"
+    return out
+
+
+_RSVP_WORD = {"accepted": "yes", "declined": "no", "tentative": "maybe"}
+
+
+def handle_rsvp_calendar_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Accept / decline / tentative on an invitation (our attendee row), after a confirm — the
+    organizer is notified. A decline drops the mirror row (the sync skips declined events)."""
+    from integrations import gcal
+
+    ti = tool_input or {}
+    response = (ti.get("response") or "").strip().lower()
+    if response not in _RSVP_WORD:
+        return "error: response must be accepted / declined / tentative"
+    _, tz = _calendar_user_tz(user_id)
+    ev, msg = _resolve_one_event(user_id, ti, tz, verb="answered")
+    if msg:
+        return msg
+    if ev["source"] != "gcal":
+        return (f"'{ev['title']}' is something you logged on your radar, not an invitation on their google "
+                "calendar — nothing to RSVP to.")
+    when = _when_local(ev["occurred_at"], ev["ends_at"], tz, all_day=ev["all_day"])
+    word = _RSVP_WORD[response]
+    proposal = {"kind": "rsvp", "event_id": ev["id"], "external_id": ev["external_id"], "title": ev["title"],
+                "when": when, "response": response}
+    gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                         verb="answered", tool="rsvp_calendar_event",
+                         reflect=f"replying '{word}' to '{ev['title']}' ({when}) — the organizer gets notified",
+                         match_keys=("event_id", "response"))
+    if gate:
+        return gate
+
+    cal_id, gid = _split_external_id(ev["external_id"])
+    rows = _gcal_rows(user_id) or [None]
+    out = None
+    for i, rid in enumerate(rows):
+        try:
+            out = gcal.rsvp_event(user_id, cal_id, gid, response, integration_id=rid)
+            break
+        except gcal.EventGone:
+            if i + 1 < len(rows):
+                continue
+            _soft_delete_gcal_copies(user_id, gid)
+            _set_pending_calendar_event(user_id, None)
+            return f"'{ev['title']}' is no longer on their google calendar (the invite was pulled?). dropped it on my side."
+        except gcal.NotAnInvitation:
+            _set_pending_calendar_event(user_id, None)
+            return (f"'{ev['title']}' is their OWN event (or a calendar they just subscribe to), not an invitation — "
+                    "nothing to RSVP to. if they want it gone, that's delete_calendar_event.")
+        except Exception as e:  # noqa: BLE001
+            degrade = _write_degrade(e, verb="answer")
+            if degrade:
+                return degrade
+            logger.warning("RSVP_CALENDAR_EVENT_FAILED user=%s err=%s", user_id, e)
+            return f"error: couldn't send the answer ({e}); tell them it didn't go through"
+    if response == "declined":
+        _soft_delete_gcal_copies(user_id, gid)
+        _soft_delete_local_event(user_id, ev["id"])
+    _set_pending_calendar_event(user_id, None)
+    organizer = (out or {}).get("_organizer")
+    logger.info("RSVP_CALENDAR_EVENT user=%s gcal_id=%s response=%s", user_id, gid, response)
+    who = f" {organizer}" if organizer else " the organizer"
+    if response == "declined":
+        return f"ok: declined '{ev['title']}' ({when}) —{who} was notified. took it off their schedule on my side."
+    return f"ok: replied '{word}' to '{ev['title']}' ({when}) —{who} was notified."
 
 
 def _parse_iso(s):
@@ -5577,6 +5873,7 @@ _HANDLERS = {
     "create_calendar_event": handle_create_calendar_event,
     "delete_calendar_event": handle_delete_calendar_event,
     "move_calendar_event": handle_move_calendar_event,
+    "rsvp_calendar_event": handle_rsvp_calendar_event,
     "react_to_message": handle_react_to_message,
     "send_gym_line_link": handle_send_gym_line_link,
     "get_referral_code": handle_get_referral_code,

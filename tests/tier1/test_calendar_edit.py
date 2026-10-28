@@ -109,7 +109,7 @@ def test_delete_event_hits_the_right_url(monkeypatch):
     from integrations import gcal
     _token(monkeypatch)
     seen = {}
-    monkeypatch.setattr(gcal.requests, "delete", lambda url, headers=None, timeout=None: seen.update(url=url, h=headers) or _Resp(204))
+    monkeypatch.setattr(gcal.requests, "delete", lambda url, headers=None, params=None, timeout=None: seen.update(url=url, h=headers) or _Resp(204))
     assert gcal.delete_event(7, "nau@gmail.com", "evt 1") is True
     assert seen["url"].endswith("/calendar/v3/calendars/nau%40gmail.com/events/evt%201")
     assert seen["h"]["Authorization"] == "Bearer AT"
@@ -145,7 +145,7 @@ def test_update_event_patches_only_given_fields(monkeypatch):
     _token(monkeypatch)
     seen = {}
 
-    def fake_patch(url, headers=None, json=None, timeout=None):
+    def fake_patch(url, headers=None, json=None, params=None, timeout=None):
         seen.update(url=url, body=json)
         return _Resp(200, {"id": "e1"})
     monkeypatch.setattr(gcal.requests, "patch", fake_patch)
@@ -256,7 +256,7 @@ def test_confirmed_delete_hits_google_and_drops_every_local_copy(db, monkeypatch
     dup = _event(u.id, "gym — push", start, external_id="primary:evt9")      # an older coach-created mirror
     other = _event(u.id, "gym — pull", start + timedelta(days=1), external_id="nau@gmail.com:evt10")
     seen = {}
-    monkeypatch.setattr(gcal.requests, "delete", lambda url, headers=None, timeout=None: seen.update(url=url) or _Resp(204))
+    monkeypatch.setattr(gcal.requests, "delete", lambda url, headers=None, params=None, timeout=None: seen.update(url=url) or _Resp(204))
 
     staged = handle_delete_calendar_event(u.id, {"query": "push"}, message_id="m1")
     assert staged.startswith("not deleted yet") and "removing 'gym — push'" in staged and "4:00pm" in staged
@@ -348,7 +348,7 @@ def test_confirmed_move_patches_google_and_updates_mirror_in_place(db, monkeypat
     a = _event(u.id, "gym — push", start, external_id="nau@gmail.com:evt9")
     seen = {}
 
-    def fake_patch(url, headers=None, json=None, timeout=None):
+    def fake_patch(url, headers=None, json=None, params=None, timeout=None):
         seen.update(url=url, body=json)
         return _Resp(200, {"id": "evt9"})
     monkeypatch.setattr(gcal.requests, "patch", fake_patch)
@@ -377,7 +377,7 @@ def test_move_to_another_day_keeps_clock_time_and_rename_only_sends_summary(db, 
     start = _tomorrow_at(16)
     a = _event(u.id, "gym — push", start, external_id="nau@gmail.com:evt9")
     bodies = []
-    monkeypatch.setattr(gcal.requests, "patch", lambda url, headers=None, json=None, timeout=None: bodies.append(json) or _Resp(200, {}))
+    monkeypatch.setattr(gcal.requests, "patch", lambda url, headers=None, json=None, params=None, timeout=None: bodies.append(json) or _Resp(200, {}))
 
     day_after = (start + timedelta(days=1)).replace(tzinfo=timezone.utc)
     from zoneinfo import ZoneInfo
