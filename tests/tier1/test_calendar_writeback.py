@@ -70,7 +70,7 @@ def test_create_event_posts_insert_with_right_body(monkeypatch):
     monkeypatch.setattr(base, "get_valid_access_token", lambda uid, prov: "AT")
     seen = {}
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, json=None, params=None, timeout=None):
         seen["url"] = url
         seen["headers"] = headers
         seen["body"] = json

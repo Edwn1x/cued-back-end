@@ -2012,8 +2012,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # (readonly grants 403 on a write, which the tools surface as an honest reconnect
         # prompt). Delete/move only reach events the user can see in context (by [id N]
         # or title) — the model never passes a raw Google id.
-        from agent_tools import CREATE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL
-        tools.extend([CREATE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL])
+        from agent_tools import (CREATE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL,
+                                 RSVP_CALENDAR_EVENT_TOOL)
+        tools.extend([CREATE_CALENDAR_EVENT_TOOL, MOVE_CALENDAR_EVENT_TOOL, DELETE_CALENDAR_EVENT_TOOL,
+                      RSVP_CALENDAR_EVENT_TOOL])
     if config.REMINDERS_ENABLED:
         from agent_tools import SET_REMINDER_TOOL, CANCEL_REMINDER_TOOL, set_reminder_tool  # noqa: F401
         # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance

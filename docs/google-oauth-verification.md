@@ -91,7 +91,10 @@ calendar (one-off, all-day, or repeating — "office hours every tue 2–3 till 
 event the user named; "delete all my eleng discussions" / "remove everything eleng 105
 related" removes the repeating event(s) the user named, every occurrence at once. In every
 case the coach reflects the exact change back (for a series or a bulk delete, with the
-count), waits for a yes, and only then writes. The coach never edits an event the user
+count), waits for a yes, and only then writes. The same applies to event details the user
+asks for — a room, a reminder, a colour, which of their calendars, a Google Meet link, guests
+they name by email (Google sends the invite), and answering an invitation they received
+(accept / decline / tentative, which notifies the organizer). The coach never edits an event the user
 didn't name and never touches events on calendars the user can't edit. The narrower
 `calendar.events.readonly` cannot write; `calendar.events.owned` would not read shared
 course calendars the user doesn't own.

@@ -348,7 +348,7 @@ CAPABILITIES: list[Capability] = [
         id="block_time",
         what="i can add, move, or delete anything on your google calendar — one-offs or repeating stuff",
         how="say 'block a lift at 4', 'add office hours every tue 2-3', 'push my gym block to 5', or 'take all the eleng stuff off' — i'll confirm, then do it",
-        tools=("create_calendar_event", "move_calendar_event", "delete_calendar_event"),
+        tools=("create_calendar_event", "move_calendar_event", "delete_calendar_event", "rsvp_calendar_event"),
         enabled=lambda u: config.CALENDAR_WRITE_ENABLED,
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=None,
