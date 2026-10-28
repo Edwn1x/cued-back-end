@@ -114,6 +114,9 @@ EXERCISE_DEMO_LINKS = {
     "cat_cow": "https://youtu.be/WHUevrqeKIg",                    # Cleveland Clinic — how to do a cat-cow (57s)
     "kneeling_hip_flexor_stretch": "https://youtu.be/K5EZ8ztNEcw",  # Rehab My Patient — Kneeling Hip Flexor Stretch (40s)
     "dead_hang": "https://youtu.be/bDSqVe4b9pA",                  # Calixpert — How To Do Dead Hang | Correct Form (70s)
+    # The standing swap for the chair version (a reclining office chair can't brace the back): hands on
+    # a wall/counter, walk the feet back, hinge, chest sinks between the arms (live 2026-10-28, user 77).
+    "standing_wall_thoracic_extension": "https://youtu.be/-TLJEN3Ri3c",  # Peak Performance Therapy Services — Thoracic EXT stretch on wall (24s)
 }
 
 # Real-world names / slugs the card and conversation use → the canonical key above.
@@ -142,6 +145,12 @@ _ALIASES = {
     "lean back over the chair": "seated_thoracic_extension", "upper back extension over chair": "seated_thoracic_extension",
     "upper back stretch over chair": "seated_thoracic_extension", "arch over the chair": "seated_thoracic_extension",
     "wall angels": "wall_angel", "wall angel exercise": "wall_angel",
+    "standing thoracic extension": "standing_wall_thoracic_extension",
+    "wall thoracic extension": "standing_wall_thoracic_extension",
+    "thoracic extension on the wall": "standing_wall_thoracic_extension",
+    "thoracic extension on a wall": "standing_wall_thoracic_extension",
+    "thoracic extension at the counter": "standing_wall_thoracic_extension",
+    "counter thoracic extension": "standing_wall_thoracic_extension",
     "cat cow": "cat_cow", "cat camel": "cat_cow", "cat and cow": "cat_cow", "cat and camel": "cat_cow",
     "cat cow stretch": "cat_cow", "cat-cow stretch": "cat_cow", "cat camel stretch": "cat_cow",
     "hip flexor stretch": "kneeling_hip_flexor_stretch", "kneeling hip flexor stretch": "kneeling_hip_flexor_stretch",
@@ -400,6 +409,33 @@ def demo_links_for_reminder(user, text: str, limit: int = 3) -> dict[str, str]:
     hasn't been shown yet — the clips ride with the FIRST fire (reminders._fire_one), so a
     posture break arrives with how-to, not just a line. Pure / fail-open like unseen_demos_for."""
     return unseen_demos_for(user, movement_phrases(text), limit=limit)
+
+
+# Every name we know (alias phrases + the canonical keys as words), longest first, so a scan of
+# free text takes "standing thoracic extension" before the "thoracic extension" inside it.
+_TEXT_PHRASES = sorted({(k.replace("_", " "), v) for k, v in _ALIASES.items()}
+                       | {(k.replace("_", " "), k) for k in EXERCISE_DEMO_LINKS},
+                       key=lambda kv: -len(kv[0]))
+
+
+def demo_keys_in_text(text: str) -> list[str]:
+    """The library moves NAMED anywhere in free text ("do a standing thoracic extension on the
+    wall, then wall angels x10"), in order of first mention, each once. Whole-word, optional
+    plural; a match's span is consumed so a shorter alias inside it doesn't count again. Pure."""
+    low = re.sub(r"[\s\-]+", " ", (text or "").lower())
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[int, str]] = []
+    for phrase, key in _TEXT_PHRASES:
+        for m in re.finditer(rf"\b{re.escape(phrase)}(?:e?s)?\b", low):
+            if any(m.start() < b and a < m.end() for a, b in taken):
+                continue
+            taken.append((m.start(), m.end()))
+            found.append((m.start(), key))
+    out: list[str] = []
+    for _, key in sorted(found):
+        if key not in out:
+            out.append(key)
+    return out
 
 
 def mark_demos_seen(user_id: int, canonical_keys) -> None:

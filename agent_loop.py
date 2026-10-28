@@ -1372,6 +1372,60 @@ def _dead_end_fallback(text: str, user_id: int) -> str:
     return text.rstrip().rstrip(".") + _DEAD_END_FALLBACK
 
 
+# An explicit ask for a form video. Video words alone count (the moves can come from the coach's
+# last texts — "reference vids pls" after a swap); a bare "link" counts only when the ask itself
+# names a library move ("send me the link" is usually a calendar/card link).
+_VIDEO_ASK_RE = re.compile(r"\b(?:vids?|videos?|clips?|demos?|tutorials?|youtube|yt)\b|\bshow me how\b", re.I)
+_LINK_ASK_RE = re.compile(r"\blinks?\b", re.I)
+_DEMO_ASK_LOOKBACK_MIN = 60
+_DEMO_ASK_MAX_CLIPS = 4
+_DEMO_ASK_SKIP_TYPES = ("water_reminder", "reaction")
+
+
+def _demo_ask_block(user, combined_body: str, session) -> str | None:
+    """They asked for a video of a move → the verified library clips for the moves named in the ask
+    (first) and the coach's texts from the last hour (newest first), as a context block sent as-is.
+    Seen doesn't filter (that only stops UNPROMPTED offers); what's listed is marked seen. None when
+    it isn't a video ask, no library move is named, or the flag is off. Live 2026-10-28, user 77:
+    "reference vids pls" → "my search didn't come back with anything" — wall angels was on file."""
+    if not (config.DEMO_ASK_CONTEXT_ENABLED and config.EXERCISE_DEMOS_ENABLED):
+        return None
+    body = combined_body or ""
+    video_ask = bool(_VIDEO_ASK_RE.search(body))
+    if not (video_ask or _LINK_ASK_RE.search(body)):
+        return None
+    try:
+        import exercise_demos
+        keys = exercise_demos.demo_keys_in_text(body)
+        if video_ask:
+            since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=_DEMO_ASK_LOOKBACK_MIN)
+            rows = (session.query(Message.body)
+                    .filter(Message.user_id == user.id, Message.direction == "out",
+                            Message.created_at >= since,
+                            ~Message.message_type.in_(_DEMO_ASK_SKIP_TYPES))
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .limit(6).all())
+            for (text,) in rows:
+                keys += [k for k in exercise_demos.demo_keys_in_text(text) if k not in keys]
+        keys = keys[:_DEMO_ASK_MAX_CLIPS]
+        if not keys:
+            return None
+        lines = "\n".join(f"{k.replace('_', ' ')}: {exercise_demos.EXERCISE_DEMO_LINKS[k]}" for k in keys)
+        exercise_demos.mark_demos_seen(user.id, keys)
+        logger.info("DEMO_ASK_CLIPS user=%s keys=%s", user.id, ",".join(keys))
+        return (
+            "## DEMO CLIPS ON FILE (they asked for a video — these are verified PT/coach clips, send them as-is)\n"
+            f"{lines}\n"
+            "Send the clip for each move they're asking about as its own bubble, one per line under a "
+            "two-word label — no search needed for these. Skip any listed move they didn't ask about. "
+            "A move they asked about that isn't listed: web_search it (a PT or coach, a short clip). "
+            "Never say you couldn't find a clip that's listed here."
+        )
+    except Exception as e:  # noqa: BLE001 — never break a turn over a hint
+        logger.warning("DEMO_ASK_CONTEXT_FAILED user=%s err=%s", user.id, e)
+        return None
+
+
 def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
@@ -1859,6 +1913,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         _rm = _repeat_meal_block(user, combined_body, session)
         if _rm:
             context += "\n\n" + _rm
+        # An explicit ask for a form video → the verified library clips for the moves named, as-is
+        # (live 2026-10-28: "reference vids pls" → a broken search, wall angels was on file).
+        _da = _demo_ask_block(user, combined_body, session)
+        if _da:
+            context += "\n\n" + _da
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):

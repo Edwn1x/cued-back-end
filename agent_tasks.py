@@ -224,9 +224,13 @@ REPORT_TOOL = {
 NOTHING_TO_REPORT_TOOL = {
     "name": "nothing_to_report",
     "description": ("For a WATCH: nothing changed yet (seat still full, grade not posted) — stay quiet and "
-                    "check again later. For a one-off LOOKUP: you came up empty — code will text them an "
-                    "honest 'couldn't find it' line; put WHY in `reason`."),
-    "input_schema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
+                    "check again later. For a one-off LOOKUP: you came up empty — put WHY in `reason` (for "
+                    "the log) and write `message`: the ONE honest text they get, in your voice — what you "
+                    "looked for in their words, that it came up empty, and whether to try again. Never "
+                    "quote the task's wording back at them."),
+    "input_schema": {"type": "object", "properties": {"reason": {"type": "string"},
+                                                      "message": {"type": "string"}},
+                     "required": ["reason"]},
 }
 
 # Read-only tools a background run may use. No writes: a run is not a conversation
@@ -275,9 +279,9 @@ def _tools_for_run() -> list:
     return tools
 
 
-def _run_loop(user, row: AgentTask) -> tuple[str, str]:
+def _run_loop(user, row: AgentTask) -> tuple:
     """Bounded tool loop. Returns (outcome, payload): ("report", message) |
-    ("nothing", reason) | ("failed", why). Never raises."""
+    ("nothing", reason, message) | ("failed", why). Never raises."""
     from agent_loop import _voice_prompt, build_loop_context, _join_text, stable_cache_control
     from agent_tools import dispatch_tool, begin_turn, pop_turn_state
     from llm_client import make_client
@@ -313,6 +317,8 @@ def _run_loop(user, row: AgentTask) -> tuple[str, str]:
                     track(user.id, "tasks.run", config.AGENT_LOOP_MODEL, resp)
                 except Exception:  # noqa: BLE001
                     pass
+                from agent_tools import log_web_search_queries
+                log_web_search_queries(user.id, resp.content, "tasks.run")
                 stop = getattr(resp, "stop_reason", None)
                 if stop == "pause_turn":
                     messages.append({"role": "assistant", "content": resp.content})
@@ -325,7 +331,8 @@ def _run_loop(user, row: AgentTask) -> tuple[str, str]:
                             msg = ((b.input or {}).get("message") or "").strip()
                             return ("report", msg) if msg else ("failed", "empty report")
                         if b.name == "nothing_to_report":
-                            return ("nothing", ((b.input or {}).get("reason") or "").strip())
+                            return ("nothing", ((b.input or {}).get("reason") or "").strip(),
+                                    ((b.input or {}).get("message") or "").strip())
                     messages.append({"role": "assistant", "content": resp.content})
                     results = []
                     for b in resp.content:
@@ -346,6 +353,34 @@ def _run_loop(user, row: AgentTask) -> tuple[str, str]:
     except Exception as e:  # noqa: BLE001
         logger.warning("TASK_RUN_FAILED user=%s id=%s err=%s", user.id, row.id, e.__class__.__name__)
         return ("failed", e.__class__.__name__)
+
+
+_GOAL_DIRECTIVE_RE = re.compile(r"\s*\b(?:and |then )?(?:text|ping|message|tell|let me know)\b.*$", re.I)
+_GOAL_VERB_RE = re.compile(r"^(?:please\s+)?(?:find(?:\s+out)?|look(?:\s+(?:up|into|for))?|check(?:\s+(?:on|out))?|"
+                           r"search(?:\s+for)?|pull(?:\s+up)?|get|see|figure\s+out)\s+", re.I)
+_GOAL_TOPIC_MAX = 50
+
+
+def _goal_topic(goal: str) -> str | None:
+    """A short user-facing topic from the model-written goal ("find the CS61C midterm room and text
+    me" → "the CS61C midterm room"): first sentence, no texting directive, no leading lookup verb.
+    None when what's left is long or a list — the goal is an instruction to the run, not a line to
+    send (live 2026-10-28: "…and wall angels. text Alexey one link per move" went out verbatim)."""
+    first = re.split(r"(?<=[.!?])\s+|\n", (goal or "").strip())[0].rstrip(".!? ")
+    topic = _GOAL_VERB_RE.sub("", _GOAL_DIRECTIVE_RE.sub("", first)).strip(" ,-—")
+    if not topic or len(topic) > _GOAL_TOPIC_MAX or "," in topic:
+        return None
+    return topic
+
+
+def _honest_line(row: AgentTask, outcome: str) -> str:
+    """Code's own close for a lookup the run couldn't finish: empty-handed or broken on our end."""
+    topic = _goal_topic(row.goal)
+    if outcome == "nothing":
+        return (f"looked into {topic} and came up empty. want me to try again later?" if topic
+                else "looked but came up empty on that one. want me to try again later?")
+    return (f"couldn't get to {topic}, something broke on my end. want me to try again later?" if topic
+            else "couldn't get that lookup done, something broke on my end. want me to try again later?")
 
 
 def _fallback_line(row: AgentTask) -> str:
@@ -407,7 +442,8 @@ def run_task(task_id: int, now: datetime | None = None) -> bool:
     finally:
         session.close()
 
-    outcome, payload = _run_loop(user, row)
+    outcome, payload, *rest = _run_loop(user, row)
+    model_line = rest[0] if rest else ""
 
     session = get_session()
     try:
@@ -432,7 +468,10 @@ def run_task(task_id: int, now: datetime | None = None) -> bool:
                 session.commit()
                 logger.info("TASK_WATCH_QUIET user=%s id=%s next=%s reason=%r", user.id, task_id, row.run_at, payload[:80])
                 return False
-            text = _fallback_line(row).replace("couldn't get that done", "couldn't find it")
+            if config.TASK_HONEST_FALLBACK_ENABLED:
+                text = model_line or _honest_line(row, "nothing")
+            else:
+                text = _fallback_line(row).replace("couldn't get that done", "couldn't find it")
             _send(user, text)
             row.status = "done"
             row.result = f"nothing: {payload}"
@@ -452,7 +491,7 @@ def run_task(task_id: int, now: datetime | None = None) -> bool:
         row.result = f"failed: {payload}"
         row.finished_at = now
         session.commit()
-        _send(user, _fallback_line(row))
+        _send(user, _honest_line(row, "failed") if config.TASK_HONEST_FALLBACK_ENABLED else _fallback_line(row))
         logger.warning("TASK_FAILED user=%s id=%s why=%r — honest fallback sent", user.id, task_id, payload)
         return True
     finally:

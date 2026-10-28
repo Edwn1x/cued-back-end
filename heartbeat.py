@@ -1817,6 +1817,8 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 search["used"] = True
                 if search["query"] is None:
                     search["query"] = (getattr(b, "input", None) or {}).get("query")
+        from agent_tools import log_web_search_results
+        log_web_search_results(user_id, resp.content, "heartbeat.decide")
 
         if stop == "pause_turn":
             messages.append({"role": "assistant", "content": resp.content})
