@@ -457,6 +457,8 @@ MIGRATIONS = [
     "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS every_hours INTEGER",
     "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS window_start VARCHAR(5)",
     "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS window_end VARCHAR(5)",
+    # Interval-ping gate v2 (2026-10-27, user 77: 9h with no water ping): first gate of the current slide
+    "ALTER TABLE reminders ADD COLUMN IF NOT EXISTS deferred_since TIMESTAMP",
     # Integrations (OAuth: gcal, strava, bcourses, wearables) — one row per
     # (user, provider). Tokens stored as Fernet ciphertext (never plaintext). meta
     # holds sync tokens / feed urls / last_error / the in-flight connect nonce. The
