@@ -206,6 +206,15 @@ CACHE_READ_MULTIPLIER  = 0.10   # cached-input read (90% off), on the input rate
 # Rule: 1-hour entries must precede 5-minute ones in a request — every site puts the
 # stable blocks first and leaves per-turn context uncached, so this holds. "5m" = old.
 PROMPT_CACHE_TTL = os.getenv("PROMPT_CACHE_TTL", "1h")
+# Keep-alive for those 1-hour entries (cache_keepalive.py): a prefix untouched for
+# REFRESH_MIN gets a max_tokens=0 re-send (bills only the cache read, returns nothing),
+# until IDLE_HOURS after its last real call. Live 2026-10-28: rewrites after 1.5–3h
+# overnight gaps were 66% of the day. false = off (entries just lapse, as before).
+CACHE_KEEPALIVE_ENABLED = os.getenv("CACHE_KEEPALIVE_ENABLED", "true").lower() == "true"
+CACHE_KEEPALIVE_REFRESH_MIN = int(os.getenv("CACHE_KEEPALIVE_REFRESH_MIN", "50"))
+CACHE_KEEPALIVE_IDLE_HOURS = float(os.getenv("CACHE_KEEPALIVE_IDLE_HOURS", "6"))
+CACHE_KEEPALIVE_MAX_ENTRIES = int(os.getenv("CACHE_KEEPALIVE_MAX_ENTRIES", "8"))
+CACHE_KEEPALIVE_SWEEP_MINUTES = int(os.getenv("CACHE_KEEPALIVE_SWEEP_MINUTES", "5"))
 TWILIO_COST_PER_SEGMENT = 0.015 # volume-based; keep separate from API cost
 # Feature flag — when false, system prompts ship as a single string (no cache_control blocks).
 # Lets us roll back the structural prompt-caching change without a redeploy if something breaks.

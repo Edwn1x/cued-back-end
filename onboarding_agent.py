@@ -960,6 +960,9 @@ def _generate(system_prompt: str, instruction: str, user_id: int = None) -> str:
                       system=_cacheable_system(system_prompt), messages=messages)
         if tools:
             kwargs["tools"] = tools
+        from cache_keepalive import note as keepalive_note
+        keepalive_note("onboarding.generate", model=COACH_MODEL, system=kwargs["system"], tools=tools,
+                       thinking=kwargs["thinking"], output_config=kwargs["output_config"])
         response = client.messages.create(**kwargs)
         track_usage(user_id, "onboarding.generate", COACH_MODEL, response)
         log_web_search_queries(user_id, response.content, "onboarding.generate")

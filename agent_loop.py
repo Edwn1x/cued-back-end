@@ -2119,6 +2119,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         )
         if tools:
             kwargs["tools"] = tools
+        from cache_keepalive import note as keepalive_note
+        keepalive_note("agent_loop.run", model=kwargs["model"], system=system, tools=tools,
+                       thinking=kwargs["thinking"], output_config=kwargs["output_config"])
         resp = client.messages.create(**kwargs)
 
         try:

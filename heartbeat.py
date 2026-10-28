@@ -26,6 +26,7 @@ from models import get_session, User, Message, HeartbeatTick, Workout, WorkoutSe
 from sms import send_sms
 from agent_loop import build_loop_context, _voice_prompt, _join_text, stable_cache_control
 from llm_client import make_client
+from cache_keepalive import note as keepalive_note
 from stale_skip import SKIP_PREFIX, SKIP_REASON_PREFIX, BACKOFF_REASON_PREFIX
 
 logger = logging.getLogger("cued.heartbeat")
@@ -1793,6 +1794,8 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     for _ in range(config.AGENT_LOOP_MAX_TOOL_ITERS):
         # Dedicated ceiling, NOT MAX_RESPONSE_TOKENS: thinking + tool JSON + the
         # composed message all bill against this one budget (Aug 6 truncation).
+        keepalive_note("heartbeat.decide", model=config.AGENT_LOOP_MODEL, system=system,
+                       tools=tools, thinking={"type": "adaptive"}, output_config={"effort": "low"})
         resp = client.messages.create(
             model=config.AGENT_LOOP_MODEL, max_tokens=config.HEARTBEAT_DECIDE_MAX_TOKENS,
             thinking={"type": "adaptive"}, output_config={"effort": "low"},

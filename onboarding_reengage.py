@@ -202,6 +202,9 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
         )
         system = [{"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()}]
         client = make_client()
+        from cache_keepalive import note as keepalive_note
+        keepalive_note("onboarding.reengage", model=config.AGENT_LOOP_MODEL, system=system,
+                       thinking={"type": "adaptive"}, output_config={"effort": "low"})
         resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=1000, system=system,
                                       thinking={"type": "adaptive"}, output_config={"effort": "low"},
                                       messages=[{"role": "user", "content": instruction}])
