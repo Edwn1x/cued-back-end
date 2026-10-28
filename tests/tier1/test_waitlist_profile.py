@@ -155,6 +155,24 @@ def test_admin_waitlist_tab_shows_the_full_name(db, client):
     assert "Nate Ruiz" in html and "Full name" in html
 
 
+def test_admin_shows_the_full_name_and_email_after_activation(db, client):
+    """Live sign-ups never sit on the Waitlist tab (activated on the spot), so the
+    full name + email the form collected must show on the per-user page and in the
+    Users table — not only on the waitlist row (2026-10-27)."""
+    from datetime import datetime, timezone as tz
+    u = make_user(db, phone="+15105550312", name="Nate", full_name="Nate Ruiz", email="nate@berkeley.edu",
+                  waitlist_status=None, activated_at=datetime.now(tz.utc), onboarding_step=0)
+    html = client.get(f"/admin/user/{u.id}").get_data(as_text=True)
+    assert "Nate Ruiz" in html and "nate@berkeley.edu" in html
+    html = client.get("/admin").get_data(as_text=True)
+    assert "Nate Ruiz" in html and 'data-name="nate ruiz"' in html
+    # first name only: nothing invented, no duplicate line
+    solo = make_user(db, phone="+15105550313", name="Ben", full_name="Ben", waitlist_status=None,
+                     activated_at=datetime.now(tz.utc), onboarding_step=0)
+    html = client.get(f"/admin/user/{solo.id}").get_data(as_text=True)
+    assert html.count("Ben") >= 1 and "Full name" in html
+
+
 def test_waitlist_goal_csv_and_defaults_match_signup(db, client):
     from models import User
     code, _ = _waitlist(client, "5105550302", goal="muscle_building", gender=None, experience="",

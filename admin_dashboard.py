@@ -358,14 +358,14 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
       {% for u in users %}
       <tr class="clickable user-row"
         onclick="window.location.href='/admin/user/{{ u.id }}'"
-        data-name="{{ u.name | lower }}"
+        data-name="{{ (u.full_name or u.name) | lower }}"
         data-phone="{{ u.phone }}"
         data-days-inactive="{{ u.days_inactive }}"
         data-onboarding="{{ u.onboarding_step }}"
         data-spend="{{ u.cost_usd }}"
         data-msgs="{{ u.msg_count }}"
         data-created="{{ u.created_ts }}">
-        <td style="color:var(--text);font-weight:500">{{ u.name }}</td>
+        <td style="color:var(--text);font-weight:500">{{ u.name }}{% if u.full_name %}<div style="font-size:11px;font-weight:400;color:var(--text3)">{{ u.full_name }}</div>{% endif %}</td>
         <td>···{{ u.phone }}</td>
         <td>{{ u.signed_up }}</td>
         <td>{{ u.last_active }}</td>
