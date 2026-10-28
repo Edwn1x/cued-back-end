@@ -161,14 +161,18 @@ def _out(db, user, body, minutes_ago, mtype="freeform"):
 def test_new_library_entry_for_the_standing_wall_hinge():
     from exercise_demos import EXERCISE_DEMO_LINKS, _resolve
     assert EXERCISE_DEMO_LINKS["standing_wall_thoracic_extension"] == "https://youtu.be/-TLJEN3Ri3c"
-    for phrase in ("standing thoracic extension", "wall thoracic extension", "thoracic extension on the wall"):
+    for phrase in ("wall thoracic extension", "counter thoracic extension", "thoracic extension at the counter"):
         assert _resolve(phrase) == "standing_wall_thoracic_extension", phrase
     assert _resolve("thoracic extension") == "seated_thoracic_extension", "the chair version keeps its alias"
+    # Live trial 2026-10-28: the model called a back-to-the-wall arch "standing thoracic extension on the
+    # wall". Those generic names are a DIFFERENT movement from the hands-on-wall hinge in the clip.
+    for phrase in ("standing thoracic extension", "thoracic extension on the wall"):
+        assert _resolve(phrase) is None, phrase
 
 
 def test_moves_named_in_free_text_are_found_longest_first():
     from exercise_demos import demo_keys_in_text
-    t = "do a standing thoracic extension on the wall, then wall angels x10. squat later"
+    t = "do a wall thoracic extension, then wall angels x10. squat later"
     keys = demo_keys_in_text(t)
     assert keys[:2] == ["standing_wall_thoracic_extension", "wall_angel"]
     assert "seated_thoracic_extension" not in keys, "a shorter alias inside a longer match doesn't double-count"
@@ -181,11 +185,13 @@ def test_a_video_ask_after_the_coach_named_moves_gets_the_clips(db, ask):
     from agent_loop import _demo_ask_block
     u = make_user(db, name="Alexey")
     _out(db, u, "yeah, a steelcase back just reclines with u so it doesn't do much", 2)
-    _out(db, u, "do a standing thoracic extension on the wall instead, hold 30s x2. then wall angels x10", 1)
+    _out(db, u, "do a wall thoracic extension instead, hold 30s x2. then wall angels x10", 1)
     block = _demo_ask_block(u, ask, db)
     assert block and block.startswith("## DEMO CLIPS ON FILE")
     assert "https://youtu.be/-TLJEN3Ri3c" in block and "https://youtu.be/kcca7_JGsVk" in block
     assert "as-is" in block and "web_search" in block and "never say you couldn't find" in block.lower()
+    assert "shows: hands on a wall" in block and "shows: back flat against a wall" in block
+    assert "a different version" in block
 
 
 def test_seen_clips_still_go_out_on_an_explicit_ask_and_get_marked_seen(db, monkeypatch):
@@ -311,3 +317,68 @@ def test_honest_fallback_flag_off_restores_the_old_line(db, anthropic_stub, sms_
     assert fire_due() == 1
     text = sms_capture[-1][1]
     assert text.startswith("couldn't find it") and "find the CS61C midterm room" in text, text
+
+
+# ─── 4. the coach names the moves it prescribes ──────────────────────────────
+# Live 14:14-14:15: the coach DESCRIBED both swaps without naming them ("hands on a wall or counter …
+# let ur chest sink", "slide ur arms up and down like a snow angel"), so neither the library nor a
+# search query had a name to work from. The voice rule makes it lead with the standard name.
+
+LIVE_UNNAMED = [
+    "do it standing instead: hands on a wall or counter at hip height, walk ur feet back, let ur chest "
+    "sink toward the floor. hold 30s, x2",
+    "or stand with ur back flat on a wall and slide ur arms up and down like a snow angel, x10. either "
+    "one counts for the chair part of the pings",
+]
+NAMED = [
+    "wall thoracic extension instead: hands on the wall or a counter at hip height, walk ur feet back, "
+    "let ur chest sink. hold 30s, x2",
+    "or wall angels: back flat on the wall, slide ur arms up and down like a snow angel, x10",
+]
+
+
+def test_the_live_descriptions_name_nothing_the_library_can_match():
+    from exercise_demos import demo_keys_in_text
+    assert all(demo_keys_in_text(t) == [] for t in LIVE_UNNAMED)
+
+
+def test_named_the_way_the_rule_asks_they_resolve_to_the_verified_clips(db):
+    from exercise_demos import demo_keys_in_text
+    from agent_loop import _demo_ask_block
+    assert demo_keys_in_text(NAMED[0]) == ["standing_wall_thoracic_extension"]
+    assert demo_keys_in_text(NAMED[1]) == ["wall_angel"]
+    u = make_user(db, name="Alexey")
+    _out(db, u, NAMED[0], 2)
+    _out(db, u, NAMED[1], 1)
+    block = _demo_ask_block(u, "reference vids pls", db)
+    assert "https://youtu.be/-TLJEN3Ri3c" in block and "https://youtu.be/kcca7_JGsVk" in block
+
+
+def test_voice_says_name_the_move_then_describe_it():
+    import re
+    from agent_loop import _voice_prompt
+    v = re.sub(r"\s+", " ", _voice_prompt())
+    assert "Name every move you prescribe" in v
+    assert "the standard name a PT or coach would search" in v
+    assert "wall angels" in v and "like a snow angel" in v, "the live example rides with the rule"
+    assert "wall thoracic extension: hands on the wall" in v, "an example name comes WITH its how"
+    assert "standing thoracic extension on the wall" not in v
+    assert "A swap gets a name too" in v
+
+
+def test_every_posture_clip_says_what_it_shows():
+    from exercise_demos import DEMO_CLIP_SHOWS
+    for key in ("chin_tuck", "doorway_pec_stretch", "seated_thoracic_extension", "wall_angel", "cat_cow",
+                "kneeling_hip_flexor_stretch", "dead_hang", "standing_wall_thoracic_extension"):
+        assert DEMO_CLIP_SHOWS.get(key), key
+
+
+@pytest.mark.parametrize("text", [
+    "standing thoracic extension: stand up, hands on ur lower back, squeeze ur shoulder blades and lean back",
+    "do a thoracic extension on the wall, back to it, arch off it x10",
+])
+def test_a_generic_name_for_another_version_maps_to_no_clip(text):
+    """Live trial: "standing thoracic extension" (a lean-back) held the chair alias "thoracic extension"
+    inside it → the over-the-chair clip. The longer generic name takes the span and maps to nothing."""
+    from exercise_demos import demo_keys_in_text
+    assert demo_keys_in_text(text) == []

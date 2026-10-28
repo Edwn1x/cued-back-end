@@ -1410,7 +1410,10 @@ def _demo_ask_block(user, combined_body: str, session) -> str | None:
         keys = keys[:_DEMO_ASK_MAX_CLIPS]
         if not keys:
             return None
-        lines = "\n".join(f"{k.replace('_', ' ')}: {exercise_demos.EXERCISE_DEMO_LINKS[k]}" for k in keys)
+        def _line(k):
+            shows = exercise_demos.DEMO_CLIP_SHOWS.get(k)
+            return f"{k.replace('_', ' ')}: {exercise_demos.EXERCISE_DEMO_LINKS[k]}" + (f" (shows: {shows})" if shows else "")
+        lines = "\n".join(_line(k) for k in keys)
         exercise_demos.mark_demos_seen(user.id, keys)
         logger.info("DEMO_ASK_CLIPS user=%s keys=%s", user.id, ",".join(keys))
         return (
@@ -1419,6 +1422,8 @@ def _demo_ask_block(user, combined_body: str, session) -> str | None:
             "Send the clip for each move they're asking about as its own bubble, one per line under a "
             "two-word label — no search needed for these. Skip any listed move they didn't ask about. "
             "A move they asked about that isn't listed: web_search it (a PT or coach, a short clip). "
+            "A clip that shows a different version than the one you prescribed: say which version it "
+            "shows, or web_search the one you prescribed. "
             "Never say you couldn't find a clip that's listed here."
         )
     except Exception as e:  # noqa: BLE001 — never break a turn over a hint

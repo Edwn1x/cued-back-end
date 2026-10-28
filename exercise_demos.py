@@ -119,6 +119,19 @@ EXERCISE_DEMO_LINKS = {
     "standing_wall_thoracic_extension": "https://youtu.be/-TLJEN3Ri3c",  # Peak Performance Therapy Services — Thoracic EXT stretch on wall (24s)
 }
 
+# What each posture / mobility clip actually shows — rides next to the link when it's handed to the
+# coach on an ask, so a clip of a different version than the one it prescribed is caught, not sent.
+DEMO_CLIP_SHOWS = {
+    "chin_tuck": "seated at the edge of a chair, drawing the chin straight back",
+    "doorway_pec_stretch": "forearms on a door frame, stepping through",
+    "seated_thoracic_extension": "seated, arching the upper back over the chair back",
+    "wall_angel": "back flat against a wall, sliding the arms up and down",
+    "cat_cow": "on hands and knees, rounding then arching the back",
+    "kneeling_hip_flexor_stretch": "half-kneeling, hips pushed forward",
+    "dead_hang": "hanging from a pull-up bar, arms straight",
+    "standing_wall_thoracic_extension": "hands on a wall, feet walked back, hinging so the chest sinks",
+}
+
 # Real-world names / slugs the card and conversation use → the canonical key above.
 # CONSERVATIVE by design: an alias must be the SAME movement. A missing demo is fine;
 # a WRONG-movement demo is a correctness bug. lat pulldown, barbell curl, back extension
@@ -145,10 +158,10 @@ _ALIASES = {
     "lean back over the chair": "seated_thoracic_extension", "upper back extension over chair": "seated_thoracic_extension",
     "upper back stretch over chair": "seated_thoracic_extension", "arch over the chair": "seated_thoracic_extension",
     "wall angels": "wall_angel", "wall angel exercise": "wall_angel",
-    "standing thoracic extension": "standing_wall_thoracic_extension",
+    # NOT "standing thoracic extension" / "thoracic extension on the wall": the model used those for a
+    # back-to-the-wall arch (live trial 2026-10-28) — a different movement from this hinge.
     "wall thoracic extension": "standing_wall_thoracic_extension",
-    "thoracic extension on the wall": "standing_wall_thoracic_extension",
-    "thoracic extension on a wall": "standing_wall_thoracic_extension",
+    "wall thoracic extension stretch": "standing_wall_thoracic_extension",
     "thoracic extension at the counter": "standing_wall_thoracic_extension",
     "counter thoracic extension": "standing_wall_thoracic_extension",
     "cat cow": "cat_cow", "cat camel": "cat_cow", "cat and cow": "cat_cow", "cat and camel": "cat_cow",
@@ -413,8 +426,14 @@ def demo_links_for_reminder(user, text: str, limit: int = 3) -> dict[str, str]:
 
 # Every name we know (alias phrases + the canonical keys as words), longest first, so a scan of
 # free text takes "standing thoracic extension" before the "thoracic extension" inside it.
+# Generic names for a DIFFERENT version than any clip: they take their span and map to nothing, so the
+# shorter alias inside them ("thoracic extension" → the over-the-chair clip) doesn't fire. Live trial
+# 2026-10-28: "standing thoracic extension: … hands on ur lower back … lean back" → the chair clip.
+_TEXT_BLOCKERS = ("standing thoracic extension", "thoracic extension on the wall", "thoracic extension on a wall",
+                  "thoracic extension against the wall")
 _TEXT_PHRASES = sorted({(k.replace("_", " "), v) for k, v in _ALIASES.items()}
-                       | {(k.replace("_", " "), k) for k in EXERCISE_DEMO_LINKS},
+                       | {(k.replace("_", " "), k) for k in EXERCISE_DEMO_LINKS}
+                       | {(b, None) for b in _TEXT_BLOCKERS if _normalize(b) not in _ALIASES_NORM},
                        key=lambda kv: -len(kv[0]))
 
 
@@ -430,7 +449,8 @@ def demo_keys_in_text(text: str) -> list[str]:
             if any(m.start() < b and a < m.end() for a, b in taken):
                 continue
             taken.append((m.start(), m.end()))
-            found.append((m.start(), key))
+            if key:
+                found.append((m.start(), key))
     out: list[str] = []
     for _, key in sorted(found):
         if key not in out:
