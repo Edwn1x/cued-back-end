@@ -3294,7 +3294,7 @@ def handle_reply_in_thread(user_id: int, tool_input: dict, *, message_id=None) -
 # returns results as content blocks; output/query hygiene are prompt rules in
 # prompts/identity.md (one detail in your own words, no links, no user PII).
 WEB_SEARCH_TOOL = {
-    "type": "web_search_20260209",
+    "type": config.WEB_SEARCH_TOOL_TYPE,   # 20250305 by default — no code-filter step (config)
     "name": "web_search",
     "max_uses": config.WEB_SEARCH_MAX_USES,
     # The beta is Berkeley: localize results (RSF hours, GBC, a 70 midterm thread)
@@ -3325,11 +3325,42 @@ def web_search_queries(content) -> list[str]:
 
 def log_web_search_queries(user_id, content, site: str) -> list[str]:
     """Log each web_search query with the user id (WEB_SEARCH_QUERY) so we can see
-    what the coach reaches for, and how often. Returns the queries."""
+    what the coach reaches for, and how often — then what each search returned
+    (log_web_search_results). Returns the queries."""
     queries = web_search_queries(content)
     for q in queries:
         logger.info("WEB_SEARCH_QUERY user=%s site=%s query=%r", user_id, site, q)
+    log_web_search_results(user_id, content, site)
     return queries
+
+
+def log_web_search_results(user_id, content, site: str) -> None:
+    """What each search came back with: WEB_SEARCH_RESULT n=N, WEB_SEARCH_EMPTY, or
+    WEB_SEARCH_ERROR code=… (an error arrives as an object in place of the result list, HTTP
+    200), plus WEB_SEARCH_FILTER_ERROR when a 20260209 code-filter step crashed. Live
+    2026-10-28: the filter crashed and the retry hit max_uses — the logs showed only the
+    query. A block without a readable content is skipped; never raises."""
+    try:
+        for b in content or []:
+            btype = getattr(b, "type", None) or ""
+            res = getattr(b, "content", None)
+            if btype == "web_search_tool_result":
+                if isinstance(res, list):
+                    if res:
+                        logger.info("WEB_SEARCH_RESULT user=%s site=%s n=%d", user_id, site, len(res))
+                    else:
+                        logger.warning("WEB_SEARCH_EMPTY user=%s site=%s", user_id, site)
+                elif res is not None and getattr(res, "error_code", None):
+                    logger.warning("WEB_SEARCH_ERROR user=%s site=%s code=%s",
+                                   user_id, site, getattr(res, "error_code", None))
+            elif btype.endswith("code_execution_tool_result") and res is not None:
+                rc = getattr(res, "return_code", 0)
+                if rc or getattr(res, "error_code", None):
+                    err = (getattr(res, "stderr", "") or getattr(res, "error_code", "") or "").strip()
+                    logger.warning("WEB_SEARCH_FILTER_ERROR user=%s site=%s rc=%s err=%r",
+                                   user_id, site, rc, err.splitlines()[-1][:200] if err else "")
+    except Exception as e:  # noqa: BLE001 — telemetry must never break a turn
+        logger.warning("WEB_SEARCH_RESULT_LOG_FAILED user=%s site=%s err=%s", user_id, site, e)
 
 
 # ─── fetch_page (client-side: READ one public web page) ──────────────────────

@@ -129,6 +129,10 @@ TASKS_ENABLED = os.getenv("TASKS_ENABLED", "false").lower() == "true"
 TASKS_MAX_ACTIVE_PER_USER = int(os.getenv("TASKS_MAX_ACTIVE_PER_USER", "5"))
 TASKS_MAX_TOOL_ITERS = int(os.getenv("TASKS_MAX_TOOL_ITERS", "6"))
 TASKS_MAX_TOKENS = int(os.getenv("TASKS_MAX_TOKENS", "6000"))
+# An empty-handed lookup sends the run model's own honest line (nothing_to_report `message`); code's
+# fallback names a short topic or nothing — never the model-written goal (live 2026-10-28, user 77:
+# "couldn't find it — find short PT/coach reference videos for … text Alexey one link per move").
+TASK_HONEST_FALLBACK_ENABLED = os.getenv("TASK_HONEST_FALLBACK_ENABLED", "true").lower() == "true"
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"
@@ -343,9 +347,16 @@ LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower(
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"
 LOG_MEAL_TOOL_ENABLED = os.getenv("LOG_MEAL_TOOL_ENABLED", "false").lower() == "true"
 GET_DINING_MENU_TOOL_ENABLED = os.getenv("GET_DINING_MENU_TOOL_ENABLED", "false").lower() == "true"
-# web_search is Anthropic's SERVER-SIDE tool (web_search_20260209 on Sonnet 5) — runs
-# inline, no client handler. Adds per-search billing on top of tokens.
+# web_search is Anthropic's SERVER-SIDE tool — runs inline, no client handler. Adds
+# per-search billing on top of tokens.
 WEB_SEARCH_TOOL_ENABLED = os.getenv("WEB_SEARCH_TOOL_ENABLED", "false").lower() == "true"
+# The tool version. web_search_20260209 runs a code filter over the results first; at effort
+# low the coach's filter code read the results as dicts (they arrive as a JSON string), crashed
+# (return_code=1), and the retry spent the second of WEB_SEARCH_MAX_USES — "my search didn't
+# come back with anything" to a plain ask for clips (live 2026-10-28, user 77; reproduced from
+# the prod container). web_search_20250305 hands the results straight to the model: no filter
+# step to break, more input tokens per search (searches are rare). Env-set back to 20260209.
+WEB_SEARCH_TOOL_TYPE = os.getenv("WEB_SEARCH_TOOL_TYPE", "web_search_20250305")
 # Cap per REPLY (founder, 2026-09-11): a friend checks one thing, maybe two — a
 # search-every-turn coach feels slow (each search adds seconds). The WEB_SEARCH_QUERY
 # log line (agent_tools.log_web_search_queries) is how we see what it reaches for.
@@ -514,6 +525,10 @@ EXERCISE_DEMOS_ENABLED = os.getenv("EXERCISE_DEMOS_ENABLED", "true").lower() == 
 # The first fire of a reminder that names library movements ("posture break: chin tucks x10, doorway
 # chest stretch…") carries the verified how-to clips as a second bubble, once (live 2026-10-27, user 77).
 REMINDER_DEMO_LINKS_ENABLED = os.getenv("REMINDER_DEMO_LINKS_ENABLED", "true").lower() == "true"
+# An explicit ask for a video ("reference vids pls") puts the library clips for the moves named in
+# the ask or the coach's last texts into context, sent as-is (live 2026-10-28, user 77: wall angels
+# was in the library; the coach searched, the search broke, he got nothing).
+DEMO_ASK_CONTEXT_ENABLED = os.getenv("DEMO_ASK_CONTEXT_ENABLED", "true").lower() == "true"
 WEATHER_CACHE_TTL_S = int(os.getenv("WEATHER_CACHE_TTL_S", "900"))   # 15 min per-process cache
 WEATHER_DEFAULT_LAT = float(os.getenv("WEATHER_DEFAULT_LAT", "37.8715"))    # Berkeley
 WEATHER_DEFAULT_LNG = float(os.getenv("WEATHER_DEFAULT_LNG", "-122.2730"))

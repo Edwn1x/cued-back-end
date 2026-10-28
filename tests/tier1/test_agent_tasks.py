@@ -225,7 +225,7 @@ def test_lookup_that_finds_nothing_still_keeps_the_promise_honestly(db, anthropi
     assert fire_due() == 1
     assert sms_capture, "a lookup the user asked for must close the loop even when empty-handed"
     low = sms_capture[-1][1].lower()
-    assert "couldn't" in low or "nothing" in low or "no " in low
+    assert "came up empty" in low and "midterm room" in low and "text me" not in low
     assert _task(db, tid).status == "done"
 
 

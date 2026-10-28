@@ -135,7 +135,7 @@ def test_web_search_tool_is_shared_and_capped_at_two():
     import config
     from agent_tools import WEB_SEARCH_TOOL
     assert config.WEB_SEARCH_MAX_USES == 2
-    assert WEB_SEARCH_TOOL["type"] == "web_search_20260209" and WEB_SEARCH_TOOL["name"] == "web_search"
+    assert WEB_SEARCH_TOOL["type"] == config.WEB_SEARCH_TOOL_TYPE and WEB_SEARCH_TOOL["name"] == "web_search"
     assert WEB_SEARCH_TOOL["max_uses"] == 2
     assert WEB_SEARCH_TOOL["user_location"]["city"] == "Berkeley"
 
