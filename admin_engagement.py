@@ -202,7 +202,18 @@ def engagement(session, users, messages, *, now: datetime | None = None) -> dict
         pull_days += len(s.days_since("pull", cutoff) & e)
     depth = f"{median(per_week):.1f}" if per_week else "—"
 
+    # Today, by each user's LOCAL day — the headline card on the Metrics page, beside the
+    # legacy "Active Today" (any inbound since UTC midnight).
+    today = {"engaged": 0, "core": 0, "pull": 0, "texted": 0}
+    for u in users:
+        s = sigs[u.id]
+        day = local_day(now, s.tz)
+        for k in today:
+            if day in s.days(k):
+                today[k] += 1
+
     return {
+        "today": today,
         "windows": windows,
         "cohorts": cohorts,
         "cohort_weeks": [f"W{k}" for k in COHORT_WEEKS],

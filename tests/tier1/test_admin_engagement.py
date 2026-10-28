@@ -100,6 +100,36 @@ def test_depth_pull_and_nudge_rate(db):
     assert e["presence_since"] is not None
 
 
+def test_today_counts_by_local_day(db):
+    """Metrics-page card: A logs a meal + texts NOW (engaged, core, pull, texted); B answers a
+    nudge NOW (texted only); C opens the card NOW (engaged + pull, not texted); D nothing."""
+    from models import get_session, Message, Meal
+    from activity_days import record
+    a, b, c, _ = _seed(db)
+    now = _now()
+    s = get_session()
+    try:
+        s.add(Meal(user_id=a, description="eggs", calories=300, logged_at=now, eaten_at=now, source="text"))
+        s.add(Message(user_id=a, direction="in", body="eggs", message_type="freeform", created_at=now))
+        s.add(Message(user_id=b, direction="out", body="u up?", message_type="heartbeat", created_at=now - timedelta(minutes=3)))
+        s.add(Message(user_id=b, direction="in", body="ya", message_type="freeform", created_at=now))
+        s.commit()
+    finally:
+        s.close()
+    record(c, "card_open", at=now)           # the real recorder: upserts on the (user, local day, signal) key
+    t = _run(db)["today"]
+    # Seed rows from "yesterday" can share today's local date depending on the hour, so assert floors.
+    assert t["engaged"] >= 2 and t["core"] >= 1 and t["pull"] >= 2
+    assert t["texted"] >= 2 and t["texted"] >= t["core"]      # A and B texted; B is never core
+
+
+def test_metrics_page_has_the_engaged_cards(db, client):
+    _seed(db)
+    html = client.get("/admin").get_data(as_text=True)
+    assert "Engaged Today" in html and "Engaged (7d)" in html and "Engaged (30d)" in html
+    assert "Active Today" in html            # legacy card still there
+
+
 def test_retention_page_renders_the_new_section(db, client):
     _seed(db)
     html = client.get("/admin").get_data(as_text=True)

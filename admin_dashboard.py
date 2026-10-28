@@ -231,6 +231,28 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     </div>
   </div>
 
+  <!-- Engaged-day numbers (admin_engagement.py) — the accurate read, beside the legacy
+       text-in cards above, never replacing them. Full definitions on the Retention page. -->
+  <div class="grid grid-4">
+    <div class="stat-card">
+      <div class="stat-label">Engaged Today</div>
+      <div class="stat-val accent">{{ eng.today.engaged }}</div>
+      <div class="stat-sub">{{ eng.today.core }} logged something · {{ eng.today.pull }} came to us · {{ eng.today.texted }} texted (their local day)</div>
+    </div>
+    {% for w in eng.windows if w.days in (7, 30) %}
+    <div class="stat-card">
+      <div class="stat-label">Engaged ({{ w.days }}d)</div>
+      <div class="stat-val {{ 'green' if w.engaged_rate != '—' and (w.engaged * 100 // (w.eligible or 1)) >= (50 if w.days == 7 else 30) else 'yellow' }}">{{ w.engaged_rate }}</div>
+      <div class="stat-sub">{{ w.engaged }} / {{ w.eligible }} engaged · {{ w.core }} logged · vs {{ w.texted }} texted</div>
+    </div>
+    {% endfor %}
+    <div class="stat-card">
+      <div class="stat-label">Depth</div>
+      <div class="stat-val">{{ eng.depth_days_per_week }}</div>
+      <div class="stat-sub">median engaged days / week, last {{ eng.window_days }}d · pull {{ eng.pull_rate }}</div>
+    </div>
+  </div>
+
   <div class="grid grid-4">
     <div class="stat-card">
       <div class="stat-label">Messages Sent</div>
