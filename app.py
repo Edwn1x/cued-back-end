@@ -2821,6 +2821,9 @@ def admin():
             users_data.append({
                 "id": u.id,
                 "name": u.name,
+                # Sign-up full name (users.full_name) — only the Waitlist tab showed it,
+                # and live sign-ups never sit there (2026-10-27).
+                "full_name": u.full_name if (u.full_name and u.full_name != u.name) else "",
                 "phone": u.phone[-4:] if u.phone else "—",
                 "signed_up": signed_up,
                 "last_active": last_active,
@@ -3499,6 +3502,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="header-top">
     <div class="user-title">
       <h1>{{ user.name }}</h1>
+      {% if (user.full_name and user.full_name != user.name) or user.email %}
+      <div class="meta">{% if user.full_name and user.full_name != user.name %}{{ user.full_name }}{% endif %}{% if user.full_name and user.full_name != user.name and user.email %} &nbsp;·&nbsp; {% endif %}{% if user.email %}{{ user.email }}{% endif %}</div>
+      {% endif %}
       <div class="meta">{{ user.phone }} &nbsp;·&nbsp; ID {{ user.id }} &nbsp;·&nbsp; Signed up {{ signed_up }}</div>
       <div class="meta">Profile link: <a href="{{ profile_link }}" target="_blank" rel="noopener">{{ profile_link }}</a></div>
       {% if google_state != 'published' %}
@@ -3600,6 +3606,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <div class="profile-section">
         <h3>Basic Info</h3>
         {% for label, val in [
+          ('Full name', user.full_name), ('Email', user.email),
           ('Age', user.age), ('Gender', user.gender), ('Occupation', user.occupation),
           ('Height', (user.height_ft|string + "'" + (user.height_in|string or '0') + '"') if user.height_ft else None),
           ('Weight', (user.weight_lbs|string + ' lbs') if user.weight_lbs else None),
