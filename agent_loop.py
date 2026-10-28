@@ -1029,7 +1029,19 @@ _CLASS_TITLE_RE = re.compile(r"\b(lecture|discussion|section|lab|seminar|recitat
 
 # A deliverable they name — the thing that must not vanish from the coach's head.
 _DELIVERABLE_NOUN = (r"(?:project|pset|problem\s*set|homework|hw|essay|paper|lab(?:\s*report)?|assignment|report|"
-                     r"write-?up|problem\s*\d+|p\d[ab]?|\d[ab]\b|midterm|final|quiz|exam)")
+                     r"write-?up|problem\s*\d+|p\d[ab]?|\d[ab]\b|midterm|final|quiz|exam)(?:zes|es|s)?")
+# An assessment they mention with no verb around it — "got a midterm thursday", "exam friday
+# at 2", "the quiz friday", "finals next week". Live 2026-10-27 (user 51): "Gotta study for
+# midterms / Got one Thursday and Friday and also the quiz Friday" → nothing captured (the
+# plural missed the noun, and "got one thursday" has no deliverable verb), so two midterms
+# never reached the calendar and the next briefing's radar. Optional course token, then the
+# assessment noun; `test` stays verb-path only (too noisy alone).
+_ASSESSMENT_RE = re.compile(
+    r"\b(?P<what>(?:(?:my|the|a|an|this|that|one|two|\d)\s+)?"
+    r"(?:(?:[a-z]{2,8}\s?c?\d{1,3}[a-z]?|o-?chem|physics|chem(?:istry)?|bio(?:logy)?|calc(?:ulus)?|econ(?:omics)?|stats?|math|cs|data)\s+)?"
+    r"(?:midterm|final|exam|quiz)(?:zes|es|s)?\b"
+    r"(?!\s+(?:rep|set|round|lift|push|pull|workout|form|stretch|mile|lap|sprint|week\s+of|few)s?\b)"   # 'final set', 'final rep' = gym talk
+    r"[^.?!\n]{0,30})", re.I)
 _DELIVERABLE_RE = re.compile(
     r"\b(?:finish|submit|turn\s+in|hand\s+in|work\s+on|get\s+(?:\w+\s+){0,3}done|haven'?t\s+(?:even\s+)?started|"
     r"start(?:ed)?\s+(?:on\s+)?|due|complete|grind\s+(?:out\s+)?|knock\s+out|wrap\s+up|study\s+for|prep\s+for)"
@@ -1053,7 +1065,7 @@ def _deliverable_mention(text: str) -> str | None:
     """The deliverable phrase they named ('project 2b for 61c', 'pset 4'), or None."""
     if not text:
         return None
-    m = _DELIVERABLE_RE.search(text) or _DELIVERABLE_DUE_RE.search(text)
+    m = _DELIVERABLE_RE.search(text) or _DELIVERABLE_DUE_RE.search(text) or _ASSESSMENT_RE.search(text)
     if not m:
         return None
     what = re.sub(r"\s+", " ", m.group("what")).strip(" .,")

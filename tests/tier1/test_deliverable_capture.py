@@ -19,6 +19,18 @@ from tests.factories import make_user
     ("ate a burger", None),
     ("gym can wait", None),
     ("what's my week", None),
+    # assessments with no deliverable verb (live 2026-10-27, user 51: two midterms + a quiz never
+    # reached the calendar — the plural missed the noun and "got one thursday" has no verb)
+    ("Gotta study for midterms", "midterms"),
+    ("Got one Thursday and Friday and also the quiz Friday", "the quiz Friday"),
+    ("got a midterm thursday", "a midterm thursday"),
+    ("exam friday at 2", "exam friday at 2"),
+    ("i have a bio midterm on wednesday", "a bio midterm on wednesday"),
+    ("finals next week", "finals next week"),
+    # gym talk is not an assessment
+    ("the final rep was ugly", None),
+    ("a final set of 5", None),
+    ("let me test it", None),
 ])
 def test_deliverable_mentions(text, what):
     from agent_loop import _deliverable_mention
@@ -168,3 +180,18 @@ def test_the_write_is_a_real_row_on_cueds_radar_not_a_claim(db, anthropic_stub, 
         s.close()
     seen = _seen(anthropic_stub.calls)
     assert "NOT their Google Calendar" in seen and "never \"it's on ur calendar\"" in seen
+
+
+def test_live_midterm_burst_gets_the_not_on_calendar_block_with_a_day(db, monkeypatch):
+    """The 2026-10-27 burst: nothing on the calendar matches 'midterms' → the log-it block, and
+    the turn note carries when_said=True ('Thursday … Friday') so the nudge can force log_event."""
+    import config
+    import agent_loop
+    from agent_loop import _deliverable_block, _DELIVERABLE_NOTES
+    monkeypatch.setattr(config, "DELIVERABLE_CAPTURE_ENABLED", True, raising=False)
+    user = make_user(db)
+    burst = "Not today\nProlly not this whole week\nGotta study for midterms\nGot one Thursday and Friday and also the quiz Friday"
+    block = _deliverable_block(user, burst, db)
+    assert block and block.startswith("## DELIVERABLE NOT ON THE CALENDAR: \"midterms\"")
+    note = _DELIVERABLE_NOTES.get(user.id)
+    assert note and note["what"] == "midterms" and note["when_said"] is True
