@@ -1783,6 +1783,19 @@ CANCEL_REMINDER_TOOL = {
 }
 
 
+UPDATE_REMINDER_TOOL = {
+    "name": "update_reminder",
+    "description": ("Change what a reminder SAYS, keeping its time and days (ids are in the REMINDERS block). "
+                    "Use it the moment something a standing reminder carries changes — you swap a move they "
+                    "can't do, change a dose, drop or add a stretch — so the next fire says the new thing. "
+                    "`text` is the whole new reminder text. A new time is set_reminder; stopping it is "
+                    "cancel_reminder."),
+    "input_schema": {"type": "object", "properties": {"reminder_id": {"type": "integer"},
+                                                      "text": {"type": "string"}},
+                     "required": ["reminder_id", "text"]},
+}
+
+
 def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from reminders import create_reminder, describe, _tz
     r = create_reminder(user_id, tool_input.get("text"), tool_input.get("time"),
@@ -1874,6 +1887,25 @@ def handle_cancel_reminder(user_id: int, tool_input: dict, *, message_id=None) -
     except (TypeError, ValueError):
         return "error: reminder_id required"
     return "ok: cancelled" if cancel_reminder(user_id, rid) else "error: no active reminder with that id"
+
+
+def handle_update_reminder(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from reminders import update_reminder_text, describe, _tz
+    try:
+        rid = int(tool_input.get("reminder_id"))
+    except (TypeError, ValueError):
+        return "error: reminder_id required"
+    r = update_reminder_text(user_id, rid, tool_input.get("text"))
+    if "error" in r:
+        return f"error: {r['error']}"
+    session = get_session()
+    try:
+        from models import Reminder
+        row = session.get(Reminder, rid)
+        user = session.get(User, user_id)
+        return f"ok: reminder updated — {describe(row, _tz(user.user_timezone if user else None), user)}"
+    finally:
+        session.close()
 
 
 def _resolve_local_date(tz: ZoneInfo, date_str, *, strict: bool = False) -> date:
@@ -5942,6 +5974,7 @@ _HANDLERS = {
     "reconstruct_routine_from_history": handle_reconstruct_routine_from_history,
     "set_lift_anchors": handle_set_lift_anchors,
     "cancel_reminder": handle_cancel_reminder,
+    "update_reminder": handle_update_reminder,
     "get_dining_menu": handle_get_dining_menu,
     "match_meal_history": handle_match_meal_history,
     "match_dining_item": handle_match_dining_item,
