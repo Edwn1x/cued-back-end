@@ -454,7 +454,7 @@ def stat_card_page(kind):
         # The bubble render is "they're on their phone", same as a workout card open.
         try:
             from wake_model import touch_last_active
-            touch_last_active(user_id)
+            touch_last_active(user_id, signal="stat_card_view")
         except Exception:  # noqa: BLE001
             pass
     resp.headers["Content-Type"] = "text/html; charset=utf-8"

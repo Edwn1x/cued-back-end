@@ -1845,7 +1845,7 @@ def internal_inbound():
             # as a Message row, so this stamp is its only trace). Fail-open.
             try:
                 from wake_model import touch_last_active
-                touch_last_active(user.id)
+                touch_last_active(user.id, signal="tapback")
             except Exception:  # noqa: BLE001
                 pass
             # A tapback on a setup step is the answer to it: advance the sequence (live
@@ -2753,6 +2753,18 @@ def admin():
         d7_rate = round((d7_active / d7_eligible * 100) if d7_eligible > 0 else 0)
         d14_rate = round((d14_active / d14_eligible * 100) if d14_eligible > 0 else 0)
         d30_rate = round((d30_active / d30_eligible * 100) if d30_eligible > 0 else 0)
+        # Engaged-day retention (admin_engagement.py): same users + messages, a definition
+        # that counts logged meals/sets/weigh-ins + unprompted presence, rendered beside the
+        # legacy rows. Fail-open: a bug here must not take the whole dashboard down.
+        try:
+            from admin_engagement import engagement
+            eng = engagement(session, all_users, all_messages, now=now)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ADMIN_ENGAGEMENT_FAILED err=%s", e)
+            eng = {"windows": [], "cohorts": [], "cohort_weeks": ["W0", "W1", "W2", "W4"],
+                   "depth_days_per_week": "—", "depth_users": 0, "pull_rate": "—", "pull_days": 0,
+                   "engaged_days": 0, "nudge_rate": "—", "nudges": 0, "nudges_answered": 0,
+                   "presence_since": None, "window_days": 28, "gap_min": 30, "reply_min": 60}
 
         # ── RATINGS ──
         rating_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
@@ -2959,6 +2971,7 @@ def admin():
             d14_rate=d14_rate,
             d30_active=d30_active, d30_eligible=d30_eligible,
             d30_rate=d30_rate,
+            eng=eng,
             users=users_data,
             rating_counts=rating_counts,
             max_rating_count=max_rating_count,

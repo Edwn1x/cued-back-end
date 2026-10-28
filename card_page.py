@@ -220,7 +220,7 @@ def card_api_session():
         # stamp (card_opened_at above stays the one-time setup marker). Own session, fail-open.
         try:
             from wake_model import touch_last_active
-            touch_last_active(ws.user_id)
+            touch_last_active(ws.user_id, signal="card_open")
         except Exception:  # noqa: BLE001
             pass
         return jsonify({"ok": True, **build_state(session, ws)})

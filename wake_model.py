@@ -207,13 +207,20 @@ def resolve_wake(user, session, *, now=None) -> WakeInfo | None:
 
 # ─── the per-event activity stamp (the ONE write in this module) ──────────────
 
-def touch_last_active(user_id: int, *, at: datetime | None = None) -> None:
+def touch_last_active(user_id: int, *, at: datetime | None = None, signal: str = "inbound") -> None:
     """Stamp users.last_active_at = now (naive UTC) for an inbound text / tapback / a
     workout-card open. Own short session, one UPDATE, fail-open: this must never block
-    or fail the request that triggered it."""
+    or fail the request that triggered it. `signal` names the event for the per-day
+    presence ledger (activity_days.record) the retention page reads — the column here
+    keeps only the latest stamp."""
     if not user_id:
         return
     when = at or datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        from activity_days import record
+        record(user_id, signal, at=when)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("ACTIVITY_DAY_RECORD_FAILED user=%s err=%s", user_id, e)
     try:
         s = get_session()
         try:

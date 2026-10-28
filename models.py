@@ -1182,6 +1182,24 @@ def recompute_daily_totals(user_id: int):
         session.close()
 
 
+class ActivityDay(Base):
+    """One row per (user, local day, signal): the presence events the retention page needs
+    and `messages` can't give it — a workout-card open, a tapback, a stat-card view — plus
+    the inbound text for a uniform read. Written by wake_model.touch_last_active (every
+    caller already routes through it); users.last_active_at keeps only the LATEST stamp, so
+    before this table a card-only day was unrecoverable. Read by admin_engagement."""
+    __tablename__ = "activity_days"
+    __table_args__ = (UniqueConstraint("user_id", "day", "signal", name="uq_activity_days_user_day_signal"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    day = Column(String(10), nullable=False)           # YYYY-MM-DD in the user's timezone
+    signal = Column(String(16), nullable=False)        # inbound | tapback | card_open | stat_card_view
+    first_at = Column(DateTime, nullable=False)        # naive UTC, first event of the day
+    last_at = Column(DateTime, nullable=False)         # naive UTC, latest event of the day
+    count = Column(Integer, default=1)
+
+
 class Reminder(Base):
     """An explicit "remind me" the coach promised. fire_at is naive UTC, code-computed
     from local_time in the user's timezone; recurring rows (recur_days 'tue,thu') re-arm
