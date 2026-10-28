@@ -400,6 +400,9 @@ def _compose(user, row: Reminder) -> str:
                 f"a few words, no question, no explanation, and not the same wording every time."
             )
         client = make_client()
+        from cache_keepalive import note as keepalive_note
+        keepalive_note("reminder.compose", model=config.AGENT_LOOP_MODEL, system=system,
+                       thinking={"type": "adaptive"}, output_config={"effort": "low"})
         # Opus 5.5: thinking always on and counted in max_tokens — effort low keeps it
         # short; the cap has room for reasoning + a <20-word line.
         resp = client.messages.create(model=config.AGENT_LOOP_MODEL, max_tokens=800,

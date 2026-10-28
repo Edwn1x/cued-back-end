@@ -248,6 +248,12 @@ def start_scheduler():
     scheduler.add_job(held_outbound_drain, trigger=_IT3(seconds=config.IMESSAGE_HOLD_DRAIN_SECONDS),
                       id="held_outbound_drain", replace_existing=True, coalesce=True, max_instances=1)
 
+    # Prompt-cache keep-alive: re-read each warm 1-hour prefix before it lapses (a
+    # max_tokens=0 prefill, no output) while it's had a real call in the last few hours.
+    from cache_keepalive import run_due as cache_keepalive_run_due
+    scheduler.add_job(cache_keepalive_run_due, trigger=_IT3(minutes=config.CACHE_KEEPALIVE_SWEEP_MINUTES),
+                      id="cache_keepalive", replace_existing=True, coalesce=True, max_instances=1)
+
     # Phase 4 — heartbeat. A dumb interval clock; each fire runs a per-user
     # decision (default silent) with guardrails in code. Jitter the interval so
     # ticks never land on a predictable :00/:45 boundary — the message-shape tell
