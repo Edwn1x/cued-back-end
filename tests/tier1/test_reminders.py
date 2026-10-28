@@ -133,7 +133,9 @@ def test_fire_due_sends_in_voice_rearms_recurring_and_closes_one_offs(db, sms_ca
     from reminders import _tz
     first_local = fire_before.replace(tzinfo=_tzu.utc).astimezone(_tz(u.user_timezone))
     expected = timedelta(days=2 if first_local.weekday() == 1 else 5)
-    assert row.fire_at > fire_before and row.fire_at - fire_before == expected
+    # Same local wall time N days on, in UTC: across a DST switch (Nov 1) that is N days ± 1h.
+    want = (first_local + expected).astimezone(_tzu.utc).replace(tzinfo=None)
+    assert row.fire_at > fire_before and row.fire_at == want
 
     # one-off created AFTER the recurring fire: its next 7am can fall before the
     # recurring's first fire (thu this week), where the sweeps above would consume it

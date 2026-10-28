@@ -4,12 +4,22 @@ day is engaged-but-not-texted; a logged meal is core."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from tests.factories import make_user
 
 
+_LA = ZoneInfo("America/Los_Angeles")
+
+
 def _now():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    """7pm Pacific today, as naive UTC. The seed lands rows at fixed offsets from this
+    instant, and which LOCAL day each one falls on decided the counts: run before ~3pm PT
+    and C's card_open (now-15h) shared a local day with its day-38 set (now-30h50m), so C
+    had 2 engaged days, not 3, and depth read 2.0. Pinned, the day split is the one the
+    assertions describe at any wall-clock hour."""
+    local = datetime.now(_LA).replace(hour=19, minute=0, second=0, microsecond=0)
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _seed(db):
@@ -43,7 +53,10 @@ def _seed(db):
             s.add(SetLog(session_id=ws.id, exercise="bench_press", exercise_label="Bench", set_index=0,
                          actual_weight=135, actual_reps=5, done=True, done_at=at + timedelta(minutes=10), source="card"))
         co = t0 + timedelta(days=39, hours=9)
-        s.add(ActivityDay(user_id=c.id, day=co.strftime("%Y-%m-%d"), signal="card_open", first_at=co, last_at=co, count=1))
+        # Keyed by the LOCAL day, as activity_days.record keys it (a UTC date here split the
+        # same local day into two rows, so today's card_open never counted as today).
+        co_day = co.replace(tzinfo=timezone.utc).astimezone(_LA).strftime("%Y-%m-%d")
+        s.add(ActivityDay(user_id=c.id, day=co_day, signal="card_open", first_at=co, last_at=co, count=1))
         s.commit()
         return a.id, b.id, c.id, d.id
     finally:
