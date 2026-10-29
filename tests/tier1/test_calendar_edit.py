@@ -218,9 +218,10 @@ def test_delete_confirm_gate_refuses_unstaged_same_turn_and_changed(db, monkeypa
     # staged now (by the refused call); confirming in the SAME turn is refused
     out = handle_delete_calendar_event(u.id, {"event_id": a, "confirmed": True}, message_id="m1")
     assert "SAME turn" in out
-    # next turn but a DIFFERENT event → restage, not delete
+    # next turn but a DIFFERENT event → staged for itself, not deleted (each target has its own
+    # pending slot since 2026-10-28 — a yes for one never authorizes another)
     out = handle_delete_calendar_event(u.id, {"event_id": b, "confirmed": True}, message_id="m2")
-    assert out.startswith("not deleted — the proposal changed") and "study block" in out
+    assert out.startswith("not deleted — nothing was staged") and "study block" in out
     # stale staging → refused
     p = _get_pending_calendar_event(u.id); p["staged_at"] = "2026-01-01T00:00:00"; _set_pending_calendar_event(u.id, p)
     out = handle_delete_calendar_event(u.id, {"event_id": b, "confirmed": True}, message_id="m3")
@@ -229,7 +230,7 @@ def test_delete_confirm_gate_refuses_unstaged_same_turn_and_changed(db, monkeypa
 
 
 def test_a_staged_delete_cannot_be_confirmed_as_a_create(db, monkeypatch):
-    """Same pending slot, different kind — a create confirm after a delete stage must restage."""
+    """A staged delete never authorizes a create — the create finds nothing staged for itself."""
     from tests.factories import make_user
     from agent_tools import handle_delete_calendar_event, handle_create_calendar_event
     _no_google(monkeypatch)
@@ -238,7 +239,7 @@ def test_a_staged_delete_cannot_be_confirmed_as_a_create(db, monkeypatch):
     a = _event(u.id, "gym", _tomorrow_at(16), external_id="c:a")
     handle_delete_calendar_event(u.id, {"event_id": a}, message_id="m1")
     out = handle_create_calendar_event(u.id, {"summary": "gym", "starts_at": "16:00", "date": "tomorrow", "confirmed": True}, message_id="m2")
-    assert out.startswith("not created — the proposal changed")
+    assert out.startswith("not created — nothing was staged")
 
 
 # ─── delete: Google + mirror ─────────────────────────────────────────────────

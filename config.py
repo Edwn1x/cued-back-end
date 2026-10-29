@@ -760,6 +760,13 @@ OAUTH_SYNC_IN_BACKGROUND = os.getenv("OAUTH_SYNC_IN_BACKGROUND", "true").lower()
 # move_calendar_event and delete_calendar_event — each touches ONE event the user named
 # and is confirm-gated in code (reflect back → yes in the next turn → write).
 CALENDAR_WRITE_ENABLED = os.getenv("CALENDAR_WRITE_ENABLED", "false").lower() == "true"
+# Live 2026-10-28 (user 51): manage_log edited our copy of a synced Google event and the next
+# sync put it back; edits/deletes of synced rows (gcal / bCourses / Canvas) are refused and
+# pointed at move/delete_calendar_event (or log_event for an extension).
+SYNCED_EVENT_EDIT_GUARD_ENABLED = os.getenv("SYNCED_EVENT_EDIT_GUARD_ENABLED", "true").lower() == "true"
+# log_event's result says the item is only on our side when Google is connected ("on ur
+# calendar" for a row nobody else can see → "Which calendar? I'm not seeing it").
+LOG_EVENT_WHERE_NOTE_ENABLED = os.getenv("LOG_EVENT_WHERE_NOTE_ENABLED", "true").lower() == "true"
 BCOURSES_ENABLED = os.getenv("BCOURSES_ENABLED", "false").lower() == "true"
 # Canvas personal access token (Part 1.4b): the richer bCourses connection — planner
 # API with submission status. Sits ON TOP of the feed: while a token is valid it

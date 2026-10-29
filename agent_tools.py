@@ -1993,12 +1993,40 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
         logger.info("LOG_EVENT user=%s event_id=%s desc=%r start=%s end=%s",
                     user_id, eid, desc[:40], starts, ends)
 
+    # Live 2026-10-28 (user 51): "put the c104 midterm on ur calendar" for a row only we can
+    # see → "Which calendar? I'm not seeing it". With Google connected, say where it lives.
+    where = ""
+    if getattr(config, "LOG_EVENT_WHERE_NOTE_ENABLED", True) and _gcal_rows(user_id):
+        where = (" — on your side only, NOT on their google calendar: say 'noted' / 'got it', never 'on ur "
+                 "calendar'. if they want it on google, offer it (create_calendar_event, after their yes)")
     if len(logged) == 1:
         eid, desc, st = logged[0]
-        return f"ok: noted '{desc}'{f' at {st}' if st else ''} (event id={eid})"
+        return f"ok: noted '{desc}'{f' at {st}' if st else ''} (event id={eid}){where}"
     ids = [e for e, _d, _s in logged]
     names = ", ".join(f"'{d}'" for _e, d, _s in logged)
-    return f"ok: noted {len(logged)} events: {names} (ids {ids})"
+    return f"ok: noted {len(logged)} events: {names} (ids {ids}){where}"
+
+
+_SYNCED_LABEL = {"bcourses": "bCourses", "canvas": "Canvas"}
+
+
+def _synced_event_refusal(row, action: str) -> str | None:
+    """A synced row (Google / bCourses / Canvas) changed only in our copy is put back by the
+    next sync (live 2026-10-28, user 51: the CS 70 HW 'moved' to friday was back on today's
+    4pm within minutes). Point at the tool that changes the source instead."""
+    verb = "edited" if action == "edit" else "deleted"
+    title = (row.title or row.raw_text or "").strip()[:80]
+    if row.source == "gcal":
+        tool = "move_calendar_event (new day / time / title)" if action == "edit" else "delete_calendar_event"
+        return (f"not {verb} — event id={row.id} ('{title}') is on their google calendar. a change here only "
+                f"touches my copy and the next sync puts it right back. use {tool} — that changes google "
+                f"itself, after their yes.")
+    if row.source in _SYNCED_LABEL:
+        src = _SYNCED_LABEL[row.source]
+        return (f"not {verb} — event id={row.id} ('{title}') comes from {src}; i can't change it there and the "
+                f"next sync puts it right back. if the date moved (an extension), log the new date as its own "
+                f"item with log_event (e.g. 'due: {title} (extension)') and leave this one.")
+    return None
 
 
 _ENTITY_MODEL = {"meal": Meal, "workout": Workout, "event": Event}
@@ -2260,6 +2288,12 @@ def handle_manage_log(user_id: int, tool_input: dict, *, message_id=None) -> str
                .filter(Model.id == entry_id).one_or_none())
         if row is None:
             return f"error: no active {entity} with id {entry_id} (already deleted or wrong id)"
+        if entity == "event" and getattr(config, "SYNCED_EVENT_EDIT_GUARD_ENABLED", True):
+            refusal = _synced_event_refusal(row, action)
+            if refusal:
+                logger.info("MANAGE_LOG_SYNCED_EVENT_REFUSED user=%s id=%s source=%s action=%s",
+                            user_id, entry_id, row.source, action)
+                return refusal
 
         # scope='meal' operates on the WHOLE logged meal (row + everything logged with it in
         # the same log_meal batch, via meal_group_id) — one atomic move/delete instead of
@@ -4885,30 +4919,43 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
     only when it matches that proposal (same kind + match_keys) AND arrives in a later turn
     (a different inbound message id) — i.e. the user has actually seen the reflect-back and
     replied. Returns None when the write may proceed, else the message to hand the model.
-    `verb` = 'created' / 'deleted' / 'moved' (past tense, for 'not <verb> yet')."""
+    `verb` = 'created' / 'deleted' / 'moved' (past tense, for 'not <verb> yet').
+    Several proposals can be staged at once (one per target, see _pending_slot); a confirm
+    matches ITS entry, and the write's handler clears only that entry (_clear_pending)."""
     proposal = dict(proposal)
     proposal.setdefault("kind", "create")
     proposal["turn"] = str(message_id) if message_id is not None else None
     proposal["staged_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    proposal["reflect"] = reflect
+    slot = _pending_slot(proposal)
+    items = _pending_list(user_id)
+    others = [p for p in items if _pending_slot(p) != slot
+              and (age := _pending_age(p)) is not None and age <= _PENDING_STALE]
+    also = ""
+    if others:
+        names = "; ".join(p.get("reflect") or p.get("summary") or p.get("title") or "" for p in others[-4:])
+        also = (f" ALSO waiting on their yes: {names} — reflect them together and ask ONCE; one yes covers "
+                f"all of them (then call each tool again with confirmed=true).")
     if not confirmed:
         _set_pending_calendar_event(user_id, proposal)
         return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back "
                 f"(with am/pm), and once they say yes call {tool} again with confirmed=true in that "
-                f"next turn.{hint}")
-    pending = _get_pending_calendar_event(user_id)
-    if not pending:
+                f"next turn.{hint}{also}")
+    pending = next((p for p in items if (p.get("kind") or "create") == proposal["kind"]
+                    and all(p.get(k) == proposal.get(k) for k in match_keys)), None)
+    if pending is None:
+        changed = any(_pending_slot(p) == slot for p in items)
         _set_pending_calendar_event(user_id, proposal)
+        if changed:
+            return (f"not {verb} — the proposal changed. reflect the new one back: {reflect}. "
+                    f"once they say yes, call again with confirmed=true.{hint}{also}")
         return (f"not {verb} — nothing was staged. reflect it back first: {reflect}. "
-                f"once they say yes, call again with confirmed=true.{hint}")
-    same = ((pending.get("kind") or "create") == proposal["kind"]
-            and all(pending.get(k) == proposal.get(k) for k in match_keys))
-    staged_at = _parse_iso(pending.get("staged_at"))
-    stale = staged_at is None or (datetime.now(timezone.utc).replace(tzinfo=None) - staged_at) > timedelta(hours=3)
-    if not same or stale:
+                f"once they say yes, call again with confirmed=true.{hint}{also}")
+    age = _pending_age(pending)
+    if age is None or age > _PENDING_STALE:
         _set_pending_calendar_event(user_id, proposal)
-        why = "the proposal changed" if not same else "the earlier one is stale"
-        return (f"not {verb} — {why}. reflect the new one back: {reflect}. "
-                f"once they say yes, call again with confirmed=true.{hint}")
+        return (f"not {verb} — the earlier one is stale. reflect the new one back: {reflect}. "
+                f"once they say yes, call again with confirmed=true.{hint}{also}")
     if message_id is not None and pending.get("turn") == str(message_id):
         return (f"not {verb} — you staged this in the SAME turn; the user hasn't seen it yet. "
                 f"reflect it back ({reflect}) and wait for their yes; confirm in the next turn.")
@@ -5132,7 +5179,7 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
         reflect = f"adding '{summary}' {when} to {where}{extra_txt}"
     desc = (ti.get("description") or "").strip() or None
     loc = (ti.get("location") or "").strip() or None
-    proposal = {"kind": "create", "summary": summary, "start_utc": start_utc.isoformat(),
+    proposal = {"kind": "create", "summary": summary, "date": date_iso, "start_utc": start_utc.isoformat(),
                 "end_utc": end_utc.isoformat(), "description": desc, "when": when, "rrule": rrule, "all_day": all_day,
                 "calendar_id": cal_id, "color_id": color_id, "exdates": ",".join(skipped),
                 "details": _details_key(details)}
@@ -5196,7 +5243,7 @@ def handle_create_calendar_event(user_id: int, tool_input: dict, *, message_id=N
     if free:
         tail_notes.append("it's marked free, so i won't plan around it")
     tail_txt = (". " + "; ".join(tail_notes)) if tail_notes else ""
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     logger.info("CREATE_CALENDAR_EVENT user=%s gcal_id=%s cal=%s summary=%r when=%s rrule=%s color=%s",
                 user_id, eid, cal_key if cal_name else "primary", summary[:40], when, rrule, color_id)
     where = f"their '{cal_name}' calendar" if cal_name else "their google calendar"
@@ -5384,7 +5431,7 @@ def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=N
             _soft_delete_gcal_copies(user_id, gid)
             n = 1
         _soft_delete_local_event(user_id, ev["id"])
-        _set_pending_calendar_event(user_id, None)
+        _clear_pending(user_id, proposal)
         logger.info("DELETE_CALENDAR_EVENT user=%s gcal_id=%s scope=%s title=%r when=%s rows=%s already_gone=%s",
                     user_id, target, scope or "one", ev["title"][:40], when, n, gone)
         if scope == "series":
@@ -5396,7 +5443,7 @@ def handle_delete_calendar_event(user_id: int, tool_input: dict, *, message_id=N
         return f"ok: deleted '{ev['title']}' ({when}) from their google calendar"
 
     _soft_delete_local_event(user_id, ev["id"])
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     logger.info("DELETE_RADAR_EVENT user=%s event=%s title=%r", user_id, ev["id"], ev["title"][:40])
     return (f"ok: took '{ev['title']}' ({when}) off your radar. it was something you logged on their side, "
             "not on their google calendar — say 'took it off my radar', not 'deleted from your calendar'.")
@@ -5461,7 +5508,7 @@ def _delete_all_matching(user_id: int, ti: dict, *, message_id=None) -> str:
         else:
             local_rows += max(1, _soft_delete_gcal_copies(user_id, gid))
         done.append(c["title"])
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     logger.info("DELETE_ALL_MATCHING user=%s query=%r done=%s failed=%s rows=%s", user_id, query, len(done), len(failed), local_rows)
     out = (f"ok: deleted everything matching '{query}' from their google calendar — {len(done)} event"
            f"{'s' if len(done) != 1 else ''} ({local_rows} occurrences over the next two months): " + "; ".join(sorted(set(done))[:6]))
@@ -5635,7 +5682,7 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
                 if i + 1 < len(rows):
                     continue
                 _soft_delete_gcal_copies(user_id, gid)
-                _set_pending_calendar_event(user_id, None)
+                _clear_pending(user_id, proposal)
                 return (f"can't move '{ev['title']}' — it's no longer on their google calendar (deleted from "
                         "the phone?). dropped it on my side. offer to add it fresh at the new time "
                         "(create_calendar_event).")
@@ -5664,7 +5711,7 @@ def handle_move_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
         _rekey_local_calendar(user_id, lambda q: q.filter(Event.external_id.like(f"%:{gid}")), dest_id)
     if on_google and details.get("busy") is False:
         _soft_delete_gcal_copies(user_id, gid)        # free events don't block time; the sync skips them too
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     if on_google:
         where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
         extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
@@ -5706,7 +5753,7 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
             if i + 1 < len(rows):
                 continue
             _soft_delete_series_rows(user_id, cal_id, master_id)
-            _set_pending_calendar_event(user_id, None)
+            _clear_pending(user_id, {"kind": "move", "event_id": ev["id"]})
             return (f"can't move '{ev['title']}' — that repeating event is no longer on their google calendar. "
                     "dropped it on my side. offer to add it fresh (create_calendar_event with repeat).")
         except Exception as e:  # noqa: BLE001
@@ -5822,7 +5869,7 @@ def _move_series(user_id: int, ti: dict, ev: dict, master_id: str, tz_str: str, 
     except Exception as e:  # noqa: BLE001 — the write succeeded; the 30-min sync will catch up
         logger.warning("MOVE_SERIES_MIRROR_FAILED user=%s err=%s", user_id, e)
         n = None
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     logger.info("MOVE_SERIES user=%s master=%s %r %s", user_id, master_id, final_title[:40], "; ".join(bits))
     where = f"their '{dest_name}' calendar" if dest_id else "their google calendar"
     extra = f", {_COLOR_NAME[color_id].split(' (')[0]}" if color_id else ""
@@ -5878,10 +5925,10 @@ def handle_rsvp_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
             if i + 1 < len(rows):
                 continue
             _soft_delete_gcal_copies(user_id, gid)
-            _set_pending_calendar_event(user_id, None)
+            _clear_pending(user_id, proposal)
             return f"'{ev['title']}' is no longer on their google calendar (the invite was pulled?). dropped it on my side."
         except gcal.NotAnInvitation:
-            _set_pending_calendar_event(user_id, None)
+            _clear_pending(user_id, proposal)
             return (f"'{ev['title']}' is their OWN event (or a calendar they just subscribe to), not an invitation — "
                     "nothing to RSVP to. if they want it gone, that's delete_calendar_event.")
         except Exception as e:  # noqa: BLE001
@@ -5893,7 +5940,7 @@ def handle_rsvp_calendar_event(user_id: int, tool_input: dict, *, message_id=Non
     if response == "declined":
         _soft_delete_gcal_copies(user_id, gid)
         _soft_delete_local_event(user_id, ev["id"])
-    _set_pending_calendar_event(user_id, None)
+    _clear_pending(user_id, proposal)
     organizer = (out or {}).get("_organizer")
     logger.info("RSVP_CALENDAR_EVENT user=%s gcal_id=%s response=%s", user_id, gid, response)
     who = f" {organizer}" if organizer else " the organizer"
@@ -5909,27 +5956,82 @@ def _parse_iso(s):
         return None
 
 
-def _get_pending_calendar_event(user_id: int) -> dict | None:
+# Several proposals can wait on the same yes (live 2026-10-28, user 51: a midterm + a due date
+# staged together; one slot meant each confirm found the OTHER one pending, re-staged, and
+# neither ever wrote — five yeses). The column holds a list; a pre-deploy row holds one dict.
+_PENDING_MAX = 8
+_PENDING_STALE = timedelta(hours=3)     # a confirm on anything older is refused ("stale")
+_PENDING_KEEP = timedelta(hours=24)     # OTHER entries older than this are dropped when staging
+
+
+def _pending_slot(p: dict) -> tuple:
+    """What a proposal is ABOUT — a revised proposal for the same target replaces the old one."""
+    kind = p.get("kind") or "create"
+    if p.get("event_id") or p.get("query"):
+        return (kind, str(p.get("event_id") or p.get("query")))
+    # a create: same title on the same LOCAL day is the same thing (a new time replaces it);
+    # "gym" monday and "gym" wednesday are two
+    return (kind, f"{(p.get('summary') or '').strip().lower()}|{p.get('date') or (p.get('start_utc') or '')[:10]}")
+
+
+def _pending_list(user_id: int) -> list:
     session = get_session()
     try:
         u = session.get(User, user_id)
-        return dict(u.pending_calendar_event) if u and u.pending_calendar_event else None
+        raw = u.pending_calendar_event if u else None
     finally:
         session.close()
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    return [dict(p) for p in items if isinstance(p, dict)]
 
 
-def _set_pending_calendar_event(user_id: int, proposal: dict | None) -> None:
+def _pending_age(p: dict) -> timedelta | None:
+    at = _parse_iso(p.get("staged_at"))
+    return None if at is None else datetime.now(timezone.utc).replace(tzinfo=None) - at
+
+
+def _save_pending(user_id: int, items: list) -> None:
     from sqlalchemy.orm.attributes import flag_modified
+    keep = items[-_PENDING_MAX:]
     session = get_session()
     try:
         u = session.get(User, user_id)
         if u is None:
             return
-        u.pending_calendar_event = proposal
+        u.pending_calendar_event = keep or None
         flag_modified(u, "pending_calendar_event")
         session.commit()
     finally:
         session.close()
+
+
+def _get_pending_calendar_event(user_id: int) -> dict | None:
+    """The most recently staged proposal (None when nothing waits)."""
+    items = _pending_list(user_id)
+    return items[-1] if items else None
+
+
+def _set_pending_calendar_event(user_id: int, proposal: dict | None) -> None:
+    """Stage `proposal` (replacing any earlier one for the same target); None clears them all."""
+    if proposal is None:
+        _save_pending(user_id, [])
+        return
+    slot = _pending_slot(proposal)
+    others = [p for p in _pending_list(user_id) if _pending_slot(p) != slot
+              and ((age := _pending_age(p)) is None or age <= _PENDING_KEEP)]
+    _save_pending(user_id, others + [dict(proposal)])
+
+
+def _clear_pending(user_id: int, proposal: dict) -> None:
+    """Drop the entry for this proposal's target after its write (or once it's moot) — the
+    others still wait on their yes."""
+    slot = _pending_slot(proposal)
+    items = _pending_list(user_id)
+    rest = [p for p in items if _pending_slot(p) != slot]
+    if len(rest) != len(items):
+        _save_pending(user_id, rest)
 
 
 _HANDLERS = {

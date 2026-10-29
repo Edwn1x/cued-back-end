@@ -678,6 +678,13 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         user = session.query(User).filter(User.id == user_id).first()
         if not user:
             return
+        # The inbound this turn answers — its id goes to the loop's tools (the confirm gate's
+        # same-turn check, the card early-send gate, past-report). Never passed before
+        # 2026-10-28, so all of those were inert in prod (turn=null on every staged event).
+        from models import Message as _Msg
+        _last_in = (session.query(_Msg.id).filter(_Msg.user_id == user_id, _Msg.direction == "in")
+                    .order_by(_Msg.id.desc()).first())
+        inbound_id = _last_in[0] if _last_in else None
         # Release the connection NOW. Everything below is the model turn (seconds to a
         # minute; a hung call, minutes) and it must not run inside an open transaction:
         # on 2026-09-11 a connection left "idle in transaction" through a turn held a
@@ -859,7 +866,8 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 since = last_nudge_at(session, user.id)
                 try:
                     response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
-                                                   image_data_list=images, continuation=continuation)
+                                                   image_data_list=images, continuation=continuation,
+                                                   message_id=inbound_id)
                 except Exception as e:  # noqa: BLE001
                     logger.error("REENGAGE_FOOD_FIRST_LOOP_FAILED user=%s err=%s", user.id, e, exc_info=True)
                     response_text = None
@@ -897,7 +905,8 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 onboarding_meals.begin_turn(user.id)
                 try:
                     response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
-                                                   image_data_list=images, continuation=continuation)
+                                                   image_data_list=images, continuation=continuation,
+                                                   message_id=inbound_id)
                 except Exception as e:  # noqa: BLE001
                     logger.error("ONBOARDING_MEAL_LOOP_FAILED user=%s err=%s", user.id, e, exc_info=True)
                     response_text = None
@@ -956,7 +965,8 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         if config.SINGLE_AGENT_LOOP_ENABLED:
             try:
                 response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
-                                               image_data_list=images, continuation=continuation)
+                                               image_data_list=images, continuation=continuation,
+                                               message_id=inbound_id)
             except Exception as e:
                 loop_raised = True
                 logger.error("AGENT_LOOP_FAILED user=%s text=%r err=%s",
