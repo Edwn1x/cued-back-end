@@ -1337,6 +1337,12 @@ ONBOARDING_DUP_QUESTION_WINDOW_S = int(os.getenv("ONBOARDING_DUP_QUESTION_WINDOW
 # Re-asking the half of a multi-field ask the turn left unanswered (while answering the other
 # half) is finishing the question, not repeating it (live 2026-10-17, user 40: diet + injuries).
 ONBOARDING_HALF_ANSWERED_REASK_ENABLED = os.getenv("ONBOARDING_HALF_ANSWERED_REASK_ENABLED", "true").lower() == "true"
+# A same-topic ask is a FOLLOW-UP, not a repeat, when their text was about that topic and the
+# field is still open (live 2026-10-28, user 80: "what do u study, and any part time job" →
+# "yeah early ass job" → "what's the job, r u on ur feet" was dropped; no question went out).
+# Same flag: a shared topic ANSWERED this turn is context when the reply moves on to a new open
+# one (user 86, 21:26: "…working at the dining hall, do u end up eating most of ur meals there too?").
+ONBOARDING_FOLLOWUP_NOT_REPEAT_ENABLED = os.getenv("ONBOARDING_FOLLOWUP_NOT_REPEAT_ENABLED", "true").lower() == "true"
 # Under-18 targets: IOM overweight equation at BMI ≥ 25, the teen PA category (10k steps =
 # low active), and a ceiling at the adult path × 1.15 (live 2026-10-17, user 40: 4150 cal).
 TEEN_EER_OVERWEIGHT_ENABLED = os.getenv("TEEN_EER_OVERWEIGHT_ENABLED", "true").lower() == "true"

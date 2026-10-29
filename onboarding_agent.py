@@ -1695,7 +1695,12 @@ def _assumption_note(wake: str, sleep: str) -> str:
 # "got" leads a question ("got any number?") — but not "got it", "got u", "gotcha": live
 # 2026-10-17 (user 40) strip_questions dropped "got it, we'll keep anything wrist-heavy light…"
 # as a question and the repeat guard's kept text came out empty → a 👍 was the whole reply.
-_Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|any|got(?!\s*(?:it|u|you|cha|chu|em|them)\b)|"
+# An optional hedge before the lead — "roughly how many cal u eat…", "so what split u run" (live
+# 2026-10-28, user 88: the unmarked hedged ask got a second copy glued on by the backstop).
+# Only a wh-word / aux may follow the hedge — "ok u got this" stays a statement.
+_Q_LEAD_RE = re.compile(r"^(?:(?:roughly|about|approx(?:imately)?|so|and|also|ok|okay|alr|real quick|quick q)[,:]?\s+"
+                        r"(?=(?:do|did|r u|are|is|what|whats|when|when's|where|how|which|any)\b))?"
+                        r"(do|did|u |you|r u|are|is|what|when|where|how|which|any|got(?!\s*(?:it|u|you|cha|chu|em|them)\b)|"
                         r"wyd|wya|whats|when's)\b", re.I)
 
 
@@ -1711,7 +1716,10 @@ _Q_LEAD_RE = re.compile(r"^(do|did|u |you|r u|are|is|what|when|where|how|which|a
 _Q_EMBED_RE = re.compile(
     r"(?:[,;:—–]|\b(?:but|so|and|also|anyway|alr|ok|okay))\s+(?:[\w'’]+\s+){0,5}?"
     r"(?:(?:what|when|where|which|how|who|whats|when's|wyd)\s+[\w'’]+"          # a wh-word + anything
-    r"|(?:do|does|did|r|are|is|can|could|would|got)\s+(?:u|you|ur|your|it|that|there|any))\b",   # an aux + a pronoun
+    r"|(?:do|does|did|r|are|is|can|could|would|got)\s+(?:u|you|ur|your|it|that|there|any)"      # an aux + a pronoun
+    # "…no legs in there at all tho, anything hurt that keeps u off them" (live 2026-10-28,
+    # user 86) — not "anything works / is fine", which is an answer, not an ask
+    r"|(?:anything|anyone|anybody)\s+(?!works\b|goes\b|is\b|was\b)[\w'’]+)\b",
     re.I)
 _Q_REPORTED_RE = re.compile(r"\b(?:told|said|mentioned|gave|texted|sent|wrote|meant|means)\b", re.I)
 
@@ -1799,6 +1807,51 @@ def unanswered_half_reask(reply: str, prev: str, stored: dict | None, missing_af
     open_topics = {t for t in prev_topics - answered
                    if any(n in still for n in _TOPIC_MISSING_NAMES.get(t, ()))}
     return question_topics(reply) & open_topics
+
+
+def followup_topics(reply: str, prev: str, incoming: str, missing_after) -> set[str]:
+    """The topics `reply` shares with `prev` that their text TALKED about while leaving the
+    field open — digging into what they said, not asking it again. Live 2026-10-28 (user 80):
+    "what do u study, and any part time job" → "yeah early ass job" → "what's the job, and r u
+    on ur feet the whole time" was dropped as a repeat and no question went out. A text that
+    never touched the topic (user 49, 2026-10-10: "in my room studying…" after a food ask)
+    keeps the repeat a repeat. Pure."""
+    shared = question_topics(reply) & question_topics(prev)
+    if not shared or not incoming:
+        return set()
+    still = {f[0] for f in (missing_after or [])}
+    return {t for t in shared
+            if _QUESTION_TOPIC_RES[t].search(incoming)
+            and any(n in still for n in _TOPIC_MISSING_NAMES.get(t, ()))}
+
+
+def moving_on_topics(reply: str, prev: str, missing_after) -> set[str]:
+    """The NEW, still-open topics `reply` asks when every topic it shares with `prev` was
+    answered this turn — the shared word is context ('working at the dining hall…'), the ask is
+    the next field. Live 2026-10-28 (user 86): "what major and any part time job?" → "Civil
+    engineering and dining hall job" (stored) → "…working at the dining hall, do u end up eating
+    most of ur meals there too?" was dropped as an occupation repeat. Re-asking ONLY what was
+    just answered has no new topic and stays a repeat. Pure."""
+    asked = question_topics(reply)
+    shared = asked & question_topics(prev)
+    still = {f[0] for f in (missing_after or [])}
+
+    def _open(t):
+        return any(n in still for n in _TOPIC_MISSING_NAMES.get(t, ()))
+    if not shared or any(_open(t) for t in shared):
+        return set()
+    return {t for t in asked - shared if _open(t)}
+
+
+_SAME_WORDS_THRESHOLD = 0.8     # near-verbatim; the topic-blind check's 0.45 matches on filler words
+
+
+def _same_ask_wording(reply: str, prev: str) -> bool:
+    """The two QUESTION parts are near-verbatim — asking the same words again is a repeat
+    whatever was answered."""
+    from sms import _norm_body, _similarity
+    a, b = _norm_body(_question_part(reply)), _norm_body(_question_part(prev))
+    return bool(a and b) and _similarity(a, b) >= _SAME_WORDS_THRESHOLD
 
 
 def is_duplicate_question(reply: str, prev: str, threshold: float | None = None) -> bool:
@@ -2360,6 +2413,23 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             reask = shared
         else:
             reask = set()
+    if (not reask and mode != "big_ask" and prev_coach and text
+            and getattr(config, "ONBOARDING_FOLLOWUP_NOT_REPEAT_ENABLED", True)):
+        shared = question_topics(text) & question_topics(prev_coach)
+        if shared and shared <= followup_topics(text, prev_coach, incoming_message, missing_after):
+            logger.info("ONBOARDING_FOLLOWUP_NOT_REPEAT user=%s topics=%s", user_row.id, sorted(shared))
+            reask = shared
+        elif shared and (moved := moving_on_topics(text, prev_coach, missing_after)):
+            logger.info("ONBOARDING_MOVING_ON user=%s shared=%s new=%s", user_row.id, sorted(shared), sorted(moved))
+            reask = shared
+        elif (stored_now := sorted(k for k, v in {**(extracted or {}), **(code_found or {})}.items()
+                                   if v not in (None, "", [], {}))) and not _same_ask_wording(text, prev_coach):
+            # Their text ANSWERED something (stored this turn) — they're replying, not mid-burst;
+            # only the same words again is a repeat (live 2026-10-28, user 89: "A lot. Especially
+            # going from the dorm to campus" → "u know roughly how many steps u get a day?" scored
+            # 0.46 against "how much do u walk around on a normal day" and was dropped).
+            logger.info("ONBOARDING_ANSWERED_FOLLOWUP user=%s topics=%s stored=%s", user_row.id, sorted(shared), stored_now)
+            reask = shared or {"answered_this_turn"}
     if (mode != "big_ask" and prev_coach and text and not reask and is_duplicate_question(text, prev_coach)):
         age = _last_coach_message_age_s(user_row.id)
         if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:
