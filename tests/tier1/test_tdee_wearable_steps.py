@@ -27,8 +27,8 @@ TZ = ZoneInfo("America/Los_Angeles")
 
 # An adult profile whose STATIC avg_steps says sedentary (level 0, ×1.2)...
 SEDENTARY_STEPS = 4000
-# ...while the wearable shows very-active days (level 3, ×1.725).
-ACTIVE_STEPS = 12000
+# ...while the wearable shows very-active days (level 3, ×1.725 — 12.5k+ since 2026-10-29).
+ACTIVE_STEPS = 13000
 
 
 def _today() -> date:
@@ -86,7 +86,7 @@ def test_flag_on_uses_real_wearable_steps(db, monkeypatch):
     db.expire_all()
     from models import User
     t = calculate_targets(db.get(User, user.id), db)
-    # real 12k steps → very active, overriding the static 4k avg_steps.
+    # real 13k steps → very active, overriding the static 4k avg_steps.
     assert t["activity_level"] == 3
 
 
