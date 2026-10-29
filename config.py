@@ -1351,6 +1351,9 @@ INBOUND_FOLD_PHOTO_INTO_PENDING_TEXT = os.getenv("INBOUND_FOLD_PHOTO_INTO_PENDIN
 OUTBOUND_RESTATEMENT_GUARD_ENABLED = os.getenv("OUTBOUND_RESTATEMENT_GUARD_ENABLED", "true").lower() == "true"
 OUTBOUND_RESTATEMENT_WINDOW_S = int(os.getenv("OUTBOUND_RESTATEMENT_WINDOW_S", "180"))
 OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD = float(os.getenv("OUTBOUND_RESTATEMENT_NEAR_DUP_THRESHOLD", "0.6"))
+OUTBOUND_RESTATEMENT_NOVELTY_GATE_ENABLED = os.getenv("OUTBOUND_RESTATEMENT_NOVELTY_GATE_ENABLED", "true").lower() == "true"
+OUTBOUND_RESTATEMENT_NOVEL_WORDS = int(os.getenv("OUTBOUND_RESTATEMENT_NOVEL_WORDS", "10"))
+OUTBOUND_RESTATEMENT_SUBSTANTIVE_WORDS = int(os.getenv("OUTBOUND_RESTATEMENT_SUBSTANTIVE_WORDS", "6"))
 # Onboarding continuation fold (2026-10-09, founder's own run msgs 5783-5786 / 5797-5801):
 # people text in 2-3 rapid bursts; the second text lands while the first turn is still
 # generating (or seconds after it flushed) and becomes its own turn → the coach asks the
