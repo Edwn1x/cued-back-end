@@ -729,6 +729,16 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # 08:00 while he slept till 11:20. Lands at quiet-end + catch-up when that is within
         # PROGRAM_REMINDER_QUIET_CATCHUP_MIN of its slot (usually up ~9 → 9:20), else this
         # occurrence is skipped (a 3.5h-late "gym time" is noise, not a reminder).
+        if not row.every_hours and row.source == "program":
+            from training_pause import is_paused
+            if is_paused(user, now):
+                # They told the coach they're out (sick / away / exams): no "gym time" till it lapses.
+                nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=training_paused next=%s", row.user_id, rid,
+                            row.fire_at if row.active else None)
+                return False
         if (not row.every_hours and row.source == "program"
                 and getattr(config, "PROGRAM_REMINDER_QUIET_GATE_ENABLED", True)):
             try:

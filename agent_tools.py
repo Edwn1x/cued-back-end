@@ -1730,6 +1730,35 @@ def set_reminder_tool() -> dict:
     return tool
 
 
+PAUSE_TRAINING_TOOL = {
+    "name": "pause_training",
+    "description": (
+        "They can't train for a while — sick ('chest cough, ill tell u when i feel better'), resting an "
+        "injury, travelling, exam week, 'not training yet'. Pause it HERE so CODE holds the gym pings, the "
+        "'gym's quiet' beats and the training-gap nudges for that long; never just say ok. `days` = how "
+        "long (1–90; 0 = resume now, when they say they're back / feeling better); `reason` = their "
+        "words, a few of them. Keep coaching food and sleep as usual."
+    ),
+    "input_schema": {"type": "object",
+                     "properties": {"days": {"type": "integer"}, "reason": {"type": "string"}},
+                     "required": ["days"]},
+}
+
+
+def handle_pause_training(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    from training_pause import set_pause
+    days = (tool_input or {}).get("days")
+    reason = (tool_input or {}).get("reason")
+    res = set_pause(user_id, days, reason)
+    if "error" in res:
+        return f"error: {res['error']}"
+    if res["until"] is None:
+        return "ok: training resumed — gym pings, beats and gap nudges are back on"
+    return (f"ok: training paused {int(days)} days" + (f" ({res['reason']})" if res.get('reason') else "")
+            + f" — {res['describe']}. the program's gym pings, the RSF beats and the training-gap nudges "
+            "hold till then; say so in a few words")
+
+
 SET_CHECKIN_LEVEL_TOOL = {
     "name": "set_checkin_level",
     "description": (
@@ -3240,6 +3269,14 @@ _PLANNING_MARKERS = tuple(re.compile(p, re.IGNORECASE | re.MULTILINE) for p in (
     r"\bno nag(ging)?\b",
     r"\bquick (reply|response|ack)\b",
     r"\b(he|she)['’]?s (deciding|venting|asking|upset|frustrated|mad|pissed|just|not|about to|gonna|trying)\b",
+    # Live 2026-10-28 16:14 (user 80, msg 7922): 'no need to apologize. short reply, no question
+    # needed. maybe "no worries, text works fine…". already said pic is easier; don't repeat.'
+    # texted verbatim — only "short reply" hit. The idiom family this time: a drafted line
+    # introduced by "maybe", and notes about what was already said / not to repeat.
+    r"\bno question needed\b",
+    r"\bdon['’]?t repeat\b",
+    r"\balready said\b",
+    r"\bmaybe\s*[“\"][^”\"\n]{3,}[”\"]",
     # Cluster-only AND allowed inside a salvaged tail: "Bad day. I'll back off." is a
     # line the coach legitimately texts; it only counts when other markers ride with it.
     r"\bi['’]?ll (just )?(back off|leave (it|them))\b",
@@ -6169,6 +6206,7 @@ _HANDLERS = {
     "log_event": handle_log_event,
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,
+    "pause_training": handle_pause_training,
     "save_routine": handle_save_routine,
     "adjust_program": handle_adjust_program,
     "reconstruct_routine_from_history": handle_reconstruct_routine_from_history,

@@ -705,6 +705,11 @@ GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
 # emptying (Sun 2026-10-05 22:25→22:55 PT: 59→0%) read as "dead" at 22:51 for a 23:00 close
 # — users 42 and 47 got a nudge nobody could act on. Line beats are unaffected.
 GYM_DEAD_MIN_MINUTES_TO_CLOSE = int(os.getenv("GYM_DEAD_MIN_MINUTES_TO_CLOSE", "60"))
+# Who a campus-gym beat is FOR (live 2026-10-28 20:05: a home-gym desk worker with a chest cough and a
+# user silent 36 days both got "gym's quiet right now. quick push?"): home_gym / bodyweight equipment,
+# a known non-student, a user quiet longer than MAX_QUIET_DAYS, or a training pause → no beat.
+RSF_BEAT_AUDIENCE_GATE_ENABLED = os.getenv("RSF_BEAT_AUDIENCE_GATE_ENABLED", "true").lower() == "true"
+RSF_BEAT_MAX_QUIET_DAYS = float(os.getenv("RSF_BEAT_MAX_QUIET_DAYS", "7"))
 
 # ─── Integrations (OAuth: Google Calendar, Strava, bCourses) ──────────────────
 # Shared plumbing (integrations/ package). Every flag defaults OFF; the whole
@@ -1026,10 +1031,17 @@ QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED",
 HEARTBEAT_RHYTHM_ENABLED = os.getenv("HEARTBEAT_RHYTHM_ENABLED", "false").lower() == "true"
 # set_checkin_level tool: "text me more" / "chill with the texts" becomes a code-enforced cap, not a said ok.
 SET_CHECKIN_LEVEL_TOOL_ENABLED = os.getenv("SET_CHECKIN_LEVEL_TOOL_ENABLED", "false").lower() == "true"
+# pause_training: "sick" / "travelling" / "exam week" → users.training_paused_until; the RSF beats, the
+# program's gym ping and the TRAINING GAP nudge hold until it lapses (training_pause.py).
+PAUSE_TRAINING_TOOL_ENABLED = os.getenv("PAUSE_TRAINING_TOOL_ENABLED", "true").lower() == "true"
 # Water-reminder OFFER (water_offer.py): the one-line, once-only "want water pings? yes or no"
 # after the kickoff (new users) and on a guarded sweep (existing users); the reply is
 # handled in code. Founder 2026-09-22: users can't ask for a feature they've never heard of.
 WATER_OFFER_ENABLED = os.getenv("WATER_OFFER_ENABLED", "false").lower() == "true"
+# A yes/no to the offer with MORE in the same text ("yeah sure. I'm pretty sick at the moment…", live
+# 2026-10-28 user 80): the yes is answered in code and the rest still runs as the turn's inbound.
+WATER_OFFER_REMAINDER_ENABLED = os.getenv("WATER_OFFER_REMAINDER_ENABLED", "true").lower() == "true"
+WATER_OFFER_REMAINDER_MIN_WORDS = int(os.getenv("WATER_OFFER_REMAINDER_MIN_WORDS", "3"))
 # A text logged BEFORE the offer went out can't be its answer (live 2026-10-17, user 40).
 WATER_OFFER_PREDATES_GUARD_ENABLED = os.getenv("WATER_OFFER_PREDATES_GUARD_ENABLED", "true").lower() == "true"
 # Water-break GIF (water_gif.py, founder 2026-10-26: "replace the boring drink-water text

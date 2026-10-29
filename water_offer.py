@@ -184,6 +184,36 @@ def _newest_inbound_predates_offer(session, user) -> bool:
     return bool(row and row[0] and row[0] < at)
 
 
+_ACK_HEAD_RE = re.compile(
+    r"^[\s.,;:!]*(?:yes+|yeah+|yea+h*|yeh|yep+|yup+|ya+s*|sure|ok|okay|k|bet|do it|go for it|please|pls|"
+    r"thanks?|thank you|thing|sounds good|why not|no+|nah+|naw|nope+|no thanks|no thank you|not now|"
+    r"i'?m good|im good|don'?t|pass)\b", re.I)
+
+
+_HOURS_CLAUSE_RE = re.compile(r"every\s*\d{1,2}\s*(?:hours?|hrs?|h)\b", re.I)   # whole clause (HOURS_RE stops at 'h')
+
+
+def remainder_after_ack(text: str) -> str | None:
+    """What a yes/no to the offer ALSO said — "yeah sure. I'm pretty sick at the moment…"
+    (live 2026-10-28, user 80: only the yes was heard). The leading ack words, filler and
+    an "every N hours" clause (the yes consumes it) come off; what's left counts only when
+    it is a real sentence (≥ WATER_OFFER_REMAINDER_MIN_WORDS words). None otherwise."""
+    body = (text or "").strip()
+    if not (YES_RE.match(body) or NO_RE.match(body)):
+        return None
+    rest = _HOURS_CLAUSE_RE.sub(" ", body)
+    for _ in range(6):
+        m = _ACK_HEAD_RE.match(rest)
+        if not m:
+            break
+        rest = rest[m.end():]
+    rest = re.sub(r"^[\s.,;:!—–-]+", "", rest).strip()
+    words = re.findall(r"[A-Za-z0-9']+", rest)
+    if len(words) < int(getattr(config, "WATER_OFFER_REMAINDER_MIN_WORDS", 3)):
+        return None
+    return rest
+
+
 def handle_reply(user_id: int, text: str) -> str | None:
     """Deterministic reply to the offer. Returns the one line to send, or None when
     the inbound isn't an answer to a pending offer (normal turn). A non-yes/no reply

@@ -492,6 +492,14 @@ def build_loop_context(user, session) -> str:
             f"be built. When they mention their days (\"chest and bis, back and tris, legs\"), "
             f"call save_routine with split_days."
         )
+    try:
+        from training_pause import is_paused, describe
+        if is_paused(user):
+            parts.append("## TRAINING PAUSED " + describe(user) + " — they told you they're out. No sessions, "
+                         "cards, gym pings or 'why'd u skip' till then; food and sleep coaching as usual; ask how "
+                         "they're feeling only if it fits. When they say they're back, call pause_training days=0.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("TRAINING_PAUSE_CONTEXT_FAILED user=%s err=%s", user.id, e)
     p = get_split_pointer(user.id)
     if p:
         parts.append(
@@ -2135,6 +2143,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     if config.SET_CHECKIN_LEVEL_TOOL_ENABLED:
         from agent_tools import SET_CHECKIN_LEVEL_TOOL
         tools.append(SET_CHECKIN_LEVEL_TOOL)
+    if getattr(config, "PAUSE_TRAINING_TOOL_ENABLED", True):
+        from agent_tools import PAUSE_TRAINING_TOOL
+        tools.append(PAUSE_TRAINING_TOOL)
     if config.GET_DINING_MENU_TOOL_ENABLED:
         from agent_tools import GET_DINING_MENU_TOOL
         tools.append(GET_DINING_MENU_TOOL)

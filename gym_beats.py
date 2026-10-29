@@ -156,6 +156,34 @@ def minutes_to_close(now_local: datetime) -> int:
     return max(0, left)
 
 
+def audience_skip_reason(user, session) -> str | None:
+    """Why a campus-gym beat is not for this user, or None. Live 2026-10-28 20:05: user 80
+    (home gym, desk job, a week-long chest cough) and user 42 (silent 36 days) both got
+    "gym's quiet right now. quick push?". The RSF is Berkeley's: a KNOWN non-student (an
+    occupation on file that isn't a college student — unknown passes), home_gym / bodyweight
+    equipment, a gym on file that isn't the RSF, a training pause, or a user quiet longer
+    than RSF_BEAT_MAX_QUIET_DAYS (the heartbeat already backs off for them)."""
+    equipment = (getattr(user, "equipment", None) or "").strip().lower()
+    if equipment in ("home_gym", "bodyweight"):
+        return f"equipment={equipment}"
+    gym = (getattr(user, "which_gym", None) or "").strip().lower()
+    if gym and gym != "rsf":
+        return f"gym={gym}"
+    occ = (getattr(user, "occupation", None) or "").strip()
+    if occ:
+        from connect_offers import is_student
+        if not is_student(user):
+            return "non_student"
+    from training_pause import is_paused
+    if is_paused(user):
+        return "training_paused"
+    from stale_skip import days_quiet
+    dq = days_quiet(user, session)
+    if dq is not None and dq > float(getattr(config, "RSF_BEAT_MAX_QUIET_DAYS", 7)):
+        return f"quiet_days={dq:.1f}"
+    return None
+
+
 def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
     """Pure decision (no sends) except queue_join, which is the D2 action itself."""
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -171,6 +199,11 @@ def propose(user, session, now_utc: datetime | None = None) -> Beat | None:
     # contradictory + redundant; a line nudge is moot once they're already lifting).
     if has_active_session(session, user):
         return None
+    if getattr(config, "RSF_BEAT_AUDIENCE_GATE_ENABLED", True):
+        why = audience_skip_reason(user, session)
+        if why:
+            logger.info("GYM_BEAT_SKIPPED user=%s reason=%s", user.id, why)
+            return None
     if not planned_today(user, session, now_local) or is_workout_confirmed_today(user.id):
         return None
     walk = walk_min_for(user, session)

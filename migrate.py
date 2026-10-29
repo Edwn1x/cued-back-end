@@ -449,6 +449,8 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id)",
     # Daily rhythm (2026-09-22): per-user check-in level + interval (water) reminders
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_level VARCHAR(10)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS training_paused_until TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS training_pause_reason VARCHAR(100)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS water_offer_status VARCHAR(10)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS water_offered_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS card_setup_at TIMESTAMP",
