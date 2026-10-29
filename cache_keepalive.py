@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 SITE = "cache.keepalive"
 # Read during prefill, never answered (max_tokens=0 returns content=[]).
 _PLACEHOLDER = "keepalive"
+# Stands in for the uncached per-call tail. A breakpoint block followed by ANOTHER
+# system block caches one more token (the separator) than the same block ending the
+# system: live 2026-10-28 the reminder prefix was 28,675 tokens, a ping of [voice]
+# alone 28,674 — a miss that paid a write. So the ping keeps the real call's shape.
+_TAIL = {"type": "text", "text": "."}
 
 _lock = threading.Lock()
 _entries: dict[str, dict] = {}
@@ -64,9 +69,10 @@ def note(site: str, *, model: str, system, tools=None, thinking=None, output_con
         prefix = _cached_prefix(system)
         if prefix is None:
             return
+        tail = len(system) > len(prefix)
         now = time.time() if now is None else now
         key = hashlib.sha1(json.dumps(
-            [model, tools or None, prefix, thinking, output_config],
+            [model, tools or None, prefix, tail, thinking, output_config],
             sort_keys=True, default=str).encode("utf-8")).hexdigest()
         with _lock:
             entry = _entries.get(key)
@@ -78,7 +84,7 @@ def note(site: str, *, model: str, system, tools=None, thinking=None, output_con
                 # its original order (the key above is order-normalized only for lookup).
                 entry = _entries[key] = {
                     "site": site, "model": model,
-                    "system": copy.deepcopy(prefix),
+                    "system": copy.deepcopy(prefix) + ([dict(_TAIL)] if tail else []),
                     "tools": copy.deepcopy(tools) if tools else None,
                     "thinking": copy.deepcopy(thinking),
                     "output_config": copy.deepcopy(output_config),

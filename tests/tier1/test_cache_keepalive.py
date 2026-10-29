@@ -89,6 +89,18 @@ def test_per_call_tail_shares_one_entry_but_tools_split_it():
     assert len(cache_keepalive._entries) == 2, "a different tool list is a different cached prefix"
 
 
+def test_a_tail_after_the_breakpoint_is_part_of_the_shape():
+    """Live 2026-10-28: the reminder ([voice, name+time]) cached 28,675 tokens; a ping of
+    [voice] alone cached 28,674 — a different prefix, so it missed and paid a write. A
+    voice-only call (re-engage) and a voice+tail call (reminder) are separate entries,
+    and each replays its own shape."""
+    import cache_keepalive
+    _note(site="reminder.compose", tools=None)                                   # [VOICE, tail]
+    _note(site="onboarding.reengage", tools=None, system=[VOICE])                # [VOICE]
+    shapes = sorted(len(e["system"]) for e in cache_keepalive._entries.values())
+    assert shapes == [1, 2]
+
+
 def test_disabled_flag_is_a_full_no_op(monkeypatch, pings):
     import cache_keepalive, config
     monkeypatch.setattr(config, "CACHE_KEEPALIVE_ENABLED", False)
@@ -106,7 +118,8 @@ def test_pings_at_fifty_minutes_not_before(pings):
     assert run_due(now=T0 + 49 * MIN)["pinged"] == 0
     assert run_due(now=T0 + 50 * MIN)["pinged"] == 1
     entry = pings[0]
-    assert entry["system"] == [VOICE], "the ping sends only the cached prefix, never a user's context"
+    assert entry["system"] == [VOICE, {"type": "text", "text": "."}], (
+        "the cached prefix + a placeholder where the per-call tail was — never a user's context")
     assert entry["tools"] == TOOLS and entry["thinking"] == THINK and entry["output_config"] == EFFORT
 
 
@@ -176,7 +189,7 @@ def test_ping_request_is_a_max_tokens_zero_prefill(anthropic_stub):
     _ping(entry)
     kw = anthropic_stub.calls[-1]
     assert kw["max_tokens"] == 0
-    assert kw["system"] == [VOICE] and kw["tools"] == TOOLS
+    assert kw["system"] == [VOICE, {"type": "text", "text": "."}] and kw["tools"] == TOOLS
     assert kw["thinking"] == THINK and kw["output_config"] == EFFORT
     assert kw["messages"] == [{"role": "user", "content": "keepalive"}]
 
@@ -201,7 +214,11 @@ def _replayed(anthropic_stub):
 
 def _assert_replays(real, ping):
     assert ping["model"] == real["model"]
-    assert ping["system"] == _prefix_of(real), "byte-identical cached prefix"
+    prefix = _prefix_of(real)
+    assert ping["system"][: len(prefix)] == prefix, "byte-identical cached prefix"
+    # Same shape: a tail after the breakpoint caches one more (separator) token.
+    assert (len(ping["system"]) > len(prefix)) == (len(real["system"]) > len(prefix))
+    assert all(b == {"type": "text", "text": "."} for b in ping["system"][len(prefix):])
     assert ping.get("tools") == real.get("tools"), "byte-identical tool list"
     assert ping.get("thinking") == real.get("thinking")
     assert ping.get("output_config") == real.get("output_config")
