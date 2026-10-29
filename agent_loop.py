@@ -2085,6 +2085,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # set_reminder_tool() = SET_REMINDER_TOOL, plus the every_hours (water) affordance
         # when WATER_REMINDERS_ENABLED.
         tools.extend([set_reminder_tool(), CANCEL_REMINDER_TOOL])
+        if config.UPDATE_REMINDER_TOOL_ENABLED:
+            from agent_tools import UPDATE_REMINDER_TOOL
+            tools.append(UPDATE_REMINDER_TOOL)
     if config.SET_CHECKIN_LEVEL_TOOL_ENABLED:
         from agent_tools import SET_CHECKIN_LEVEL_TOOL
         tools.append(SET_CHECKIN_LEVEL_TOOL)

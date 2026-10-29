@@ -309,6 +309,27 @@ def cancel_reminder(user_id: int, reminder_id: int) -> bool:
         session.close()
 
 
+def update_reminder_text(user_id: int, reminder_id: int, text: str) -> dict:
+    """Rewrite what an active reminder SAYS; its time, days, next fire and sent count stay. Returns
+    {"id", "text"} or {"error": ...}. Never raises on bad input. Live 2026-10-28 (user 77): a swapped
+    stretch left both daily posture reminders prescribing the move he'd just been told to drop."""
+    text = (text or "").strip()
+    if not text:
+        return {"error": "text required"}
+    session = get_session()
+    try:
+        row = session.get(Reminder, reminder_id)
+        if not row or row.user_id != user_id or not row.active:
+            return {"error": "no active reminder with that id"}
+        old = row.text
+        row.text = text[:300]
+        session.commit()
+        logger.info("REMINDER_UPDATED user=%s id=%s old=%r new=%r", user_id, reminder_id, (old or "")[:60], text[:60])
+        return {"id": row.id, "text": row.text}
+    finally:
+        session.close()
+
+
 def active_reminders(user_id: int, session=None) -> list:
     own = session is None
     session = session or get_session()

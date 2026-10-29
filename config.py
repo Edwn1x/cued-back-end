@@ -465,6 +465,10 @@ SCHEDULE_RUNDOWN_MAX_EVENTS = int(os.getenv("SCHEDULE_RUNDOWN_MAX_EVENTS", "40")
 # 60s firing sweep. Ships ON (founder rule: capabilities ship on + budgeted + instrumented);
 # one flag covers all three so a revert is one var.
 REMINDERS_ENABLED = os.getenv("REMINDERS_ENABLED", "true").lower() == "true"
+# update_reminder: rewrite what a reminder SAYS, keeping its schedule — a swapped move or a changed dose
+# reaches the standing reminder in the same turn (live 2026-10-28, user 77: the coach swapped "lean back
+# over chair" and both daily posture reminders kept prescribing it).
+UPDATE_REMINDER_TOOL_ENABLED = os.getenv("UPDATE_REMINDER_TOOL_ENABLED", "true").lower() == "true"
 # A fired one-off gym reminder with no session started within N hours re-arms once for
 # tomorrow (source='rearm'), so "go tomorrow" is a row, not a sentence (live 2026-10-17, u40).
 REMINDER_GYM_REARM_ENABLED = os.getenv("REMINDER_GYM_REARM_ENABLED", "true").lower() == "true"

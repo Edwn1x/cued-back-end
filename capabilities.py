@@ -295,7 +295,7 @@ CAPABILITIES: list[Capability] = [
         id="reminders",
         what="i can text you at a set time — after class to go run, at 7 to take creatine",
         how="say 'remind me to X after class' or 'ping me at 7' and it'll show up on time",
-        tools=("set_reminder", "cancel_reminder"),
+        tools=("set_reminder", "cancel_reminder", "update_reminder"),
         enabled=lambda u: config.REMINDERS_ENABLED,
         relevance=lambda u: 6 if (getattr(u, "occupation", "") or "").lower() == "student" else 4,
         used=_reminders_set,
