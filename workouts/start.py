@@ -290,7 +290,8 @@ def one_off_templates(rows: list[dict]) -> list:
         name = str(r.get("name") or "").strip()
         if not name:
             continue
-        slug = slug_for_name(name) or _re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:60]
+        # [:40]/[:60] = the SetLog column widths (live 2026-10-28: a 41-char slug crashed the build)
+        slug = slug_for_name(name) or _re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40].strip("_")
         if not slug:
             continue
         base = known.get(slug)
@@ -306,7 +307,7 @@ def one_off_templates(rows: list[dict]) -> list:
             weight = base.default_weight if base else 0.0
         step = base.plate_step if base else (5.0 if weight else 0.0)
         rep_step = base.rep_step if base else (2 if not weight else 0)
-        out.append(ExerciseTemplate(slug, (base.label if base and base.label else name.lower())[:80], sets, reps, weight, step, rep_step))
+        out.append(ExerciseTemplate(slug, (base.label if base and base.label else name.lower())[:60], sets, reps, weight, step, rep_step))
     return out
 
 
