@@ -109,6 +109,50 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
 .bar-col .bar{width:100%;border-radius:3px 3px 0 0;min-height:2px;transition:height .3s}
 .bar-col .bar-label{font-size:12px;font-weight:600;color:var(--text2)}
 
+/* ── VIZ (admin_engagement charts) ── palette validated dark on --card: blue / orange / aqua */
+.viz{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--muted:#4a4a52;--ink:var(--text);--ink2:var(--text2);--ink3:var(--text3)}
+.viz-filters{display:flex;gap:6px;align-items:center;margin-bottom:12px}
+.viz-filters span{font-size:11px;color:var(--text3);margin-right:4px}
+.viz-filters button{background:transparent;border:1px solid var(--border);color:var(--text2);font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
+.viz-filters button.on{background:rgba(124,110,255,.15);color:var(--accent);border-color:transparent}
+.viz-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:28px}
+.viz-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 16px 10px;position:relative;min-width:0}
+.viz-card.wide{grid-column:1 / -1}
+.viz-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
+.viz-title{font-size:13px;font-weight:600;color:var(--text2)}
+.viz-sub{font-size:11px;color:var(--text3);margin-top:2px}
+.viz-tbtn{background:transparent;border:0;color:var(--text3);font-size:11px;cursor:pointer;padding:2px 6px}
+.viz-tbtn:hover{color:var(--text2)}
+.viz-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:4px 0 6px;font-size:11px;color:var(--text2)}
+.viz-legend i{display:inline-block;width:14px;height:2px;border-radius:1px;vertical-align:middle;margin-right:6px}
+.viz-legend i.rect{height:10px;width:10px;border-radius:2px}
+.viz-plot{position:relative;width:100%}
+.viz-plot svg{display:block;width:100%;height:auto;overflow:visible}
+.viz-plot svg text{font-family:inherit;font-size:10px;fill:var(--text3)}
+.viz-plot .grid{stroke:var(--border);stroke-width:1}
+.viz-plot .axis{stroke:#2a2a30;stroke-width:1}
+.viz-plot .ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.viz-plot .mk{stroke:var(--card);stroke-width:2}
+.viz-plot .xh{stroke:var(--text3);stroke-width:1;pointer-events:none}
+.viz-plot .hit{fill:transparent;cursor:crosshair}
+.viz-plot .barhit{fill:transparent}
+.viz-plot .barhit:hover{fill:rgba(255,255,255,.04)}
+.viz-plot .endlbl{fill:var(--text2);font-size:11px;font-weight:600}
+.viz-tip{position:absolute;pointer-events:none;background:#0d0d10;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11px;color:var(--text2);min-width:120px;z-index:5;display:none;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.viz-tip .t{color:var(--text3);margin-bottom:4px}
+.viz-tip .r{display:flex;align-items:center;gap:8px;line-height:1.7}
+.viz-tip .r i{display:inline-block;width:10px;height:2px;border-radius:1px}
+.viz-tip .r b{color:var(--text);font-weight:600;min-width:28px;text-align:right;font-variant-numeric:tabular-nums}
+.viz-table{display:none;max-height:260px;overflow:auto;margin-top:6px}
+.viz-table table{font-size:11px;width:100%}
+.viz-table th,.viz-table td{padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums}
+.viz-table th:first-child,.viz-table td:first-child{text-align:left}
+.viz-card.tbl .viz-plot,.viz-card.tbl .viz-legend{display:none}
+.viz-card.tbl .viz-table{display:block}
+.viz-empty{color:var(--text3);font-size:12px;padding:40px 0;text-align:center}
+.spark{display:block;width:100%;height:28px;margin-top:8px;overflow:visible}
+@media(max-width:900px){.viz-grid{grid-template-columns:1fr}}
+
 /* ── AGENT PIPELINE BADGES ── */
 .pipeline{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 .pipe-badge{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:500}
@@ -238,6 +282,7 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
       <div class="stat-label">Engaged Today</div>
       <div class="stat-val accent">{{ eng.today.engaged }}</div>
       <div class="stat-sub">{{ eng.today.core }} logged something · {{ eng.today.pull }} came to us · {{ eng.today.texted }} texted (their local day)</div>
+      <svg class="spark viz" data-spark="engaged" aria-label="engaged users per day, last 14 days"></svg>
     </div>
     {% for w in eng.windows if w.days in (7, 30) %}
     <div class="stat-card">
@@ -791,6 +836,40 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
     <h1>Retention</h1>
     <p>How many users stay active over time</p>
   </div>
+
+  <!-- Trends (admin_engagement.py series). One filter row scopes every chart below it;
+       the selection survives the 60s auto-reload via localStorage. -->
+  <div class="viz">
+    <div class="viz-filters" id="viz-range">
+      <span>Range</span>
+      <button data-weeks="4">4 weeks</button>
+      <button data-weeks="8">8 weeks</button>
+      <button data-weeks="12">12 weeks</button>
+    </div>
+    <div class="viz-grid">
+      <div class="viz-card wide" id="viz-daily">
+        <div class="viz-head">
+          <div><div class="viz-title">Users per day</div><div class="viz-sub">engaged vs the legacy any-text count vs logged something — by each user's local day, complete days only</div></div>
+          <button class="viz-tbtn" onclick="vizToggle('viz-daily')">table</button>
+        </div>
+        <div class="viz-legend"></div><div class="viz-plot"></div><div class="viz-table"></div>
+      </div>
+      <div class="viz-card" id="viz-weekly">
+        <div class="viz-head">
+          <div><div class="viz-title">Engaged users per week</div><div class="viz-sub">logged something, stacked with showed-up-only (card open, tapback, unprompted text) — current week faded</div></div>
+          <button class="viz-tbtn" onclick="vizToggle('viz-weekly')">table</button>
+        </div>
+        <div class="viz-legend"></div><div class="viz-plot"></div><div class="viz-table"></div>
+      </div>
+      <div class="viz-card" id="viz-curves">
+        <div class="viz-head">
+          <div><div class="viz-title">Cohort curves</div><div class="viz-sub">% engaged in week N after activation — newest cohorts in colour, earlier in grey</div></div>
+          <button class="viz-tbtn" onclick="vizToggle('viz-curves')">table</button>
+        </div>
+        <div class="viz-legend"></div><div class="viz-plot"></div><div class="viz-table"></div>
+      </div>
+    </div>
+  </div>
   <div class="table-wrap" style="margin-bottom:24px">
     <table>
       <tr><th>Cohort</th><th>Users</th><th>Rate</th><th>Benchmark</th><th>Status</th></tr>
@@ -1058,6 +1137,264 @@ async function sendManual(e) {
 }
 
 setTimeout(() => location.reload(), 60000);
+
+// ─── VIZ: engaged-day charts (admin_engagement.py). Plain SVG, no library. ───
+const VIZ = {
+  daily: {{ eng.daily | tojson }},
+  weekly: {{ eng.weekly | tojson }},
+  curves: {{ eng.curves | tojson }},
+};
+const VIZ_C = {s1:'#3987e5', s2:'#d95926', s3:'#199e70', s4:'#c98500', muted:'#4a4a52'};
+const NS = "http://www.w3.org/2000/svg";   // double-quoted: the inline-script lint strips //… as a comment
+function svgEl(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function niceMax(v) {
+  if (v <= 0) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) { if (m * p >= v) return m * p; }
+  return 10 * p;
+}
+// Gridline count whose step is a whole number (50 → 5 lines of 10, 20 → 4 of 5, 4 → 4 of 1).
+function divisions(ymax) { return [4, 5, 2, 1].find(d => Number.isInteger(ymax / d)) || 4; }
+function fmtDay(s) {
+  const d = new Date(s + 'T12:00:00');
+  return d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+}
+function mkTip(plot) {
+  let tip = plot.querySelector('.viz-tip');
+  if (!tip) { tip = document.createElement('div'); tip.className = 'viz-tip'; plot.appendChild(tip); }
+  return tip;
+}
+function fillTip(tip, title, rows) {
+  tip.textContent = '';
+  const t = document.createElement('div'); t.className = 't'; t.textContent = title; tip.appendChild(t);
+  for (const r of rows) {
+    const row = document.createElement('div'); row.className = 'r';
+    const key = document.createElement('i'); key.style.background = r.color; row.appendChild(key);
+    const v = document.createElement('b'); v.textContent = r.value; row.appendChild(v);
+    const n = document.createElement('span'); n.textContent = r.name; row.appendChild(n);
+    tip.appendChild(row);
+  }
+}
+function placeTip(tip, plot, x, y) {
+  const w = plot.clientWidth, tw = tip.offsetWidth || 140;
+  tip.style.left = (x + 14 + tw > w ? x - tw - 10 : x + 14) + 'px';
+  tip.style.top = Math.max(0, y - 10) + 'px';
+  tip.style.display = 'block';
+}
+function legend(card, items, shape) {
+  const lg = card.querySelector('.viz-legend'); lg.textContent = '';
+  for (const it of items) {
+    const sp = document.createElement('span');
+    const i = document.createElement('i'); i.style.background = it.color; if (shape === 'rect') i.className = 'rect';
+    sp.appendChild(i); sp.appendChild(document.createTextNode(it.name)); lg.appendChild(sp);
+  }
+}
+function tableView(card, head, rows) {
+  const wrap = card.querySelector('.viz-table'); wrap.textContent = '';
+  const tb = document.createElement('table');
+  const tr = document.createElement('tr');
+  for (const h of head) { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); }
+  tb.appendChild(tr);
+  for (const r of rows) {
+    const trr = document.createElement('tr');
+    for (const c of r) { const td = document.createElement('td'); td.textContent = c; trr.appendChild(td); }
+    tb.appendChild(trr);
+  }
+  wrap.appendChild(tb);
+}
+function vizToggle(id) {
+  const card = document.getElementById(id); card.classList.toggle('tbl');
+  card.querySelector('.viz-tbtn').textContent = card.classList.contains('tbl') ? 'chart' : 'table';
+}
+function emptyCard(card, msg) {
+  const plot = card.querySelector('.viz-plot'); plot.textContent = '';
+  const d = document.createElement('div'); d.className = 'viz-empty'; d.textContent = msg; plot.appendChild(d);
+  card.querySelector('.viz-legend').textContent = '';
+}
+
+// Multi-series line chart: xs = category labels, series = [{name,color,values,muted,endLabel}].
+function lineChart(card, xs, series, opts) {
+  const plot = card.querySelector('.viz-plot'); plot.textContent = '';
+  if (!xs.length) return emptyCard(card, 'no data yet');
+  const W = Math.max(320, plot.clientWidth), H = opts.height || 220;
+  const L = 34, R = 44, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const ymax = opts.ymax || niceMax(Math.max(1, ...series.flatMap(s => s.values.filter(v => v != null))));
+  const x = i => L + (xs.length === 1 ? pw / 2 : i * pw / (xs.length - 1));
+  const y = v => T + ph - (v / ymax) * ph;
+  const svg = svgEl('svg', {viewBox: `0 0 ${W} ${H}`, width: W, height: H}, plot);
+  const nd = opts.ymax ? 4 : divisions(ymax);
+  for (let g = 0; g <= nd; g++) {
+    const yy = T + ph * g / nd, val = ymax * (nd - g) / nd;
+    svgEl('line', {x1: L, x2: L + pw, y1: yy, y2: yy, class: g === nd ? 'axis' : 'grid'}, svg);
+    const t = svgEl('text', {x: L - 6, y: yy + 3, 'text-anchor': 'end'}, svg);
+    t.textContent = opts.yFmt ? opts.yFmt(val) : Math.round(val);
+  }
+  const step = Math.max(1, Math.ceil(xs.length / (opts.xTicks || 8)));
+  xs.forEach((lab, i) => {
+    if (i % step !== 0 && i !== xs.length - 1) return;
+    const t = svgEl('text', {x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === xs.length - 1 ? 'end' : 'middle'}, svg);
+    t.textContent = opts.xFmt ? opts.xFmt(lab) : lab;
+  });
+  const ends = [];
+  for (const s of series) {
+    let d = '';
+    s.values.forEach((v, i) => { if (v == null) return; d += (d ? ' L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); });
+    if (!d) continue;
+    svgEl('path', {d, class: 'ln', stroke: s.color, opacity: s.muted ? 0.9 : 1}, svg);
+    let last = s.values.length - 1; while (last >= 0 && s.values[last] == null) last--;
+    if (last >= 0 && !s.muted) {
+      svgEl('circle', {cx: x(last), cy: y(s.values[last]), r: 4, fill: s.color, class: 'mk'}, svg);
+      ends.push({y: y(s.values[last]), x: x(last), v: s.values[last], s});
+    }
+  }
+  // Selective direct labels: the endpoint of each coloured series, skipped where they'd collide.
+  ends.sort((a, b) => a.y - b.y);
+  let lastY = -99;
+  for (const e of ends) {
+    if (e.y - lastY < 12) continue;
+    const t = svgEl('text', {x: e.x + 8, y: e.y + 4, class: 'endlbl'}, svg);
+    t.textContent = opts.yFmt ? opts.yFmt(e.v) : e.v; lastY = e.y;
+  }
+  // Crosshair + tooltip listing every series at the nearest X.
+  const xh = svgEl('line', {x1: 0, x2: 0, y1: T, y2: T + ph, class: 'xh', style: 'display:none'}, svg);
+  const dots = series.map(s => svgEl('circle', {r: 4, fill: s.color, class: 'mk', style: 'display:none'}, svg));
+  const hit = svgEl('rect', {x: L, y: T, width: pw, height: ph, class: 'hit'}, svg);
+  const tip = mkTip(plot);
+  hit.addEventListener('pointermove', ev => {
+    const rect = svg.getBoundingClientRect(), sx = W / rect.width;
+    const px = (ev.clientX - rect.left) * sx;
+    const i = Math.max(0, Math.min(xs.length - 1, Math.round((px - L) / (pw / Math.max(1, xs.length - 1)))));
+    xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.style.display = '';
+    series.forEach((s, k) => {
+      const v = s.values[i];
+      if (v == null) { dots[k].style.display = 'none'; return; }
+      dots[k].setAttribute('cx', x(i)); dots[k].setAttribute('cy', y(v)); dots[k].style.display = '';
+    });
+    fillTip(tip, opts.xFmt ? opts.xFmt(xs[i]) : xs[i],
+      series.map(s => ({name: s.name, color: s.color, value: s.values[i] == null ? '—' : (opts.yFmt ? opts.yFmt(s.values[i]) : s.values[i])})));
+    placeTip(tip, plot, (ev.clientX - rect.left), (ev.clientY - rect.top));
+  });
+  hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; xh.style.display = 'none'; dots.forEach(d => d.style.display = 'none'); });
+  legend(card, series.map(s => ({name: s.name, color: s.color})), 'line');
+  tableView(card, [opts.xHead || ''].concat(series.map(s => s.name)),
+    xs.map((lab, i) => [opts.xFmt ? opts.xFmt(lab) : lab].concat(series.map(s => s.values[i] == null ? '—' : (opts.yFmt ? opts.yFmt(s.values[i]) : s.values[i])))));
+}
+
+// Stacked column chart: xs = category labels, series = [{name,color,values}] bottom-up.
+function stackedBars(card, xs, series, opts) {
+  const plot = card.querySelector('.viz-plot'); plot.textContent = '';
+  if (!xs.length) return emptyCard(card, 'no data yet');
+  const W = Math.max(320, plot.clientWidth), H = opts.height || 220;
+  const L = 34, R = 12, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const totals = xs.map((_, i) => series.reduce((a, s) => a + (s.values[i] || 0), 0));
+  const ymax = niceMax(Math.max(1, ...totals));
+  const slot = pw / xs.length, bw = Math.min(24, slot * 0.6);
+  const y = v => T + ph - (v / ymax) * ph;
+  const svg = svgEl('svg', {viewBox: `0 0 ${W} ${H}`, width: W, height: H}, plot);
+  const nd = divisions(ymax);
+  for (let g = 0; g <= nd; g++) {
+    const yy = T + ph * g / nd;
+    svgEl('line', {x1: L, x2: L + pw, y1: yy, y2: yy, class: g === nd ? 'axis' : 'grid'}, svg);
+    const t = svgEl('text', {x: L - 6, y: yy + 3, 'text-anchor': 'end'}, svg); t.textContent = Math.round(ymax * (nd - g) / nd);
+  }
+  const tip = mkTip(plot);
+  xs.forEach((lab, i) => {
+    const cx = L + slot * i + slot / 2, x0 = cx - bw / 2;
+    let acc = 0, topIdx = -1;
+    series.forEach((s, k) => { if (s.values[i] > 0) topIdx = k; });
+    series.forEach((s, k) => {
+      const v = s.values[i] || 0; if (v <= 0) return;
+      const y1 = y(acc + v), y0 = y(acc);
+      // 2px surface gap between stacked segments; 4px rounded cap on the top segment only.
+      const gap = k === 0 ? 0 : 2, hgt = Math.max(0, y0 - y1 - gap);
+      const op = (opts.partial && opts.partial[i]) ? 0.45 : 1;   // the current week is still filling
+      if (k === topIdx && hgt >= 4) {
+        const r = 4, xa = x0, xb = x0 + bw, yt = y1, yb = y1 + hgt;
+        svgEl('path', {d: `M${xa} ${yb} V${yt + r} Q${xa} ${yt} ${xa + r} ${yt} H${xb - r} Q${xb} ${yt} ${xb} ${yt + r} V${yb} Z`, fill: s.color, opacity: op}, svg);
+      } else {
+        svgEl('rect', {x: x0, y: y1, width: bw, height: hgt, fill: s.color, opacity: op}, svg);
+      }
+      acc += v;
+    });
+    if (i % Math.max(1, Math.ceil(xs.length / 8)) === 0 || i === xs.length - 1) {
+      const t = svgEl('text', {x: cx, y: H - 8, 'text-anchor': 'middle'}, svg); t.textContent = opts.xFmt ? opts.xFmt(lab) : lab;
+    }
+    const hit = svgEl('rect', {x: L + slot * i, y: T, width: slot, height: ph, class: 'barhit'}, svg);
+    hit.addEventListener('pointermove', ev => {
+      const rect = svg.getBoundingClientRect();
+      fillTip(tip, (opts.xFmt ? opts.xFmt(lab) : lab) + ' · ' + totals[i] + ' engaged' + ((opts.partial && opts.partial[i]) ? ' (so far)' : ''),
+        series.slice().reverse().map(s => ({name: s.name, color: s.color, value: s.values[i] || 0})));
+      placeTip(tip, plot, ev.clientX - rect.left, ev.clientY - rect.top);
+    });
+    hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+  });
+  legend(card, series.map(s => ({name: s.name, color: s.color})), 'rect');
+  tableView(card, [opts.xHead || ''].concat(series.map(s => s.name)).concat(['total']),
+    xs.map((lab, i) => [opts.xFmt ? opts.xFmt(lab) : lab].concat(series.map(s => s.values[i] || 0)).concat([totals[i]])));
+}
+
+function sparkline(svg, values, color) {
+  svg.textContent = '';
+  if (!values.length) return;
+  const W = 200, H = 28, max = Math.max(1, ...values);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none');
+  const x = i => (values.length === 1 ? W / 2 : i * W / (values.length - 1)), y = v => H - 3 - (v / max) * (H - 6);
+  let d = ''; values.forEach((v, i) => { d += (d ? ' L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); });
+  svgEl('path', {d, fill: 'none', stroke: VIZ_C.muted, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke'}, svg);
+  const n = values.length - 1;
+  if (n >= 1) svgEl('path', {d: `M${x(n - 1).toFixed(1)} ${y(values[n - 1]).toFixed(1)} L${x(n).toFixed(1)} ${y(values[n]).toFixed(1)}`, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke'}, svg);
+}
+
+function renderViz() {
+  const weeks = parseInt(localStorage.getItem('cued_ret_weeks') || '8', 10);
+  document.querySelectorAll('#viz-range button').forEach(b => b.classList.toggle('on', parseInt(b.dataset.weeks, 10) === weeks));
+  const days = VIZ.daily.slice(-7 * weeks);
+  const dailyCard = document.getElementById('viz-daily');
+  if (dailyCard) lineChart(dailyCard, days.map(d => d.day), [
+    {name: 'engaged', color: VIZ_C.s1, values: days.map(d => d.engaged)},
+    {name: 'texted (legacy)', color: VIZ_C.s2, values: days.map(d => d.texted)},
+    {name: 'logged something', color: VIZ_C.s3, values: days.map(d => d.core)},
+  ], {xFmt: fmtDay, xHead: 'day', xTicks: weeks >= 12 ? 12 : 8});
+  const cutoff = days.length ? days[0].day : '9999';
+  const wk = VIZ.weekly.filter(w => w.week >= cutoff);   // weeks whose Monday is inside the range
+  const weeklyCard = document.getElementById('viz-weekly');
+  if (weeklyCard) stackedBars(weeklyCard, wk.map(w => w.week), [
+    {name: 'logged something', color: VIZ_C.s1, values: wk.map(w => w.core)},
+    {name: 'showed up only', color: VIZ_C.s3, values: wk.map(w => w.pull_only)},
+  ], {xFmt: s => 'wk ' + fmtDay(s), xHead: 'week of', partial: wk.map(w => !!w.partial)});
+  const curvesCard = document.getElementById('viz-curves');
+  if (curvesCard) {
+    const curves = VIZ.curves.filter(c => c.users >= 2);
+    if (!curves.length) emptyCard(curvesCard, 'no cohort with 2+ users and a full week yet');
+    else {
+      const maxW = Math.max(...curves.map(c => c.points[c.points.length - 1].week));
+      const xs = []; for (let k = 0; k <= maxW; k++) xs.push('W' + k);
+      const colours = [VIZ_C.s1, VIZ_C.s2, VIZ_C.s3];
+      lineChart(curvesCard, xs, curves.map((c, i) => ({
+        name: c.label + ' (' + c.users + ')', color: i < 3 ? colours[i] : VIZ_C.muted, muted: i >= 3,
+        values: xs.map((_, k) => { const p = c.points.find(q => q.week === k); return p ? p.rate : null; }),
+      })), {ymax: 100, yFmt: v => Math.round(v) + '%', xHead: 'week', xTicks: 9});
+    }
+  }
+  document.querySelectorAll('[data-spark]').forEach(el => {
+    const last = VIZ.daily.slice(-14);
+    sparkline(el, last.map(d => d[el.dataset.spark]), VIZ_C.s1);
+  });
+}
+document.querySelectorAll('#viz-range button').forEach(b => b.addEventListener('click', () => {
+  localStorage.setItem('cued_ret_weeks', b.dataset.weeks); renderViz();
+}));
+let vizResize; window.addEventListener('resize', () => { clearTimeout(vizResize); vizResize = setTimeout(renderViz, 150); });
+// The retention page is display:none until opened, so its plots have no width on load:
+// render on first open too.
+const _showPage = showPage;
+showPage = function(id, btn) { _showPage(id, btn); if (id === 'retention') renderViz(); };
+renderViz();
 </script>
 </body>
 </html>

@@ -136,6 +136,33 @@ def test_today_counts_by_local_day(db):
     assert t["texted"] >= 2 and t["texted"] >= t["core"]      # A and B texted; B is never core
 
 
+def test_chart_series_daily_weekly_and_curves(db):
+    """Trend series for the charts (founder 2026-10-28): daily users by local day over the
+    84-day horizon, weekly engaged split core vs showed-up-only, cohort curves W0..W8."""
+    _seed(db)
+    e = _run(db)
+    daily = e["daily"]
+    from activity_days import local_day
+    assert len(daily) == 84 and daily[-1]["day"] >= daily[0]["day"]
+    assert daily[-1]["day"] < local_day(_now(), None)            # complete days only: today is on the card
+    assert all(set(d) == {"day", "texted", "engaged", "core", "pull"} for d in daily)
+    # A logs every other day; B texts (nudge replies) every third day → texted > engaged on some days.
+    assert sum(d["engaged"] for d in daily) >= 14 and any(d["texted"] > d["engaged"] for d in daily)
+    assert any(d["core"] > 0 and d["engaged"] >= d["core"] for d in daily)
+    weekly = e["weekly"]
+    assert weekly and all(set(w) == {"week", "core", "pull_only", "partial"} for w in weekly)
+    assert sum(1 for w in weekly if w["partial"]) <= 1 and (not weekly[-1]["partial"] or all(not w["partial"] for w in weekly[:-1]))
+    assert all(datetime.strptime(w["week"], "%Y-%m-%d").weekday() == 0 for w in weekly)   # Mondays
+    assert weekly == sorted(weekly, key=lambda w: w["week"])
+    # C's card_open day (day 39) is showed-up-only unless a set was logged that same local day.
+    assert any(w["pull_only"] >= 1 for w in weekly) or any(w["core"] >= 2 for w in weekly)
+    curves = e["curves"]
+    assert len(curves) == 1 and curves[0]["users"] == 4
+    pts = {p["week"]: p for p in curves[0]["points"]}
+    assert pts[0]["rate"] == 50 and pts[0]["n"] == 4 and pts[1]["rate"] == 25
+    assert max(pts) == 4                       # 40 days old → weeks 0..4 fully elapsed, 5 not yet
+
+
 def test_metrics_page_has_the_engaged_cards(db, client):
     _seed(db)
     html = client.get("/admin").get_data(as_text=True)
@@ -150,6 +177,8 @@ def test_retention_page_renders_the_new_section(db, client):
     assert "Texted (legacy)" in html and "Core action" in html
     assert "Weekly cohorts" in html and "all activated" in html
     assert "Day 7 — active in last 7 days" in html        # legacy rows untouched
+    assert "Users per day" in html and "Cohort curves" in html and 'id="viz-range"' in html
+    assert '"daily": [' in html or "daily: [" in html     # series embedded for the renderer
 
 
 def test_empty_db_renders(db, client):

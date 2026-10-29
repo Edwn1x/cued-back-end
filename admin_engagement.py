@@ -39,6 +39,8 @@ from sqlalchemy import func
 from activity_days import PRESENCE_SIGNALS, local_day
 from models import ActivityDay, Meal, SetLog, WeightLog, WorkoutSession
 
+SERIES_DAYS = 84             # daily chart horizon (12 weeks); the page filters client-side
+CURVE_WEEKS = 8              # cohort curve horizon (weeks after activation)
 UNPROMPTED_GAP_MIN = 30      # an inbound this soon after our outbound is a reply, not pull
 REPLY_WINDOW_MIN = 60        # a proactive outbound counts as answered if an inbound lands within this
 COHORT_WEEKS = (0, 1, 2, 4)  # weeks after activation shown per cohort
@@ -212,8 +214,70 @@ def engagement(session, users, messages, *, now: datetime | None = None) -> dict
             if day in s.days(k):
                 today[k] += 1
 
+    # ── chart series (founder 2026-10-28: visualise, spot trends) ──
+    # daily: users per LOCAL day, last SERIES_DAYS days — texted (legacy) / engaged / core.
+    # Keyed by the user's own local date, so a 1am-UTC meal lands on the evening it was eaten.
+    # Complete days only: the current local day is partial and would always draw a cliff at
+    # the right edge. "Today" lives on the stat card instead. Local = the default zone (the
+    # beta is one campus); the last complete day is yesterday there.
+    today_local = local_day(now, None)
+    day_keys = [k for k in ((now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(SERIES_DAYS + 2, -1, -1))
+                if k < today_local][-SERIES_DAYS:]
+    daily_counts = {k: {"texted": 0, "engaged": 0, "core": 0, "pull": 0} for k in day_keys}
+    for u in users:
+        s = sigs[u.id]
+        for kind in ("texted", "engaged", "core", "pull"):
+            for d in s.days(kind):
+                if d in daily_counts:
+                    daily_counts[d][kind] += 1
+    daily = [{"day": k, **daily_counts[k]} for k in day_keys]
+
+    # weekly: ISO weeks (Monday) across the same horizon — engaged users split into
+    # "logged something" (core) and "showed up only" (pull without core). Stacks to engaged.
+    weekly_counts = {}
+    for u in users:
+        s = sigs[u.id]
+        core_d, eng_d = s.days("core"), s.days("engaged")
+        for d in eng_d:
+            if d not in daily_counts:
+                continue
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            wk = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+            row = weekly_counts.setdefault(wk, {"core": set(), "pull_only": set()})
+            (row["core"] if d in core_d else row["pull_only"]).add(u.id)
+    weekly = []
+    this_monday = (datetime.strptime(today_local, "%Y-%m-%d") - timedelta(days=datetime.strptime(today_local, "%Y-%m-%d").weekday())).strftime("%Y-%m-%d")
+    for wk in sorted(weekly_counts):
+        core_u = weekly_counts[wk]["core"]
+        pull_u = weekly_counts[wk]["pull_only"] - core_u
+        weekly.append({"week": wk, "core": len(core_u), "pull_only": len(pull_u), "partial": wk == this_monday})
+
+    # cohort curves: % engaged in week k after activation, k = 0..CURVE_WEEKS, only for
+    # weeks that have fully elapsed for that user. Most recent first; the page colours the
+    # newest few and greys the rest.
+    curves = []
+    for monday, members in sorted(cohort_users.items(), reverse=True):
+        pts = []
+        for k in range(CURVE_WEEKS + 1):
+            measurable = engaged = 0
+            for u, a in members:
+                start, end = a + timedelta(days=7 * k), a + timedelta(days=7 * (k + 1))
+                if end > now:
+                    continue
+                measurable += 1
+                if sigs[u.id].any_between("engaged", start, end):
+                    engaged += 1
+            if measurable == 0:
+                break
+            pts.append({"week": k, "rate": round(100.0 * engaged / measurable), "n": measurable})
+        if len(pts) >= 2:
+            curves.append({"label": monday.strftime("%b %d"), "users": len(members), "points": pts})
+
     return {
         "today": today,
+        "daily": daily,
+        "weekly": weekly,
+        "curves": curves,
         "windows": windows,
         "cohorts": cohorts,
         "cohort_weeks": [f"W{k}" for k in COHORT_WEEKS],
