@@ -1086,6 +1086,7 @@ STOP_PAUSE_DAYS = int(os.getenv("STOP_PAUSE_DAYS", "4"))
 # and the ceiling only bills what's actually generated.
 HEARTBEAT_DECIDE_MAX_TOKENS = int(os.getenv("HEARTBEAT_DECIDE_MAX_TOKENS", "8000"))
 HEARTBEAT_RECENT_TICKS = 8             # tick decisions fed into the next tick (anti-repetition)
+HEARTBEAT_TICK_HISTORY_DATED_ENABLED = os.getenv("HEARTBEAT_TICK_HISTORY_DATED_ENABLED", "true").lower() == "true"
 # Anti-STACK window (guardrail): within this many minutes of an unanswered proactive
 # nudge, don't send a second one. Clears on time-elapse (no user reply needed) — the
 # fix for the unanswered_gap deadlock. Only proactive (heartbeat) outbounds count;
