@@ -463,33 +463,44 @@ def card_api_swap_exercise(slug):
         ws = _load(session, ids)
         if not ws:
             return jsonify({"ok": False, "error": "not found"}), 404
-        if ws.status in ("done", "abandoned"):
-            return jsonify({"ok": False, "error": "session closed"}), 409
-        rows = session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).order_by(SetLog.id).all()
-        if not rows:
-            return jsonify({"ok": False, "error": "not found"}), 404
-        present = {r[0] for r in session.query(SetLog.exercise).filter(SetLog.session_id == ws.id).distinct().all()} - {slug}
-        new_slug, label = resolve_exercise_name(name, present)
-        if new_slug in present:
-            return jsonify({"ok": False, "error": f"{label} is already in this session"}), 409
-        undone = [r for r in rows if not r.done]
-        n_sets = max(1, min(n_in or len(undone) or 3, 10))
-        pw, pr_ = _next_plan_for(session, ws, new_slug, label)
-        weight = w_in if w_in is not None else pw
-        reps = r_in if r_in is not None else pr_
-        if weight is None or reps is None:
-            return jsonify({"ok": False, "error": "weight and reps needed for a new exercise"}), 400
-        for r in undone:
-            session.delete(r)
-        for i in range(n_sets):
-            session.add(SetLog(session_id=ws.id, exercise=new_slug, exercise_label=label, set_index=i,
-                               planned_weight=weight, planned_reps=reps, done=False))
-        session.commit()
-        logger.info("CARD_SWAP_EXERCISE user=%s session=%s %s→%s sets=%s kept_done=%s",
-                    ws.user_id, ws.id, slug, new_slug, n_sets, len(rows) - len(undone))
-        return jsonify({"ok": True, "removed": len(undone), "added": n_sets, **build_state(session, ws)})
+        r = swap_exercise(session, ws, slug, name, n_in, w_in, r_in)
+        if not r["ok"]:
+            return jsonify({"ok": False, "error": r["error"]}), r["status"]
+        return jsonify({"ok": True, "removed": r["removed"], "added": r["added"], **build_state(session, ws)})
     finally:
         session.close()
+
+
+def swap_exercise(session, ws, slug: str, name: str, n_in=None, w_in=None, r_in=None) -> dict:
+    """Swap the REMAINING (undone) sets of `slug` in `ws` for `name` — the card's swap button and
+    the coach's swap_card_exercise tool both land here. Done sets stay. → {"ok": True, "removed",
+    "added", "slug", "label", "weight", "reps"} or {"ok": False, "error", "status"}. Commits."""
+    if ws.status in ("done", "abandoned"):
+        return {"ok": False, "error": "session closed", "status": 409}
+    rows = session.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).order_by(SetLog.id).all()
+    if not rows:
+        return {"ok": False, "error": "not found", "status": 404}
+    present = {r[0] for r in session.query(SetLog.exercise).filter(SetLog.session_id == ws.id).distinct().all()} - {slug}
+    new_slug, label = resolve_exercise_name(name, present)
+    if new_slug in present:
+        return {"ok": False, "error": f"{label} is already in this session", "status": 409}
+    undone = [r for r in rows if not r.done]
+    n_sets = max(1, min(n_in or len(undone) or 3, 10))
+    pw, pr_ = _next_plan_for(session, ws, new_slug, label)
+    weight = w_in if w_in is not None else pw
+    reps = r_in if r_in is not None else pr_
+    if weight is None or reps is None:
+        return {"ok": False, "error": "weight and reps needed for a new exercise", "status": 400}
+    for r in undone:
+        session.delete(r)
+    for i in range(n_sets):
+        session.add(SetLog(session_id=ws.id, exercise=new_slug, exercise_label=label, set_index=i,
+                           planned_weight=weight, planned_reps=reps, done=False))
+    session.commit()
+    logger.info("CARD_SWAP_EXERCISE user=%s session=%s %s→%s sets=%s kept_done=%s",
+                ws.user_id, ws.id, slug, new_slug, n_sets, len(rows) - len(undone))
+    return {"ok": True, "removed": len(undone), "added": n_sets, "slug": new_slug, "label": label,
+            "weight": weight, "reps": reps}
 
 
 @card_bp.route("/card/api/exercise/<slug>", methods=["DELETE"])

@@ -480,6 +480,78 @@ RESET_WORKOUT_SESSION_TOOL = {
 }
 
 
+SWAP_CARD_EXERCISE_TOOL = {
+    "name": "swap_card_exercise",
+    "description": (
+        "Swap ONE lift on their open workout card for another, in place — the card's own swap button. "
+        "Use it when they ask you to swap / change / replace an exercise on the card ('can u swap it for "
+        "me', 'make the rows chest-supported'), or when you've just told them to do a different lift than "
+        "the card shows. `exercise` = the lift as the card names it; `to` = the new lift, named plainly "
+        "('chest-supported db row', 'incline curl'). Give `weight` and `reps` for a lift the card doesn't "
+        "know (anything new to them); `sets` defaults to the sets left. Done sets stay. The card updates "
+        "in place — no new card, no summary."
+    ),
+    "input_schema": {"type": "object", "properties": {
+        "exercise": {"type": "string"}, "to": {"type": "string"},
+        "weight": {"type": "number"}, "reps": {"type": "integer"}, "sets": {"type": "integer"}},
+        "required": ["exercise", "to"]},
+}
+
+
+def handle_swap_card_exercise(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """One lift on the open card → another, via card_page.swap_exercise (the card's swap)."""
+    import re as _re
+    from card_page import swap_exercise
+    from models import WorkoutSession, SetLog
+    from workouts.session_ops import active_session_id
+    from workouts.templates import slug_for_name
+    ex = str(tool_input.get("exercise") or "").strip()
+    to = str(tool_input.get("to") or "").strip()
+    if not ex or not to:
+        return "error: exercise and to are required"
+
+    def _num(k, cast):
+        v = tool_input.get(k)
+        try:
+            return cast(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    sid = active_session_id(user_id)
+    if not sid:
+        return "error: no open card to swap on — start_workout_session sends one"
+    session = get_session()
+    try:
+        ws = session.get(WorkoutSession, sid)
+        on_card = []                                   # (slug, label) in card order
+        for slug, label in (session.query(SetLog.exercise, SetLog.exercise_label)
+                            .filter(SetLog.session_id == sid).order_by(SetLog.id)):
+            if slug not in [s for s, _ in on_card]:
+                on_card.append((slug, label or slug.replace("_", " ")))
+        low = _re.sub(r"\s+", " ", ex.lower())
+        free = _re.sub(r"[^a-z0-9]+", "_", low).strip("_")
+        hinted = slug_for_name(low)
+        slug = next((s for s, lbl in on_card if low in (s, lbl.lower()) or s in (free, hinted)), None)
+        if not slug:
+            names = ", ".join(lbl for _, lbl in on_card)
+            return f"error: '{ex}' isn't on the card. on the card: {names}"
+        old_label = dict(on_card)[slug]
+        r = swap_exercise(session, ws, slug, to, _num("sets", int), _num("weight", float), _num("reps", int))
+        if not r["ok"]:
+            if r["status"] == 409 and "already" in r["error"]:
+                return f"error: {to} is already on the card — log to it instead"
+            if "weight and reps" in r["error"]:
+                return f"error: {to} is new on this card — give weight and reps"
+            return f"error: {r['error']}"
+    finally:
+        session.close()
+    from workouts import card as _card
+    _card.refresh_card_async(sid)
+    w = r["weight"]
+    load = f"{w:g} lb" if w else "bodyweight"
+    return (f"ok: swapped {old_label} → {r['label']} on their open card ({r['added']}×{r['reps']} @ {load}); "
+            f"done sets kept, the card updates in place — no new card, no summary.")
+
+
 def handle_reset_workout_session(user_id: int, tool_input: dict, *, message_id=None) -> str:
     from workouts.session_ops import reset_active_session
     try:
@@ -6068,6 +6140,7 @@ _HANDLERS = {
     "log_weight": lambda user_id, tool_input, **kw: handle_log_weight(user_id, tool_input, **kw),
     "start_workout_session": lambda user_id, tool_input, **kw: handle_start_workout_session(user_id, tool_input, **kw),
     "reset_workout_session": handle_reset_workout_session,
+    "swap_card_exercise": handle_swap_card_exercise,
     "log_event": handle_log_event,
     "set_reminder": handle_set_reminder,
     "set_checkin_level": handle_set_checkin_level,

@@ -562,6 +562,10 @@ PRE_SESSION_PLAN_ENABLED = os.getenv("PRE_SESSION_PLAN_ENABLED", "true").lower()
 # it if sets are logged so work is never lost, else abandons it). Also lets start_workout_session
 # REPLACE an active-but-empty session instead of dead-ending on the open-session guard.
 RESET_SESSION_TOOL_ENABLED = os.getenv("RESET_SESSION_TOOL_ENABLED", "true").lower() == "true"
+# swap_card_exercise: swap ONE lift on the open card in place (done sets kept) — the card's own swap.
+# Live 2026-10-28 (user 77): "Can u swap it for me" → the coach finalized the card (a 3-set summary
+# went out) and built new ones, twice, because nothing else could change a lift.
+SWAP_CARD_EXERCISE_TOOL_ENABLED = os.getenv("SWAP_CARD_EXERCISE_TOOL_ENABLED", "true").lower() == "true"
 # Active-session visibility in the loop context: inject the in-progress session's REAL
 # template_key + start + logged-set count so the coach stops confabulating the day (it called
 # a pull session "push"). Inert with no open session.

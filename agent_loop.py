@@ -2055,6 +2055,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         if config.RESET_SESSION_TOOL_ENABLED:
             from agent_tools import RESET_WORKOUT_SESSION_TOOL
             tools.append(RESET_WORKOUT_SESSION_TOOL)
+        if config.SWAP_CARD_EXERCISE_TOOL_ENABLED:
+            from agent_tools import SWAP_CARD_EXERCISE_TOOL
+            tools.append(SWAP_CARD_EXERCISE_TOOL)
         if config.CARD_LINK_FALLBACK_ENABLED:
             from agent_tools import SET_CARD_DELIVERY_TOOL
             tools.append(SET_CARD_DELIVERY_TOOL)

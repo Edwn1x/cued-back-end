@@ -11,6 +11,8 @@ import logging
 import threading
 from datetime import datetime, timezone, timedelta
 
+import config
+
 from models import get_session, User, WorkoutSession, SetLog, Workout
 from card_page import apply_set_update, build_state
 from workouts.parse import parse_set_text, SetUpdate
@@ -183,8 +185,16 @@ def active_session_brief(user) -> str | None:
         n = session.query(SetLog.id).filter(SetLog.session_id == ws_id, SetLog.done.is_(True)).count()
         key = ws.template_key
         started = ws.started_at or ws.date
+        # The card's actual lifts (live 2026-10-28: the coach said "dumbbell rows" — its own promise —
+        # while the card it had built said barbell row 100 lb).
+        lifts: dict[str, list] = {}
+        for slug, label, w, r in (session.query(SetLog.exercise, SetLog.exercise_label, SetLog.planned_weight,
+                                                SetLog.planned_reps)
+                                  .filter(SetLog.session_id == ws_id).order_by(SetLog.id)):
+            lifts.setdefault(slug, [label or slug.replace("_", " "), 0, w, r])[1] += 1
     finally:
         session.close()
+    on_card = ", ".join(f"{lbl} {k}×{r}" + (f" @ {w:g}" if w else "") for lbl, k, w, r in lifts.values())
     when = ""
     try:
         import config as _cfg
@@ -194,11 +204,17 @@ def active_session_brief(user) -> str | None:
     except Exception:  # noqa: BLE001 — a time-format hiccup must not drop the block
         when = ""
     logged = f"{n} set{'s' if n != 1 else ''} logged" if n else "no sets logged yet"
+    swap = ""
+    if getattr(config, "SWAP_CARD_EXERCISE_TOOL_ENABLED", True):
+        swap = (" To change a lift on it (they ask, or you told them a different one), use "
+                "swap_card_exercise — not reset_workout_session.")
     return ("## ACTIVE WORKOUT SESSION\n"
-            f"{day_label(key)} day (session #{ws_id}){when} — {logged}. This is the in-progress "
+            f"{day_label(key)} day (session #{ws_id}){when} — {logged}."
+            + (f" on the card: {on_card}." if on_card else "")
+            + f" This is the in-progress "
             f"session RIGHT NOW; refer to it as {day_label(key)}, never a different day. To send a "
             f"fresh card you must clear it first with reset_workout_session (it finalizes the session "
-            f"if sets are logged so nothing is lost, else clears the empty one).")
+            f"if sets are logged so nothing is lost, else clears the empty one)." + swap)
 
 
 RECENT_CLOSE_MINUTES = 45

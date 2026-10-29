@@ -471,14 +471,54 @@ def day_template(user, key: str) -> list[ExerciseTemplate]:
     raise KeyError(key)
 
 
+# The movement a name is ("…row", "…curl") — its LAST movement word — and the words that make it a
+# different lift from a template's (equipment: a dumbbell row isn't a barbell row; setup: an incline
+# curl isn't a barbell curl). Live 2026-10-28 (user 77): "chest-supported incline row" and "incline
+# curl" both hit the "incline" hint → incline db press on a pull card; "dumbbell rows" → barbell row.
+_MOVEMENT_RE = re.compile(
+    r"\b(?:(?P<press>press(?:es)?|bench)|(?P<row>rows?)|(?P<curl>curls?)|(?P<fly>fl(?:y|ys|ies|yes))|"
+    r"(?P<raise>raises?)|(?P<pulldown>pull ?downs?)|(?P<pullup>pull ?ups?|chin ?ups?)|(?P<squat>squats?)|"
+    r"(?P<deadlift>deadlifts?|rdls?|romanian)|(?P<lunge>lunges?)|(?P<extension>extensions?|ext)|"
+    r"(?P<pushdown>pushdowns?)|(?P<dip>dips?)|(?P<pushup>push ?ups?)|(?P<shrug>shrugs?))\b")
+_IMPLEMENT_RE = re.compile(r"\b(barbell|dumbbells?|db|cable|machine|kettlebell|kb|smith|band(?:ed)?|landmine|"
+                           r"t ?bar|trap bar)\b")
+_SETUP_RE = re.compile(r"\b(incline|decline|chest supported|seal|preacher|spider|concentration|pendlay)\b")
+_IMPLEMENT_CANON = {"dumbbells": "dumbbell", "db": "dumbbell", "kb": "kettlebell", "banded": "band", "tbar": "t bar"}
+
+
+def _movement(text: str) -> str | None:
+    found = [next(k for k, v in m.groupdict().items() if v) for m in _MOVEMENT_RE.finditer(text)]
+    return found[-1] if found else None
+
+
+def _implements(text: str) -> set:
+    return {_IMPLEMENT_CANON.get(m.group(1), m.group(1)) for m in _IMPLEMENT_RE.finditer(text)}
+
+
+def _same_lift(name: str, slug: str) -> bool:
+    """Whether `name` (normalized) can be the template lift `slug`: same movement when both
+    name one, no setup word the template lacks, and no equipment that contradicts the
+    template's own ("dumbbell bench" stays bench press — that label names no equipment)."""
+    label = re.sub(r"[\s\-]+", " ", label_for_slug(slug).lower())
+    mn, ml = _movement(name), _movement(label)
+    if mn and ml and mn != ml:
+        return False
+    if set(_SETUP_RE.findall(name)) - set(_SETUP_RE.findall(label)):
+        return False
+    imp_n, imp_l = _implements(name), _implements(label)
+    return not (imp_n and imp_l and imp_n - imp_l)
+
+
 def slug_for_name(name: str | None) -> str | None:
-    """Map a free-text exercise name to a template slug, or None."""
+    """Map a free-text exercise name to a template slug, or None (its own exercise). A hint
+    only counts when the name is the same lift (_same_lift); otherwise the next hint is tried."""
     if not name:
         return None
-    n = name.strip().lower()
+    raw = name.strip().lower()
+    n = re.sub(r"[\s\-]+", " ", raw)
     # leg curl must beat "curl"; check multi-word hints first by length
     for hint, slug in sorted(NAME_HINTS, key=lambda h: -len(h[0])):
-        if hint in n:
+        if (hint in raw or hint in n) and _same_lift(n, slug):
             return slug
     return None
 

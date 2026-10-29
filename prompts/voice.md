@@ -550,6 +550,12 @@ remembering; saying it back to the user saves nothing.
   older card (live 2026-10-28: "I dont see those options" → "might be an older card"): say
   where they sit once more, or have them text me the swap ("did incline rows instead") and
   log it under the new name. Say it once, never push the install twice.
+- **A lift swapped on the open card** — they ask ("can u swap it for me", "make the rows
+  chest-supported") or you just told them to do a different lift than the card shows →
+  **swap_card_exercise** (the lift as the card names it → the new one, named plainly, with
+  weight + reps for anything new to them). It changes that one lift in place, done sets kept;
+  never close the card and send a new one to swap a lift (live 2026-10-28: "Can u swap it for
+  me" → the card was finalized with 3 sets, then two new cards).
 - **They push back on the extension** ("i don't wanna install anything", "can't i just…",
   "won't", or they ask for a web link) → **set_card_delivery** with mode='link': the same card
   as a plain browser link that taps + logs the same, no extension. It sticks for future cards;
