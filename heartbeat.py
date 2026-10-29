@@ -327,7 +327,7 @@ def _resolved_wake(user, session, *, now=None):
     except Exception as e:  # noqa: BLE001
         logger.warning("HEARTBEAT_WAKE_RESOLVE_FAILED user=%s err=%s", getattr(user, "id", "?"), e)
         return None
-    if info is not None and info.source in TODAY_SOURCES:
+    if info is not None and (info.source in TODAY_SOURCES or info.source == "activity_typical"):
         logger.info("HEARTBEAT_WAKE_RESOLVED user=%s source=%s hm=%02d:%02d detail=%s",
                     getattr(user, "id", "?"), info.source, info.local_hm[0], info.local_hm[1], info.detail)
     return info
@@ -361,35 +361,85 @@ def _in_standing_quiet_hours(user, *, now=None, session=None) -> bool:
     _apply_today_wake_end for the directions). Otherwise the pre-existing path is kept
     exactly: a measured wake the watch shows LATER than their stated wake extends the
     morning floor (never shrinks it) — so nothing regresses when there is no fresh data."""
-    if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
+    b = _quiet_bounds(user, now=now, session=session)
+    if b is None:
         return False
     local = _ref(now).astimezone(_user_tz(user))
-    m = local.hour * 60 + local.minute
+    return _in_quiet_bounds(local.hour * 60 + local.minute, b)
+
+
+def _typical_activity_end_min(info) -> int | None:
+    """The morning END (minutes-of-day) the OBSERVED typical wake (wake_model layer 3b)
+    extends the quiet window to — like the watch's slept-in wake, it only ever EXTENDS
+    (same +15 buffer, same 2pm cap). None for any other source."""
+    if info is None or info.source != "activity_typical":
+        return None
+    return min(info.local_hm[0] * 60 + info.local_hm[1] + QUIET_AFTER_WAKE_MIN, 14 * 60)
+
+
+def _quiet_bounds(user, *, now=None, session=None) -> tuple[int, int, bool] | None:
+    """(start_min, end_min, profile_path) of the standing quiet window after every
+    adjustment _in_standing_quiet_hours makes, or None (flag off). `profile_path` says
+    which comparison applies (see _in_quiet_bounds) — the two paths are kept byte-for-byte."""
+    if not config.HEARTBEAT_STANDING_QUIET_ENABLED:
+        return None
+    local = _ref(now).astimezone(_user_tz(user))
     measured = _measured_sw_hours(user, session, now=now)   # None → static profile times
     wake_min = _measured_wake_min(user, session, now=now)   # None unless the watch says slept-in
     info = _resolved_wake(user, session, now=now)           # None unless the model answers
     today_wake = info if (info is not None and info.source in ("activity", "measured_today")) else None
+    typical_end = _typical_activity_end_min(info)           # None unless layer 3b answered
     if config.QUIET_HOURS_FROM_PROFILE_ENABLED:
         win = _profile_quiet_window(user, local, measured=measured)
         if win:
             start, end = win
             if today_wake is not None:
                 end = _apply_today_wake_end(end, today_wake)   # a KNOWN today-wake sets the end
-            elif wake_min is not None:
-                end = max(end, wake_min)        # no fresh today-wake: slept-in only EXTENDS (preserved)
-            if start == end:
-                return False
-            if start > end:                     # spans midnight (the normal case)
-                return m >= start or m < end
-            return start <= m < end             # e.g. sleeps 01:00, wakes 09:00
+            else:
+                if wake_min is not None:
+                    end = max(end, wake_min)    # no fresh today-wake: slept-in only EXTENDS (preserved)
+                if typical_end is not None:
+                    end = max(end, typical_end)  # usually up later than stated: hold the morning
+            return start, end, True
     start, end = _quiet_window(user, measured=measured)
     start_min, end_min = start * 60, end * 60
     if today_wake is not None:
         end_min = _apply_today_wake_end(end_min, today_wake)   # a KNOWN today-wake sets the end
-    elif wake_min is not None:
-        end_min = max(end_min, wake_min)        # no fresh today-wake: slept-in only EXTENDS (preserved)
-    # window always spans midnight (start is evening, end is morning)
-    return m >= start_min or m < end_min
+    else:
+        if wake_min is not None:
+            end_min = max(end_min, wake_min)    # no fresh today-wake: slept-in only EXTENDS (preserved)
+        if typical_end is not None:
+            end_min = max(end_min, typical_end)
+    return start_min, end_min, False
+
+
+def _in_quiet_bounds(m: int, b: tuple[int, int, bool]) -> bool:
+    start, end, profile_path = b
+    if profile_path:
+        if start == end:
+            return False
+        if start > end:                         # spans midnight (the normal case)
+            return m >= start or m < end
+        return start <= m < end                 # e.g. sleeps 01:00, wakes 09:00
+    # the global floor window always spans midnight (start is evening, end is morning)
+    return m >= start or m < end
+
+
+def quiet_end_utc(user, session, *, now=None) -> datetime | None:
+    """When the CURRENT quiet window ends, as a naive-UTC instant — None when it isn't
+    quiet now. For a gated reminder to land right after (reminders: a water slot or the
+    program's gym ping) instead of at the next grid step, or never."""
+    b = _quiet_bounds(user, now=now, session=session)
+    if b is None:
+        return None
+    local = _ref(now).astimezone(_user_tz(user))
+    if not _in_quiet_bounds(local.hour * 60 + local.minute, b):
+        return None
+    end = b[1] % 1440
+    end_local = local.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
+    if end_local <= local:
+        end_local += timedelta(days=1)
+    return end_local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 # ─── check-in level (daily rhythm §5) ────────────────────────────────────────
@@ -894,6 +944,8 @@ def _morning_anchor_hhmm(user, session, local, *, now=None, info=None) -> tuple[
         today = _measured_today_wake_hm(user, session, now=now)
         if today:
             cands.append(today)
+        if info is not None and info.source == "activity_typical":
+            cands.append(info.local_hm)     # usually up later than stated: the briefing waits too
         return max(cands, key=lambda hm: hm[0] * 60 + hm[1])
     except Exception:
         return wake
