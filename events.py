@@ -356,7 +356,7 @@ def current_blocks(user_id: int, *, now=None) -> list[dict]:
     calendar_block_soon there is no lookahead — this answers "are they in something NOW".
     Interval (water) pings read it (reminders._interval_gate): a one-line ping needs no
     runway, and the LENGTH of the block decides whether it gates at all."""
-    from models import active
+    from models import active, User
     n = _now_naive_utc(now)
     session = get_session()
     try:
@@ -364,12 +364,21 @@ def current_blocks(user_id: int, *, now=None) -> list[dict]:
                 .filter(Event.source.in_(CALENDAR_SOURCES), Event.all_day.isnot(True),
                         Event.occurred_at <= n)
                 .order_by(Event.occurred_at.desc()).limit(50).all())
+        user = session.get(User, user_id) if rows else None
         out = []
         for e in rows:
             end = event_end(e)
             if e.occurred_at and end > n:
+                # is_exam the way the schedule judges it (schedule._is_deadline): a class-type title
+                # with a "(friday = quiz)" note is an exam only on that weekday — live 2026-10-28
+                # (user 51) the water gate's bare keyword regex read it as an exam on a Wednesday.
+                try:
+                    from schedule import _is_deadline
+                    is_exam = bool(_is_deadline(e, user)[1])
+                except Exception:  # noqa: BLE001
+                    is_exam = False
                 out.append({"start": e.occurred_at, "end": end, "title": (e.title or e.raw_text or "").strip(),
-                            "minutes": int((end - e.occurred_at).total_seconds() // 60)})
+                            "minutes": int((end - e.occurred_at).total_seconds() // 60), "is_exam": is_exam})
         return out
     finally:
         session.close()

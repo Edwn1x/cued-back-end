@@ -68,12 +68,42 @@ def _slot(user_id: int, n: int, count: int) -> int:
     return idx
 
 
-def pick_gif(row, user_id: int | None = None) -> str | None:
+BED_GIF_HINT = "sleepy"      # the "sip before bed" loop (water-04-sleepy-stretch.gif, #270)
+
+
+def _bed_window_open(user, now=None) -> bool:
+    """True in the last WATER_GIF_BED_WINDOW_H hours before the user's sleep_time (an
+    after-midnight bedtime counts as the same evening); after 21:00 local when the profile
+    has no clock. `now` naive UTC. Fail-open → True (the old time-blind shuffle)."""
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        from reminders import parse_local_time
+        tz = ZoneInfo(getattr(user, "user_timezone", None) or "America/Los_Angeles")
+        n = now or datetime.now(timezone.utc).replace(tzinfo=None)
+        local = n.replace(tzinfo=timezone.utc).astimezone(tz)
+        now_m = local.hour * 60 + local.minute
+        bed = parse_local_time(getattr(user, "sleep_time", None))
+        if not bed:
+            return local.hour >= 21
+        bed_m = bed[0] * 60 + bed[1]
+        return (bed_m - now_m) % 1440 <= int(getattr(config, "WATER_GIF_BED_WINDOW_H", 3)) * 60
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def pick_gif(row, user_id: int | None = None, *, user=None, now=None) -> str | None:
     """Next GIF for this row: shuffled per user and per ping (founder: 'a few distinct
-    ones so it never gets repetitive'), never the same file twice in a row."""
+    ones so it never gets repetitive'), never the same file twice in a row. With `user`,
+    the bed loop (BED_GIF_HINT) is only in the draw during the evening window — live
+    2026-10-28 "sip before bed" went out at 17:05."""
     files = gif_files()
     if not files:
         return None
+    if user is not None and getattr(config, "WATER_GIF_BED_WINDOW_ENABLED", True) and not _bed_window_open(user, now):
+        day_files = [f for f in files if BED_GIF_HINT not in f.lower()]
+        if day_files:
+            files = day_files
     count = int(getattr(row, "sent_count", 0) or 0)
     uid = user_id if user_id is not None else getattr(row, "user_id", 0)
     return files[_slot(uid, len(files), count)]
@@ -108,9 +138,24 @@ def send_gif(user, name: str, *, message_type: str = WATER_REMINDER_TYPE) -> boo
         logger.info("WATER_GIF_SENT user=%s channel=%s gif=%s type=%s", user.id, channel, name, message_type)
         return True
     except Exception as e:  # noqa: BLE001 — never lose the ping to a media failure
+        if _ambiguous_dispatch(e) and getattr(config, "WATER_GIF_AMBIGUOUS_AS_SENT_ENABLED", True):
+            # Photon's "dispatch may have completed": the GIF usually landed; a text now doubles
+            # it (live 2026-10-28 08:01, user 53). Count it as sent, write the row, no fallback.
+            try:
+                sms._log_message(user.id, MARKER, message_type, channel=channel, provider_sid=None,
+                                 delivery_status="sent")
+            except Exception as le:  # noqa: BLE001
+                logger.warning("WATER_GIF_AMBIGUOUS_LOG_FAILED user=%s err=%s", user.id, le)
+            logger.warning("WATER_GIF_AMBIGUOUS user=%s channel=%s gif=%s err=%s — counted as sent, no text",
+                           user.id, channel, name, e)
+            return True
         logger.warning("WATER_GIF_FAILED user=%s channel=%s gif=%s err=%s — falling back to text",
                        user.id, channel, name, e)
         return False
+
+
+def _ambiguous_dispatch(err) -> bool:
+    return "dispatch may have completed" in str(err).lower()
 
 
 def send_water_gif(user, row) -> bool:
@@ -118,7 +163,7 @@ def send_water_gif(user, row) -> bool:
     False → the caller sends the plain line, whose own send path owns failover / hold."""
     if not config.WATER_GIF_ENABLED:
         return False
-    name = pick_gif(row, user.id)
+    name = pick_gif(row, user.id, user=user)
     if not name:
         logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
         return False
