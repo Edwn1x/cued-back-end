@@ -542,12 +542,13 @@ def test_extractor_survives_a_thinking_block_first(db, anthropic_stub):
 def test_everything_known_completes_with_code_numbers_and_answers_their_question(db, anthropic_stub, sms_capture, monkeypatch):
     """Live (user 27): the model wrote '2300 cal and 150g protein. sound right?' —
     numbers it cannot set — and skipped a wh-question with no '?'. The summary is
-    code's now (2450/139 for these stats); the friend's bubble answers the question."""
+    code's now (2450/139 for these stats — 13k steps, since 2026-10-29 the ×1.725 bucket
+    starts at 12.5k); the friend's bubble answers the question."""
     import config, onboarding_agent
     from models import User
     monkeypatch.setattr(config, "ONBOARDING_RUNDOWN_ENABLED", False)
     user = _new_signup(db, onboarding_step=2, height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male",
-                       occupation="student", activity_level="active", avg_steps=10000,
+                       occupation="student", activity_level="active", avg_steps=13000,
                        workout_days="4", workout_time="afternoon", current_split="ppl",
                        cooking_situation="mix", diet="omnivore", injuries="none",
                        wake_time="12:00", sleep_time="03:00", existing_tools="strava",

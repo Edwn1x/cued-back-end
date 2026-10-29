@@ -68,7 +68,7 @@ def test_apply_goal_is_the_shared_rule():
     from types import SimpleNamespace as NS
     u = NS(**{k: v for k, v in FOUNDER.items() if k != "onboarding_step"}, goal="fat_loss,muscle_building")
     t = calculate_targets(u)
-    assert apply_goal(t["tdee"], u.goal, **goal_profile(u))["calories"] == t["calories"] == 2450
+    assert apply_goal(t["tdee"], u.goal, **goal_profile(u))["calories"] == t["calories"] == 2200
 
 
 # ─── gates ──────────────────────────────────────────────────────────────────
@@ -133,6 +133,23 @@ def test_recomp_holding_flat_is_left_alone(db):
           weights=[(13, 139.0), (10, 139.3), (7, 138.8), (3, 139.2), (0, 139.0)])
     r = _eval(db, user)
     assert r["change"] is False and "recomp holding flat" in r["reason"]
+
+
+def test_obese_fat_loss_plus_muscle_is_a_cut_not_a_recomp(db):
+    """5'10"/220 (BMI 31.6), fat loss + muscle, eating 2500 and drifting down only 0.3 lb/wk:
+    the goal rule says this is a CUT (2026-10-29), so the cycle must not call it "recomp
+    holding flat" — the estimate says he burns ~2600, the −20% cut on the damped maintenance
+    wants ~2200 but the energy-availability floor (30 kcal/kg FFM + training ≈ 2390) holds it
+    at 2400, so the target steps down 100."""
+    user = make_user(db, goal="fat_loss,muscle_building", calorie_target=2500, protein_target=174,
+                     targets_source="computed",
+                     **dict(FOUNDER, height_ft=5, height_in=10, weight_lbs=220, age=19,
+                            workout_days="tue,thu,fri,sat,sun", avg_steps=10848))
+    _seed(db, user, days=14, meals_per_day=3, kcal_per_day=2500,
+          weights=[(13, 220.4), (10, 220.3), (7, 220.1), (3, 219.9), (0, 219.8)])
+    r = _eval(db, user)
+    assert "recomp" not in r["reason"], r
+    assert r["change"] is True and r["new"] == 2400, r
 
 
 # ─── cycle writes + cadence ─────────────────────────────────────────────────

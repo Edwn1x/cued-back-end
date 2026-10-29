@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from models import get_session, User, Meal, WeightLog, TargetAdjustment, active
-from macro_calculator import calculate_targets, apply_goal, goal_profile, override_bounds
+from macro_calculator import calculate_targets, apply_goal, goal_profile, goal_pct, override_bounds
 
 logger = logging.getLogger("cued.adaptive")
 
@@ -140,7 +140,12 @@ def evaluate(user, session, now: datetime | None = None) -> dict:
     # ── direction check against the goal ──
     goal = user.goal or ""
     per_week = delta_lbs / days_between * 7
-    recomp = "fat_loss" in goal and "muscle" in goal
+    # The SAME goal rule as the calculator decides what this user is on: fat loss + muscle is
+    # recomp only on a lean frame; at BMI ≥ 30 it is a cut (macro_calculator.goal_pct,
+    # 2026-10-29). Read from the goal string alone, a 220-lb user losing 0.4 lb/wk was
+    # "recomp holding flat — leaving it".
+    gp = goal_profile(user)
+    recomp = goal_pct(goal, age=gp["age"], bmi=gp["bmi"], experience=gp["experience"])[1] == "recomp"
     cutting = "fat_loss" in goal and not recomp
     bulking = ("muscle" in goal or "strength" in goal) and not recomp
     if cutting and per_week <= -0.5:

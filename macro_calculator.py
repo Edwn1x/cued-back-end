@@ -44,6 +44,17 @@ for ages 9–18, which is a total-expenditure equation with a growth term — no
 separate activity multiplier; activity enters as its PA coefficient, mapped from the
 same step / training-day buckets. The goal rule and the floors are unchanged.
 
+Heavy frames (2026-10-29, live users 80 and 86 — 320 lb → 3400 and 220 lb → 3550, both
+asking to lose fat): every bias in the calculator pointed the same way for an overweight
+user and nothing bounded the high side. Four rules, each gated on BMI ≥ 30 or on the
+step scale: (1) 10k steps is "active" (×1.55), not "very active" — the top bucket needs
+12.5k+ (activity_level_index); (2) at BMI ≥ 30 the fat-loss rule wins even when muscle is
+also a goal — recomp is a lean person's plan (goal_pct); (3) the 500 kcal/day deficit
+ceiling is the LEAN-lifter bound and does not apply at BMI ≥ 30 — the fat-mass bound does
+(apply_goal); (4) Ten Haaf needs a lean frame as well as a training history (BMI < 30).
+User 86 recomputes to 2500 (was 3550), user 80 to 2700 (was 3400). Lean users with
+under 10k steps are untouched; 10–12.5k steps moves from ×1.725 to ×1.55.
+
 Protein basis (same review): 1 g/lb of TOTAL bodyweight on a heavy frame produces a
 target the calorie budget can't hold (173 g on 1400 cal = 49% of intake). The
 per-pound rule now runs on a REFERENCE weight — actual weight, capped at the weight
@@ -59,6 +70,9 @@ import config
 logger = logging.getLogger("cued.macros")
 
 TEN_HAAF_MIN_DAYS = 5
+STEPS_LOW_ACTIVE = 5000      # adult step buckets (Tudor-Locke): sedentary / low active / active / very active
+STEPS_ACTIVE = 10000
+STEPS_VERY_ACTIVE = 12500
 TEN_HAAF_UNTRAINED = ("none", "beginner")   # experience levels that stay on Mifflin whatever they plan
 RAMP_MAX_STEP = 0.20         # first target ≤ reported intake × 1.20 when the goal number is above it
 PROTEIN_RAMP_G_PER_LB = 0.8  # protein while ramped: the low end of the 0.8–1 g/lb range
@@ -94,13 +108,19 @@ TEEN_ADULT_CEILING = 1.15       # a teen maintenance never exceeds the adult pat
 def activity_level_index(avg_steps, days_count: int) -> int:
     """0 sedentary, 1 low active, 2 active, 3 very active — from avg_steps when known
     (objective), else from training days. The SAME buckets feed the adult multiplier
-    and the teen PA coefficient so a user doesn't change activity class at 18."""
+    and the teen PA coefficient so a user doesn't change activity class at 18.
+
+    Step cut-offs (2026-10-29, live user 86): Tudor-Locke's scale — under 5k sedentary,
+    5–10k low active ("somewhat active" tops out at 10k), 10–12.5k active, 12.5k+ highly
+    active. The old table put 10k in the TOP bucket (×1.725 — the multiplier for someone
+    training hard twice a day), which is what the teen function below already refused to
+    do. 10k steps is a campus walk, not an athlete's day."""
     if avg_steps:
-        if avg_steps < 5000:
+        if avg_steps < STEPS_LOW_ACTIVE:
             return 0
-        if avg_steps < 7500:
+        if avg_steps < STEPS_ACTIVE:
             return 1
-        if avg_steps < 10000:
+        if avg_steps < STEPS_VERY_ACTIVE:
             return 2
         return 3
     if days_count <= 2:
@@ -240,7 +260,12 @@ def goal_pct(goal: str, *, age: int | None = None, bmi: float | None = None,
              experience: str | None = None) -> tuple[float, str]:
     """(signed fraction of maintenance, goal_label)."""
     goal = goal or "general_fitness"
-    if "fat_loss" in goal and "muscle" in goal:
+    obese = bmi is not None and bmi >= OBESE_BMI
+    adult = age is None or TEEN_MAX_AGE < age < OLDER_AGE
+    if "fat_loss" in goal and "muscle" in goal and not (obese and adult):
+        # Recomp (hold near maintenance, swap fat for muscle) is a LEAN person's goal. At
+        # BMI ≥ 30 the fat-loss rule applies whatever else they ticked: live users 80 and
+        # 86 (BMI 45 and 32) both ticked muscle too and got −10% instead of −20%.
         return -RECOMP_DEFICIT, "recomp"
     if "fat_loss" in goal:
         if age is not None and age <= TEEN_MAX_AGE:
@@ -272,7 +297,11 @@ def apply_goal(tdee: int, goal: str, *, age=None, bmi=None, experience=None, tra
     limits = []
     if pct < 0:
         deficit = tdee - calories
-        if trains and deficit > DEFICIT_CEILING_TRAINING:
+        # The 500/day ceiling is the lean-lifter bound (Murphy & Koehler: where lifting stops
+        # adding lean mass). The header above calls 500 the clinical-OBESITY default, so at
+        # BMI ≥ 30 it is a floor on ambition, not a ceiling — the fat-mass bound below is
+        # the one that applies there.
+        if trains and deficit > DEFICIT_CEILING_TRAINING and not (bmi is not None and bmi >= OBESE_BMI):
             deficit, _ = DEFICIT_CEILING_TRAINING, limits.append("deficit≤500 (training)")
         if fat_mass_lb is not None and deficit > KCAL_PER_LB_FAT_PER_DAY * fat_mass_lb:
             deficit, _ = KCAL_PER_LB_FAT_PER_DAY * fat_mass_lb, limits.append("deficit≤31kcal/lb fat")
@@ -351,6 +380,7 @@ def calculate_targets(user, session=None) -> dict:
     is_male = gender in ("male", "prefer_not_to_say")
     eff_steps = _effective_avg_steps(user, session)
     level = activity_level_index(eff_steps, days_count)
+    adult_bmi = weight_kg / (height_cm / 100.0) ** 2
     if age <= TEEN_MAX_AGE:
         # Teen: the EER IS the maintenance number. `bmr` reports the sedentary
         # (PA=1.0) requirement — the closest analog for the log line and the
@@ -379,7 +409,10 @@ def calculate_targets(user, session=None) -> dict:
         else:
             tdee = tdee_iom
         multiplier = None
-    elif days_count >= TEN_HAAF_MIN_DAYS and not _untrained(user):
+    elif days_count >= TEN_HAAF_MIN_DAYS and not _untrained(user) and adult_bmi < OBESE_BMI:
+        # Ten Haaf was fit on lean athletes and charges 11.9 kcal per kg of TOTAL weight
+        # (Mifflin: 10). At BMI ≥ 30 that is fat tissue billed at muscle rates — live
+        # user 86 (5'10"/220, intermediate, 5 days): +283 at rest, +490 at maintenance.
         bmr_formula = "ten_haaf"
         bmr = (11.936 * weight_kg + 587.728 * (height_cm / 100.0) - 8.129 * age
                + 191.027 * (1 if is_male else 0) + 29.279)

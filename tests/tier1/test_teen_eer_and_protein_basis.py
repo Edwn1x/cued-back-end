@@ -83,15 +83,14 @@ def test_live_2026_10_17_user_40_is_not_told_4150():
     """17M, 5'4"/200 (BMI 34), 10k steps, 4 days, fat loss. Live: the normal-weight boys
     equation at "very active" (10k steps = the top adult bucket) → tdee 4585 → 4150 cal.
     Now: overweight boys equation, 10k steps = LOW ACTIVE (PA 1.12):
-    114 − 50.9·17 + 1.12·(19.5·90.72 + 1161.4·1.6256) = 3344.5 → −10% → 3010 → 3000."""
+    114 − 50.9·17 + 1.12·(19.5·90.72 + 1161.4·1.6256) = 3344.5; the adult path for the same
+    body is Mifflin 1843 × 1.55 (10k steps = active since 2026-10-29) = 2857, and the
+    ×1.15 ceiling on it (3286) binds → −10% → 2957 → 2950."""
     t = calculate_targets(_u(**JAYDEN))
     assert t["bmr_formula"] == "iom_eer_overweight"
     assert t["activity_level"] == 1
-    assert t["tdee"] == 3345 and t["calories"] == 3000
+    assert t["tdee"] == round(2857 * 1.15) == 3286 and t["calories"] == 2950
     assert t["protein"] == 146                   # the BMI-25 reference weight already capped this
-    # the adult path for the same body (Mifflin 1843 × 1.725) is 3179; the teen number sits
-    # inside the +15% ceiling, so the equation — not the ceiling — set it
-    assert t["tdee"] <= round(3179 * 1.15)
 
 
 def test_teen_tdee_is_capped_at_the_adult_path_plus_15pct():
@@ -156,8 +155,9 @@ def test_protein_share_cap_binds_on_a_small_budget():
 
 
 def test_founder_row_does_not_move():
+    # 2026-10-29: 10k steps = active (×1.55) → 2454 → 2200 (was ×1.725 → 2731 → 2450)
     t = calculate_targets(_u())
-    assert (t["bmr_formula"], t["tdee"], t["calories"], t["protein"]) == ("mifflin", 2731, 2450, 139)
+    assert (t["bmr_formula"], t["tdee"], t["calories"], t["protein"]) == ("mifflin", 2454, 2200, 139)
     assert t["reference_weight_lbs"] == 139
 
 
@@ -307,19 +307,21 @@ def test_zero_inches_is_a_height_not_a_missing_value():
     assert short["bmr"] < tall["bmr"] and short["bmr"] == 1313
 
 
-def test_training_ceiling_binds_for_a_heavy_lifter():
-    """300 lb adult, BMI ≥ 30 → −20% of a ~3400 TDEE would be ~680; capped at 500."""
-    t = calculate_targets(_u(height_ft=5, height_in=10, weight_lbs=300, age=30, avg_steps=6000,
+def test_training_ceiling_binds_for_a_lifter_under_bmi_30():
+    """6'0"/215 (BMI 29.2), 13k steps, 4 days, fat loss: 15% of a ~3450 TDEE is ~520 → capped
+    at 500. (Until 2026-10-29 this test used a 300-lb body; at BMI ≥ 30 the 500 ceiling no
+    longer applies — see test_targets_heavy_frames.)"""
+    t = calculate_targets(_u(height_ft=6, height_in=0, weight_lbs=215, age=25, avg_steps=13000,
                              goal="fat_loss", workout_days="4"))
-    assert t["goal_pct"] == -0.20
+    assert t["goal_pct"] == -0.15
     assert "deficit≤500 (training)" in t["goal_limits"]
-    assert t["tdee"] - t["calories"] in (450, 500, 550)   # 500, then rounded to 50
+    assert abs((t["tdee"] - t["calories"]) - 500) <= 50   # 500, then the target rounds to 50
 
 
 def test_fat_mass_ceiling_binds_for_a_lean_lifter():
     """Alpert: a very lean person can't fund a 15% deficit from fat alone."""
     t = calculate_targets(_u(height_ft=6, height_in=0, weight_lbs=150, age=25, gender="male",
-                             body_fat_pct=6, goal="fat_loss", workout_days="5", avg_steps=12000))
+                             body_fat_pct=6, goal="fat_loss", workout_days="5", avg_steps=13000))
     # fat mass 9 lb → ceiling 279 kcal/day; 15% of his ~3000 TDEE would be ~450
     assert "deficit≤31kcal/lb fat" in t["goal_limits"]
     assert t["tdee"] - t["calories"] <= 300

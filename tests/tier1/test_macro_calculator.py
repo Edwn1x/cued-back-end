@@ -30,10 +30,11 @@ def test_training_days_parser(raw, expected):
 
 
 def test_founder_row_stays_on_mifflin_with_a_4_to_5_range():
-    """'4-5' is its lower bound → 4 → Mifflin. His live 2450 must not move."""
+    """'4-5' is its lower bound → 4 → Mifflin. 2026-10-29: 10k steps is "active" (×1.55),
+    no longer the top bucket (×1.725) — 1583 × 1.55 = 2454 → −10% recomp → 2200 (was 2450)."""
     t = calculate_targets(_u(workout_days="4-5"))
     assert t["bmr_formula"] == "mifflin"
-    assert t["bmr"] == 1583 and t["tdee"] == 2731 and t["calories"] == 2450 and t["protein"] == 139
+    assert t["bmr"] == 1583 and t["tdee"] == 2454 and t["calories"] == 2200 and t["protein"] == 139
 
 
 def test_five_days_switches_to_ten_haaf():
@@ -41,7 +42,7 @@ def test_five_days_switches_to_ten_haaf():
     assert t["bmr_formula"] == "ten_haaf"
     # 11.936*63.05 + 587.728*1.6764 - 8.129*20 + 191.027 + 29.279 = 1795.6
     assert t["bmr"] == 1796
-    assert t["tdee"] == round(1795.6 * 1.725)  # 10k+ steps → 1.725
+    assert t["tdee"] == round(1795.6 * 1.55)   # 10k steps → active (×1.55); 12.5k+ earns 1.725
     assert t["calories"] == round(t["tdee"] * 0.9 / 50) * 50
 
 
