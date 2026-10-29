@@ -618,13 +618,19 @@ def pop_pending_card(user_id: int) -> str | None:
         u.lift_anchors = merged
         flag_modified(u, "lift_anchors")
         session.commit()
-        try:
-            age = (_utcnow() - datetime.fromisoformat(str(entry.get("at")))).total_seconds()
-        except (TypeError, ValueError):
+        if not entry.get("key"):
             return None
-        return str(entry.get("key")) if entry.get("key") and age <= PENDING_CARD_TTL_S else None
+        return str(entry["key"]) if (entry.get("setup") or _entry_is_fresh(entry)) else None
     finally:
         session.close()
+
+
+def _entry_is_fresh(entry: dict) -> bool:
+    try:
+        age = (_utcnow() - datetime.fromisoformat(str(entry.get("at")))).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return age <= PENDING_CARD_TTL_S
 
 
 def peek_pending_card(user_id: int) -> str | None:
@@ -638,11 +644,12 @@ def peek_pending_card(user_id: int) -> str | None:
         session.close()
     if not isinstance(entry, dict) or not entry.get("key"):
         return None
-    try:
-        age = (_utcnow() - datetime.fromisoformat(str(entry.get("at")))).total_seconds()
-    except (TypeError, ValueError):
-        return None
-    return str(entry["key"]) if age <= PENDING_CARD_TTL_S else None
+    # The SETUP ask (card_setup.py, the last setup step) never lapses: it is asked once
+    # (setup_sequence._card_due reads peek_pending_setup) and the card must still land when
+    # they answer the next afternoon — live 2026-10-28 22:32 (user 88): ask at 22:32, 3h TTL,
+    # a next-day "no clue" would have gone to the model. Past the TTL only a STRONG answer
+    # takes it (handle_pending_card_reply); a coach's mid-conversation ask lapses as before.
+    return str(entry["key"]) if (entry.get("setup") or _entry_is_fresh(entry)) else None
 
 
 def peek_pending_setup(user_id: int) -> bool:
@@ -668,13 +675,28 @@ _NO_NUMBER_STRONG_RE = re.compile(
 _NO_NUMBER_WEAK_RE = re.compile(r"\b(idk|dunno|not sure|nothing|none|nah|no)\b", re.IGNORECASE)
 
 
-def is_no_number_answer(text: str) -> bool:
+def is_no_number_answer(text: str, *, strong_only: bool = False) -> bool:
     t = (text or "").strip()
     if not t or re.search(r"\d", t):
         return False
     if _NO_NUMBER_STRONG_RE.search(t):
         return True
+    if strong_only:
+        return False
     return len(re.findall(r"[a-z']+", t.lower())) <= 4 and bool(_NO_NUMBER_WEAK_RE.search(t))
+
+
+def pending_card_is_fresh(user_id: int) -> bool:
+    """True while the parked ask is within PENDING_CARD_TTL_S (a setup ask is still
+    pending past it — see peek_pending_card — but no longer fresh)."""
+    from models import get_session, User
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        entry = (u.lift_anchors or {}).get(_PENDING_KEY) if u and isinstance(u.lift_anchors, dict) else None
+    finally:
+        session.close()
+    return isinstance(entry, dict) and _entry_is_fresh(entry)
 
 
 def handle_pending_card_reply(user_id: int, text: str) -> bool:
@@ -705,7 +727,10 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
             except Exception as e:  # noqa: BLE001 — fall through to the model with anchors saved
                 logger.warning("PENDING_CARD_ANSWER_FAILED user=%s key=%s err=%s", user_id, key, e)
                 return False
-    if is_no_number_answer(text):
+    # A stale setup ask (past the TTL, kept pending because it is the once-only setup step):
+    # a bare "nah" / "idk" days later is an answer to whatever the coach just asked, not to
+    # this. Only the strong forms ("no clue", "never lifted", "just start light") take it.
+    if is_no_number_answer(text, strong_only=not pending_card_is_fresh(user_id)):
         try:
             sr = start_workout_session(user_id, key, no_anchors=True, setup=setup)
             logger.info("PENDING_CARD_NO_NUMBER user=%s key=%s session=%s", user_id, key, sr["session_id"])

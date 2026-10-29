@@ -114,6 +114,10 @@ def describe(user) -> str:
                 groups.setdefault(by_day[d], []).append(d)
         return ", ".join(f"{_word(t)} {'/'.join(ds)}" for t, ds in groups.items())
     slots = wt.get("slots") if isinstance(wt.get("slots"), list) else None
+    if slots and len(slots) >= 3:
+        # Every box on the form ticked (live 2026-10-28, user 88): "training 4 days a week,
+        # evenings or mornings or afternoons" is not how anyone says "whenever".
+        return "any time of day"
     if slots and len(slots) > 1:
         return " or ".join(_word(t) for t in slots)
     t = slot_for(user)

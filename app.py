@@ -668,6 +668,23 @@ def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
 SAFE_GLITCH_REPLY = "sorry, glitched for a sec — say that again?"
 
 
+def _code_reply_done(user_id: int) -> None:
+    """A reply answered in code (the program-days yes, the water yes/no, a pantry line, a
+    gym-line reply, a terse set) is still an inbound: the typing dots come down AND the
+    setup sequence advances, exactly as it does after a model turn (setup_sequence.on_inbound
+    at the end of the normal path). Live 2026-10-28 21:38 (user 88): "sounds good" to the
+    program brief → "locked in" and a bare return — no calendar offer, no water, no card
+    until the sweep cleared the heartbeat's 30-min active-conversation gate. Same hole as
+    the closing-ack branch (user 50, 2026-10-11), on every code-answered return."""
+    from typing_indicator import typing_stop
+    typing_stop(user_id)
+    try:
+        from setup_sequence import on_inbound as _setup_on_inbound
+        _setup_on_inbound(user_id)
+    except Exception as e:  # noqa: BLE001 — a setup step must never break the turn
+        logger.warning("SETUP_SEQUENCE_CODE_REPLY_FAILED user=%s err=%s", user_id, e)
+
+
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None,
                              images: list = None, continuation: bool = False):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response.
@@ -725,7 +742,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 pline = None
             if pline:
                 send_sms(user.phone, pline, user_id=user.id, message_type="pantry")
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # First-card ask: the answer ("bench 35", "no clue") sends the card in code.
@@ -747,7 +764,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 logger.error("PENDING_CARD_PATH_FAILED user=%s err=%s", user.id, e, exc_info=True)
                 card_sent = False
             if card_sent:
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Program brief: "those days work, or wanna swap any?" — a yes / a list of days / a
@@ -762,7 +779,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 pline = None
             if pline:
                 send_sms(user.phone, pline, user_id=user.id, message_type="program_brief_reply")
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Water-reminder offer: a yes/no to the pending one-line offer is answered in
@@ -777,7 +794,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 wline = None
             if wline:
                 send_sms(user.phone, wline, user_id=user.id, message_type="water_offer_reply")
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Series §2.7: opt-in replies / 'handle the line for me' / 'not going' — in code.
@@ -800,7 +817,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                         s2.close()
                     if beat and beat.kind in ("line_d2", "line_d1"):
                         send_sms(user.phone, beat.text, user_id=user.id, message_type=beat.message_type)
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Series §2.8: 'heading to the gym' while the line's on → the join link (or the
@@ -815,7 +832,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             if hbeat:
                 send_sms(user.phone, hbeat.text, user_id=user.id, message_type=hbeat.message_type)
                 logger.info("GYM_HEADING_OUT user=%s kind=%s", user.id, hbeat.kind)
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # A parked card (workouts/park.py: sent off a mention hours early → held) goes out
@@ -830,7 +847,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 released = None
             if released:
                 _react_to_latest_inbound(user.id, "like")
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Workout card, Phase 4: with a session open, a terse set ('190 x4',
@@ -848,7 +865,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                     send_sms(user.phone, line, user_id=user.id, message_type="workout_set")
                     if "PR" in line:
                         _react_to_latest_inbound(user.id, "emphasize")   # ‼️ = the hype tapback
-                typing_stop(user.id)
+                _code_reply_done(user.id)
                 return
 
         # Re-engaged mid-setup user (onboarding_reengage.py, food-first window): their reply

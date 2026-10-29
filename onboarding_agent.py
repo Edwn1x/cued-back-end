@@ -668,6 +668,7 @@ Examples:
 "I cook for myself" → {{"cooking_situation": "cook_myself", ...rest null}}
 "I eat at the dining hall" → {{"cooking_situation": "dining_hall", ...rest null}}
 "no injuries" → {{"injuries": "none", ...rest null}}
+"I have no injury. The only thing is my right shoulder feels weird sometimes from volleyball" → {{"injuries": "right shoulder — feels weird sometimes (volleyball)", ...rest null}}  (a "no" with a caveat IS the injury)
 "I have no allergies and eat mostly chicken and protein pasta" → {{"diet": "omnivore", ...rest null}}
 "I don't eat mushrooms tofu and raw fish" → {{"diet": "omnivore", "food_dislikes": "mushrooms, tofu, raw fish", ...rest null}}
 "I count my macros staying under 2000 cals and 155 grams of protein" → {{"calorie_target": 2000, "protein_target": 155, ...rest null}}
@@ -685,7 +686,7 @@ Examples:
 
 Short answer rules:
 - A bare major when the coach asked their major ("Cs", "mech e", "data science") → occupation="<major> student" (live 2026-10-13: "Cs" stored nothing, and the coach was about to ask what they do again)
-- "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none"
+- "No", "nah", "nope", "none", "I don't think so" when asked about injuries → injuries="none" — unless the same message names a body part or a niggle ("nothing serious but my knee clicks") → that caveat is the injuries value, never "none"
 - A warm-up or work-around they do for a joint IS the injuries answer, even with no pain named: "on leg day I warm up with leg extensions and leg curls first" → injuries="knees — warms up with leg extensions and leg curls before squatting". Not null, not "none".
 - "No", "nah", "nope", "none" when asked about diet/restrictions → diet="omnivore"
 - "idk", "no idea", "no clue", "never counted" when asked how much they EAT in a day → current_intake_unknown=true (a full answer — never null); a bare number there ("2000", "like 1800") → current_intake_calories
@@ -1452,6 +1453,15 @@ _NO_INJURY_RE = re.compile(
     r"\bno injur\w*\b|\bnothing hurts?\b|\bnothing(?:'s| is)? (?:hurt|injured|wrong)\b|"
     r"\b(?:no|none|nothing|nah|nope)\b[^.!?\n]{0,20}\b(?:hurt\w*|injur\w*|pain)\b|"
     r"\b(?:injur\w*|pain)[^.!?\n]{0,12}\b(?:none|no|nothing)\b", re.I)
+# "I have no injury. The only thing is my right shoulder feels weird sometimes from
+# volleyball" (live 2026-10-28, user 88) — code wrote injuries='none', the program builder
+# saw no constraint, and upper day led with bench + overhead press. A body part or the
+# vocabulary of a niggle in the same message means the "no" is not the whole answer: leave
+# it to the extractor, which reads the caveat.
+_INJURY_CAVEAT_RE = re.compile(
+    r"\b(?:knees?|shoulders?|hips?|wrists?|elbows?|ankles?|neck|(?:lower|upper|my) back|rotator|hamstrings?|quads?|"
+    r"groin|shins?|achilles|feels? (?:weird|off|funny|tight|sore)|sore|tight|tweak\w*|acts? up|bugs? me|bothers?|"
+    r"clicks?|pops?|flares?|pinch\w*|twinge\w*)\b", re.I)
 
 
 def parse_stats(message: str) -> dict:
@@ -1518,7 +1528,7 @@ def parse_stats(message: str) -> dict:
         if d:
             out["workout_days"] = d.group(1)
 
-    if _NO_INJURY_RE.search(text):
+    if _NO_INJURY_RE.search(text) and not _INJURY_CAVEAT_RE.search(text):
         out["injuries"] = "none"
     return {k: v for k, v in out.items() if v is not None}
 
