@@ -1006,6 +1006,10 @@ _BRIEFING_INSTRUCTION = (
     "question stack. REQUIRED, in this order — these are not optional colour: (1) lead with the "
     "weather in a few words: the temperature WITH the degree sign (write 88°, never a bare 88 — "
     "a bare number reads as noise) and the condition, e.g. '88° and clear'; "
+    "then, when the material carries Water: one short clause telling them to drink a big glass "
+    "of water first thing — a few words in your own voice, varied day to day, never the same line "
+    "twice in a row ('big glass of water first', 'water before coffee, a full glass', 'chug a "
+    "glass before anything else', 'start with a big glass of water'); "
     "(2) ALWAYS name anything due TODAY by name (with the time if it has one) — a due-today item "
     "is the single most important line of the morning and may never be dropped or folded into "
     "'a few things due'; (3) then the day's shape: what's on, a good gym window, where nutrition "
@@ -1024,9 +1028,11 @@ def _daily_briefing_parts(user, session, *, now=None) -> dict:
         due_soon    [(display title, days_until) for the rest of the next 7 days]  (≤3)
         gym_window  (start_clock, end_clock) or None
         nutrition   {cal, pro, meals, tgt} or None
+        water       True when the big-glass-first line is owed (BRIEFING_WATER_ENABLED)
     """
     parts: dict = {"weather": None, "due_today": [], "due_today_times": {}, "due_soon": [],
-                   "gym_window": None, "nutrition": None}
+                   "gym_window": None, "nutrition": None,
+                   "water": bool(getattr(config, "BRIEFING_WATER_ENABLED", True))}
     if config.WEATHER_ENABLED:
         try:
             from weather import weather_line
@@ -1083,6 +1089,8 @@ def _render_briefing_extras(parts: dict) -> str:
     lines = []
     if parts.get("weather"):
         lines.append(f"Weather: {parts['weather']}.")
+    if parts.get("water"):
+        lines.append("Water: a big glass right after waking — say it in a few words right after the weather.")
     if parts.get("due_today"):
         times = parts.get("due_today_times") or {}
         shown = [f"{t} (by {times[t]})" if t in times else t for t in parts["due_today"]]
@@ -1208,7 +1216,24 @@ def _briefing_drops(text: str, parts: dict) -> list[tuple[str, str]]:
     n = parts.get("nutrition")
     if n and not _mentions_nutrition(text, n):
         drops.append(("nutrition", f"{n['cal']} cal"))
+    if parts.get("water") and not _WATER_LINE_RE.search(text or ""):
+        drops.append(("water", WATER_FALLBACK_DETAIL))
     return drops
+
+
+# The water line, as people write it: water / a glass / hydrate.
+_WATER_LINE_RE = re.compile(r"\b(?:water|glass|hydrate|hydrated|h2o)\b", re.IGNORECASE)
+WATER_FALLBACK_DETAIL = "big glass right after waking"
+WATER_FALLBACK_LINE = "big glass of water first"
+
+
+def _append_to_first_bubble(out: str, clause: str) -> str:
+    """`clause` on the end of the FIRST bubble ('---' separates bubbles), sentence-joined."""
+    bubbles = out.split("\n---\n")
+    first = bubbles[0].rstrip()
+    sep = " " if (not first or first[-1] in ".!?") else ". "
+    bubbles[0] = f"{first}{sep}{clause}" if first else clause
+    return "\n---\n".join(bubbles)
 
 
 def _insert_degree_sign(msg: str, temp: str) -> str | None:
@@ -1330,6 +1355,11 @@ def _enforce_briefing(msg: str, parts: dict | None, user_id: int) -> str:
         # dropped" (the briefing instruction) — live 2026-10-21 12:59 PT the whole briefing
         # was "67° and overcast out" with CS 70 HW due at 4pm. Code appends it as its own
         # bubble when the model left it out.
+        # The big-glass-first line (founder 2026-10-29) is briefing material like the weather:
+        # when the model left it out, a short clause goes on the end of the first bubble.
+        if any(i == "water" for i, _ in drops) and getattr(config, "BRIEFING_WATER_ENABLED", True):
+            logger.info("BRIEFING_WATER_APPENDED user=%s", user_id)
+            out = _append_to_first_bubble(out, WATER_FALLBACK_LINE)
         dropped_due = [d for i, d in drops if i == "due_today"]
         if dropped_due and getattr(config, "BRIEFING_DUE_TODAY_GUARANTEE_ENABLED", True):
             times = parts.get("due_today_times") or {}
@@ -1773,6 +1803,10 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     # Set only on the morning-open daily-briefing tick: the material the sent text is
     # verified against (weather guarantee + BRIEFING_DROPPED_ITEM). None on every other tick.
     briefing = state.get("briefing")
+    # A briefing that carries the water line is the day's first water ping: heartbeat_tick
+    # folds the pending first GIF slot once the text is sent (reminders.fold_first_water_slot).
+    if briefing and briefing.get("water"):
+        search["briefing_water"] = True
 
     prompt = HEARTBEAT_PROMPT
     if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
@@ -1942,6 +1976,12 @@ def heartbeat_tick(user_id: int):
     if spoke:
         send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
         _log_tick(user_id, True, "spoke", payload, search=search)
+        if search.get("briefing_water") and getattr(config, "BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", True):
+            try:
+                from reminders import fold_first_water_slot
+                fold_first_water_slot(user_id, now=_naive_utcnow())
+            except Exception as e:  # noqa: BLE001 — the briefing is sent; a fold failure is a log line
+                logger.warning("WATER_FIRST_SLOT_FOLD_FAILED user=%s err=%s", user_id, e)
     else:
         if config.TYPING_INDICATOR_HEARTBEAT:
             from typing_indicator import typing_stop

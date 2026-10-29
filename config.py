@@ -1175,6 +1175,13 @@ CALENDAR_BRIEFING_GUARANTEE_ENABLED = os.getenv("CALENDAR_BRIEFING_GUARANTEE_ENA
 # Every dropped material item (weather / due_today / due_soon / gym_window / nutrition) is
 # also logged as BRIEFING_DROPPED_ITEM so a drop can't go unnoticed for a week again.
 BRIEFING_WEATHER_GUARANTEE_ENABLED = os.getenv("BRIEFING_WEATHER_GUARANTEE_ENABLED", "true").lower() == "true"
+# The briefing tells them to drink a big glass of water first thing (founder 2026-10-29) — briefing
+# MATERIAL right after the weather, in the model's own varied words; a dropped line gets a short
+# code fallback on the first bubble. And that line IS the day's first water ping: a sent briefing
+# folds the pending first interval (water GIF) slot into the next one, so the GIF at wake+15 and the
+# briefing at wake+30 don't nag twice in one morning.
+BRIEFING_WATER_ENABLED = os.getenv("BRIEFING_WATER_ENABLED", "true").lower() == "true"
+BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED = os.getenv("BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", "true").lower() == "true"
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent

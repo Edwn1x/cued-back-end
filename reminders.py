@@ -635,6 +635,67 @@ def _send_demo_links_once(user, row: Reminder) -> bool:
         return False
 
 
+def _first_slot_waits_for_briefing(user, row: Reminder, session, now: datetime) -> bool:
+    """The day's FIRST water slot yields to a morning briefing that is still owed — the
+    briefing carries "big glass of water first" and IS that ping (founder 2026-10-29). A
+    7:00 waker's GIF lands at 7:15 and the briefing tick at ~7:30: without this the GIF
+    goes first and the fold never has anything to fold. Only the first slot of the local
+    day, only while _morning_open_signal still renders (nobody has talked since they woke
+    and the window is open), only when the daily briefing is on. Fail-open → False."""
+    if not (getattr(config, "BRIEFING_WATER_ENABLED", True)
+            and getattr(config, "BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", True)
+            and config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DAILY_BRIEFING_ENABLED):
+        return False
+    try:
+        from water_gif import is_water_row
+        if not is_water_row(row):
+            return False
+        from timefmt import local_day_bounds
+        d0, _d1 = local_day_bounds(user, now=now.replace(tzinfo=timezone.utc))
+        if row.last_sent_at is not None and row.last_sent_at >= d0:
+            return False                                   # not the first slot of the day
+        from heartbeat import _morning_open_signal
+        return _morning_open_signal(user, session, now=now) is not None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("WATER_BRIEFING_WAIT_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
+
+
+def fold_first_water_slot(user_id: int, *, now: datetime | None = None) -> int:
+    """The morning briefing just told them "big glass of water first" — that IS the day's
+    first water ping (founder 2026-10-29). Every active water row (water_gif.is_water_row)
+    whose pending slot is already due or lands within one interval of `now` moves to the
+    grid slot after it; a slot further out (a catch-up already past the next slot) stays.
+    Returns the number of rows moved. `now` naive UTC."""
+    from water_gif import is_water_row
+    now = now or _naive_utcnow()
+    session = get_session()
+    moved = 0
+    try:
+        rows = (session.query(Reminder)
+                .filter(Reminder.user_id == user_id, Reminder.active.is_(True), Reminder.every_hours.isnot(None))
+                .all())
+        for row in rows:
+            if not is_water_row(row) or row.fire_at is None:
+                continue
+            if row.fire_at > now + timedelta(hours=int(row.every_hours)):
+                continue
+            user = session.get(User, user_id)
+            tz = _tz(user.user_timezone if user else None)
+            nxt = _next_for_row(user, row, tz, after=max(now, row.fire_at))
+            if not nxt:
+                continue
+            logger.info("WATER_FIRST_SLOT_FOLDED user=%s id=%s was=%s now=%s", user_id, row.id, row.fire_at, nxt)
+            row.fire_at = nxt
+            row.deferred_since = None
+            moved += 1
+        if moved:
+            session.commit()
+        return moved
+    finally:
+        session.close()
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -660,6 +721,13 @@ def _fire_one(rid: int, now: datetime) -> bool:
             return False
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
+        if row.every_hours and _first_slot_waits_for_briefing(user, row, session, now):
+            nxt = _next_for_row(user, row, tz, after=now)
+            row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+            session.commit()
+            logger.info("REMINDER_GATED user=%s id=%s reason=briefing_owed next=%s", row.user_id, rid,
+                        row.fire_at if row.active else None)
+            return False
         if row.every_hours:
             gate = _interval_gate(user, now, row)
             if gate["reason"]:

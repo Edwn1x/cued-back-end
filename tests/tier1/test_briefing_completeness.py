@@ -108,6 +108,9 @@ def brief_on(monkeypatch):
     monkeypatch.setattr(config, "CALENDAR_BRIEFING_GUARANTEE_ENABLED", True)
     monkeypatch.setattr(config, "BRIEFING_WEATHER_GUARANTEE_ENABLED", True)
     monkeypatch.setattr(config, "WEATHER_ENABLED", True)
+    # These tests pin the weather / due-today guarantees byte for byte; the big-glass-first
+    # line (its own material + fallback, tests/tier1/test_briefing_water_first.py) stays out.
+    monkeypatch.setattr(config, "BRIEFING_WATER_ENABLED", False, raising=False)
     yield
 
 
