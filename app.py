@@ -2761,7 +2761,8 @@ def admin():
             eng = engagement(session, all_users, all_messages, now=now)
         except Exception as e:  # noqa: BLE001
             logger.warning("ADMIN_ENGAGEMENT_FAILED err=%s", e)
-            eng = {"today": {"engaged": 0, "core": 0, "pull": 0, "texted": 0}, "windows": [], "cohorts": [], "cohort_weeks": ["W0", "W1", "W2", "W4"],
+            eng = {"today": {"engaged": 0, "core": 0, "pull": 0, "texted": 0}, "windows": [], "cohorts": [],
+                   "daily": [], "weekly": [], "curves": [], "cohort_weeks": ["W0", "W1", "W2", "W4"],
                    "depth_days_per_week": "—", "depth_users": 0, "pull_rate": "—", "pull_days": 0,
                    "engaged_days": 0, "nudge_rate": "—", "nudges": 0, "nudges_answered": 0,
                    "presence_since": None, "window_days": 28, "gap_min": 30, "reply_min": 60}
