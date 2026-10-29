@@ -525,6 +525,15 @@ def rearm_bailed_gym_reminders(now: datetime | None = None) -> int:
 _EXAM_TITLE_RE = re.compile(r"\b(?:exam|midterm|finals?|quiz|test)\b", re.I)
 
 
+def _block_is_exam(b: dict) -> bool:
+    """events.current_blocks carries is_exam (schedule._is_deadline's judgement — a class with a
+    '(friday = quiz)' note is an exam only on Friday); a block without the key (older callers,
+    stubs) keeps the title regex."""
+    if getattr(config, "EXAM_GATE_TITLE_AWARE_ENABLED", True) and "is_exam" in b:
+        return bool(b["is_exam"])
+    return bool(_EXAM_TITLE_RE.search(b.get("title") or ""))
+
+
 def _interval_gate(user, now: datetime, row: Reminder | None = None, session=None) -> dict:
     """Why an interval (water) ping should wait, and until when:
       {"reason": None}                              → fire
@@ -574,7 +583,7 @@ def _interval_gate(user, now: datetime, row: Reminder | None = None, session=Non
         return none
     if not blocks:
         return none
-    exam = next((b for b in blocks if _EXAM_TITLE_RE.search(b["title"] or "")), None)
+    exam = next((b for b in blocks if _block_is_exam(b)), None)
     if exam:
         return {"reason": "exam", "until": exam["end"]}
     long_min = int(getattr(config, "INTERVAL_GATE_LONG_BLOCK_MIN", 120))

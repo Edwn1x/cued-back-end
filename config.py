@@ -1025,6 +1025,10 @@ INTERVAL_GATE_V2_ENABLED = os.getenv("INTERVAL_GATE_V2_ENABLED", "true").lower()
 INTERVAL_GATE_LONG_BLOCK_MIN = int(os.getenv("INTERVAL_GATE_LONG_BLOCK_MIN", "120"))
 INTERVAL_GATE_CATCHUP_MIN = int(os.getenv("INTERVAL_GATE_CATCHUP_MIN", "5"))
 INTERVAL_GATE_MAX_DEFER_H = float(os.getenv("INTERVAL_GATE_MAX_DEFER_H", "4"))
+# The exam gate reads a block's title the way the schedule does (schedule._is_deadline: a class-type
+# title with a "(friday = quiz)" note is an exam only on that weekday) instead of a bare keyword regex.
+# Live 2026-10-28 (user 51): "cs70 Discussion (friday = quiz)" gated a Wednesday water ping as an exam.
+EXAM_GATE_TITLE_AWARE_ENABLED = os.getenv("EXAM_GATE_TITLE_AWARE_ENABLED", "true").lower() == "true"
 # Quiet = sleep-30min .. wake+15min from the user's own 'HH:MM' profile times, else the global window.
 QUIET_HOURS_FROM_PROFILE_ENABLED = os.getenv("QUIET_HOURS_FROM_PROFILE_ENABLED", "false").lower() == "true"
 # MORNING OPEN / EVENING CLOSE standing conditions: the rhythm the disabled legacy briefings left behind.
@@ -1051,6 +1055,14 @@ WATER_OFFER_PREDATES_GUARD_ENABLED = os.getenv("WATER_OFFER_PREDATES_GUARD_ENABL
 # line is the fallback whenever the file doesn't land. OFF until the sidecar build with
 # /send-attachment is deployed.
 WATER_GIF_ENABLED = os.getenv("WATER_GIF_ENABLED", "false").lower() == "true"
+# The "sip before bed" loop (water-04-sleepy-stretch.gif, captioned so in #270) only in the last
+# BED_WINDOW_H hours before the user's sleep_time (after 21:00 local without one). Live 2026-10-28:
+# it went out at 17:05 (user 51) and 17:01 (user 77).
+WATER_GIF_BED_WINDOW_ENABLED = os.getenv("WATER_GIF_BED_WINDOW_ENABLED", "true").lower() == "true"
+WATER_GIF_BED_WINDOW_H = int(os.getenv("WATER_GIF_BED_WINDOW_H", "3"))
+# Photon's ambiguous 502 on /send-attachment ("dispatch may have completed") usually means the GIF
+# landed: count it as sent and send no text (live 2026-10-28 08:01, user 53: GIF + "water" double).
+WATER_GIF_AMBIGUOUS_AS_SENT_ENABLED = os.getenv("WATER_GIF_AMBIGUOUS_AS_SENT_ENABLED", "true").lower() == "true"
 # Public base Twilio fetches the MMS media from. Empty → INTEGRATIONS_BASE_URL.
 WATER_GIF_BASE_URL = os.getenv("WATER_GIF_BASE_URL", "")
 # Card setup step at onboarding completion (workouts/card_setup.py): the extension
