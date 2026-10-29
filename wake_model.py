@@ -20,6 +20,12 @@ tapbacks, and workout-card opens. So: a layered model with a precedence.
                       and PLAUSIBLE (sleep_minutes >= WEARABLE_WAKE_MIN_SLEEP_MINUTES — a
                       nap is not a wake; same earliest-hour floor). Both directions.
   3. measured_typical the median typical wake over recent nights (#146) — unchanged.
+  3b. activity_typical the OBSERVED typical wake for people without a watch: the EARLIEST
+                      first plausible activity over the last few days (morning samples
+                      only — a first text is an upper bound on the wake, so only the
+                      earliest is safe to hold a morning on). LATER than the profile wake only — it holds the morning for a
+                      late riser, never shortens it (live 2026-10-28, user 77: stated 07:00,
+                      surfaces ~11:10; the briefing, gym ping and water GIFs beat him up).
   4. profile          wake_time (alt-day honoured). FALLBACK ONLY, never nulled.
 
 Consumers (heartbeat.py): the standing quiet-hours morning END (an activity /
@@ -43,7 +49,7 @@ from models import get_session, Message, User
 
 logger = logging.getLogger("cued.wake_model")
 
-SOURCES = ("activity", "measured_today", "measured_typical", "profile")
+SOURCES = ("activity", "measured_today", "measured_typical", "activity_typical", "profile")
 # The two "we know it's TODAY's wake" sources — the ones consumers act on directly.
 TODAY_SOURCES = ("activity", "measured_today")
 
@@ -173,6 +179,45 @@ def _typical_wake(user, session, local, *, now=None) -> WakeInfo | None:
     return WakeInfo(source="measured_typical", local_hm=hm, at_utc=_naive(at), detail="median typical wake")
 
 
+def _activity_typical_wake(user, session, local, *, now=None) -> WakeInfo | None:
+    """Layer 3b. The OBSERVED typical wake for people without a watch: the EARLIEST first
+    plausible activity (layer 1's rule, day by day — the still-up guard applies, and only
+    a morning sample counts: a first text at 15:00 says nothing about when they woke) over
+    the last ACTIVITY_WAKE_WINDOW_DAYS local days, at least ACTIVITY_WAKE_MIN_DAYS of them.
+    The earliest, not the median: a first text is an UPPER bound on the wake (they were up
+    by then), so the earliest we've seen them up is the only one safe to hold a morning
+    on — a student up at 6:30 who texts between classes (10:47, 12:31, 07:32 — live user
+    40) must be held to 07:32, not 10:47. Only ever LATER than the profile wake (by ≥
+    ACTIVITY_WAKE_MIN_SHIFT_MIN; capped at 14:00) — the profile is the base, what we know
+    of them can hold the morning, never shorten it. Live 2026-10-28 (user 77): stated
+    07:00, surfaces at 11:05 / 11:20; the briefing, the gym ping and two water GIFs all
+    landed while he slept."""
+    if not getattr(config, "ACTIVITY_TYPICAL_WAKE_ENABLED", True):
+        return None
+    profile = _profile_wake(user, local)
+    if profile is None:
+        return None
+    latest = int(getattr(config, "ACTIVITY_WAKE_LATEST_LOCAL_HOUR", 13))
+    samples: list[int] = []
+    for off in range(1, int(getattr(config, "ACTIVITY_WAKE_WINDOW_DAYS", 7)) + 1):
+        day_end = (local - timedelta(days=off)).replace(hour=23, minute=59, second=59, microsecond=0)
+        info = _activity_wake(user, session, day_end, now=day_end)
+        if info is None or info.local_hm[0] >= latest:
+            continue
+        samples.append(info.local_hm[0] * 60 + info.local_hm[1])
+    n = len(samples)
+    if n < int(getattr(config, "ACTIVITY_WAKE_MIN_DAYS", 2)):
+        return None
+    earliest = min(samples)
+    pmin = profile.local_hm[0] * 60 + profile.local_hm[1]
+    if earliest - pmin < int(getattr(config, "ACTIVITY_WAKE_MIN_SHIFT_MIN", 45)):
+        return None
+    earliest = min(earliest, 14 * 60)
+    at = local.replace(hour=earliest // 60, minute=earliest % 60, second=0, microsecond=0)
+    return WakeInfo(source="activity_typical", local_hm=(earliest // 60, earliest % 60), at_utc=_naive(at),
+                    detail=f"earliest first activity over {n} days (profile {profile.local_hm[0]:02d}:{profile.local_hm[1]:02d})")
+
+
 def _profile_wake(user, local) -> WakeInfo | None:
     """Layer 4. wake_time (alt-day honoured). Fallback only."""
     from heartbeat import _wake_hhmm_for
@@ -185,7 +230,7 @@ def _profile_wake(user, local) -> WakeInfo | None:
 
 def resolve_wake(user, session, *, now=None) -> WakeInfo | None:
     """The layered wake for TODAY (user-local). First layer that applies wins:
-    activity → measured_today → measured_typical → profile. None when the flag is off,
+    activity → measured_today → measured_typical → activity_typical → profile. None when the flag is off,
     there is no session, nothing resolves, or anything raises (fail-open: callers then
     behave exactly as today). NO DB writes."""
     if not config.WAKE_MODEL_ENABLED or session is None or user is None:
@@ -195,6 +240,7 @@ def resolve_wake(user, session, *, now=None) -> WakeInfo | None:
         for layer in (lambda: _activity_wake(user, session, local, now=now),
                       lambda: _measured_today_wake(user, session, local, now=now),
                       lambda: _typical_wake(user, session, local, now=now),
+                      lambda: _activity_typical_wake(user, session, local, now=now),
                       lambda: _profile_wake(user, local)):
             info = layer()
             if info is not None:

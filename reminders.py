@@ -525,7 +525,7 @@ def rearm_bailed_gym_reminders(now: datetime | None = None) -> int:
 _EXAM_TITLE_RE = re.compile(r"\b(?:exam|midterm|finals?|quiz|test)\b", re.I)
 
 
-def _interval_gate(user, now: datetime, row: Reminder | None = None) -> dict:
+def _interval_gate(user, now: datetime, row: Reminder | None = None, session=None) -> dict:
     """Why an interval (water) ping should wait, and until when:
       {"reason": None}                              → fire
       {"reason": "quiet_hours", "until": None}      → overnight, re-arm to the grid
@@ -550,7 +550,11 @@ def _interval_gate(user, now: datetime, row: Reminder | None = None) -> dict:
         return none
     try:
         from heartbeat import _in_standing_quiet_hours
-        if _in_standing_quiet_hours(user, now=now):
+        # `session` lets the layered wake model see TODAY's observed wake (a text, a tapback, a
+        # card open) and their usual one. Without it the window ends at the stated wake+15, so a
+        # slot anchored on the wake minute was quiet every day (live 2026-10-27, user 51: texted
+        # at 11:01, the 12:30 water slot — his stated wake — gated quiet_hours, pushed to 14:30).
+        if _in_standing_quiet_hours(user, now=now, session=session):
             return {"reason": "quiet_hours", "until": None}
     except Exception as e:  # noqa: BLE001 — a gate import/eval failure must never drop the ping
         logger.warning("INTERVAL_GATE_QUIET_FAILED user=%s err=%s", getattr(user, "id", None), e)
@@ -587,14 +591,15 @@ def _interval_gate(user, now: datetime, row: Reminder | None = None) -> dict:
     return {"reason": "calendar_block", "until": until}
 
 
-def _interval_gate_reason(user, now: datetime, row: Reminder | None = None) -> str | None:
+def _interval_gate_reason(user, now: datetime, row: Reminder | None = None, session=None) -> str | None:
     """Back-compat: the reason only (defer) or None (fire)."""
-    return _interval_gate(user, now, row)["reason"]
+    return _interval_gate(user, now, row, session=session)["reason"]
 
 
-def _catchup_fire_at(user, row: Reminder, tz: ZoneInfo, now: datetime, until: datetime | None) -> datetime | None:
-    """Where a calendar-gated ping lands: just after the block ends, if that comes before the
-    next grid slot and isn't quiet hours; else the next grid slot."""
+def _catchup_fire_at(user, row: Reminder, tz: ZoneInfo, now: datetime, until: datetime | None,
+                     session=None) -> datetime | None:
+    """Where a gated ping lands: just after the block (or the quiet window) ends, if that
+    comes before the next grid slot and isn't quiet hours; else the next grid slot."""
     grid = _next_for_row(user, row, tz, after=now)
     if not until:
         return grid
@@ -603,7 +608,7 @@ def _catchup_fire_at(user, row: Reminder, tz: ZoneInfo, now: datetime, until: da
         return grid
     try:
         from heartbeat import _in_standing_quiet_hours
-        if _in_standing_quiet_hours(user, now=cand):
+        if _in_standing_quiet_hours(user, now=cand, session=session):
             return grid
     except Exception:  # noqa: BLE001
         return grid
@@ -658,13 +663,50 @@ def _fire_one(rid: int, now: datetime) -> bool:
             row.active = False
             session.commit()
             return False
+        # The program's standing "gym" ping (source='program') is code's own rhythm, not a time
+        # they asked for: it honours the quiet window. Live 2026-10-28 (user 77): "gym time" at
+        # 08:00 while he slept till 11:20. Lands at quiet-end + catch-up when that is within
+        # PROGRAM_REMINDER_QUIET_CATCHUP_MIN of its slot (usually up ~9 → 9:20), else this
+        # occurrence is skipped (a 3.5h-late "gym time" is noise, not a reminder).
+        if (not row.every_hours and row.source == "program"
+                and getattr(config, "PROGRAM_REMINDER_QUIET_GATE_ENABLED", True)):
+            try:
+                from heartbeat import _in_standing_quiet_hours, quiet_end_utc
+                quiet = _in_standing_quiet_hours(user, now=now, session=session)
+            except Exception as e:  # noqa: BLE001 — never drop the ping on a gate failure
+                logger.warning("PROGRAM_GATE_QUIET_FAILED user=%s err=%s", user.id, e)
+                quiet = False
+            if quiet:
+                until = quiet_end_utc(user, session, now=now)
+                cand = (until + timedelta(minutes=int(getattr(config, "INTERVAL_GATE_CATCHUP_MIN", 5)))
+                        if until else None)
+                late_ok = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_QUIET_CATCHUP_MIN", 90)))
+                if cand is not None and cand > now and (cand - row.fire_at) <= late_ok:
+                    nxt = cand
+                else:
+                    nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=quiet_hours until=%s next=%s source=program",
+                            row.user_id, rid, until, row.fire_at if row.active else None)
+                return False
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
         if row.every_hours:
-            gate = _interval_gate(user, now, row)
+            gate = _interval_gate(user, now, row, session=session)
             if gate["reason"]:
                 if gate["reason"] in ("calendar_block", "exam") and getattr(config, "INTERVAL_GATE_V2_ENABLED", True):
-                    nxt = _catchup_fire_at(user, row, tz, now, gate.get("until"))
+                    nxt = _catchup_fire_at(user, row, tz, now, gate.get("until"), session=session)
+                elif gate["reason"] == "quiet_hours" and getattr(config, "INTERVAL_QUIET_CATCHUP_ENABLED", True):
+                    # Land right after quiet ends when that beats the next grid slot — a row
+                    # anchored on the wake minute used to lose its first slot every morning.
+                    try:
+                        from heartbeat import quiet_end_utc
+                        until = quiet_end_utc(user, session, now=now)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("INTERVAL_GATE_QUIET_END_FAILED user=%s err=%s", user.id, e)
+                        until = None
+                    nxt = _catchup_fire_at(user, row, tz, now, until, session=session)
                 else:
                     nxt = _next_for_row(user, row, tz, after=now)
                 if getattr(row, "deferred_since", None) is None:

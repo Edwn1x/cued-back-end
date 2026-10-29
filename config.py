@@ -969,6 +969,26 @@ WAKE_DETECT_MIN_HOURS_AFTER_SLEEP = float(os.getenv("WAKE_DETECT_MIN_HOURS_AFTER
 # the sleep was a real night (>= MIN_SLEEP_MINUTES — naps never count as a wake).
 WEARABLE_WAKE_FRESH_HOURS = float(os.getenv("WEARABLE_WAKE_FRESH_HOURS", "3"))                 # synced_at − sleep_end
 WEARABLE_WAKE_MIN_SLEEP_MINUTES = int(os.getenv("WEARABLE_WAKE_MIN_SLEEP_MINUTES", "180"))     # exclude naps
+# Layer 3b — the OBSERVED typical wake for people without a watch: the EARLIEST first plausible
+# activity (still-up guard applied; samples before LATEST_LOCAL_HOUR only) over the last
+# WINDOW_DAYS local days, at least MIN_DAYS of them (a first text is an upper bound on the wake —
+# a student who texts between classes is held to his earliest, not his median). It only ever pushes the morning LATER than
+# the profile wake (by at least MIN_SHIFT_MIN, capped at 14:00 like every late-wake extension).
+# Live 2026-10-28 (user 77): stated wake 07:00, first texts 11:05 / 11:20 — the 7:29 briefing,
+# the 8:00 gym ping and the 9:00 / 11:00 water GIFs all went out while he slept.
+ACTIVITY_TYPICAL_WAKE_ENABLED = os.getenv("ACTIVITY_TYPICAL_WAKE_ENABLED", "true").lower() == "true"
+ACTIVITY_WAKE_WINDOW_DAYS = int(os.getenv("ACTIVITY_WAKE_WINDOW_DAYS", "7"))
+ACTIVITY_WAKE_MIN_DAYS = int(os.getenv("ACTIVITY_WAKE_MIN_DAYS", "2"))
+ACTIVITY_WAKE_LATEST_LOCAL_HOUR = int(os.getenv("ACTIVITY_WAKE_LATEST_LOCAL_HOUR", "13"))
+ACTIVITY_WAKE_MIN_SHIFT_MIN = int(os.getenv("ACTIVITY_WAKE_MIN_SHIFT_MIN", "45"))
+# The program's standing "gym" ping (reminders.source='program') honours the quiet window like the
+# water pings: lands at quiet-end + catch-up when that is within CATCHUP_MIN of its time, else that
+# occurrence is skipped. User-asked reminders are never gated — they named the time.
+PROGRAM_REMINDER_QUIET_GATE_ENABLED = os.getenv("PROGRAM_REMINDER_QUIET_GATE_ENABLED", "true").lower() == "true"
+PROGRAM_REMINDER_QUIET_CATCHUP_MIN = int(os.getenv("PROGRAM_REMINDER_QUIET_CATCHUP_MIN", "90"))
+# A quiet-gated water slot re-arms to quiet-end + INTERVAL_GATE_CATCHUP_MIN when that comes before
+# the next grid slot (off = the next grid slot, as before: the first slot of the day was always lost).
+INTERVAL_QUIET_CATCHUP_ENABLED = os.getenv("INTERVAL_QUIET_CATCHUP_ENABLED", "true").lower() == "true"
 
 # Surface a compact, advisory "ACTIVITY TODAY" block (today's steps + active minutes, and a
 # coarse "notably active" flag) in build_loop_context so the coach acknowledges real
