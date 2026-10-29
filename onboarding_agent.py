@@ -1843,6 +1843,17 @@ def moving_on_topics(reply: str, prev: str, missing_after) -> set[str]:
     return {t for t in asked - shared if _open(t)}
 
 
+_SAME_WORDS_THRESHOLD = 0.8     # near-verbatim; the topic-blind check's 0.45 matches on filler words
+
+
+def _same_ask_wording(reply: str, prev: str) -> bool:
+    """The two QUESTION parts are near-verbatim — asking the same words again is a repeat
+    whatever was answered."""
+    from sms import _norm_body, _similarity
+    a, b = _norm_body(_question_part(reply)), _norm_body(_question_part(prev))
+    return bool(a and b) and _similarity(a, b) >= _SAME_WORDS_THRESHOLD
+
+
 def is_duplicate_question(reply: str, prev: str, threshold: float | None = None) -> bool:
     """True when `reply` asks what `prev` already asked — the same TOPIC (intake field), or
     near enough in wording. A reply that asks nothing is never a duplicate question. Pure."""
@@ -2411,6 +2422,14 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         elif shared and (moved := moving_on_topics(text, prev_coach, missing_after)):
             logger.info("ONBOARDING_MOVING_ON user=%s shared=%s new=%s", user_row.id, sorted(shared), sorted(moved))
             reask = shared
+        elif (stored_now := sorted(k for k, v in {**(extracted or {}), **(code_found or {})}.items()
+                                   if v not in (None, "", [], {}))) and not _same_ask_wording(text, prev_coach):
+            # Their text ANSWERED something (stored this turn) — they're replying, not mid-burst;
+            # only the same words again is a repeat (live 2026-10-28, user 89: "A lot. Especially
+            # going from the dorm to campus" → "u know roughly how many steps u get a day?" scored
+            # 0.46 against "how much do u walk around on a normal day" and was dropped).
+            logger.info("ONBOARDING_ANSWERED_FOLLOWUP user=%s topics=%s stored=%s", user_row.id, sorted(shared), stored_now)
+            reask = shared or {"answered_this_turn"}
     if (mode != "big_ask" and prev_coach and text and not reask and is_duplicate_question(text, prev_coach)):
         age = _last_coach_message_age_s(user_row.id)
         if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:

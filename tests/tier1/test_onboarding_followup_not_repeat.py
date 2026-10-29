@@ -168,3 +168,43 @@ def test_a_hedge_before_a_pronoun_is_still_a_statement():
     import onboarding_agent as oa
     assert not oa._Q_LEAD_RE.match("ok u got this")
     assert not oa._Q_LEAD_RE.match("so you're set for tonight")
+
+
+# ── 2026-10-28 21:43 PT, user 89 (Coyo): answered this turn, asked for the number ───────────
+# "how much do u walk around on a normal day" → "A lot. Especially going from the dorm to campus"
+# (activity_level STORED) → "that walk adds up fast. u know roughly how many steps u get a day? …"
+# dropped as an avg_steps repeat; the reply went out with no question in it.
+
+LIVE_8075 = "undeclared is normal, lots of ppl figure it out later. how much do u walk around on a normal day"
+LIVE_8076 = "A lot. Especially going from the dorm to campus"
+DROPPED_89 = ("that walk adds up fast. u know roughly how many steps u get a day? iphone health app has it under "
+              "browse > activity > steps")
+
+
+def test_live_user_89_answered_so_the_number_ask_is_a_follow_up(db, anthropic_stub, sms_capture, reactions, caplog):
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, name="Coyo", height_ft=5, height_in=9, weight_lbs=150,
+                       workout_days="3", workout_time="18:00", experience="beginner", diet="omnivore",
+                       occupation="undeclared student")
+    _coach_said(user, LIVE_8075)
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: ('{"activity_level": "active — walks a lot, including from dorm to campus"}'
+                                          if _is_extract(kw) else DROPPED_89))
+    caplog.set_level(logging.INFO)
+    oa.handle_onboarding_reply(user, LIVE_8076)
+    assert _bodies(sms_capture) == [DROPPED_89]
+    assert "REPEAT_QUESTION_SUPPRESSED" not in caplog.text
+
+
+def test_answering_does_not_license_the_same_words_again(db, anthropic_stub, sms_capture, reactions):
+    """Stored something, but the reply re-asks the previous question near-verbatim → still a repeat."""
+    import onboarding_agent as oa
+    user = _new_signup(db, onboarding_step=2, name="Coyo", height_ft=5, height_in=9, weight_lbs=150,
+                       workout_days="3", workout_time="18:00", experience="beginner", diet="omnivore",
+                       occupation="undeclared student")
+    _coach_said(user, LIVE_8075)
+    sms_capture.clear()
+    anthropic_stub.reply_with(lambda kw: ('{"activity_level": "active"}' if _is_extract(kw)
+                                          else "nice. how much do u walk around on a normal day"))
+    oa.handle_onboarding_reply(user, LIVE_8076)
+    assert sms_capture == [] or "how much do u walk" not in _bodies(sms_capture)[0]
