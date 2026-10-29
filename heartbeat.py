@@ -982,7 +982,8 @@ _CODE_STEP_TYPES = ("connect_offer", "connect_link", "water_offer", "card_setup"
                     "workout_card", "routine_capture_offer", "inbound_recovery")
 
 
-def _morning_open_signal(user, session, *, now=None, state: dict | None = None) -> str | None:
+def _morning_open_signal(user, session, *, now=None, state: dict | None = None,
+                         reactive: bool = False) -> str | None:
     """§4 MORNING OPEN: within RHYTHM_MORNING_MINUTES after their wake (profile, alt
     honoured, pushed later by a measured wake — see _morning_anchor_hhmm) and no
     non-reaction message either way since they woke. One line of material: the weekday,
@@ -990,10 +991,23 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
 
     `state` (optional, decide() passes one): when the daily-briefing branch fires, the
     structured material it rendered is stored under state["briefing"] so the send path
-    can verify the sent text against it (_enforce_briefing) without recomputing."""
+    can verify the sent text against it (_enforce_briefing) without recomputing.
+
+    `reactive` (agent_loop._morning_briefing_block): the user texted FIRST this morning and
+    this is the reply turn. Their own texts then don't count as "talked" (the text IS the
+    wake — live 2026-10-29, user 77: "Good morning" at 08:44 made the activity wake 08:44
+    and, in the same breath, closed the window), only what the coach has said since they
+    woke; the block tells the model the reply is the briefing; and it needs the daily
+    briefing on and a local hour before REACTIVE_BRIEFING_LATEST_LOCAL_HOUR (an afternoon
+    first text is not a morning)."""
     if not config.HEARTBEAT_RHYTHM_ENABLED or _checkin_level(user) == "less":
         return None
     local = _ref(now).astimezone(_user_tz(user))
+    if reactive:
+        if not (config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_DAILY_BRIEFING_ENABLED):
+            return None
+        if local.hour >= int(getattr(config, "REACTIVE_BRIEFING_LATEST_LOCAL_HOUR", 13)):
+            return None
     info = _resolved_wake(user, session, now=now)
     wake = _morning_anchor_hhmm(user, session, local, now=now, info=info)
     if not wake:
@@ -1024,13 +1038,17 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     # calendar link counted as the morning open, no briefing was ever owed, and the
     # 11:55 tick "let them breathe" — while the sweeps kept pinging. A fired reminder
     # (water ping, "gym") isn't talking either (#231: Joanna's morning open never rendered).
-    talked = (session.query(Message.id)
-              .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction(),
-                      _not_reminder(),
-                      or_(Message.direction != "out", Message.message_type.is_(None),
-                          Message.message_type.notin_(_CODE_STEP_TYPES)))
-              .first())
-    if talked:
+    talked_q = (session.query(Message.id)
+                .filter(Message.user_id == user.id, Message.created_at >= _naive(since_dt), _not_reaction(),
+                        _not_reminder(),
+                        or_(Message.direction != "out", Message.message_type.is_(None),
+                            Message.message_type.notin_(_CODE_STEP_TYPES))))
+    if reactive:
+        # The reply turn to their first text: only the COACH talking since wake closes the
+        # morning (a briefing tick already sent, a reply to an earlier text) — their own
+        # texts are the reason this turn exists.
+        talked_q = talked_q.filter(Message.direction == "out")
+    if talked_q.first():
         return None
     days = _training_days(user)
     today_abbr = _DAY_ABBR[local.weekday()]
@@ -1056,9 +1074,11 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
     # heartbeat_ticks; HEARTBEAT_WAKE_RESOLVED carries it in the logs).
     wake_src = (f" (wake source: {info.source} — {info.detail})"
                 if info is not None and info.source in ("activity", "measured_today") else "")
+    since_line = ("their text just now is the first word either way since they woke" if reactive
+                  else "nobody has texted since they woke")
     base = ("## MORNING OPEN (standing condition — code-computed)\n"
             f"It's {_clock(local)} {local.strftime('%A')}, ~{mins} min after their {_clock_hm(wake)} wake{wake_src}, and "
-            f"nobody has texted since they woke. Today: {plan}; events today: {ev_txt}.\n")
+            f"{since_line}. Today: {plan}; events today: {ev_txt}.\n")
 
     # Feature 4 — daily briefing: extend MORNING OPEN into a concise rundown (classes +
     # due dates + a suggested gym window + nutrition status) in ONE short message. Only
@@ -1070,7 +1090,7 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
         if state is not None:
             state["briefing"] = parts
         brief = _render_briefing_extras(parts)
-        return (base + brief + _BRIEFING_INSTRUCTION)
+        return (base + brief + (_REACTIVE_BRIEFING_INSTRUCTION if reactive else _BRIEFING_INSTRUCTION))
 
     return (base +
             "One short line — a friend's morning text, not a briefing: no plan dump, no totals, no "
@@ -1078,9 +1098,8 @@ def _morning_open_signal(user, session, *, now=None, state: dict | None = None) 
             "already today, this is not a reason to speak.")
 
 
-_BRIEFING_INSTRUCTION = (
-    "A daily briefing: ONE short, warm rundown in a couple lines, not a dashboard and not a "
-    "question stack. REQUIRED, in this order — these are not optional colour: (1) lead with the "
+_BRIEFING_REQUIRED = (
+    "REQUIRED, in this order — these are not optional colour: (1) lead with the "
     "weather in a few words: the temperature WITH the degree sign (write 88°, never a bare 88 — "
     "a bare number reads as noise) and the condition, e.g. '88° and clear'; "
     "then, when the material carries Water: one short clause telling them to drink a big glass "
@@ -1090,9 +1109,23 @@ _BRIEFING_INSTRUCTION = (
     "(2) ALWAYS name anything due TODAY by name (with the time if it has one) — a due-today item "
     "is the single most important line of the morning and may never be dropped or folded into "
     "'a few things due'; (3) then the day's shape: what's on, a good gym window, where nutrition "
-    "stands. Anything due in the next few days gets a word if there's room. Once — if TICK "
-    "HISTORY / RECENT PROACTIVE MESSAGES show a morning text already today, this is not a reason "
-    "to speak.")
+    "stands. Anything due in the next few days gets a word if there's room. ")
+
+_BRIEFING_INSTRUCTION = (
+    "A daily briefing: ONE short, warm rundown in a couple lines, not a dashboard and not a "
+    "question stack. " + _BRIEFING_REQUIRED +
+    "Once — if TICK HISTORY / RECENT PROACTIVE MESSAGES show a morning text already today, this "
+    "is not a reason to speak.")
+
+# The reply-turn variant (agent_loop._morning_briefing_block): they texted first, there is no
+# later tick for the briefing, so the reply carries it. Same REQUIRED items as the tick; the
+# "once / not a reason to speak" clause is gone — this turn always answers.
+_REACTIVE_BRIEFING_INSTRUCTION = (
+    "They texted first this morning, before any morning text went out, so THIS REPLY is the "
+    "day's briefing — there is no later moment for it. Answer what they said in a few words, "
+    "then the rundown in the same message: a couple of warm lines, not a dashboard and not a "
+    "question stack. Never announce it ('here's your briefing'); it is just the morning text. " +
+    _BRIEFING_REQUIRED)
 
 
 def _daily_briefing_parts(user, session, *, now=None) -> dict:
