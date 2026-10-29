@@ -299,7 +299,7 @@ def program_brief(user, prog: dict) -> list[str]:
     week = describe_week(prog)
     b1 = f"ok {name.lower()}, here's ur program. {week}. {prog['rationale'][0]}"
     day_lines = []
-    for key in prog["cycle"]:
+    for key in dict.fromkeys(prog["cycle"]):      # each distinct day once (live 2026-10-28 user 86: push/pull/legs/push/pull)
         ex = prog["exercises"].get(key) or []
         if ex:
             day_lines.append(f"{day_label(key)} = {', '.join(ex)}")

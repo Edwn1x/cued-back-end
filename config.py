@@ -348,6 +348,9 @@ REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"
 LOG_MEAL_TOOL_ENABLED = os.getenv("LOG_MEAL_TOOL_ENABLED", "false").lower() == "true"
+# A logged description that names TWO amounts ('chimichurri ~1 cup used (~2 tbsp)', live 2026-10-28 user
+# 51 → readback '1 cup', 150 cal) is flagged in the tool result so the readback says one.
+LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED = os.getenv("LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED", "true").lower() == "true"
 GET_DINING_MENU_TOOL_ENABLED = os.getenv("GET_DINING_MENU_TOOL_ENABLED", "false").lower() == "true"
 # web_search is Anthropic's SERVER-SIDE tool — runs inline, no client handler. Adds
 # per-search billing on top of tokens.
@@ -735,6 +738,9 @@ CONNECT_OG_IMAGE_URL = os.getenv("CONNECT_OG_IMAGE_URL", "")
 # step goes out as a thing to do ("first thing: connect ur google calendar … tap this" +
 # the link), then "next:" steps one per text. Food logging rides on the summary tail.
 SETUP_STEPS_DIRECTIVE_ENABLED = os.getenv("SETUP_STEPS_DIRECTIVE_ENABLED", "true").lower() == "true"
+# A KNOWN non-student (occupation on file, not a college student) gets gcal copy about their week, not
+# "ur classes and due dates" (live 2026-10-28 user 80: 26, desk job).
+GCAL_OFFER_NONSTUDENT_COPY_ENABLED = os.getenv("GCAL_OFFER_NONSTUDENT_COPY_ENABLED", "true").lower() == "true"
 # Stat cards (stat_cards.py): the small fixed-height "rsf right now" / "today" / "this
 # week" bubbles. The page is server-rendered by THIS app (/card/stat/<kind>), so the
 # base is the Flask host, same as the connect links. STAT_CARDS_MODE: live = the page
@@ -1247,6 +1253,9 @@ ONBOARDING_HOOK_FALLBACK_MINUTES = int(os.getenv("ONBOARDING_HOOK_FALLBACK_MINUT
 # pending row, one holding line when they text, admin activates from /admin.
 # Rollback = LIVE_SIGNUPS_ENABLED=false in Railway; nothing else changes.
 LIVE_SIGNUPS_ENABLED = os.getenv("LIVE_SIGNUPS_ENABLED", "true").lower() == "true"
+# A question typed into the sign-up NAME field ("Where do I put the referral code" → name 'Where', live
+# 2026-10-28 user 85) is refused with a hint about where the code goes.
+SIGNUP_NAME_SANITY_ENABLED = os.getenv("SIGNUP_NAME_SANITY_ENABLED", "true").lower() == "true"
 # Sign-up abuse ceilings (2026-10-16, after the launch-night probe showed the per-IP
 # limiter keying on Railway's edge hop — request_ip.py). Both are flask-limiter rate
 # strings; the decorators read them from config per request, so a Railway env change
