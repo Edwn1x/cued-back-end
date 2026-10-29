@@ -1235,6 +1235,17 @@ BRIEFING_WEATHER_GUARANTEE_ENABLED = os.getenv("BRIEFING_WEATHER_GUARANTEE_ENABL
 # briefing at wake+30 don't nag twice in one morning.
 BRIEFING_WATER_ENABLED = os.getenv("BRIEFING_WATER_ENABLED", "true").lower() == "true"
 BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED = os.getenv("BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", "true").lower() == "true"
+# The user texts first in the morning (live 2026-10-29, user 77: "Good morning" at 08:44,
+# earlier than the late-wake hold expected): the heartbeat's morning open is then never owed —
+# their text, and the reply to it, count as "talked since they woke" — and the briefing is
+# simply lost for the day. With this on, the reactive turn that answers the day's first text
+# inside the morning window carries the briefing material + instruction, so the REPLY is the
+# briefing (one message, no greeting-then-briefing double text); the same send-time check as
+# the tick (weather / water / due-today guarantees) runs on it and it folds the first water
+# ping. Only while the coach has said nothing since they woke, only before the latest-hour cap
+# (an afternoon first text is not a morning), never mid-setup. Fail-open: any error → no block.
+REACTIVE_MORNING_BRIEFING_ENABLED = os.getenv("REACTIVE_MORNING_BRIEFING_ENABLED", "true").lower() == "true"
+REACTIVE_BRIEFING_LATEST_LOCAL_HOUR = int(os.getenv("REACTIVE_BRIEFING_LATEST_LOCAL_HOUR", "13"))
 
 # Phase 5 — nightly consolidation + episodic digest. The first writers to memory
 # NOT triggered by a user turn, so every knob below is a guardrail against silent

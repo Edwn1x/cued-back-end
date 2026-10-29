@@ -1451,6 +1451,60 @@ def _demo_ask_block(user, combined_body: str, session) -> str | None:
         return None
 
 
+def _morning_briefing_block(user, combined_body: str, session, *, now: datetime = None
+                            ) -> tuple[str | None, dict | None]:
+    """They texted first this morning → this reply IS the day's briefing. Live 2026-10-29
+    (user 77): the late-wake hold kept the 07:34/08:20 ticks quiet, his "Good morning" at
+    08:44 made the activity wake 08:44 and — being a text — also counted as "talked since
+    they woke", so the heartbeat's morning open was never owed again and the reply was a
+    plain "morning". The block is heartbeat._morning_open_signal in reactive mode: the same
+    window, material and REQUIRED items as the tick, their own texts not counted as talking.
+    Returns (block, parts); parts drive the send-time check (_finish_reactive_briefing).
+    Only after setup (onboarding_step ≥ 3, not waitlisted). Fail-open → (None, None)."""
+    if not getattr(config, "REACTIVE_MORNING_BRIEFING_ENABLED", True):
+        return None, None
+    try:
+        if (getattr(user, "onboarding_step", 0) or 0) < 3 or getattr(user, "waitlist_status", None) == "pending":
+            return None, None
+        import heartbeat
+        st: dict = {}
+        block = heartbeat._morning_open_signal(user, session, now=now, state=st, reactive=True)
+        if not block:
+            return None, None
+        parts = st.get("briefing")
+        logger.info("AGENT_LOOP_MORNING_BRIEFING user=%s water=%s due_today=%d text=%r",
+                    user.id, bool((parts or {}).get("water")), len((parts or {}).get("due_today") or []),
+                    (combined_body or "")[:40])
+        return block, parts
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MORNING_BRIEFING_BLOCK_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return None, None
+
+
+def _finish_reactive_briefing(user, text: str, parts: dict | None) -> str:
+    """The reply that carries the morning briefing gets the tick's send-time check
+    (heartbeat._enforce_briefing: weather clause / degree sign / water line / due-today
+    bubble when the model dropped them) and, when the water line is material, folds the
+    day's first water-GIF slot — the briefing IS that ping (same as heartbeat_tick).
+    Fail-open: any error → `text` unchanged."""
+    if not parts or not text:
+        return text
+    try:
+        import heartbeat
+        out = heartbeat._enforce_briefing(text, parts, user.id)
+        logger.info("AGENT_LOOP_MORNING_BRIEFING_SENT user=%s changed=%s", user.id, out != text)
+        if parts.get("water") and getattr(config, "BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", True):
+            try:
+                from reminders import fold_first_water_slot
+                fold_first_water_slot(user.id)
+            except Exception as e:  # noqa: BLE001 — the briefing goes out; a fold failure is a log line
+                logger.warning("WATER_FIRST_SLOT_FOLD_FAILED user=%s err=%s", user.id, e)
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("MORNING_BRIEFING_FINISH_FAILED user=%s err=%s", user.id, e)
+        return text
+
+
 def _week_asked(text: str) -> bool:
     return bool(text and _WEEK_ASK_RE.search(text))
 
@@ -1934,6 +1988,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     # signals below (estimation prompt, receipt pre-classifier, has_image marker).
     images = image_data_list if image_data_list else ([image_data] if image_data else [])
     image_data = images[0] if images else None
+    _briefing_parts: dict | None = None   # set when this reply carries the morning briefing
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -1972,6 +2027,13 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         _da = _demo_ask_block(user, combined_body, session)
         if _da:
             context += "\n\n" + _da
+        # Their first text of the morning, before any morning text went out → this reply is
+        # the day's briefing (live 2026-10-29, user 77: "Good morning" at 08:44 got "morning").
+        # Not on a continuation: the reply it rides behind already answered the morning.
+        if not continuation:
+            _mb, _briefing_parts = _morning_briefing_block(user, combined_body, session)
+            if _mb:
+                context += "\n\n" + _mb
         # Series §2.4: when a workout is discussed or the gym comes up, the coach
         # gets the meter as ONE code line — it phrases it, never invents a number.
         if config.RSF_METER_ENABLED and _gym_mentioned(combined_body, user):
@@ -2470,6 +2532,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             if not text:
                 logger.info("AGENT_LOOP_CARD_SPEAKS user=%s iter=%d — reply dropped, the card + plan text already went out", user.id, i)
                 return ""
+        if text and _briefing_parts:
+            # The reply that is the morning briefing: the tick's completeness check + the
+            # first-water-ping fold (see _finish_reactive_briefing).
+            text = _finish_reactive_briefing(user, text, _briefing_parts)
         if text:
             _persist_recent_photo(user.id, image_data, combined_body, text)
             if config.LOWERCASE_REPLIES_ENABLED:
@@ -2486,6 +2552,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # outcome, not an anomaly — the caller sends nothing and clears the bubble.
         if state.get("reacted"):
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d", user.id, i)
+            if _briefing_parts:
+                logger.warning("AGENT_LOOP_MORNING_BRIEFING_LOST user=%s — reaction-only reply to the day's first text", user.id)
             return ""
 
         # A terminal stop with no text is a genuine anomaly — log stop_reason + block
