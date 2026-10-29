@@ -668,6 +668,11 @@ def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
 SAFE_GLITCH_REPLY = "sorry, glitched for a sec — say that again?"
 
 
+_QUESTION_NAME_RE = re.compile(
+    r"\?|\b(?:referral|code)\b|"
+    r"^\s*(?:where|what|how|why|when|who|which|do|does|is|can|i|what's|whats|where's|hows)\b\s+\S+\s+\S+", re.I)
+
+
 def _code_reply_done(user_id: int) -> None:
     """A reply answered in code (the program-days yes, the water yes/no, a pantry line, a
     gym-line reply, a terse set) is still an inbound: the typing dots come down AND the
@@ -2386,6 +2391,13 @@ def waitlist_signup():
     # Validation
     if not name or len(name) > 100:
         return jsonify({"status": "error", "message": "Please enter your name."}), 400
+    # "Where do I put the referral code" typed as the name → users.name 'Where', own code WHERE9060,
+    # "hey Where" (live 2026-10-28, user 85). A question-shaped name is not a name.
+    if getattr(config, "SIGNUP_NAME_SANITY_ENABLED", True) and _QUESTION_NAME_RE.search(name):
+        logger.info("SIGNUP_NAME_REJECTED name=%r", name[:60])
+        return jsonify({"status": "error",
+                        "message": "That looks like a question, not a name. Please enter your first name — "
+                                   "the referral code goes in its own field on the form."}), 400
     # The chat asks for the full name (kept in full_name — for us: admin, email).
     # `name` is what the coach SAYS ("yo {name}…" in the hook, every trigger
     # prompt, the transcript labels), so it is the first name only — enforced

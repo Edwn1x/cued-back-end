@@ -1223,6 +1223,21 @@ def _evening_protein_directive(u, pro: int, tz, *, now=None) -> str:
         return ""
 
 
+_QTY_RE = re.compile(r"(?:~\s*)?(?:\d+(?:[./]\d+)?|½|¼|¾)\s*(?:cups?|tbsps?|tablespoons?|tsps?|teaspoons?|oz|ounces?|g|grams?|"
+                     r"lbs?|scoops?|servings?|slices?|pieces?)\b", re.I)
+_SERVED_RE = re.compile(r"\b(?:served|used|ate|eaten)\b", re.I)
+
+
+def _names_two_amounts(desc: str) -> bool:
+    """'chimichurri ~1 cup used (~2 tbsp)' (live 2026-10-28, user 51 — read back as '1 cup', logged
+    150 cal): a parenthetical amount, or a served/used/ate phrasing with two amounts. One food with
+    one amount ('chicken breast ~6oz') and two foods with one amount each ('2 eggs, 2 toasts') are not."""
+    d = desc or ""
+    if re.search(r"\([^)]*" + _QTY_RE.pattern, d, re.I):
+        return True
+    return bool(_SERVED_RE.search(d)) and len(_QTY_RE.findall(d)) >= 2
+
+
 def _day_total_suffix(user_id: int, day: date | None = None, *, now: datetime | None = None) -> str:
     """The FRESH authoritative day total, read after a recompute, as a tool-result
     suffix. The context's TODAY'S TOTALS block was built BEFORE this turn's log/edit,
@@ -1588,6 +1603,12 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                  "fix any of them at once (\"2 eggs, 3/4 cup yogurt, 2 toasts — fix any of those\"); "
                  "a correction is a manage_log edit on that id")
 
+    if getattr(config, "LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED", True):
+        for _mid, desc, _cal, _pro, _saw in logged:
+            if _names_two_amounts(desc):
+                logger.info("LOG_MEAL_TWO_AMOUNTS user=%s desc=%r", user_id, desc[:80])
+                tail += (f" | '{desc}' names two amounts — the calories are for ONE of them: say that one in the "
+                         "readback, and log the amount EATEN (never 'served X (used Y)') next time")
     for hm, text in hint_tags:
         tail += f" | eaten at {hm} local (from '{text}') — say the time back if it matters"
     for note in hint_notes:

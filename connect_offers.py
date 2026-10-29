@@ -52,6 +52,10 @@ OFFER_GCAL_LINK = ("want me on ur google calendar? i plan ur workouts around ur 
 STEP_GCAL_LINK = "connect ur google calendar so i plan workouts around ur classes and catch due dates. tap this"
 STEP_GCAL_ASK = ("connect ur google calendar so i plan workouts around ur classes and catch due dates. "
                  "which google account is it on")
+# A known non-student (live 2026-10-28, user 80: 26, desk job) has no classes or due dates.
+STEP_GCAL_LINK_NONSTUDENT = "connect ur google calendar so i plan workouts around ur week and catch what's coming up. tap this"
+STEP_GCAL_ASK_NONSTUDENT = ("connect ur google calendar so i plan workouts around ur week and catch what's coming up. "
+                            "which google account is it on")
 STEP_BCOURSES = ("bcourses. in bcourses go to calendar, then 'calendar feed' (bottom right), and paste me that "
                  "link — ur due dates go on my radar")
 OFFER_GCAL_ASK = ("want me on ur google calendar? i plan ur workouts around ur week with it. "
@@ -457,15 +461,25 @@ def _send_action(uid: int, kind: str, provider: str, text: str | None, phone: st
         logger.info("CONNECT_OFFER_SENT user=%s provider=%s kind=%s", uid, provider, kind)
 
 
-def _directive_text(kind: str, provider: str, text: str | None, lead: str | None) -> str | None:
+def _known_non_student(user) -> bool:
+    """An occupation on file that is not a college student's. Unknown → False (student copy)."""
+    if user is None or not getattr(config, "GCAL_OFFER_NONSTUDENT_COPY_ENABLED", True):
+        return False
+    occ = (getattr(user, "occupation", None) or "").strip()
+    return bool(occ) and not is_student(user)
+
+
+def _directive_text(kind: str, provider: str, text: str | None, lead: str | None, user=None) -> str | None:
     """Setup-step copy: the directive line for the first offers when the lead is given
-    (SETUP_STEPS_DIRECTIVE_ENABLED), else the text as decided."""
+    (SETUP_STEPS_DIRECTIVE_ENABLED), else the text as decided. A known non-student gets the
+    week copy, not classes and due dates."""
     if not lead or not getattr(config, "SETUP_STEPS_DIRECTIVE_ENABLED", True):
         return text
+    non_student = _known_non_student(user)
     if kind == "offer_link" and provider == "gcal":
-        return f"{lead} {STEP_GCAL_LINK}"
+        return f"{lead} {STEP_GCAL_LINK_NONSTUDENT if non_student else STEP_GCAL_LINK}"
     if kind == "offer_ask" and provider == "gcal":
-        return f"{lead} {STEP_GCAL_ASK}"
+        return f"{lead} {STEP_GCAL_ASK_NONSTUDENT if non_student else STEP_GCAL_ASK}"
     if kind == "offer_text" and provider == "bcourses":
         return f"{lead} {STEP_BCOURSES}"
     return f"{lead} {text}" if text else text
@@ -489,7 +503,7 @@ def offer_now(user_id: int, now: datetime | None = None, *, min_gap: timedelta |
             return None
         _commit_action(session, u, action, now)
         kind, provider, text = action
-        text = _directive_text(kind, provider, text, lead)
+        text = _directive_text(kind, provider, text, lead, user=u)
         phone = u.phone
     finally:
         session.close()
