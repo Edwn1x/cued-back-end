@@ -136,6 +136,9 @@ class User(Base):
     # Daily rhythm: how much proactive contact they asked for (set_checkin_level).
     # 'more' | 'normal' | 'less'; null = normal. Read by heartbeat._checkin_level.
     checkin_level = Column(String(10), default=None)
+    # pause_training (training_pause.py): no beats / gym pings / gap nudges until this instant (naive UTC).
+    training_paused_until = Column(DateTime, default=None)
+    training_pause_reason = Column(String(100), default=None)
     # Water-reminder offer (water_offer.py): None = never offered | offered | yes | no | lapsed.
     water_offer_status = Column(String(10), default=None)
     water_offered_at = Column(DateTime, default=None)

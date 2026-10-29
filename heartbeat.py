@@ -715,6 +715,12 @@ def _training_gap_signal(user, session) -> str | None:
     2026-09-14→19 (user 32): five days, zero workouts, and not one training mention
     from the coach, because no block ever said so. Renders once the gap exceeds the
     spacing their frequency implies (ceil(7/n)+1 days); None below that."""
+    try:
+        from training_pause import is_paused
+        if is_paused(user):
+            return None            # they said they're out (sick / away / exams): no inquest
+    except Exception:  # noqa: BLE001
+        pass
     per_week = _committed_per_week(user)
     threshold = math.ceil(7 / per_week) + 1
     now = _naive_utcnow()

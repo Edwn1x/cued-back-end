@@ -794,8 +794,21 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 wline = None
             if wline:
                 send_sms(user.phone, wline, user_id=user.id, message_type="water_offer_reply")
-                _code_reply_done(user.id)
-                return
+                # "yeah sure. I'm pretty sick at the moment…" (live 2026-10-28, user 80): the yes is
+                # answered; the rest of the text still runs as this turn's inbound.
+                rest = None
+                if getattr(config, "WATER_OFFER_REMAINDER_ENABLED", True):
+                    try:
+                        from water_offer import remainder_after_ack
+                        rest = remainder_after_ack(combined_body)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("WATER_OFFER_REMAINDER_FAILED user=%s err=%s", user.id, e)
+                if rest:
+                    logger.info("WATER_OFFER_REMAINDER user=%s rest=%r", user.id, rest[:80])
+                    combined_body = rest
+                else:
+                    _code_reply_done(user.id)
+                    return
 
         # Series §2.7: opt-in replies / 'handle the line for me' / 'not going' — in code.
         if (user.onboarding_step or 0) >= 3 and not image_url:

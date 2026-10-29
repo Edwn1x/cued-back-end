@@ -325,6 +325,16 @@ CAPABILITIES: list[Capability] = [
         reveal_when="they say the check-ins feel too far apart, or too frequent",
     ),
     Capability(
+        id="training_pause",
+        what="tell me ur sick, hurt or away and i hold the gym stuff till ur back",
+        how="say 'i'm sick this week' and the gym pings and nudges pause; say 'i'm back' to resume",
+        tools=("pause_training",),
+        enabled=lambda u: config.PAUSE_TRAINING_TOOL_ENABLED,
+        relevance=lambda u: 3,
+        used=lambda session, u: bool(getattr(u, "training_paused_until", None)),
+        reveal_when="they say they're sick, injured, travelling or in exams",
+    ),
+    Capability(
         id="calendar",
         what="i can hold dates — a midterm, a trip, a game — and plan around them",
         how="tell me 'midterm thursday' or 'home this weekend' and i'll work with it",
