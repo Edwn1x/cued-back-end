@@ -311,6 +311,68 @@ def program_brief(user, prog: dict) -> list[str]:
     return [b1, b2, b3]
 
 
+def _pointer_roll(user, prog: dict, local) -> dict | None:
+    """What the split pointer says the NEXT sessions are — the card builder's rule
+    (workouts.start.infer_template: the day AFTER the pointer in their cycle), read here so
+    the block and the card agree. None when there is no usable pointer (the calendar slot
+    stands) or the flag is off. `upcoming` is the cycle from the pointer onward;
+    `done_today` = the pointer moved on today's local date (a session already logged)."""
+    if not getattr(config, "PROGRAM_BLOCK_FOLLOWS_POINTER_ENABLED", True):
+        return None
+    last = getattr(user, "split_pointer_day", None)
+    if not last:
+        return None
+    from split_pointer import cycle_for
+    cycle = [k for k in (normalize_template_key(d) for d in cycle_for(user)) if k]
+    if not cycle:
+        cycle = [k for k in (normalize_template_key(d) for d in (prog.get("cycle") or [])) if k]
+    if last not in cycle:
+        return None
+    at = getattr(user, "split_pointer_at", None)
+    at_local = at.replace(tzinfo=timezone.utc).astimezone(local.tzinfo) if at is not None else None
+    i = cycle.index(last)
+    return {"last": last, "source": getattr(user, "split_pointer_source", None) or "inferred",
+            "at_local": at_local, "done_today": bool(at_local and at_local.date() == local.date()),
+            "upcoming": [cycle[(i + 1 + k) % len(cycle)] for k in range(len(cycle))]}
+
+
+def _today_line(user, prog: dict, local) -> str:
+    """'- today (wed): …; next: thu …'. With a pointer, a training day's label is what the
+    card would build and the calendar slot is named when it differs — live 2026-10-28
+    (user 77): push done on the calendar's pull day → the briefing said "legs at 8" (the
+    calendar), the card would build pull (the pointer), and the loop called it "u missed
+    yesterday". A day done out of order is not a missed day; the cycle just rolls on."""
+    today = DAYS[local.weekday()]
+    cal_key = prog["days"].get(today)
+    nxt = next((d for i in range(1, 8) for d in [DAYS[(local.weekday() + i) % 7]] if d in prog["days"]), None)
+    roll = _pointer_roll(user, prog, local)
+    if roll is None:
+        return (f"- today ({today}): {day_label(cal_key) + ' day' if cal_key else 'rest day'}"
+                + (f"; next: {nxt} {day_label(prog['days'][nxt])}" if nxt else ""))
+    up = roll["upcoming"]
+    first, second = up[0], up[1 % len(up)]
+    last_lbl, src = day_label(roll["last"]), roll["source"]
+    if roll["done_today"]:
+        t = f"{last_lbl} day — done today ({src}); don't offer another session today"
+        nxt_key = first
+    elif cal_key:
+        if first == normalize_template_key(cal_key):
+            t = f"{day_label(first)} day"
+        else:
+            when = roll["at_local"].strftime("%a").lower() if roll["at_local"] else "last time"
+            t = (f"{day_label(first)} day (the calendar slot says {day_label(cal_key)}, but their last session "
+                 f"was {last_lbl} ({src}, {when}), so the cycle rolls on: {day_label(first)} now, "
+                 f"{day_label(second)} after. say {day_label(first)}; a day done out of order is not a missed "
+                 f"day — never say they missed one)")
+        nxt_key = second
+    else:
+        t = "rest day"
+        nxt_key = first
+    if src == "inferred":
+        t += " (pointer source inferred — hedge, confirm rather than assert)"
+    return f"- today ({today}): {t}" + (f"; next: {nxt} {day_label(nxt_key)}" if nxt else "")
+
+
 def program_context(user, prog: dict | None = None, *, now=None) -> str:
     """The loop/heartbeat block: the week, today's day (or rest), the next session."""
     prog = prog or getattr(user, "program", None)
@@ -319,13 +381,9 @@ def program_context(user, prog: dict | None = None, *, now=None) -> str:
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(getattr(user, "user_timezone", None) or "America/Los_Angeles")
     local = (now or datetime.now(timezone.utc)).astimezone(tz)
-    today = DAYS[local.weekday()]
-    key = prog["days"].get(today)
-    nxt = next((d for i in range(1, 8) for d in [DAYS[(local.weekday() + i) % 7]] if d in prog["days"]), None)
     lines = [f"## PROGRAM ({prog['split'].replace('_', '/')}, code-built — explain it, don't reinvent it)",
              f"- week: {describe_week(prog)}",
-             f"- today ({today}): {day_label(key) + ' day' if key else 'rest day'}"
-             + (f"; next: {nxt} {day_label(prog['days'][nxt])}" if nxt else "")]
+             _today_line(user, prog, local)]
     if prog.get("cardio"):
         c = prog["cardio"]
         lines.append(f"- cardio: {c['minutes']} min {c['what']} after {'/'.join(c['on'])}")

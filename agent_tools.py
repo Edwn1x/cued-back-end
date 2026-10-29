@@ -1199,7 +1199,31 @@ def _nutrition_day_of(user, eaten_at) -> date:
     return start.replace(tzinfo=timezone.utc).astimezone(resolve_tz(user)).date()
 
 
-def _day_total_suffix(user_id: int, day: date | None = None) -> str:
+def _evening_protein_directive(u, pro: int, tz, *, now=None) -> str:
+    """The once-a-day protein line has a moment — the evening meal — and code names it.
+    voice.md: "the protein gap is said when it matters … at the evening meal". Live
+    2026-10-28 18:16 (user 77): dinner logged, 88g of 132, both bubbles calories only —
+    nothing had told the model THIS was the evening meal. Renders only at or after
+    EVENING_MEAL_LOCAL_HOUR (local) and only for a real gap (≥ EVENING_PROTEIN_GAP_MIN_G and
+    ≥ 15% of the target). Fail-open: any error → ""."""
+    if not getattr(config, "EVENING_PROTEIN_NUDGE_ENABLED", True) or not u.protein_target:
+        return ""
+    try:
+        left = int(u.protein_target - pro)
+        floor = max(int(config.EVENING_PROTEIN_GAP_MIN_G), int(round(0.15 * u.protein_target)))
+        if left < floor:
+            return ""
+        local = (now or _naive_utcnow()).replace(tzinfo=timezone.utc).astimezone(tz)
+        if local.hour < int(config.EVENING_MEAL_LOCAL_HOUR):
+            return ""
+        return (f" | EVENING MEAL: this is the log where the protein line belongs — they're {left}g short of "
+                f"{u.protein_target}. say the gap now, in your words, with ONE concrete way to close it tonight "
+                "(a shake, greek yogurt, a second helping of the protein) — one line, no lecture.")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _day_total_suffix(user_id: int, day: date | None = None, *, now: datetime | None = None) -> str:
     """The FRESH authoritative day total, read after a recompute, as a tool-result
     suffix. The context's TODAY'S TOTALS block was built BEFORE this turn's log/edit,
     so the coach must quote THIS number for the updated running total instead of adding
@@ -1221,7 +1245,7 @@ def _day_total_suffix(user_id: int, day: date | None = None) -> str:
         if day is not None:
             try:
                 from timefmt import local_day_bounds
-                today_local = _nutrition_day_of(u, _naive_utcnow())
+                today_local = _nutrition_day_of(u, now or _naive_utcnow())
                 if day != today_local:
                     tz = _user_tz(session, user_id)
                     noon = datetime(day.year, day.month, day.day, 12, 0, tzinfo=tz)
@@ -1243,7 +1267,8 @@ def _day_total_suffix(user_id: int, day: date | None = None) -> str:
         tgt = f", {u.protein_target - pro}g protein left of {u.protein_target}" if u.protein_target else ""
         return (f" | DAY TOTAL NOW: {cal} cal, {pro}g protein{tgt} — use this exact number"
                 + (" (quote the total; the protein-left figure is for when they ask, at the evening "
-                   "meal, or when planning what to eat — not a line after every log)" if tgt else ""))
+                   "meal, or when planning what to eat — not a line after every log)" if tgt else "")
+                + _evening_protein_directive(u, pro, _user_tz(session, user_id), now=now))
     finally:
         session.close()
 

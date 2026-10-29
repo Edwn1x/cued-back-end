@@ -1372,6 +1372,17 @@ CONTINUATION_CORRECTION_HINT_ENABLED = os.getenv("CONTINUATION_CORRECTION_HINT_E
 # outbound AND the text is one short clause; a list of days / a swap keeps the 48h window (live
 # 2026-10-27, user 77: "Ok. Also as a heads up, I will be dropping Eleng 105…" 47 min later → "locked in").
 PROGRAM_DAYS_REPLY_BOUNDS_ENABLED = os.getenv("PROGRAM_DAYS_REPLY_BOUNDS_ENABLED", "true").lower() == "true"
+# The PROGRAM block's "today" follows the split pointer (what the card builder would build), naming
+# the calendar slot when they differ. Live 2026-10-28 (user 77): push done on the calendar's pull
+# day → the briefing said "legs at 8" (calendar), the card would build pull (pointer), the loop
+# said "u missed yesterday" — three stories about one day.
+PROGRAM_BLOCK_FOLLOWS_POINTER_ENABLED = os.getenv("PROGRAM_BLOCK_FOLLOWS_POINTER_ENABLED", "true").lower() == "true"
+# The DAY TOTAL NOW suffix names the EVENING meal (local hour ≥ EVENING_MEAL_LOCAL_HOUR) as the one
+# where the protein gap gets said, when the gap is real (≥ EVENING_PROTEIN_GAP_MIN_G and ≥ 15% of
+# the target). Live 2026-10-28 18:16 (user 77): dinner logged, 44g short, both bubbles calories only.
+EVENING_PROTEIN_NUDGE_ENABLED = os.getenv("EVENING_PROTEIN_NUDGE_ENABLED", "true").lower() == "true"
+EVENING_MEAL_LOCAL_HOUR = int(os.getenv("EVENING_MEAL_LOCAL_HOUR", "17"))
+EVENING_PROTEIN_GAP_MIN_G = int(os.getenv("EVENING_PROTEIN_GAP_MIN_G", "20"))
 # "never used a bar" / "machines only" / "scared of the bar" → users.equipment = machines, so every
 # card (not just a one-off) is machine-based (live 2026-10-17, user 40: wrist surgery, barbell card).
 EQUIPMENT_PREFERENCE_CAPTURE_ENABLED = os.getenv("EQUIPMENT_PREFERENCE_CAPTURE_ENABLED", "true").lower() == "true"
