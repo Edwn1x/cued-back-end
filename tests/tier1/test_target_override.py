@@ -15,8 +15,10 @@ import pytest
 
 from tests.factories import make_user
 
+# avg_steps 13000 (not 10000): since 2026-10-29 the ×1.725 bucket starts at 12.5k steps; these
+# tests are about the ±15% band around 2450/139, not about the step scale.
 FOUNDER = dict(height_ft=5, height_in=6, weight_lbs=139, age=20, gender="male",
-               goal="fat_loss,muscle_building", workout_days="4-5", avg_steps=10000,
+               goal="fat_loss,muscle_building", workout_days="4-5", avg_steps=13000,
                occupation="student", activity_level="active", workout_time="14:00",
                current_split="ppl", cooking_situation="cooks", diet="omnivore", injuries="none",
                wake_time="11:30", sleep_time="02:00", existing_tools="strava,fitbit", name="Nau")
