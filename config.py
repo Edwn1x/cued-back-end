@@ -999,6 +999,17 @@ ACTIVITY_WAKE_MIN_SHIFT_MIN = int(os.getenv("ACTIVITY_WAKE_MIN_SHIFT_MIN", "45")
 # occurrence is skipped. User-asked reminders are never gated — they named the time.
 PROGRAM_REMINDER_QUIET_GATE_ENABLED = os.getenv("PROGRAM_REMINDER_QUIET_GATE_ENABLED", "true").lower() == "true"
 PROGRAM_REMINDER_QUIET_CATCHUP_MIN = int(os.getenv("PROGRAM_REMINDER_QUIET_CATCHUP_MIN", "90"))
+# …and yields to a morning briefing that is still owed (live 2026-10-30, user 77: the quiet-gated
+# "gym time" catch-up landed at quiet-end + 5 = 09:04, a `reminder` is a PROACTIVE type, so the
+# anti-stack gate held every heartbeat tick for 180 min while the 90-min morning window closed —
+# no briefing; same shape as the setup sweep on 2026-10-12 and the water GIF's first slot). While
+# heartbeat._morning_open_signal still renders, the ping re-arms WAIT_MIN out instead of sending
+# and marks itself held; the sent briefing (it names today's session) folds the HELD ping — today's
+# occurrence is skipped. A ping that was never held (7:30 briefing, 8:00 "gym") is untouched. No
+# briefing by the time the window closes → it fires inside the QUIET_CATCHUP_MIN lateness
+# tolerance, else today's occurrence is skipped as noise. User-asked reminders never wait.
+PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED = os.getenv("PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", "true").lower() == "true"
+PROGRAM_REMINDER_BRIEFING_WAIT_MIN = int(os.getenv("PROGRAM_REMINDER_BRIEFING_WAIT_MIN", "10"))
 # A quiet-gated water slot re-arms to quiet-end + INTERVAL_GATE_CATCHUP_MIN when that comes before
 # the next grid slot (off = the next grid slot, as before: the first slot of the day was always lost).
 INTERVAL_QUIET_CATCHUP_ENABLED = os.getenv("INTERVAL_QUIET_CATCHUP_ENABLED", "true").lower() == "true"
