@@ -1554,6 +1554,14 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # collecting the profile.
     _pb_onboarded = (user.onboarding_step or 0) >= 3
 
+    # Their own words name the RSF → it goes on file as their gym (the only writer of
+    # users.which_gym; the RSF hours fit and hours context key off it).
+    try:
+        from gym_on_file import note_gym_from_text
+        note_gym_from_text(user.id, body)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("GYM_ON_FILE_FAILED user=%s err=%s", user.id, e)
+
     # Track workout intent. The one-shot Workout row was the LEGACY writer; the loop's
     # log_workout tool is the single writer now (read-before-write, split day, sets).
     # The state writes (confirmed today / at_gym) stay — cheap, idempotent, and read by
