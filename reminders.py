@@ -118,16 +118,22 @@ def _weekday_from(raw: str) -> int | None:
 
 
 def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after: datetime | None = None,
-                 date_str: str | None = None) -> datetime | None:
+                 date_str: str | None = None, adjust=None) -> datetime | None:
     """Naive-UTC instant of the next occurrence strictly after `after` (default now).
     Recurring: the next listed weekday at local_time (today if still ahead). One-off
-    with a date: that day. One-off without: today if ahead, else tomorrow."""
+    with a date: that day. One-off without: today if ahead, else tomorrow.
+    `adjust(local_aware) -> local_aware | None` is applied to each candidate before the
+    'still ahead' test (the gym-hours fit); None from it skips that day."""
     parsed = parse_local_time(local_time)
     if not parsed:
         return None
     h, mm = parsed
     after_utc = (after or _naive_utcnow()).replace(tzinfo=timezone.utc)
     now_local = after_utc.astimezone(tz)
+
+    def _fit(cand):
+        return adjust(cand) if adjust else cand
+
     if recur_days:
         days = [d for d in recur_days.split(",") if d in DAY_ABBR]
         if not days:
@@ -136,8 +142,8 @@ def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after
             d = (now_local + timedelta(days=offset)).date()
             if DAY_ABBR[d.weekday()] not in days:
                 continue
-            cand = datetime(d.year, d.month, d.day, h, mm, tzinfo=tz)
-            if cand > now_local:
+            cand = _fit(datetime(d.year, d.month, d.day, h, mm, tzinfo=tz))
+            if cand is not None and cand > now_local:
                 return cand.astimezone(timezone.utc).replace(tzinfo=None)
         return None
     if date_str and str(date_str).strip().lower() not in ("", "today", "tomorrow"):
@@ -149,8 +155,8 @@ def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after
                 cand_d = (now_local + timedelta(days=offset)).date()
                 if cand_d.weekday() != wd:
                     continue
-                cand = datetime(cand_d.year, cand_d.month, cand_d.day, h, mm, tzinfo=tz)
-                if cand > now_local and not (raw.startswith("next") and offset == 0):
+                cand = _fit(datetime(cand_d.year, cand_d.month, cand_d.day, h, mm, tzinfo=tz))
+                if cand is not None and cand > now_local and not (raw.startswith("next") and offset == 0):
                     return cand.astimezone(timezone.utc).replace(tzinfo=None)
             return None
         try:
@@ -165,9 +171,14 @@ def next_fire_at(tz: ZoneInfo, local_time: str, recur_days: str | None, *, after
     else:
         d = now_local.date()
     cand = datetime(d.year, d.month, d.day, h, mm, tzinfo=tz)
-    if cand <= now_local:
-        cand += timedelta(days=1)
-    return cand.astimezone(timezone.utc).replace(tzinfo=None)
+    fit = _fit(cand)
+    if fit is None or fit <= now_local:
+        if date_str and str(date_str).strip().lower() not in ("", "today"):
+            return None          # an explicit day the gym can't take: an error, not a silent slide
+        fit = _fit(cand + timedelta(days=1))
+    if fit is None:
+        return None
+    return fit.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 # ─── interval recurrence (daily rhythm: water) ───────────────────────────────
@@ -225,13 +236,47 @@ def next_interval_fire_at(tz: ZoneInfo, every_hours, window_start: str, window_e
     return None
 
 
+def gym_hours_adjuster(user, text: str):
+    """The per-occurrence fit for a gym reminder of someone who trains at the RSF: a start
+    inside opening hours and GYM_SESSION_MIN_BEFORE_CLOSE_MIN before close, else pulled back
+    to the latest start that day (closed date → that day is skipped). None when the gate is
+    off, the text isn't about training, or they don't train there. Live Sat 2026-10-31
+    (user 51): a 6pm pull reminder on a day the RSF closes at 6 — "they closed"."""
+    if not getattr(config, "GYM_REMINDER_HOURS_GATE_ENABLED", True):
+        return None
+    if not _GYM_REMINDER_RE.search(text or ""):
+        return None
+    try:
+        from gym_beats import campus_gym_user
+        if not campus_gym_user(user):
+            return None
+        from integrations import rsf
+    except Exception as e:  # noqa: BLE001 — never block a reminder on the gate
+        logger.warning("GYM_HOURS_ADJUSTER_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return None
+    lead = int(getattr(config, "GYM_SESSION_MIN_BEFORE_CLOSE_MIN", 90))
+    return lambda cand: rsf.fit_session_start(cand, lead)
+
+
+def gym_hours_note(fire_utc_naive: datetime, local_time: str, tz: ZoneInfo) -> str | None:
+    """'rsf closes at 6pm sat, so it's set for 4:30pm' when the first fire isn't at the
+    asked-for clock time; None when it is."""
+    local = fire_utc_naive.replace(tzinfo=timezone.utc).astimezone(tz)
+    if local.strftime("%H:%M") == _norm_hhmm(local_time):
+        return None
+    from integrations import rsf
+    return (f"rsf closes at {rsf.closing_text(local.weekday())} {local.strftime('%a').lower()}, "
+            f"so it's set for {_fmt_time(local.strftime('%H:%M'))}")
+
+
 def _next_for_row(user, row: Reminder, tz: ZoneInfo, *, after: datetime | None = None) -> datetime | None:
     """Re-arm helper: the right next instant for any recurring row (interval or weekly)."""
     if row.every_hours:
         ws, we = interval_window(user, row)
         return next_interval_fire_at(tz, row.every_hours, ws, we, after=after)
     if row.recur_days:
-        return next_fire_at(tz, row.local_time, row.recur_days, after=after)
+        return next_fire_at(tz, row.local_time, row.recur_days, after=after,
+                            adjust=gym_hours_adjuster(user, row.text))
     return None
 
 
@@ -280,16 +325,27 @@ def create_reminder(user_id: int, text: str, local_time: str | None = None, *, d
             row.every_hours = row.window_start = row.window_end = None
             h, mm = parse_local_time(local_time)
             local_norm = f"{h:02d}:{mm:02d}"
-            fire = next_fire_at(tz, local_norm, recur, date_str=date_str)
+            adjust = gym_hours_adjuster(user, text)
+            fire = next_fire_at(tz, local_norm, recur, date_str=date_str, adjust=adjust)
+            if fire is None and adjust is not None and next_fire_at(tz, local_norm, recur, date_str=date_str):
+                from integrations import rsf
+                probe = next_fire_at(tz, local_norm, recur, date_str=date_str).replace(tzinfo=timezone.utc).astimezone(tz)
+                return {"error": f"the rsf is closed then ({probe.strftime('%a').lower()} hours "
+                                 f"{rsf.hours_text(probe.weekday())}) — pick a time inside its hours or another day"}
         if fire is None:
             return {"error": "could not compute a next time"}
+        note = gym_hours_note(fire, local_norm, tz) if (not interval and adjust is not None) else None
         row.text, row.local_time, row.recur_days, row.fire_at, row.active = text[:300], local_norm, recur, fire, True
         row.cancelled_at = None
         session.commit()
-        logger.info("REMINDER_SET user=%s id=%s text=%r at=%s days=%s every_hours=%s fire_at=%s source=%s",
-                    user_id, row.id, text[:60], local_norm, recur, interval, fire, source)
-        return {"id": row.id, "fire_at": fire, "local_time": local_norm, "recur_days": recur,
-                "every_hours": interval}
+        logger.info("REMINDER_SET user=%s id=%s text=%r at=%s days=%s every_hours=%s fire_at=%s source=%s%s",
+                    user_id, row.id, text[:60], local_norm, recur, interval, fire, source,
+                    f" gym_hours_fit={note!r}" if note else "")
+        out = {"id": row.id, "fire_at": fire, "local_time": local_norm, "recur_days": recur,
+               "every_hours": interval}
+        if note:
+            out["note"] = note
+        return out
     finally:
         session.close()
 
@@ -710,6 +766,76 @@ def fold_first_water_slot(user_id: int, *, now: datetime | None = None) -> int:
         session.close()
 
 
+def _program_slot_today_utc(user, row: Reminder, tz: ZoneInfo, now: datetime) -> datetime | None:
+    """Today's scheduled instant for a weekly program row (local_time on the local day of
+    `now`), naive UTC — the lateness reference once fire_at has been re-armed by a gate."""
+    hm = parse_local_time(row.local_time)
+    if hm is None:
+        return None
+    local_now = now.replace(tzinfo=timezone.utc).astimezone(tz)
+    slot = local_now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+    return slot.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _program_ping_waits_for_briefing(user, row: Reminder, session, now: datetime) -> bool:
+    """The program's "gym" ping yields while the morning briefing is still owed (live
+    2026-10-30, user 77): a fired `reminder` is a PROACTIVE type, so a ping that lands before
+    the briefing tick arms the anti-stack gate for 180 min and the 90-min morning window closes
+    with no briefing. Only source='program' weekly rows (user-asked reminders named their time),
+    only while _morning_open_signal still renders (window open, nobody has talked since they
+    woke — a sent briefing or their text closes it), only with the heartbeat on. Fail-open → False."""
+    if not (getattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", True)
+            and getattr(config, "HEARTBEAT_ENABLED", True)):
+        return False
+    if row.every_hours or row.source != "program":
+        return False
+    try:
+        from heartbeat import _morning_open_signal
+        return _morning_open_signal(user, session, now=now) is not None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PROGRAM_BRIEFING_WAIT_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
+
+
+def fold_held_program_ping(user_id: int, *, now: datetime | None = None) -> int:
+    """The morning briefing just went out and it names today's session: a program "gym" ping
+    that was HELD for it (deferred_since set today by _program_ping_waits_for_briefing) is
+    covered — today's occurrence is skipped, the row re-arms to its next program day. A ping
+    that was never held (its slot is still ahead) is left alone: a 7:30 briefing and the 8:00
+    "gym" are the normal day. Returns the number of rows folded. `now` naive UTC."""
+    if not getattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", True):
+        return 0
+    now = now or _naive_utcnow()
+    session = get_session()
+    folded = 0
+    try:
+        rows = (session.query(Reminder)
+                .filter(Reminder.user_id == user_id, Reminder.active.is_(True), Reminder.source == "program",
+                        Reminder.every_hours.is_(None), Reminder.deferred_since.isnot(None))
+                .all())
+        if not rows:
+            return 0
+        user = session.get(User, user_id)
+        tz = _tz(user.user_timezone if user else None)
+        from timefmt import local_day_bounds
+        d0, d1 = local_day_bounds(user, now=now.replace(tzinfo=timezone.utc))
+        for row in rows:
+            if not (d0 <= row.deferred_since < d1) or row.fire_at is None or not (d0 <= row.fire_at < d1):
+                continue                                   # a hold from another day: not ours to fold
+            nxt = _next_for_row(user, row, tz, after=max(now, row.fire_at))
+            if not nxt:
+                continue
+            logger.info("PROGRAM_PING_FOLDED user=%s id=%s was=%s now=%s", user_id, row.id, row.fire_at, nxt)
+            row.fire_at = nxt
+            row.deferred_since = None
+            folded += 1
+        if folded:
+            session.commit()
+        return folded
+    finally:
+        session.close()
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -770,6 +896,29 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 logger.info("REMINDER_GATED user=%s id=%s reason=quiet_hours until=%s next=%s source=program",
                             row.user_id, rid, until, row.fire_at if row.active else None)
                 return False
+        # The program's ping yields while the morning briefing is still owed (live 2026-10-30,
+        # user 77: "gym time" at quiet-end + 5 → proactive_stack on every tick → no briefing).
+        # Re-arm a few minutes out and mark the hold; the sent briefing folds it
+        # (fold_held_program_ping). Past the lateness tolerance today's occurrence is noise → skip.
+        if _program_ping_waits_for_briefing(user, row, session, now):
+            late_ok = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_QUIET_CATCHUP_MIN", 90)))
+            wait = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_BRIEFING_WAIT_MIN", 10)))
+            slot = _program_slot_today_utc(user, row, tz, now)
+            if slot is not None and now - slot > late_ok:
+                nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                row.deferred_since = None
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=briefing_owed_too_late slot=%s next=%s source=program",
+                            row.user_id, rid, slot, row.fire_at if row.active else None)
+                return False
+            if row.deferred_since is None:
+                row.deferred_since = now
+            row.fire_at = now + wait
+            session.commit()
+            logger.info("REMINDER_GATED user=%s id=%s reason=briefing_owed next=%s deferred_since=%s source=program",
+                        row.user_id, rid, row.fire_at, row.deferred_since)
+            return False
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
         if row.every_hours and _first_slot_waits_for_briefing(user, row, session, now):

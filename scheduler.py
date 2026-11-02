@@ -209,6 +209,11 @@ def start_scheduler():
     from workouts.session_ops import abandon_stale
     scheduler.add_job(abandon_stale, trigger=_IT2(minutes=30), id="workout_abandon_sweep",
                       replace_existing=True, coalesce=True, max_instances=1)
+    # A session they only said ("hitting the gym now, just doing upper", card declined) becomes a
+    # workouts row once it has clearly happened — the briefings count from that table.
+    from workouts.said_sessions import settle_said_sessions
+    scheduler.add_job(settle_said_sessions, trigger=_IT2(minutes=config.SAID_SESSION_SWEEP_MINUTES),
+                      id="said_session_settle", replace_existing=True, coalesce=True, max_instances=1)
 
     # RSF crowd meter (series §2): poll during hours, refresh hours weekly, propose
     # beats every 15 min, poll open queue tickets every 60s. All flag-gated inside.

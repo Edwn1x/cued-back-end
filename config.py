@@ -478,6 +478,13 @@ UPDATE_REMINDER_TOOL_ENABLED = os.getenv("UPDATE_REMINDER_TOOL_ENABLED", "true")
 # tomorrow (source='rearm'), so "go tomorrow" is a row, not a sentence (live 2026-10-17, u40).
 REMINDER_GYM_REARM_ENABLED = os.getenv("REMINDER_GYM_REARM_ENABLED", "true").lower() == "true"
 REMINDER_GYM_REARM_AFTER_H = float(os.getenv("REMINDER_GYM_REARM_AFTER_H", "3"))
+# A session they only SAID ("hitting the gym now, just doing upper", card declined, no sets) is
+# written as a completed workouts row once it has clearly happened (at_gym state older than
+# SETTLE_MIN, no row and no card session that local day) — the briefings count from that table.
+# Live 2026-10-30 (user 51): Friday's upper never logged → "pull's been 8 days" on Monday.
+SAID_SESSION_SETTLE_ENABLED = os.getenv("SAID_SESSION_SETTLE_ENABLED", "true").lower() == "true"
+SAID_SESSION_SETTLE_MIN = int(os.getenv("SAID_SESSION_SETTLE_MIN", "90"))
+SAID_SESSION_SWEEP_MINUTES = int(os.getenv("SAID_SESSION_SWEEP_MINUTES", "15"))
 # Logger bridge (rewrite/logger-bridge): a user still logging food in another app.
 # Gates the OTHER FOOD LOGGER context block, the diary-screenshot rules, parity
 # lines and nightly graduation. Live 2026-09-19: user 32's MyNetDiary screenshot
@@ -708,6 +715,14 @@ GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
 # emptying (Sun 2026-10-05 22:25→22:55 PT: 59→0%) read as "dead" at 22:51 for a 23:00 close
 # — users 42 and 47 got a nudge nobody could act on. Line beats are unaffected.
 GYM_DEAD_MIN_MINUTES_TO_CLOSE = int(os.getenv("GYM_DEAD_MIN_MINUTES_TO_CLOSE", "60"))
+# A session needs this long before the RSF closes. A gym reminder (model / program / rearm /
+# onboarding) for someone who trains there is fitted inside opening hours per occurrence — pulled
+# back to close − N min, or opening when it's too early; the coach's context carries today's +
+# tomorrow's hours; the briefing's suggested gym window is clipped to them. Live Sat 2026-10-31
+# (user 51): "6pm still the plan?" for a pull, re-armed Sun 6pm — the RSF closes at 6 on Saturdays.
+GYM_SESSION_MIN_BEFORE_CLOSE_MIN = int(os.getenv("GYM_SESSION_MIN_BEFORE_CLOSE_MIN", "90"))
+GYM_REMINDER_HOURS_GATE_ENABLED = os.getenv("GYM_REMINDER_HOURS_GATE_ENABLED", "true").lower() == "true"
+RSF_HOURS_CONTEXT_ENABLED = os.getenv("RSF_HOURS_CONTEXT_ENABLED", "true").lower() == "true"
 # Who a campus-gym beat is FOR (live 2026-10-28 20:05: a home-gym desk worker with a chest cough and a
 # user silent 36 days both got "gym's quiet right now. quick push?"): home_gym / bodyweight equipment,
 # a known non-student, a user quiet longer than MAX_QUIET_DAYS, or a training pause → no beat.
@@ -999,6 +1014,17 @@ ACTIVITY_WAKE_MIN_SHIFT_MIN = int(os.getenv("ACTIVITY_WAKE_MIN_SHIFT_MIN", "45")
 # occurrence is skipped. User-asked reminders are never gated — they named the time.
 PROGRAM_REMINDER_QUIET_GATE_ENABLED = os.getenv("PROGRAM_REMINDER_QUIET_GATE_ENABLED", "true").lower() == "true"
 PROGRAM_REMINDER_QUIET_CATCHUP_MIN = int(os.getenv("PROGRAM_REMINDER_QUIET_CATCHUP_MIN", "90"))
+# …and yields to a morning briefing that is still owed (live 2026-10-30, user 77: the quiet-gated
+# "gym time" catch-up landed at quiet-end + 5 = 09:04, a `reminder` is a PROACTIVE type, so the
+# anti-stack gate held every heartbeat tick for 180 min while the 90-min morning window closed —
+# no briefing; same shape as the setup sweep on 2026-10-12 and the water GIF's first slot). While
+# heartbeat._morning_open_signal still renders, the ping re-arms WAIT_MIN out instead of sending
+# and marks itself held; the sent briefing (it names today's session) folds the HELD ping — today's
+# occurrence is skipped. A ping that was never held (7:30 briefing, 8:00 "gym") is untouched. No
+# briefing by the time the window closes → it fires inside the QUIET_CATCHUP_MIN lateness
+# tolerance, else today's occurrence is skipped as noise. User-asked reminders never wait.
+PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED = os.getenv("PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", "true").lower() == "true"
+PROGRAM_REMINDER_BRIEFING_WAIT_MIN = int(os.getenv("PROGRAM_REMINDER_BRIEFING_WAIT_MIN", "10"))
 # A quiet-gated water slot re-arms to quiet-end + INTERVAL_GATE_CATCHUP_MIN when that comes before
 # the next grid slot (off = the next grid slot, as before: the first slot of the day was always lost).
 INTERVAL_QUIET_CATCHUP_ENABLED = os.getenv("INTERVAL_QUIET_CATCHUP_ENABLED", "true").lower() == "true"
