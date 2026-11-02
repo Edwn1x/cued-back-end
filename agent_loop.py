@@ -1981,6 +1981,17 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 context += rsf_context_block(_occ.now())   # '' when no fresh reading
             except Exception as e:  # noqa: BLE001
                 logger.warning("RSF_CONTEXT_FAILED user=%s err=%s", user.id, e)
+        # …and the RSF's hours, so a time it proposes or agrees to is one the doors are open
+        # for (live Sat 2026-10-31, user 51: a 6pm pull on a 6pm-close day).
+        if _gym_mentioned(combined_body, user):
+            try:
+                from gym_beats import rsf_hours_line
+                from timefmt import resolve_tz
+                hl = rsf_hours_line(user, datetime.now(timezone.utc).astimezone(resolve_tz(user)))
+                if hl:
+                    context += "\n\n" + hl
+            except Exception as e:  # noqa: BLE001
+                logger.warning("RSF_HOURS_CONTEXT_FAILED user=%s err=%s", user.id, e)
     finally:
         session.close()
 

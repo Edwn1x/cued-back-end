@@ -156,6 +156,50 @@ def minutes_to_close(now_local: datetime) -> int:
     return max(0, left)
 
 
+def campus_gym_user(user) -> bool:
+    """Does this person train at the RSF? The profile part of audience_skip_reason (no
+    session, no silence check): not a home / bodyweight setup, no other gym on file, not a
+    KNOWN non-student, and in Berkeley's timezone. Used by the reminder hours gate and the
+    hours context line — a wrong 'yes' only costs an hours note nobody needed."""
+    equipment = (getattr(user, "equipment", None) or "").strip().lower()
+    if equipment in ("home_gym", "bodyweight"):
+        return False
+    gym = (getattr(user, "which_gym", None) or "").strip().lower()
+    if gym and gym != "rsf":
+        return False
+    if (getattr(user, "user_timezone", None) or "America/Los_Angeles") != "America/Los_Angeles":
+        return False
+    if (getattr(user, "occupation", None) or "").strip():
+        from connect_offers import is_student
+        if not is_student(user):
+            return False
+    return True
+
+
+def rsf_hours_line(user, now_local: datetime) -> str | None:
+    """One code line for the coach's context: today's RSF hours, how long till close, and
+    tomorrow's — so a proposed session time is never one the doors are shut for (live Sat
+    2026-10-31, user 51: "6pm still the plan?" for a pull; the RSF closes at 6 on Saturdays).
+    None for people who don't train there or when the flag is off."""
+    if not getattr(config, "RSF_HOURS_CONTEXT_ENABLED", True) or not campus_gym_user(user):
+        return None
+    from integrations import rsf
+    lead = int(getattr(config, "GYM_SESSION_MIN_BEFORE_CLOSE_MIN", 90))
+    today = now_local.strftime("%a").lower()
+    tmrw_dt = now_local + timedelta(days=1)
+    line = f"today ({today}): {rsf.hours_text(now_local.weekday())}"
+    if (now_local.month, now_local.day) in rsf.CLOSED_DATES:
+        line = f"today ({today}): closed"
+    elif rsf.is_open(now_local):
+        left = minutes_to_close(now_local)
+        line += f", closes in {left // 60}h {left % 60:02d}m" if left >= 60 else f", closes in {left} min"
+    else:
+        line += ", closed right now"
+    line += f"; tomorrow ({tmrw_dt.strftime('%a').lower()}): {rsf.hours_text(tmrw_dt.weekday())}"
+    return (f"## RSF HOURS\n{line}. A session needs {lead} min before close — never propose, confirm "
+            f"or ask about a start time the doors are shut for; say the closing time instead.")
+
+
 def audience_skip_reason(user, session) -> str | None:
     """Why a campus-gym beat is not for this user, or None. Live 2026-10-28 20:05: user 80
     (home gym, desk job, a week-long chest cough) and user 42 (silent 36 days) both got

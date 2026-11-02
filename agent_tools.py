@@ -163,7 +163,11 @@ LOG_WORKOUT_TOOL = {
         "already_done=true when they REPORT a session they already finished ('this morning i did', "
         "'earlier', 'just got back from the gym') rather than logging live from the gym: a card "
         "planned for later never absorbs a report — the report gets its own log and the waiting "
-        "card is re-planned to the next day (the result says so)."
+        "card is re-planned to the next day (the result says so). "
+        "A plain 'at the gym now / hitting upper' with no sets and no card: don't call this and don't "
+        "ask for sets — code writes that session itself about 90 min later if no card opens. "
+        "But when YOU concede a session you have no row for ('did i not go friday?' → 'yeah u did'), "
+        "call this with that date in the same turn: agreeing in text leaves the briefing wrong tomorrow."
     ),
     "input_schema": {
         "type": "object",
@@ -1955,7 +1959,8 @@ def handle_set_reminder(user_id: int, tool_input: dict, *, message_id=None) -> s
         from models import Reminder
         row = session.get(Reminder, r["id"])
         user = session.get(User, user_id)
-        return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None), user)}"
+        note = f"; {r['note']} — tell them that in your reply" if r.get("note") else ""
+        return f"ok: reminder set — {describe(row, _tz(user.user_timezone if user else None), user)}{note}"
     finally:
         session.close()
 

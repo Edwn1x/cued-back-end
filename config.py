@@ -478,6 +478,13 @@ UPDATE_REMINDER_TOOL_ENABLED = os.getenv("UPDATE_REMINDER_TOOL_ENABLED", "true")
 # tomorrow (source='rearm'), so "go tomorrow" is a row, not a sentence (live 2026-10-17, u40).
 REMINDER_GYM_REARM_ENABLED = os.getenv("REMINDER_GYM_REARM_ENABLED", "true").lower() == "true"
 REMINDER_GYM_REARM_AFTER_H = float(os.getenv("REMINDER_GYM_REARM_AFTER_H", "3"))
+# A session they only SAID ("hitting the gym now, just doing upper", card declined, no sets) is
+# written as a completed workouts row once it has clearly happened (at_gym state older than
+# SETTLE_MIN, no row and no card session that local day) — the briefings count from that table.
+# Live 2026-10-30 (user 51): Friday's upper never logged → "pull's been 8 days" on Monday.
+SAID_SESSION_SETTLE_ENABLED = os.getenv("SAID_SESSION_SETTLE_ENABLED", "true").lower() == "true"
+SAID_SESSION_SETTLE_MIN = int(os.getenv("SAID_SESSION_SETTLE_MIN", "90"))
+SAID_SESSION_SWEEP_MINUTES = int(os.getenv("SAID_SESSION_SWEEP_MINUTES", "15"))
 # Logger bridge (rewrite/logger-bridge): a user still logging food in another app.
 # Gates the OTHER FOOD LOGGER context block, the diary-screenshot rules, parity
 # lines and nightly graduation. Live 2026-09-19: user 32's MyNetDiary screenshot
@@ -708,6 +715,14 @@ GYM_DEAD_MAX_PCT = int(os.getenv("GYM_DEAD_MAX_PCT", "35"))
 # emptying (Sun 2026-10-05 22:25→22:55 PT: 59→0%) read as "dead" at 22:51 for a 23:00 close
 # — users 42 and 47 got a nudge nobody could act on. Line beats are unaffected.
 GYM_DEAD_MIN_MINUTES_TO_CLOSE = int(os.getenv("GYM_DEAD_MIN_MINUTES_TO_CLOSE", "60"))
+# A session needs this long before the RSF closes. A gym reminder (model / program / rearm /
+# onboarding) for someone who trains there is fitted inside opening hours per occurrence — pulled
+# back to close − N min, or opening when it's too early; the coach's context carries today's +
+# tomorrow's hours; the briefing's suggested gym window is clipped to them. Live Sat 2026-10-31
+# (user 51): "6pm still the plan?" for a pull, re-armed Sun 6pm — the RSF closes at 6 on Saturdays.
+GYM_SESSION_MIN_BEFORE_CLOSE_MIN = int(os.getenv("GYM_SESSION_MIN_BEFORE_CLOSE_MIN", "90"))
+GYM_REMINDER_HOURS_GATE_ENABLED = os.getenv("GYM_REMINDER_HOURS_GATE_ENABLED", "true").lower() == "true"
+RSF_HOURS_CONTEXT_ENABLED = os.getenv("RSF_HOURS_CONTEXT_ENABLED", "true").lower() == "true"
 # Who a campus-gym beat is FOR (live 2026-10-28 20:05: a home-gym desk worker with a chest cough and a
 # user silent 36 days both got "gym's quiet right now. quick push?"): home_gym / bodyweight equipment,
 # a known non-student, a user quiet longer than MAX_QUIET_DAYS, or a training pause → no beat.

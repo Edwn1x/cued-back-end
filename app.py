@@ -1563,7 +1563,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         if config.AT_GYM_SKIPS_PAST_REPORT_ENABLED and is_past_workout_report(body):
             logger.info("AT_GYM_SKIPPED_PAST_REPORT user=%s body=%r", user.id, (body or "")[:80])
         else:
-            set_session_state(user.id, "at_gym")
+            set_session_state(user.id, "at_gym", said=(body or "")[:200])
         threading.Thread(target=maybe_infer_training_days, args=(user.id,), daemon=True).start()
 
     if message_type == "workout_request" and _pb_onboarded:
@@ -1577,7 +1577,9 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     if message_type == "freeform" and _pb_onboarded and not is_workout_confirmed_today(user.id):
         if _is_training_day_confirmation(body):
             confirm_workout_today(user.id)
-            set_session_state(user.id, "at_gym")
+            # `said` lets workouts.said_sessions write the row later if no card ever opens
+            # (live 2026-10-30, user 51: "hitting the gym now, just doing upper" → never logged).
+            set_session_state(user.id, "at_gym", said=(body or "")[:200])
             logger.info(f"Training day confirmed via freeform reply for {user.name}")
             threading.Thread(
                 target=maybe_infer_training_days,
