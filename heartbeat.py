@@ -1095,6 +1095,38 @@ _BRIEFING_INSTRUCTION = (
     "to speak.")
 
 
+def _clip_blocks_to_gym_hours(user, blocks: list) -> list:
+    """The briefing's "suggested gym window" is a free block AND the RSF being open: each
+    block is clipped to that day's hours (close − GYM_SESSION_MIN_BEFORE_CLOSE_MIN is the
+    latest start) and dropped under an hour. People who don't train there keep their
+    blocks untouched. Fail-open."""
+    try:
+        from gym_beats import campus_gym_user
+        if not blocks or not getattr(config, "RSF_HOURS_CONTEXT_ENABLED", True) or not campus_gym_user(user):
+            return blocks
+        from integrations import rsf
+        from schedule import FreeBlock
+        from timefmt import to_local
+        lead = int(getattr(config, "GYM_SESSION_MIN_BEFORE_CLOSE_MIN", 90))
+        out = []
+        for b in blocks:
+            lo_local = to_local(b.start, user)
+            if (lo_local.month, lo_local.day) in rsf.CLOSED_DATES:
+                continue
+            o, c = rsf.hours_for(lo_local.weekday())
+            open_local = lo_local.replace(hour=o, minute=0, second=0, microsecond=0)
+            close_local = lo_local.replace(hour=c, minute=0, second=0, microsecond=0)
+            lo = max(b.start, open_local.astimezone(timezone.utc).replace(tzinfo=None))
+            hi = min(b.end, close_local.astimezone(timezone.utc).replace(tzinfo=None))
+            if hi - lo < timedelta(minutes=60) or (hi - timedelta(minutes=lead)) < lo:
+                continue
+            out.append(FreeBlock(start=lo, end=hi))
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("BRIEFING_GYM_CLIP_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return blocks
+
+
 def _daily_briefing_parts(user, session, *, now=None) -> dict:
     """The daily-briefing material as STRUCTURED parts (code-computed, read-only, fail-open —
     a failing piece is simply None/empty). Rendered into the MORNING OPEN block by
@@ -1150,6 +1182,7 @@ def _daily_briefing_parts(user, session, *, now=None) -> dict:
         from schedule import free_blocks, timed_schedule
         if timed_schedule(user.id, session, now=now):
             blocks = [b for b in free_blocks(user.id, session, now=now) if b.minutes >= 60]
+            blocks = _clip_blocks_to_gym_hours(user, blocks)
             if blocks:
                 b = blocks[0]
                 parts["gym_window"] = (_cal_local_clock(b.start, user), _cal_local_clock(b.end, user))
@@ -1832,6 +1865,15 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
             parts.append(pb)
     except Exception as e:  # noqa: BLE001
         logger.warning("PROGRAM_CONTEXT_FAILED user=%s err=%s", user.id, e)
+    # The RSF's hours (today + tomorrow) for people who train there — a proposed or confirmed
+    # session time is never one the doors are shut for (live Sat 2026-10-31, user 51).
+    try:
+        from gym_beats import rsf_hours_line
+        hl = rsf_hours_line(user, _now_aware().astimezone(_user_tz(user)))
+        if hl:
+            parts.append(hl)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("RSF_HOURS_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     day_start = _local_day_start_utc(user)
     todays_out = (session.query(Message)

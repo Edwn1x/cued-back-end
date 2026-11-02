@@ -57,6 +57,49 @@ def hours_for(weekday: int) -> tuple[int, int]:
     return _state["hours"].get(weekday, (7, 23))
 
 
+def _to_local(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).astimezone(TZ)
+    return dt.astimezone(TZ)
+
+
+def _clock(h: int, m: int = 0) -> str:
+    suffix = "am" if h < 12 else "pm"
+    hh = h % 12 or 12
+    return f"{hh}:{m:02d}{suffix}" if m else f"{hh}{suffix}"
+
+
+def hours_text(weekday: int) -> str:
+    """'8am–6pm' for the weekday (Mon=0)."""
+    o, c = hours_for(weekday)
+    return f"{_clock(o)}–{_clock(c)}"
+
+
+def closing_text(weekday: int) -> str:
+    return _clock(hours_for(weekday)[1])
+
+
+def fit_session_start(local_dt: datetime, lead_min: int) -> datetime | None:
+    """The instant a session can START on local_dt's day given the RSF hours: unchanged when
+    it is open then and at least lead_min before close; moved to opening when it's before
+    the doors open; pulled back to close − lead_min when it's too late (live Sat 2026-10-31:
+    a 6pm pull proposed on a day the RSF closes at 6). None on a closed date. Aware or
+    naive-UTC input; aware America/Los_Angeles output."""
+    local = _to_local(local_dt)
+    if (local.month, local.day) in CLOSED_DATES:
+        return None
+    o, c = hours_for(local.weekday())
+    opening = local.replace(hour=o, minute=0, second=0, microsecond=0)
+    latest = local.replace(hour=c, minute=0, second=0, microsecond=0) - timedelta(minutes=int(lead_min))
+    if latest < opening:
+        return None
+    if local < opening:
+        return opening
+    if local > latest:
+        return latest
+    return local
+
+
 _HOURS_RE = re.compile(r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s*[–-]\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday))?\s*[:\s]\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\s*[–-]\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)", re.I)
 _DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
