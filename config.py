@@ -723,6 +723,9 @@ GYM_DEAD_MIN_MINUTES_TO_CLOSE = int(os.getenv("GYM_DEAD_MIN_MINUTES_TO_CLOSE", "
 GYM_SESSION_MIN_BEFORE_CLOSE_MIN = int(os.getenv("GYM_SESSION_MIN_BEFORE_CLOSE_MIN", "90"))
 GYM_REMINDER_HOURS_GATE_ENABLED = os.getenv("GYM_REMINDER_HOURS_GATE_ENABLED", "true").lower() == "true"
 RSF_HOURS_CONTEXT_ENABLED = os.getenv("RSF_HOURS_CONTEXT_ENABLED", "true").lower() == "true"
+# users.which_gym had no writer (all live rows empty, 2026-11-02). Their own text naming the RSF
+# puts 'rsf' on file once; the hours fit / hours context / briefing clip apply ONLY to those users.
+GYM_ON_FILE_FROM_TEXT_ENABLED = os.getenv("GYM_ON_FILE_FROM_TEXT_ENABLED", "true").lower() == "true"
 # Who a campus-gym beat is FOR (live 2026-10-28 20:05: a home-gym desk worker with a chest cough and a
 # user silent 36 days both got "gym's quiet right now. quick push?"): home_gym / bodyweight equipment,
 # a known non-student, a user quiet longer than MAX_QUIET_DAYS, or a training pause → no beat.

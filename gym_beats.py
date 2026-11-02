@@ -157,30 +157,20 @@ def minutes_to_close(now_local: datetime) -> int:
 
 
 def campus_gym_user(user) -> bool:
-    """Does this person train at the RSF? The profile part of audience_skip_reason (no
-    session, no silence check): not a home / bodyweight setup, no other gym on file, not a
-    KNOWN non-student, and in Berkeley's timezone. Used by the reminder hours gate and the
-    hours context line — a wrong 'yes' only costs an hours note nobody needed."""
-    equipment = (getattr(user, "equipment", None) or "").strip().lower()
-    if equipment in ("home_gym", "bodyweight"):
-        return False
-    gym = (getattr(user, "which_gym", None) or "").strip().lower()
-    if gym and gym != "rsf":
-        return False
-    if (getattr(user, "user_timezone", None) or "America/Los_Angeles") != "America/Los_Angeles":
-        return False
-    if (getattr(user, "occupation", None) or "").strip():
-        from connect_offers import is_student
-        if not is_student(user):
-            return False
-    return True
+    """Is the RSF their gym? ONLY when it's on file (users.which_gym == 'rsf', written by
+    gym_on_file from their own words) — founder 2026-11-02: "this only applies if their gym is
+    actually rsf". The beats' audience gate (audience_skip_reason) keeps its looser
+    unknown-passes reading; this one gates the hours fit, the hours context and the
+    briefing's window clip."""
+    from gym_on_file import trains_at_rsf
+    return trains_at_rsf(user)
 
 
 def rsf_hours_line(user, now_local: datetime) -> str | None:
     """One code line for the coach's context: today's RSF hours, how long till close, and
     tomorrow's — so a proposed session time is never one the doors are shut for (live Sat
     2026-10-31, user 51: "6pm still the plan?" for a pull; the RSF closes at 6 on Saturdays).
-    None for people who don't train there or when the flag is off."""
+    None unless the RSF is their gym on file, or when the flag is off."""
     if not getattr(config, "RSF_HOURS_CONTEXT_ENABLED", True) or not campus_gym_user(user):
         return None
     from integrations import rsf

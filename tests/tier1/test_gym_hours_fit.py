@@ -17,7 +17,7 @@ import pytest
 from tests.factories import make_user
 
 TZ = ZoneInfo("America/Los_Angeles")
-CAMPUS = dict(user_timezone="America/Los_Angeles", equipment="full_gym", occupation="student",
+CAMPUS = dict(user_timezone="America/Los_Angeles", equipment="full_gym", which_gym="rsf",
               current_split="ppl", split_pointer_day="push")
 
 
@@ -86,14 +86,19 @@ def test_the_rearm_for_tomorrow_fits_too_and_a_fine_time_is_untouched(db, defaul
     assert _to_local(r2["fire_at"]) == _local(2026, 10, 31, 15) and "note" not in r2
 
 
-def test_non_gym_text_home_gym_and_other_gym_users_keep_their_time(db, default_hours, monkeypatch):
+def test_only_a_user_whose_gym_on_file_is_the_rsf_gets_the_fit(db, default_hours, monkeypatch):
+    """Founder 2026-11-02: "this only applies if their gym is actually rsf" — a full_gym student
+    with NO gym on file keeps 6pm; so do a home gym, another gym, and non-gym text."""
     import reminders
     fri_1730 = _local(2026, 10, 30, 17, 30)
     monkeypatch.setattr(reminders, "_naive_utcnow", lambda: _naive(fri_1730))
     campus = make_user(db, **CAMPUS)
     r = reminders.create_reminder(campus.id, "call mom", "18:00", date_str="saturday")
     assert _to_local(r["fire_at"]) == _local(2026, 10, 31, 18) and "note" not in r
-    home = make_user(db, **dict(CAMPUS, equipment="home_gym"), phone="+15550003001")
+    unknown = make_user(db, **dict(CAMPUS, which_gym=None, occupation="student"), phone="+15550003000")
+    r = reminders.create_reminder(unknown.id, "pull day, rsf", "18:00", date_str="saturday")
+    assert _to_local(r["fire_at"]) == _local(2026, 10, 31, 18) and "note" not in r
+    home = make_user(db, **dict(CAMPUS, which_gym=None, equipment="home_gym"), phone="+15550003001")
     r = reminders.create_reminder(home.id, "pull day", "18:00", date_str="saturday")
     assert _to_local(r["fire_at"]) == _local(2026, 10, 31, 18) and "note" not in r
     other = make_user(db, **dict(CAMPUS, which_gym="24 hour fitness"), phone="+15550003002")
@@ -144,8 +149,8 @@ def test_rsf_hours_line_for_campus_users_only(db, default_hours):
     assert "tomorrow (sun): 8am–11pm" in line and "90 min before close" in line
     late = rsf_hours_line(u, _local(2026, 10, 31, 19))
     assert "closed right now" in late
-    home = make_user(db, **dict(CAMPUS, equipment="home_gym"), phone="+15550003003")
-    assert rsf_hours_line(home, _local(2026, 10, 31, 15)) is None
+    nogym = make_user(db, **dict(CAMPUS, which_gym=None), phone="+15550003003")
+    assert rsf_hours_line(nogym, _local(2026, 10, 31, 15)) is None
 
 
 def test_heartbeat_context_carries_the_hours(db, default_hours, monkeypatch):
@@ -172,7 +177,43 @@ def test_briefing_gym_window_is_clipped_to_the_hours(db, default_hours):
     # 5pm–8pm: the hour before close isn't a session (latest start 4:30) → dropped, next block wins
     out = _clip_blocks_to_gym_hours(u, [FreeBlock(start=sat(17), end=sat(20)), FreeBlock(start=sat(9), end=sat(11))])
     assert len(out) == 1 and _to_local(out[0].start).hour == 9
-    # home gym: untouched
-    home = make_user(db, **dict(CAMPUS, equipment="home_gym"), phone="+15550003004")
+    # no gym on file: untouched
+    nogym = make_user(db, **dict(CAMPUS, which_gym=None), phone="+15550003004")
     blocks = [FreeBlock(start=sat(17), end=sat(20))]
-    assert _clip_blocks_to_gym_hours(home, blocks) == blocks
+    assert _clip_blocks_to_gym_hours(nogym, blocks) == blocks
+
+
+# ─── 4. the one writer of which_gym ──────────────────────────────────────────
+
+@pytest.mark.parametrize("text,names", [
+    ("Line at rsf?", True), ("rsf's packed rn", True), ("heading to the RSF after data", True),
+    ("i go to the rec sports facility", True),
+    ("not the rsf, i lift at my apartment gym", False), ("no rsf for me", False),
+    ("hitting the gym now", False), ("rsfs", False),
+])
+def test_names_the_rsf(text, names):
+    from gym_on_file import names_the_rsf
+    assert names_the_rsf(text) is names, text
+
+
+def test_their_own_words_put_the_rsf_on_file_once(db, driver, anthropic_stub, monkeypatch, caplog):
+    import config, logging
+    from models import User
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(config, "SINGLE_AGENT_LOOP_ENABLED", False)
+    u = make_user(db, **dict(CAMPUS, which_gym=None))
+    anthropic_stub.reply_with(lambda kw: "ok")
+    driver.send(u, "Line at rsf?")
+    db.expire_all()
+    assert db.get(User, u.id).which_gym == "rsf" and "GYM_ON_FILE" in caplog.text
+    # never overwritten
+    other = make_user(db, **dict(CAMPUS, which_gym="24 hour fitness"), phone="+15550003005")
+    driver.send(other, "rsf is closed so im at 24")
+    db.expire_all()
+    assert db.get(User, other.id).which_gym == "24 hour fitness"
+    # and only from their words — the flag off writes nothing
+    monkeypatch.setattr(config, "GYM_ON_FILE_FROM_TEXT_ENABLED", False)
+    third = make_user(db, **dict(CAMPUS, which_gym=None), phone="+15550003006")
+    driver.send(third, "rsf's dead")
+    db.expire_all()
+    assert db.get(User, third.id).which_gym is None

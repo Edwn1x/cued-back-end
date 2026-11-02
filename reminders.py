@@ -237,10 +237,10 @@ def next_interval_fire_at(tz: ZoneInfo, every_hours, window_start: str, window_e
 
 
 def gym_hours_adjuster(user, text: str):
-    """The per-occurrence fit for a gym reminder of someone who trains at the RSF: a start
+    """The per-occurrence fit for a gym reminder of someone whose gym on file is the RSF: a start
     inside opening hours and GYM_SESSION_MIN_BEFORE_CLOSE_MIN before close, else pulled back
     to the latest start that day (closed date → that day is skipped). None when the gate is
-    off, the text isn't about training, or they don't train there. Live Sat 2026-10-31
+    off, the text isn't about training, or the RSF isn't on file as their gym. Live Sat 2026-10-31
     (user 51): a 6pm pull reminder on a day the RSF closes at 6 — "they closed"."""
     if not getattr(config, "GYM_REMINDER_HOURS_GATE_ENABLED", True):
         return None
