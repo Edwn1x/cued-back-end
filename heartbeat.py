@@ -1933,6 +1933,10 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     # folds the pending first GIF slot once the text is sent (reminders.fold_first_water_slot).
     if briefing and briefing.get("water"):
         search["briefing_water"] = True
+    # A morning-open briefing tick, whatever it carries: a sent one folds the program's "gym"
+    # ping that was held for it (reminders.fold_held_program_ping).
+    if briefing is not None:
+        search["morning_open"] = True
 
     prompt = HEARTBEAT_PROMPT
     if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
@@ -2108,6 +2112,12 @@ def heartbeat_tick(user_id: int):
                 fold_first_water_slot(user_id, now=_naive_utcnow())
             except Exception as e:  # noqa: BLE001 — the briefing is sent; a fold failure is a log line
                 logger.warning("WATER_FIRST_SLOT_FOLD_FAILED user=%s err=%s", user_id, e)
+        if search.get("morning_open") and getattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", True):
+            try:
+                from reminders import fold_held_program_ping
+                fold_held_program_ping(user_id, now=_naive_utcnow())
+            except Exception as e:  # noqa: BLE001 — same: the briefing is sent
+                logger.warning("PROGRAM_PING_FOLD_FAILED user=%s err=%s", user_id, e)
     else:
         if config.TYPING_INDICATOR_HEARTBEAT:
             from typing_indicator import typing_stop

@@ -710,6 +710,76 @@ def fold_first_water_slot(user_id: int, *, now: datetime | None = None) -> int:
         session.close()
 
 
+def _program_slot_today_utc(user, row: Reminder, tz: ZoneInfo, now: datetime) -> datetime | None:
+    """Today's scheduled instant for a weekly program row (local_time on the local day of
+    `now`), naive UTC — the lateness reference once fire_at has been re-armed by a gate."""
+    hm = parse_local_time(row.local_time)
+    if hm is None:
+        return None
+    local_now = now.replace(tzinfo=timezone.utc).astimezone(tz)
+    slot = local_now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+    return slot.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _program_ping_waits_for_briefing(user, row: Reminder, session, now: datetime) -> bool:
+    """The program's "gym" ping yields while the morning briefing is still owed (live
+    2026-10-30, user 77): a fired `reminder` is a PROACTIVE type, so a ping that lands before
+    the briefing tick arms the anti-stack gate for 180 min and the 90-min morning window closes
+    with no briefing. Only source='program' weekly rows (user-asked reminders named their time),
+    only while _morning_open_signal still renders (window open, nobody has talked since they
+    woke — a sent briefing or their text closes it), only with the heartbeat on. Fail-open → False."""
+    if not (getattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", True)
+            and getattr(config, "HEARTBEAT_ENABLED", True)):
+        return False
+    if row.every_hours or row.source != "program":
+        return False
+    try:
+        from heartbeat import _morning_open_signal
+        return _morning_open_signal(user, session, now=now) is not None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PROGRAM_BRIEFING_WAIT_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
+
+
+def fold_held_program_ping(user_id: int, *, now: datetime | None = None) -> int:
+    """The morning briefing just went out and it names today's session: a program "gym" ping
+    that was HELD for it (deferred_since set today by _program_ping_waits_for_briefing) is
+    covered — today's occurrence is skipped, the row re-arms to its next program day. A ping
+    that was never held (its slot is still ahead) is left alone: a 7:30 briefing and the 8:00
+    "gym" are the normal day. Returns the number of rows folded. `now` naive UTC."""
+    if not getattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", True):
+        return 0
+    now = now or _naive_utcnow()
+    session = get_session()
+    folded = 0
+    try:
+        rows = (session.query(Reminder)
+                .filter(Reminder.user_id == user_id, Reminder.active.is_(True), Reminder.source == "program",
+                        Reminder.every_hours.is_(None), Reminder.deferred_since.isnot(None))
+                .all())
+        if not rows:
+            return 0
+        user = session.get(User, user_id)
+        tz = _tz(user.user_timezone if user else None)
+        from timefmt import local_day_bounds
+        d0, d1 = local_day_bounds(user, now=now.replace(tzinfo=timezone.utc))
+        for row in rows:
+            if not (d0 <= row.deferred_since < d1) or row.fire_at is None or not (d0 <= row.fire_at < d1):
+                continue                                   # a hold from another day: not ours to fold
+            nxt = _next_for_row(user, row, tz, after=max(now, row.fire_at))
+            if not nxt:
+                continue
+            logger.info("PROGRAM_PING_FOLDED user=%s id=%s was=%s now=%s", user_id, row.id, row.fire_at, nxt)
+            row.fire_at = nxt
+            row.deferred_since = None
+            folded += 1
+        if folded:
+            session.commit()
+        return folded
+    finally:
+        session.close()
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -770,6 +840,29 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 logger.info("REMINDER_GATED user=%s id=%s reason=quiet_hours until=%s next=%s source=program",
                             row.user_id, rid, until, row.fire_at if row.active else None)
                 return False
+        # The program's ping yields while the morning briefing is still owed (live 2026-10-30,
+        # user 77: "gym time" at quiet-end + 5 → proactive_stack on every tick → no briefing).
+        # Re-arm a few minutes out and mark the hold; the sent briefing folds it
+        # (fold_held_program_ping). Past the lateness tolerance today's occurrence is noise → skip.
+        if _program_ping_waits_for_briefing(user, row, session, now):
+            late_ok = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_QUIET_CATCHUP_MIN", 90)))
+            wait = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_BRIEFING_WAIT_MIN", 10)))
+            slot = _program_slot_today_utc(user, row, tz, now)
+            if slot is not None and now - slot > late_ok:
+                nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                row.deferred_since = None
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=briefing_owed_too_late slot=%s next=%s source=program",
+                            row.user_id, rid, slot, row.fire_at if row.active else None)
+                return False
+            if row.deferred_since is None:
+                row.deferred_since = now
+            row.fire_at = now + wait
+            session.commit()
+            logger.info("REMINDER_GATED user=%s id=%s reason=briefing_owed next=%s deferred_since=%s source=program",
+                        row.user_id, rid, row.fire_at, row.deferred_since)
+            return False
         # Interval (water) rhythm pings defer through quiet hours / calendar blocks —
         # the same gates the heartbeat honours. Re-arm to the next slot, don't send.
         if row.every_hours and _first_slot_waits_for_briefing(user, row, session, now):
