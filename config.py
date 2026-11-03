@@ -546,6 +546,12 @@ SAVE_MENU_TOOL_ENABLED = os.getenv("SAVE_MENU_TOOL_ENABLED", "true").lower() == 
 SAVED_MENU_TTL_DAYS = int(os.getenv("SAVED_MENU_TTL_DAYS", "14"))
 SAVED_MENU_MAX = int(os.getenv("SAVED_MENU_MAX", "5"))            # most-recent N kept
 SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
+# A menu the COACH found (a public page / picture, source_url set) is saved only after the
+# user confirms it's theirs — the same code-enforced confirm gate the calendar writes use
+# (live 2026-11-02, user 77: the public Grizzly Chefs page shows lunch + dinner; his house
+# gets breakfast + dinner — an unconfirmed save would have been wrong food with confidence).
+# A menu THEY sent still saves on the spot.
+SAVE_MENU_CONFIRM_WEB_ENABLED = os.getenv("SAVE_MENU_CONFIRM_WEB_ENABLED", "true").lower() == "true"
 # Weather (open-meteo — FREE, NO API KEY): a concise weather line in the morning brief
 # plus a reactive get_weather answer + a correctable set_weather_location. Location
 # resolves per-user (weather_lat/lng/place) else the Berkeley default. Short HTTP timeout,

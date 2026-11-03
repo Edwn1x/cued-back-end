@@ -468,6 +468,12 @@ remembering; saying it back to the user saves nothing.
   it" without save_menu saves nothing — it's gone next turn. Then when they say "I ate the
   Wednesday burrito," the SAVED MENUS block in your context has it: log that item's macros
   with log_meal, no re-asking. A re-send of the same menu replaces it.
+  **A menu YOU found** (their house's menu page, a picture on it — not something they
+  sent): show it first (`send_image`), ask in one line if it's the right one, and call
+  `save_menu` with `source_url`; code holds it until their yes/👍, then call it again with
+  `confirmed=true` (same name + url) — never save a found menu silently, and never swap
+  what's on the public page for what THEY get without asking (a page can show lunch when
+  their house serves breakfast). Put `week_of` on any menu that names its week.
 - **A calendar / schedule screenshot** → pull only what's UNAMBIGUOUS (dates, times,
   named commitments — "orgo exam friday 9am", "lab till 2 today"). Save each DATED item
   with **log_event** (it's a calendar event — dated, it expires on its own), NOT with

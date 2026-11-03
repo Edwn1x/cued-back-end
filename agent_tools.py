@@ -3863,12 +3863,23 @@ SAVE_MENU_TOOL = {
         "(required) plus `calories`, `protein_g`, `carbs_g`, `fat_g`, and a short `note` "
         "(key ingredients) when they're on the menu — put macros you can actually read, omit "
         "the ones you can't (don't invent them). Re-sending the same menu REPLACES it. This "
-        "is for reference options to log from, NOT a meal they ate (that's log_meal)."
+        "is for reference options to log from, NOT a meal they ate (that's log_meal). "
+        "`week_of` (YYYY-MM-DD) when the menu names its week — it stops showing once that week "
+        "is over. A menu YOU found (a public page / picture, not something they sent): pass "
+        "`source_url`; code then holds it until they confirm it's theirs — send_image the picture, "
+        "ask ('this week's house menu, that right?'), and on their yes/👍 call save_menu again "
+        "with confirmed=true (same name + source_url; the items you staged are kept, you may "
+        "pass them again or leave them out). A menu THEY sent saves on the spot (no source_url)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "short menu label, e.g. 'frat house lunch'"},
+            "week_of": {"type": "string", "description": "optional YYYY-MM-DD of the week the menu covers"},
+            "source_url": {"type": "string",
+                           "description": "optional: the public page / picture url YOU read it from (not for menus they sent)"},
+            "confirmed": {"type": "boolean",
+                          "description": "true only in a LATER turn after they said yes to a menu you found (source_url set)"},
             "items": {
                 "type": "array",
                 "items": {
@@ -3885,25 +3896,59 @@ SAVE_MENU_TOOL = {
                 },
             },
         },
-        "required": ["name", "items"],
+        "required": ["name"],
     },
 }
 
 
 def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Persist a user-sent menu so later 'I ate the <item>' logs from its macros."""
-    name = str((tool_input or {}).get("name") or "").strip()
-    items = (tool_input or {}).get("items")
+    """Persist a menu so later 'I ate the <item>' logs from its macros. One they SENT saves
+    now. One the coach FOUND (source_url) waits on their yes behind the shared confirm gate;
+    the staged proposal carries the items, so the confirming call only names it."""
+    from saved_menus import save_menu_for_user, parse_week_of, _clean_items, week_label
+    ti = tool_input or {}
+    name = str(ti.get("name") or "").strip()
+    items = ti.get("items")
+    source_url = str(ti.get("source_url") or "").strip() or None
+    week_of = parse_week_of(ti.get("week_of"))
     if not name:
         return "error: name is required (a short menu label)"
-    if not isinstance(items, list) or not items:
+    if items is not None and not isinstance(items, list):
+        return "error: items must be a list of {item, ...} entries"
+    proposal = None
+    if source_url and config.SAVE_MENU_CONFIRM_WEB_ENABLED:
+        from saved_menus import _key as _menu_key
+        staged = _staged_proposal(user_id, "save_menu", {"name": name, "source_url": source_url})
+        if not items and staged:
+            items = staged.get("items")          # confirm by reference: the staged payload
+            week_of = week_of or staged.get("week_of")
+        cleaned = _clean_items(items or [])
+        if not cleaned:
+            return "error: items must be a non-empty list of {item, ...} entries (nothing staged to confirm)"
+        n = len(cleaned)
+        wk = week_label(week_of)
+        reflect = (f"saving '{name}' ({n} item{'s' if n != 1 else ''}{', ' + wk if wk else ''}) from "
+                   f"{source_url} as their menu")
+        proposal = {"kind": "save_menu", "slot": _menu_key(name), "name": name, "source_url": source_url,
+                    "week_of": week_of, "items": cleaned, "n": n}
+        gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+                             verb="saved", tool="save_menu", reflect=reflect,
+                             match_keys=("name", "source_url"), reflect_note="",
+                             hint=" Show them the picture (send_image) if you haven't, and ask if it's the right one.")
+        if gate:
+            return gate
+        items = cleaned
+    if not items:
         return "error: items must be a non-empty list of {item, ...} entries"
-    from saved_menus import save_menu_for_user
-    saved_count, total = save_menu_for_user(user_id, name, items)
+    saved_count, total = save_menu_for_user(user_id, name, items, source_url=source_url, week_of=week_of)
     if saved_count == 0:
         return "error: no usable items — each needs at least an `item` name"
-    logger.info("SAVE_MENU user=%s name=%r items=%d total_menus=%d", user_id, name, saved_count, total)
-    return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
+    if proposal:
+        _clear_pending(user_id, proposal)
+    logger.info("SAVE_MENU user=%s name=%r items=%d total_menus=%d source=%s week_of=%s",
+                user_id, name, saved_count, total, "web" if source_url else "user", week_of)
+    extra = f" ({week_label(week_of)})" if week_of else ""
+    return f"ok: saved '{name}'{extra} with {saved_count} items — you can log from it when they eat one"
 
 
 STOCK_PANTRY_TOOL = {
@@ -5131,7 +5176,8 @@ def _merge_guests(existing: list[dict] | None, new_emails: list[str]) -> list[di
 
 
 def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, verb: str,
-                  tool: str, reflect: str, match_keys: tuple, hint: str = "") -> str | None:
+                  tool: str, reflect: str, match_keys: tuple, hint: str = "",
+                  reflect_note: str = " (with am/pm)") -> str | None:
     """Confirm-before-write, enforced in CODE (live 2026-10-02: the model called create with
     confirmed=true on the first go and wrote an 8am block for a bare "8" said at 4am; the
     user meant 8pm). The staged proposal is persisted on the user; confirmed=true is honoured
@@ -5140,7 +5186,11 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
     replied. Returns None when the write may proceed, else the message to hand the model.
     `verb` = 'created' / 'deleted' / 'moved' (past tense, for 'not <verb> yet').
     Several proposals can be staged at once (one per target, see _pending_slot); a confirm
-    matches ITS entry, and the write's handler clears only that entry (_clear_pending)."""
+    matches ITS entry, and the write's handler clears only that entry (_clear_pending).
+    GENERAL, not calendar-only (2026-11-02): any write that should wait for a yes stages a
+    proposal with a `kind` and a `slot`; the staged entry can carry the PAYLOAD (a menu's
+    items read off a picture) so the confirming call only has to name it — see
+    _staged_proposal. `reflect_note` is the parenthetical after "reflect that back"."""
     proposal = dict(proposal)
     proposal.setdefault("kind", "create")
     proposal["turn"] = str(message_id) if message_id is not None else None
@@ -5157,8 +5207,8 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
                 f"all of them (then call each tool again with confirmed=true).")
     if not confirmed:
         _set_pending_calendar_event(user_id, proposal)
-        return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back "
-                f"(with am/pm), and once they say yes call {tool} again with confirmed=true in that "
+        return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back"
+                f"{reflect_note}, and once they say yes call {tool} again with confirmed=true in that "
                 f"next turn.{hint}{also}")
     pending = next((p for p in items if (p.get("kind") or "create") == proposal["kind"]
                     and all(p.get(k) == proposal.get(k) for k in match_keys)), None)
@@ -6186,6 +6236,8 @@ _PENDING_KEEP = timedelta(hours=24)     # OTHER entries older than this are drop
 def _pending_slot(p: dict) -> tuple:
     """What a proposal is ABOUT — a revised proposal for the same target replaces the old one."""
     kind = p.get("kind") or "create"
+    if p.get("slot"):                       # non-calendar proposals name their target
+        return (kind, str(p.get("slot")))
     if p.get("event_id") or p.get("query"):
         return (kind, str(p.get("event_id") or p.get("query")))
     # a create: same title on the same LOCAL day is the same thing (a new time replaces it);
@@ -6224,6 +6276,19 @@ def _save_pending(user_id: int, items: list) -> None:
         session.commit()
     finally:
         session.close()
+
+
+def _staged_proposal(user_id: int, kind: str, match: dict) -> dict | None:
+    """The staged (unexpired) proposal of `kind` whose fields equal `match` — so a confirming
+    call can take its PAYLOAD from what was staged instead of re-deriving it."""
+    for p in reversed(_pending_list(user_id)):
+        if (p.get("kind") or "create") != kind:
+            continue
+        if all(p.get(k) == v for k, v in match.items()):
+            age = _pending_age(p)
+            if age is not None and age <= _PENDING_STALE:
+                return p
+    return None
 
 
 def _get_pending_calendar_event(user_id: int) -> dict | None:
