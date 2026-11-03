@@ -490,6 +490,26 @@ CAPABILITIES: list[Capability] = [
         used=None,
         reveal_when="they paste a link, mention a syllabus or a course site, or ask when something is due / what a class's exam dates are",
     ),
+    Capability(
+        id="send_image",
+        what="when the thing is a picture — a menu, a flyer, a map, a posted schedule — i'll send you the picture itself, not read it out",
+        how="ask to see it ('send me the menu', 'show me the map') or let me show you what i found before you say yes to it",
+        tools=("send_image",),
+        enabled=lambda u: config.SEND_IMAGE_TOOL_ENABLED,
+        relevance=lambda u: 3,
+        used=None,
+        reveal_when="never as a pitch — it shows up when you have a picture worth showing; say 'sent it above' and move on",
+    ),
+    Capability(
+        id="sources",
+        what="tell me where your stuff is posted once — your house's menu page, a syllabus, your team's schedule — and i'll check it myself from then on",
+        how="send me the link (or the provider's name) and say how often it changes; i'll open it on schedule and show you what's new before saving anything",
+        tools=("save_source",),
+        enabled=lambda u: config.SOURCES_ENABLED,
+        relevance=lambda u: 6 if (getattr(u, "cooking_situation", "") or "") in ("mix", "provided") or "house" in ((getattr(u, "food_context", "") or "").lower()) else 3,
+        used=lambda session, u: bool(getattr(u, "sources", None)),
+        reveal_when="they send a branded menu / schedule photo for the second time, or say 'i'll send you the menu every week'",
+    ),
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.
