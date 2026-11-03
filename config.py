@@ -135,6 +135,21 @@ TASKS_MAX_TOKENS = int(os.getenv("TASKS_MAX_TOKENS", "6000"))
 # fallback names a short topic or nothing — never the model-written goal (live 2026-10-28, user 77:
 # "couldn't find it — find short PT/coach reference videos for … text Alexey one link per move").
 TASK_HONEST_FALLBACK_ENABLED = os.getenv("TASK_HONEST_FALLBACK_ENABLED", "true").lower() == "true"
+# Sources on file (sources.py): the coach remembers WHERE their stuff is posted — the house
+# menu page, a syllabus, a club calendar — as structured rows the fetch tools can open, and
+# routines (agent_tasks kind "routine"): a recurring check of a source that fetches cheaply
+# (fingerprint; no model call when nothing changed), and when something new is posted runs
+# a bounded model turn that may SHOW (send_image) and STAGE (save_menu with source_url — the
+# confirm gate holds it) and asks in one line; the user's yes in a normal turn does the write.
+# A background run can never commit (handlers ignore confirmed=true under the background note).
+# Founder 2026-11-02: routines may text the user unprompted ("more useful, will actually see
+# the light of day"). ROUTINES_ENABLED needs TASKS_ENABLED (same sweep).
+SOURCES_ENABLED = os.getenv("SOURCES_ENABLED", "false").lower() == "true"
+ROUTINES_ENABLED = os.getenv("ROUTINES_ENABLED", "false").lower() == "true"
+SOURCES_MAX_PER_USER = int(os.getenv("SOURCES_MAX_PER_USER", "12"))
+ROUTINE_RUN_AT_LOCAL = os.getenv("ROUTINE_RUN_AT_LOCAL", "09:30")          # default local check time
+ROUTINE_RETRY_HOURS = float(os.getenv("ROUTINE_RETRY_HOURS", "6"))          # re-look when nothing new yet
+ROUTINE_CYCLE_WINDOW_HOURS = float(os.getenv("ROUTINE_CYCLE_WINDOW_HOURS", "30"))  # keep re-looking this long
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"

@@ -3706,6 +3706,58 @@ def handle_send_image(user_id: int, tool_input: dict, *, message_id=None) -> str
     return out
 
 
+SAVE_SOURCE_TOOL = {
+    "name": "save_source",
+    "description": (
+        "Put WHERE their stuff is posted on file: the provider / page behind a recurring thing "
+        "they showed you — the house or dining menu page (e.g. 'Grizzly Chefs weekly menu'), a "
+        "syllabus or course site, a club's event page, a team schedule. Call it when you have the "
+        "url (they texted it, it's printed on the picture, or ONE web_search found the official "
+        "page) and the thing will come again. `recheck`: 'weekly' for a weekly menu / schedule, "
+        "'daily' for a daily one, 'none' for a one-time reference (syllabus). With a recheck on, "
+        "code opens the page on schedule and, when something new is posted, shows it to them and "
+        "stages it for their yes (you don't have to ask them to send it again); say that in one "
+        "line. Re-saving the same url updates it; recheck 'none' stops the checks. Never save a "
+        "url you haven't opened or found — guess nothing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "what it is, e.g. 'Grizzly Chefs weekly menu'"},
+            "url": {"type": "string", "description": "the public page url"},
+            "purpose": {"type": "string", "description": "2-5 words: 'house menu', 'CS61C syllabus', 'club events'"},
+            "recheck": {"type": "string", "enum": ["none", "daily", "weekly"], "description": "default none"},
+        },
+        "required": ["name", "url"],
+    },
+}
+
+
+def handle_save_source(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    if not config.SOURCES_ENABLED:
+        return "error: sources on file are not enabled"
+    from sources import save_source_for_user
+    ti = tool_input or {}
+    r = save_source_for_user(user_id, name=str(ti.get("name") or ""), url=str(ti.get("url") or ""),
+                             purpose=str(ti.get("purpose") or ""), recheck=str(ti.get("recheck") or "none"))
+    if "error" in r:
+        return f"error: {r['error']}"
+    row, routine = r["row"], r.get("routine")
+    line = f"ok: on file — {row['name']} ({row['url']})"
+    if routine:
+        from agent_tasks import _tz, _fmt_local
+        session = get_session()
+        try:
+            tz = _tz(session.get(User, user_id))
+        finally:
+            session.close()
+        line += (f"; code will check it {row['recheck']} (first look {_fmt_local(routine['run_at'], tz)}) and, when "
+                 "something new is posted, show it to them and ask before saving. Tell them that in one line.")
+    elif row["recheck"] == "none":
+        line += "; no re-checks (open it with fetch_page when they ask)"
+    return line
+
+
 # ─── schedule_task / cancel_task (deferred work — agent_tasks.py) ─────────────
 SCHEDULE_TASK_TOOL = {
     "name": "schedule_task",
@@ -3931,7 +3983,8 @@ def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
                    f"{source_url} as their menu")
         proposal = {"kind": "save_menu", "slot": _menu_key(name), "name": name, "source_url": source_url,
                     "week_of": week_of, "items": cleaned, "n": n}
-        gate = _confirm_gate(user_id, proposal, confirmed=bool(ti.get("confirmed")), message_id=message_id,
+        confirmed = bool(ti.get("confirmed")) and not get_turn_note(user_id, "background")
+        gate = _confirm_gate(user_id, proposal, confirmed=confirmed, message_id=message_id,
                              verb="saved", tool="save_menu", reflect=reflect,
                              match_keys=("name", "source_url"), reflect_note="",
                              hint=" Show them the picture (send_image) if you haven't, and ask if it's the right one.")
@@ -5196,6 +5249,7 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
     proposal["turn"] = str(message_id) if message_id is not None else None
     proposal["staged_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     proposal["reflect"] = reflect
+    proposal["tool"] = tool
     slot = _pending_slot(proposal)
     items = _pending_list(user_id)
     others = [p for p in items if _pending_slot(p) != slot
@@ -6291,6 +6345,29 @@ def _staged_proposal(user_id: int, kind: str, match: dict) -> dict | None:
     return None
 
 
+def render_pending_block(user_id: int) -> str:
+    """The staged-but-unwritten proposals, for context: a yes/👍 in THIS turn is only actionable
+    if the model knows what is waiting and which call commits it (a routine's ask arrives
+    between turns, so the conversation alone may not carry the exact name + url)."""
+    items = [p for p in _pending_list(user_id)
+             if (age := _pending_age(p)) is not None and age <= _PENDING_STALE]
+    if not items:
+        return ""
+    lines = ["## WAITING ON THEIR YES (staged, NOT written — if their latest message is a yes / 👍 to one "
+             "of these, call that tool again with confirmed=true and the same identifying fields; a no "
+             "or a correction means don't call it, or stage the corrected one)"]
+    for p in items[-6:]:
+        tool = p.get("tool") or {"create": "create_calendar_event", "delete": "delete_calendar_event",
+                                 "delete_all": "delete_calendar_event", "move": "move_calendar_event",
+                                 "rsvp": "rsvp_calendar_event", "save_menu": "save_menu"}.get(p.get("kind") or "create", "")
+        what = p.get("reflect") or p.get("summary") or p.get("title") or p.get("name") or ""
+        ident = ""
+        if (p.get("kind") or "") == "save_menu":
+            ident = f" — confirm with save_menu(name={p.get('name')!r}, source_url={p.get('source_url')!r}, confirmed=true)"
+        lines.append(f"- {tool}: {what}{ident}")
+    return "\n".join(lines)
+
+
 def _get_pending_calendar_event(user_id: int) -> dict | None:
     """The most recently staged proposal (None when nothing waits)."""
     items = _pending_list(user_id)
@@ -6336,6 +6413,7 @@ _HANDLERS = {
     "fetch_page": handle_fetch_page,
     "send_image": handle_send_image,
     "schedule_task": handle_schedule_task,
+    "save_source": handle_save_source,
     "cancel_task": handle_cancel_task,
     "set_weather_location": handle_set_weather_location,
     "set_card_delivery": handle_set_card_delivery,

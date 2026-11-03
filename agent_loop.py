@@ -382,6 +382,19 @@ def build_loop_context(user, session) -> str:
         menus = render_menus_block(getattr(user, "saved_menus", None))
         if menus:
             parts.append(menus)
+    if config.SOURCES_ENABLED:
+        from sources import render_sources_block
+        srcs = render_sources_block(getattr(user, "sources", None))
+        if srcs:
+            parts.append(srcs)
+    # Staged-but-unwritten proposals (the confirm gate): a yes in this turn must be actionable.
+    try:
+        from agent_tools import render_pending_block
+        pend = render_pending_block(user.id)
+        if pend:
+            parts.append(pend)
+    except Exception as e:  # noqa: BLE001 — context must never fail on this
+        logger.warning("PENDING_BLOCK_FAILED user=%s err=%s", getattr(user, "id", None), e)
 
     # Cross-turn image persistence: what recent inbound photos showed (the image itself
     # is gone next turn — this is the durable trace so a later turn references it instead
@@ -2260,6 +2273,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # a map) as its own bubble; transport + caps in outbound_images.py.
         from agent_tools import SEND_IMAGE_TOOL
         tools.append(SEND_IMAGE_TOOL)
+    if config.SOURCES_ENABLED:
+        # WHERE their stuff is posted, on file (sources.py) — and the routine that re-checks it.
+        from agent_tools import SAVE_SOURCE_TOOL
+        tools.append(SAVE_SOURCE_TOOL)
     if config.SEND_CONNECT_LINK_TOOL_ENABLED:
         # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
         # identity/voice.md; the link bubble is an allowed URL exception.
