@@ -3653,6 +3653,59 @@ def handle_fetch_page(user_id: int, tool_input: dict, *, message_id=None) -> str
     return webfetch.render_for_model(res)
 
 
+# fetch_page lets the coach SEE a picture; send_image puts one in the thread. Transport,
+# caps, repeat guard and the honest fallback live in outbound_images.py.
+SEND_IMAGE_TOOL = {
+    "name": "send_image",
+    "description": (
+        "Send the user a PICTURE from a public image url, as its own bubble in the thread. "
+        "Use it when the thing is visual and seeing it beats reading it out: the house / dining "
+        "menu you just opened with fetch_page (so they can confirm it's the right one), a flyer, "
+        "a map, a posted schedule, an event poster. Typical flow: fetch_page the page → it lists "
+        "pictures → fetch_page the likely picture to LOOK at it → if it's the one, send_image that "
+        "same url → your reply is the one sentence around it (what it is + the question or the "
+        "point). Rules: only an image url (not a page); only a picture you have actually looked at "
+        "this turn or that they asked for; never a photo THEY sent you; at most one or two per "
+        "reply; don't resend one that's already in the thread. The result tells you whether the "
+        "picture itself landed or only a link to it — say which, never claim they can see it when "
+        "the result says link. If this tool isn't available you CANNOT send pictures — say so, "
+        "don't paste a url."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "the public image url (the one fetch_page listed or opened)"},
+            "caption": {"type": "string",
+                        "description": "optional 2-8 word label for the thread log, e.g. 'grizzly chefs menu week of 11/2'"},
+        },
+        "required": ["url"],
+    },
+}
+
+
+def handle_send_image(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Send a picture from a public url (outbound_images.send_image_url). Per-turn cap on
+    the turn state so a reply can't become a photo dump; every failure is an honest line."""
+    if not config.SEND_IMAGE_TOOL_ENABLED:
+        return "error: sending pictures is not enabled"
+    st = _TURN_STATE.get(user_id)
+    if st is not None:
+        n = int(st.get("images_sent", 0))
+        if n >= config.SEND_IMAGE_MAX_PER_TURN:
+            return (f"error: picture limit reached for this reply ({config.SEND_IMAGE_MAX_PER_TURN}) — "
+                    "answer in text")
+    url = str((tool_input or {}).get("url") or "").strip()
+    caption = str((tool_input or {}).get("caption") or "").strip()
+    if not url:
+        return "error: url is required (a public image url)"
+    from outbound_images import send_image_url
+    out = send_image_url(user_id, url, caption=caption)
+    if st is not None and out.startswith("ok:"):
+        st["images_sent"] = int(st.get("images_sent", 0)) + 1
+    logger.info("SEND_IMAGE user=%s ok=%s url=%r caption=%r", user_id, out.startswith("ok:"), url[-80:], caption)
+    return out
+
+
 # ─── schedule_task / cancel_task (deferred work — agent_tasks.py) ─────────────
 SCHEDULE_TASK_TOOL = {
     "name": "schedule_task",
@@ -6216,6 +6269,7 @@ _HANDLERS = {
     "stock_pantry": handle_stock_pantry,
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
+    "send_image": handle_send_image,
     "schedule_task": handle_schedule_task,
     "cancel_task": handle_cancel_task,
     "set_weather_location": handle_set_weather_location,

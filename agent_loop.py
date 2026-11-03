@@ -2255,6 +2255,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # a link the user texted. Envelope in webfetch.py; per-turn cap on the turn state.
         from agent_tools import FETCH_PAGE_TOOL
         tools.append(FETCH_PAGE_TOOL)
+    if config.SEND_IMAGE_TOOL_ENABLED:
+        # Put a PICTURE from a public url in the thread (the menu it just read, a flyer,
+        # a map) as its own bubble; transport + caps in outbound_images.py.
+        from agent_tools import SEND_IMAGE_TOOL
+        tools.append(SEND_IMAGE_TOOL)
     if config.SEND_CONNECT_LINK_TOOL_ENABLED:
         # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
         # identity/voice.md; the link bubble is an allowed URL exception.

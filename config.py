@@ -401,6 +401,13 @@ FETCH_PAGE_IMAGE_MAX_EDGE = int(os.getenv("FETCH_PAGE_IMAGE_MAX_EDGE", "1568")) 
 FETCH_PAGE_IMAGE_MAX_SEND_BYTES = int(os.getenv("FETCH_PAGE_IMAGE_MAX_SEND_BYTES", str(3_500_000)))
 FETCH_PAGE_PDF_MAX_BYTES = int(os.getenv("FETCH_PAGE_PDF_MAX_BYTES", str(10_000_000)))
 FETCH_PAGE_MAX_MEDIA_LISTED = int(os.getenv("FETCH_PAGE_MAX_MEDIA_LISTED", "8"))               # images + pdf links on a page
+# send_image — the coach puts a PICTURE from a public url in the thread (outbound_images.py):
+# the house menu PNG it just read, a flyer, a map, a posted schedule. Same fetch envelope
+# as reading; iMessage attachment / SMS MMS; per-turn cap + repeat guard; a refused
+# attachment degrades to the link as text, never to a claim.
+SEND_IMAGE_TOOL_ENABLED = os.getenv("SEND_IMAGE_TOOL_ENABLED", "false").lower() == "true"
+SEND_IMAGE_MAX_PER_TURN = int(os.getenv("SEND_IMAGE_MAX_PER_TURN", "2"))
+SEND_IMAGE_REPEAT_MIN = int(os.getenv("SEND_IMAGE_REPEAT_MIN", "30"))
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
