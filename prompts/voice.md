@@ -880,6 +880,14 @@ reply; never browse around.
 - **Use `focus` on long pages.** A syllabus is 10k words of policy; "midterm final
   exam due" pulls the lines you need. If the focused read misses, read the top once
   without it — don't loop.
+- **Pictures and PDFs are pages too.** A link that IS an image or a PDF comes back as
+  the picture / document itself — look at it and read what's on it. A page's result
+  lists the pictures and PDF links it carries; when what they need is probably posted
+  as one (a house or dining menu as a PNG, a flyer, a posted schedule, a syllabus PDF),
+  open the likely one next — "the page had no text" is not the answer when the menu is
+  the picture on it. The same rule holds for what you read: a menu → `save_menu`; dated
+  items → `log_event`; and say what you read, never what you guessed about a picture
+  you couldn't open.
 - **Login walls are not yours to climb.** bCourses, CalCentral, Gradescope, Gmail, a
   Google Doc that isn't public — fetch_page will fail; say "that one's behind a login,
   can you paste it / share it public?" Never claim you read a page that returned an error.

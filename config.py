@@ -388,6 +388,19 @@ FETCH_PAGE_MAX_CHARS = int(os.getenv("FETCH_PAGE_MAX_CHARS", "12000"))
 FETCH_PAGE_MAX_REDIRECTS = int(os.getenv("FETCH_PAGE_MAX_REDIRECTS", "5"))
 FETCH_PAGE_CACHE_TTL_S = int(os.getenv("FETCH_PAGE_CACHE_TTL_S", "600"))     # 10 min per-process cache
 FETCH_PAGE_MAX_PER_TURN = int(os.getenv("FETCH_PAGE_MAX_PER_TURN", "3"))
+# fetch_page media: the page the coach needs is often a PICTURE or a PDF, not text — a
+# house menu posted as a PNG (Grizzly Chefs, 2026-11-02), a flyer, a schedule screenshot,
+# a syllabus PDF. With this on, an image / PDF url comes back to the model as an image /
+# document block it can actually look at, and an HTML page lists the content images and
+# PDF links it carries so the coach can open the right one. Bounded: download caps, a
+# long-edge downscale (token cost), a send-size cap, a short list. Off = the old text-only
+# behaviour (images and PDFs refused with a plain reason).
+FETCH_PAGE_MEDIA_ENABLED = os.getenv("FETCH_PAGE_MEDIA_ENABLED", "true").lower() == "true"
+FETCH_PAGE_IMAGE_MAX_BYTES = int(os.getenv("FETCH_PAGE_IMAGE_MAX_BYTES", str(15_000_000)))     # download cap
+FETCH_PAGE_IMAGE_MAX_EDGE = int(os.getenv("FETCH_PAGE_IMAGE_MAX_EDGE", "1568"))                # px, long edge
+FETCH_PAGE_IMAGE_MAX_SEND_BYTES = int(os.getenv("FETCH_PAGE_IMAGE_MAX_SEND_BYTES", str(3_500_000)))
+FETCH_PAGE_PDF_MAX_BYTES = int(os.getenv("FETCH_PAGE_PDF_MAX_BYTES", str(10_000_000)))
+FETCH_PAGE_MAX_MEDIA_LISTED = int(os.getenv("FETCH_PAGE_MAX_MEDIA_LISTED", "8"))               # images + pdf links on a page
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).

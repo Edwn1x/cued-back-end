@@ -3601,6 +3601,11 @@ FETCH_PAGE_TOOL = {
         "place's own page for hours or a menu; an event or club page; or a page web_search "
         "surfaced whose actual contents you need rather than the snippet. Prefer the OFFICIAL "
         "page (the course's own site, the venue's own site, a .edu page). "
+        "PICTURES AND PDFs: a url that IS an image (.png/.jpg) or a PDF comes back as the picture "
+        "/ document itself — look at it and read what's on it (a house menu posted as a PNG, a "
+        "flyer, a schedule screenshot, a syllabus PDF). A page's result lists the pictures and "
+        "PDF links it carries; when the thing they need is probably in one of those (the page text "
+        "is thin and says 'menu' / 'schedule' / 'flyer'), open the likely one next. "
         "Do NOT use it for a general question (that's web_search), for anything behind a "
         "login (bCourses, CalCentral, Gmail — it will fail and you should say so), or to "
         "browse around — one page, maybe two, per reply. "
@@ -3641,9 +3646,10 @@ def handle_fetch_page(user_id: int, tool_input: dict, *, message_id=None) -> str
     url = (tool_input or {}).get("url") or ""
     focus = (tool_input or {}).get("focus") or ""
     res = webfetch.fetch_page(url, focus=focus)
-    logger.info("FETCH_PAGE user=%s ok=%s status=%s chars=%s total=%s truncated=%s focus=%r url=%r err=%r",
-                user_id, res.ok, res.status, len(res.text), res.total_chars, res.truncated,
-                focus, res.final_url or url, res.error)
+    logger.info("FETCH_PAGE user=%s ok=%s kind=%s status=%s chars=%s total=%s truncated=%s media_bytes=%s "
+                "listed=%s focus=%r url=%r err=%r",
+                user_id, res.ok, res.kind, res.status, len(res.text), res.total_chars, res.truncated,
+                len(res.media or b""), len(res.media_links), focus, res.final_url or url, res.error)
     return webfetch.render_for_model(res)
 
 
@@ -6263,7 +6269,10 @@ def turn_wrote(user_id: int) -> bool:
     return bool(_TURN_STATE.get(user_id, {}).get("wrote"))
 
 
-def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> str:
+def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> "str | list":
+    """Run one tool. Returns the tool_result content: a string for almost every tool, or a
+    LIST of content blocks (text + image / document) when a tool hands the model something
+    to look at (fetch_page on a picture / PDF). Both are what the Messages API accepts."""
     handler = _HANDLERS.get(name)
     if handler is None:
         return f"error: unknown tool {name!r}"
@@ -6277,7 +6286,8 @@ def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None)
     # success signal here). Only the turn's own state is touched — never the result.
     st = _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})
     st.setdefault("called", set()).add(name)
-    if name not in READ_ONLY_TOOLS and not str(out or "").lstrip().lower().startswith("error"):
+    is_error = isinstance(out, str) and out.lstrip().lower().startswith("error")
+    if name not in READ_ONLY_TOOLS and not is_error:
         st["wrote"] = True
     return out
 
