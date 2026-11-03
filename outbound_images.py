@@ -32,6 +32,7 @@ import config
 logger = logging.getLogger("cued.outbound_images")
 
 SENT_MARKER_PREFIX = "[sent picture: "
+MMS_MAX_BYTES = 1_000_000      # carriers' practical MMS ceiling; Twilio's own is 5 MB
 
 
 def _utcnow() -> datetime:
@@ -49,7 +50,7 @@ def _sent_recently(user_id: int, url: str, minutes: int) -> bool:
                .filter(Message.user_id == user_id, Message.direction == "out",
                        Message.created_at >= since,
                        Message.body.like(f"{SENT_MARKER_PREFIX}%"),
-                       Message.body.like(f"%{url}%"))
+                       Message.body.contains(url, autoescape=True))   # %3A / _ in a url are not wildcards
                .first())
         return bool(row)
     finally:
@@ -63,6 +64,7 @@ def _ambiguous_dispatch(err) -> bool:
 
 
 def _webp_to_png(data: bytes) -> tuple[bytes, str]:
+    """PNG when it stays under the send cap, else JPEG (a photographic WebP inflates 3-5x as PNG)."""
     try:
         import io
         from PIL import Image
@@ -70,7 +72,11 @@ def _webp_to_png(data: bytes) -> tuple[bytes, str]:
         im.load()
         buf = io.BytesIO()
         (im.convert("RGBA") if im.mode in ("RGBA", "LA", "P") else im.convert("RGB")).save(buf, format="PNG", optimize=True)
-        return buf.getvalue(), "image/png"
+        if len(buf.getvalue()) <= int(config.FETCH_PAGE_IMAGE_MAX_SEND_BYTES):
+            return buf.getvalue(), "image/png"
+        buf = io.BytesIO()
+        im.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
+        return buf.getvalue(), "image/jpeg"
     except Exception as e:  # noqa: BLE001 — send the webp rather than nothing
         logger.info("IMAGE_WEBP_REENCODE_FAILED err=%s", e.__class__.__name__)
         return data, "image/webp"
@@ -129,6 +135,9 @@ def send_image_url(user_id: int, url: str, *, caption: str = "") -> str:
                 raise RuntimeError("imessage pipe is down (outage_active)")
             sid = sms._send_imessage_attachment(phone, media, name, media_type)
         else:
+            if (res.media_bytes_original or len(res.media)) > MMS_MAX_BYTES:
+                # Twilio fetches the ORIGINAL url; carriers drop big MMS silently. The link instead.
+                raise RuntimeError(f"original is {res.media_bytes_original} bytes, over the MMS cap")
             sid = sms._send_single_mms(phone, public_url)
         sms._log_message(user_id, marker, "freeform", channel=channel, provider_sid=sid, delivery_status="sent")
         logger.info("IMAGE_SENT user=%s channel=%s bytes=%s type=%s %sx%s url=%r",

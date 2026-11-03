@@ -92,6 +92,7 @@ class FetchResult:
     media_type: str = ""          # "image/png" / "image/jpeg" / "application/pdf"
     width: int = 0                # image only
     height: int = 0
+    media_bytes_original: int = 0 # size as served (before any downscale) — the MMS path's guard
     media_links: list[dict] = field(default_factory=list)   # text pages: [{kind, url, name}]
 
 
@@ -688,7 +689,7 @@ def _media_result(resp, *, url: str, cur: str, status: int, ctype: str) -> Fetch
             return FetchResult(ok=False, url=url, final_url=cur, status=status, content_type=ctype, error=err)
         return FetchResult(ok=True, url=url, final_url=cur, status=status, content_type=ctype,
                            kind="image", media=out, media_type=out_type, width=w, height=h,
-                           title=_media_name(cur))
+                           media_bytes_original=len(data), title=_media_name(cur))
     return FetchResult(ok=False, url=url, final_url=cur, status=status, content_type=ctype,
                        error=f"that isn't a readable page (content type {ctype.split(';')[0] or 'unknown'})")
 

@@ -54,8 +54,10 @@ def list_sources(saved) -> list[dict]:
     return [dict(s) for s in items if isinstance(s, dict) and s.get("url")]
 
 
-def apply_source(saved, *, name: str, url: str, purpose: str = "", recheck: str = "none") -> tuple[list, dict]:
-    """Pure: add or update the row for `url`. Returns (new_list, the_row)."""
+def apply_source(saved, *, name: str, url: str, purpose: str = "", recheck: str = "none",
+                 evicted: list | None = None) -> tuple[list, dict]:
+    """Pure: add or update the row for `url`. Returns (new_list, the_row). Rows pushed out by
+    the cap are appended to `evicted` (the caller cancels their routines)."""
     items = list_sources(saved)
     recheck = (recheck or "none").strip().lower()
     if recheck not in RECHECKS:
@@ -78,6 +80,8 @@ def apply_source(saved, *, name: str, url: str, purpose: str = "", recheck: str 
     items.append(row)
     cap = int(config.SOURCES_MAX_PER_USER)
     if len(items) > cap:
+        if evicted is not None:
+            evicted.extend(items[:-cap])
         items = items[-cap:]
     return items, row
 
@@ -103,12 +107,20 @@ def save_source_for_user(user_id: int, *, name: str, url: str, purpose: str = ""
         user = session.query(User).filter(User.id == user_id).with_for_update().first()
         if not user:
             return {"error": "user not found"}
-        items, row = apply_source(user.sources, name=name, url=norm, purpose=purpose, recheck=recheck)
+        evicted: list = []
+        items, row = apply_source(user.sources, name=name, url=norm, purpose=purpose, recheck=recheck,
+                                  evicted=evicted)
         user.sources = items
         flag_modified(user, "sources")
         session.commit()
     finally:
         session.close()
+    for gone in evicted:
+        if gone.get("task_id"):
+            from agent_tasks import cancel_task
+            cancel_task(user_id, gone["task_id"])
+            logger.info("SOURCE_EVICTED user=%s id=%s url=%s routine=%s cancelled", user_id, gone.get("id"),
+                        gone.get("url"), gone.get("task_id"))
 
     routine = None
     if config.ROUTINES_ENABLED and config.TASKS_ENABLED:

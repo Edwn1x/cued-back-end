@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
+import time
 import uuid
 
 from datetime import datetime, date, timezone, timedelta
@@ -3428,7 +3429,18 @@ _TURN_STATE: dict = {}
 
 
 def begin_turn(user_id: int) -> None:
-    _TURN_STATE[user_id] = {"reacted": False, "reply_to": None}
+    _TURN_STATE[user_id] = {"reacted": False, "reply_to": None, "started_at": time.monotonic()}
+
+
+def live_turn_in_progress(user_id: int, *, max_age_s: float = 300.0) -> bool:
+    """True while a turn's state for this user is open and young — a background run must
+    not begin_turn over it (that would make the live turn's confirmed=true inert and pop its
+    reacted / reply_to state). A state older than max_age_s is a leak, not a turn."""
+    st = _TURN_STATE.get(user_id)
+    if not st or st.get("background"):
+        return False
+    started = st.get("started_at")
+    return started is not None and (time.monotonic() - started) < max_age_s
 
 
 def pop_turn_state(user_id: int) -> dict:
@@ -3971,8 +3983,14 @@ def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
     if source_url and config.SAVE_MENU_CONFIRM_WEB_ENABLED:
         from saved_menus import _key as _menu_key
         staged = _staged_proposal(user_id, "save_menu", {"name": name, "source_url": source_url})
-        if not items and staged:
-            items = staged.get("items")          # confirm by reference: the staged payload
+        if staged and bool(ti.get("confirmed")):
+            # Confirm by reference: what they said yes to is what was STAGED — the confirming
+            # call's items (re-typed from memory, maybe shortened) and a missing week_of don't
+            # get to change it. A different list is a new proposal: stage it without confirmed.
+            items = staged.get("items")
+            week_of = staged.get("week_of") or week_of
+        elif not items and staged:
+            items = staged.get("items")
             week_of = week_of or staged.get("week_of")
         cleaned = _clean_items(items or [])
         if not cleaned:
@@ -5253,7 +5271,7 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
     slot = _pending_slot(proposal)
     items = _pending_list(user_id)
     others = [p for p in items if _pending_slot(p) != slot
-              and (age := _pending_age(p)) is not None and age <= _PENDING_STALE]
+              and (age := _pending_age(p)) is not None and age <= _pending_stale_for(p)]
     also = ""
     if others:
         names = "; ".join(p.get("reflect") or p.get("summary") or p.get("title") or "" for p in others[-4:])
@@ -5275,7 +5293,7 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
         return (f"not {verb} — nothing was staged. reflect it back first: {reflect}. "
                 f"once they say yes, call again with confirmed=true.{hint}{also}")
     age = _pending_age(pending)
-    if age is None or age > _PENDING_STALE:
+    if age is None or age > _pending_stale_for(pending):
         _set_pending_calendar_event(user_id, proposal)
         return (f"not {verb} — the earlier one is stale. reflect the new one back: {reflect}. "
                 f"once they say yes, call again with confirmed=true.{hint}{also}")
@@ -6285,6 +6303,13 @@ def _parse_iso(s):
 _PENDING_MAX = 8
 _PENDING_STALE = timedelta(hours=3)     # a confirm on anything older is refused ("stale")
 _PENDING_KEEP = timedelta(hours=24)     # OTHER entries older than this are dropped when staging
+# A routine's ask arrives between turns (Monday 09:30) and the yes comes when they look at
+# their phone — hours later. The calendar's 3h window is for a same-conversation confirm.
+_PENDING_STALE_BY_KIND = {"save_menu": timedelta(hours=36)}
+
+
+def _pending_stale_for(p: dict) -> timedelta:
+    return _PENDING_STALE_BY_KIND.get((p or {}).get("kind") or "create", _PENDING_STALE)
 
 
 def _pending_slot(p: dict) -> tuple:
@@ -6340,7 +6365,7 @@ def _staged_proposal(user_id: int, kind: str, match: dict) -> dict | None:
             continue
         if all(p.get(k) == v for k, v in match.items()):
             age = _pending_age(p)
-            if age is not None and age <= _PENDING_STALE:
+            if age is not None and age <= _pending_stale_for(p):
                 return p
     return None
 
@@ -6350,7 +6375,7 @@ def render_pending_block(user_id: int) -> str:
     if the model knows what is waiting and which call commits it (a routine's ask arrives
     between turns, so the conversation alone may not carry the exact name + url)."""
     items = [p for p in _pending_list(user_id)
-             if (age := _pending_age(p)) is not None and age <= _PENDING_STALE]
+             if (age := _pending_age(p)) is not None and age <= _pending_stale_for(p)]
     if not items:
         return ""
     lines = ["## WAITING ON THEIR YES (staged, NOT written — if their latest message is a yes / 👍 to one "

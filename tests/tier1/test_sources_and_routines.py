@@ -369,3 +369,76 @@ def test_prompts_carry_the_source_rule():
     assert "Where their stuff is posted" in voice and "save_source" in voice and "SOURCES ON FILE" in voice
     import agent_tasks
     assert "you cannot confirm it yourself" in agent_tasks._ROUTINE_PROMPT
+
+
+# ─── review fixes (2026-11-02) ───────────────────────────────────────────────
+
+def test_a_routines_staged_menu_survives_an_afternoon_yes(db):
+    """The ask goes out at 09:30 unprompted; the 👍 comes at 13:00. The calendar's 3h stale
+    window would have thrown the staged menu away — menus wait up to 36h."""
+    from agent_tools import handle_save_menu, _pending_list, _save_pending, render_pending_block
+    u = _user(db)
+    handle_save_menu(u.id, {"name": "house menu", "source_url": MENU_IMG, "week_of": "2026-11-02",
+                            "items": [{"item": "Mon dinner: x"}]}, message_id=None)
+    items = _pending_list(u.id)
+    items[0]["staged_at"] = (_utcnow() - timedelta(hours=5)).isoformat()
+    _save_pending(u.id, items)
+    assert "WAITING ON THEIR YES" in render_pending_block(u.id)
+    ok = handle_save_menu(u.id, {"name": "house menu", "source_url": MENU_IMG, "confirmed": True}, message_id="m-yes")
+    assert ok.startswith("ok: saved")
+    # but a calendar-style proposal keeps the 3h rule
+    from agent_tools import _pending_stale_for
+    assert _pending_stale_for({"kind": "create"}) == timedelta(hours=3)
+    assert _pending_stale_for({"kind": "save_menu"}) == timedelta(hours=36)
+
+
+def test_confirm_writes_the_staged_payload_even_when_items_are_repassed_short(db):
+    from agent_tools import handle_save_menu
+    from models import User
+    u = _user(db)
+    handle_save_menu(u.id, {"name": "house menu", "source_url": MENU_IMG, "week_of": "2026-11-02",
+                            "items": [{"item": "Mon dinner: a"}, {"item": "Tue dinner: b"}, {"item": "Wed dinner: c"}]},
+                     message_id="m1")
+    ok = handle_save_menu(u.id, {"name": "house menu", "source_url": MENU_IMG, "confirmed": True,
+                                 "items": [{"item": "Mon dinner: a"}]}, message_id="m2")   # re-typed, shortened, no week_of
+    assert ok.startswith("ok: saved 'house menu' (week of Nov 2) with 3 items")
+    db.expire_all()
+    saved = db.get(User, u.id).saved_menus["house menu"]
+    assert len(saved["items"]) == 3 and saved["week_of"] == "2026-11-02"
+
+
+def test_live_turn_defers_the_routine_and_a_stale_state_does_not(db, anthropic_stub, sms_capture, monkeypatch):
+    import agent_tools
+    from agent_tasks import fire_due
+    _patch_http(monkeypatch, {MENU_PAGE: _Resp(_page())})
+    u = _user(db)
+    tid = _routine(db, u, fp="old")
+    agent_tools.begin_turn(u.id)                       # their reply is mid-loop
+    try:
+        before = _utcnow()
+        assert fire_due() == 0 and not anthropic_stub.calls
+        t = _task(db, tid)
+        assert timedelta(minutes=9) <= (t.run_at - before) <= timedelta(minutes=11)
+        # a leaked state from long ago is not a live turn
+        agent_tools._TURN_STATE[u.id]["started_at"] -= 3600
+        t.run_at = before - timedelta(minutes=1)
+        db.commit()
+        anthropic_stub.push(ToolUse("nothing_to_report", {"reason": "same menu"}, id="n1"))
+        fire_due()
+        assert anthropic_stub.calls
+    finally:
+        agent_tools.pop_turn_state(u.id)
+
+
+def test_evicted_source_loses_its_routine(db, monkeypatch):
+    import agent_tools
+    from models import AgentTask
+    monkeypatch.setattr(config, "SOURCES_MAX_PER_USER", 2)
+    u = _user(db)
+    agent_tools.dispatch_tool("save_source", {"name": "a", "url": "https://a.example/menu", "recheck": "weekly"}, u.id)
+    first_task = _sources(db, u.id)[0]["task_id"]
+    agent_tools.dispatch_tool("save_source", {"name": "b", "url": "https://b.example/menu"}, u.id)
+    agent_tools.dispatch_tool("save_source", {"name": "c", "url": "https://c.example/menu"}, u.id)
+    assert [r["name"] for r in _sources(db, u.id)] == ["b", "c"]
+    db.expire_all()
+    assert db.get(AgentTask, first_task).status == "cancelled"

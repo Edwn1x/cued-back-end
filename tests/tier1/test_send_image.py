@@ -202,3 +202,43 @@ def test_webp_from_a_cdn_goes_out_as_png(db, attachment_ok, monkeypatch):
     assert out.startswith("ok: sent the picture")
     _, data, name, mime = attachment_ok[0]
     assert mime == "image/png" and name.endswith(".png") and data[:4] == b"\x89PNG"
+
+
+def test_repeat_guard_treats_percent_and_underscore_literally(db, attachment_ok, monkeypatch):
+    import agent_tools
+    _patch_http(monkeypatch, default=_Resp(_png(), ctype="image/png"))
+    u = make_user(db, preferred_channel="imessage")
+    agent_tools.begin_turn(u.id)
+    try:
+        # same prefix, different encoded segment: NOT a repeat
+        assert agent_tools.dispatch_tool("send_image", {"url": "https://cdn.example/Fall+11%3A2%3A2026+Menu.png"}, u.id).startswith("ok:")
+        assert agent_tools.dispatch_tool("send_image", {"url": "https://cdn.example/Fall+11%3A9%3A2026+Menu.png"}, u.id).startswith("ok:")
+    finally:
+        agent_tools.pop_turn_state(u.id)
+    assert len(attachment_ok) == 2
+
+
+def test_big_original_does_not_go_as_mms_the_link_does(db, mms_ok, sms_capture, monkeypatch):
+    import agent_tools, outbound_images
+    monkeypatch.setattr(outbound_images, "MMS_MAX_BYTES", 10)        # pretend the carrier cap is tiny
+    _patch_http(monkeypatch, {MENU_URL: _Resp(_png(), ctype="image/png")})
+    u = make_user(db)
+    out = agent_tools.dispatch_tool("send_image", {"url": MENU_URL}, u.id)
+    assert out.startswith("ok:") and "LINK" in out
+    assert not mms_ok and sms_capture[-1][1] == MENU_URL
+
+
+def test_photographic_webp_falls_back_to_jpeg_when_png_is_too_big(db, attachment_ok, monkeypatch):
+    import agent_tools
+    from PIL import Image
+    import random
+    random.seed(1)
+    im = Image.new("RGB", (300, 200))
+    im.putdata([(random.randrange(256), random.randrange(256), random.randrange(256)) for _ in range(300 * 200)])
+    buf = io.BytesIO(); im.save(buf, format="WEBP", quality=60)
+    monkeypatch.setattr(config, "FETCH_PAGE_IMAGE_MAX_SEND_BYTES", 60_000)   # noise PNG blows past this
+    _patch_http(monkeypatch, {"https://cdn.example/photo.webp": _Resp(buf.getvalue(), ctype="image/webp")})
+    u = make_user(db, preferred_channel="imessage")
+    assert agent_tools.dispatch_tool("send_image", {"url": "https://cdn.example/photo.webp"}, u.id).startswith("ok:")
+    _, data, name, mime = attachment_ok[0]
+    assert mime == "image/jpeg" and name.endswith(".jpg")

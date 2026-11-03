@@ -580,6 +580,12 @@ def run_task(task_id: int, now: datetime | None = None) -> bool:
             logger.info("TASK_CANCELLED_GATE user=%s id=%s", row.user_id, task_id)
             return False
         if row.kind == "routine":
+            from agent_tools import live_turn_in_progress
+            if live_turn_in_progress(row.user_id):
+                row.run_at = now + timedelta(minutes=10)
+                session.commit()
+                logger.info("ROUTINE_DEFERRED user=%s id=%s reason=live_turn", row.user_id, task_id)
+                return False
             if not config.ROUTINES_ENABLED:
                 row.run_at = now + timedelta(hours=24)       # parked, not cancelled: flag may return
                 session.commit()
