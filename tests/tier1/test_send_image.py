@@ -189,3 +189,16 @@ def test_tool_description_and_prompt_carry_the_rules():
     voice = open("prompts/voice.md").read()
     assert "send_image" in voice and "Show it when seeing beats reading" in voice
     assert 'never "see the pic" when it was a link' in voice
+
+
+def test_webp_from_a_cdn_goes_out_as_png(db, attachment_ok, monkeypatch):
+    import agent_tools
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 32), (200, 10, 10)).save(buf, format="WEBP")
+    _patch_http(monkeypatch, {"https://cdn.example/menu.webp": _Resp(buf.getvalue(), ctype="image/webp")})
+    u = make_user(db, preferred_channel="imessage")
+    out = agent_tools.dispatch_tool("send_image", {"url": "https://cdn.example/menu.webp"}, u.id)
+    assert out.startswith("ok: sent the picture")
+    _, data, name, mime = attachment_ok[0]
+    assert mime == "image/png" and name.endswith(".png") and data[:4] == b"\x89PNG"

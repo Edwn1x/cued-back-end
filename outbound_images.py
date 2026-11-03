@@ -62,6 +62,20 @@ def _ambiguous_dispatch(err) -> bool:
     return "dispatch may have completed" in str(err).lower()
 
 
+def _webp_to_png(data: bytes) -> tuple[bytes, str]:
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        im.load()
+        buf = io.BytesIO()
+        (im.convert("RGBA") if im.mode in ("RGBA", "LA", "P") else im.convert("RGB")).save(buf, format="PNG", optimize=True)
+        return buf.getvalue(), "image/png"
+    except Exception as e:  # noqa: BLE001 — send the webp rather than nothing
+        logger.info("IMAGE_WEBP_REENCODE_FAILED err=%s", e.__class__.__name__)
+        return data, "image/webp"
+
+
 def _fallback_name(url: str, caption: str) -> str:
     from webfetch import _media_name
     return _media_name(url, caption)
@@ -98,8 +112,12 @@ def send_image_url(user_id: int, url: str, *, caption: str = "") -> str:
     if _sent_recently(user_id, public_url, config.SEND_IMAGE_REPEAT_MIN):
         return "error: that picture is already in the thread from a few minutes ago; point at it instead of resending"
 
+    media, media_type = res.media, res.media_type
+    if media_type == "image/webp":
+        # Squarespace's CDN negotiates WebP; Messages renders PNG/JPEG everywhere — re-encode.
+        media, media_type = _webp_to_png(media)
     name = _fallback_name(public_url, "")
-    ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(res.media_type, "")
+    ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(media_type, "")
     if ext and not name.lower().endswith(ext):
         name = (name.rsplit(".", 1)[0] if "." in name else name)[:60] + ext
     marker = f"{SENT_MARKER_PREFIX}{caption or name} — {public_url}]"
@@ -109,12 +127,12 @@ def send_image_url(user_id: int, url: str, *, caption: str = "") -> str:
         if channel == "imessage":
             if sms.outage_active():
                 raise RuntimeError("imessage pipe is down (outage_active)")
-            sid = sms._send_imessage_attachment(phone, res.media, name, res.media_type)
+            sid = sms._send_imessage_attachment(phone, media, name, media_type)
         else:
             sid = sms._send_single_mms(phone, public_url)
         sms._log_message(user_id, marker, "freeform", channel=channel, provider_sid=sid, delivery_status="sent")
         logger.info("IMAGE_SENT user=%s channel=%s bytes=%s type=%s %sx%s url=%r",
-                    user_id, channel, len(res.media), res.media_type, res.width, res.height, public_url)
+                    user_id, channel, len(media), media_type, res.width, res.height, public_url)
         return (f"ok: sent the picture ({res.width}x{res.height}) as its own bubble — your reply is the "
                 "sentence around it, don't describe the whole picture back and don't paste the link")
     except Exception as e:  # noqa: BLE001 — the picture failing must never kill the reply
