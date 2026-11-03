@@ -57,6 +57,10 @@ def _on(monkeypatch):
               "SAVE_MENU_CONFIRM_WEB_ENABLED"):
         monkeypatch.setattr(config, f, True)
     monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [])
+    # user ids restart at 1 per test DB: a turn state another test file left open for "user 1"
+    # would read as a live turn here (the deferral is the behaviour under test, not the leak)
+    import agent_tools
+    agent_tools._TURN_STATE.clear()
 
     def fake_gai(host, port, *a, **kw):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
