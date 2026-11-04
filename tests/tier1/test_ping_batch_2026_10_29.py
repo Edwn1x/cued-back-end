@@ -56,11 +56,12 @@ def _picks(user, now, counts=range(0, 24)):
 
 
 def test_the_bed_loop_never_shows_in_the_afternoon(db):
-    from water_gif import BED_GIF_HINT
+    from water_gif import BED_GIF_HINT, gif_files
     user = make_user(db, sleep_time="23:00")
-    picks = _picks(user, _at(17, 5))
+    picks = _picks(user, _at(17, 5), counts=range(0, 200))
     assert picks and not any(BED_GIF_HINT in p for p in picks), picks
-    assert len(set(picks)) == 3, "the other three loops still rotate"
+    day_loops = {f for f in gif_files() if BED_GIF_HINT not in f}
+    assert set(picks) == day_loops, "every other loop still rotates in"
     assert all(a != b for a, b in zip(picks, picks[1:])), "never the same file twice in a row"
 
 

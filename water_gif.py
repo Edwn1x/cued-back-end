@@ -1,9 +1,19 @@
 """Water-break GIF — the standing water ping as a picture, not a line.
 
 Founder 2026-10-26: "replace the drink water reminder with a cute little gif/avatar
-instead of a boring old drink water text." The character is the cued ball in the site's
-blue-ink sketch style (static/water/*.gif, one loop per pose); the pings rotate through
-the files so two in a row never look the same. GIF alone — no caption (founder).
+instead of a boring old drink water text." The loops live in static/water/*.gif in the
+site's blue-ink sketch style, each with its line hand-lettered into the art (no text
+message goes with it); the pings shuffle through the files per user so two in a row never
+look the same, and the "sip before bed" loop keeps to the evening.
+
+Founder 2026-11-04: "even more silly engaging water gif designs … different approaches so
+it's not always the same one boring mascot." The set is now deliberately mixed, not one
+character in N poses: the cued ball in new scenes (surfing, lifeguard whistle-blast,
+desert crawl under an angry sun, ghost, news anchor), other characters (a side-eyeing
+cactus, a goldfish in a low bowl), and no-mascot pieces (the sketch drawing itself in
+with a pencil, slammed-in lettering, a glass with a face that fills up). Adding one is
+still: drop a GIF in static/water/, no code change. Source art + the render scripts are
+kept out of the repo (workspace .context/mascot).
 
 Where it sits: reminders._fire_one calls send_water_gif() for an interval (every_hours)
 row that is about water, BEFORE composing the line. True → the GIF landed and the row
