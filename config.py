@@ -520,6 +520,13 @@ REMINDER_GYM_REARM_AFTER_H = float(os.getenv("REMINDER_GYM_REARM_AFTER_H", "3"))
 REMINDER_MAX_QUIET_DAYS = float(os.getenv("REMINDER_MAX_QUIET_DAYS", "5"))
 REMINDER_QUIET_CHECKIN_ENABLED = os.getenv("REMINDER_QUIET_CHECKIN_ENABLED", "true").lower() == "true"
 REMINDER_QUIET_CHECKIN_EVERY_DAYS = float(os.getenv("REMINDER_QUIET_CHECKIN_EVERY_DAYS", "14"))
+# First text back after a long gap is a door, not an ack (founder 2026-11-04; live u33: 26 days
+# dark, 👍 to the water-ping check-in, coach answered with a bare tapback). When the latest inbound
+# is the first in REENGAGE_REPLY_GAP_DAYS+ days the reply context carries a cue: react AND one
+# bubble of concrete offers ("ok they stay. how u been? meals from today to log? study room link?
+# i got you") — never the training gap, never a second nudge.
+REENGAGE_REPLY_ENABLED = os.getenv("REENGAGE_REPLY_ENABLED", "true").lower() == "true"
+REENGAGE_REPLY_GAP_DAYS = float(os.getenv("REENGAGE_REPLY_GAP_DAYS", "7"))
 # The program's 'gym' ping still goes out inside a saved class / work block (founder 2026-11-04:
 # "even in class it's nice to get reminders") — phrased as a heads-up for after, never a nag.
 PROGRAM_REMINDER_CLASS_NOTE_ENABLED = os.getenv("PROGRAM_REMINDER_CLASS_NOTE_ENABLED", "true").lower() == "true"
