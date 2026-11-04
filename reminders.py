@@ -777,6 +777,30 @@ def _program_slot_today_utc(user, row: Reminder, tz: ZoneInfo, now: datetime) ->
     return slot.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+_GYM_BLOCK_RE = re.compile(r"\b(gym|rsf|lift(?:ing)?|workout|training|push day|pull day|leg day|legs)\b", re.I)
+
+
+def _program_calendar_block_until(user, session, now: datetime) -> datetime | None:
+    """Naive-UTC end of the timed calendar block covering `now`, or None when they're free.
+    A block about the gym itself doesn't count. Fail-open → None."""
+    try:
+        from schedule import _timed_events
+        from events import event_end
+        rows = _timed_events(user.id, session, now, now + timedelta(minutes=1))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("PROGRAM_CALENDAR_GATE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return None
+    until = None
+    for ev in rows:
+        label = f"{getattr(ev, 'title', '') or ''} {getattr(ev, 'raw_text', '') or ''}"
+        if _GYM_BLOCK_RE.search(label):
+            continue
+        if ev.occurred_at <= now:
+            end = event_end(ev)
+            until = end if until is None or end > until else until
+    return until
+
+
 def _program_ping_waits_for_briefing(user, row: Reminder, session, now: datetime) -> bool:
     """The program's "gym" ping yields while the morning briefing is still owed (live
     2026-10-30, user 77): a fired `reminder` is a PROACTIVE type, so a ping that lands before
@@ -836,6 +860,21 @@ def fold_held_program_ping(user_id: int, *, now: datetime | None = None) -> int:
         session.close()
 
 
+def _quiet_user(user, session, now: datetime) -> bool:
+    """Silent longer than REMINDER_MAX_QUIET_DAYS (last inbound text / tapback / card open —
+    stale_skip.days_quiet). A brand-new account with nothing on record is never quiet."""
+    limit = float(getattr(config, "REMINDER_MAX_QUIET_DAYS", 5))
+    if limit <= 0:
+        return False
+    try:
+        from stale_skip import days_quiet
+        dq = days_quiet(user, session, now=now)
+    except Exception as e:  # noqa: BLE001 — never drop a reminder on the gate
+        logger.warning("REMINDER_QUIET_GATE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
+    return dq is not None and dq > limit
+
+
 def _fire_one(rid: int, now: datetime) -> bool:
     from sms import send_sms
     session = get_session()
@@ -858,6 +897,18 @@ def _fire_one(rid: int, now: datetime) -> bool:
                         "opted_out" if user and getattr(user, "opted_out", False) else "inactive")
             row.active = False
             session.commit()
+            return False
+        # A standing rhythm (weekly / interval / program) goes quiet with the person: past
+        # REMINDER_MAX_QUIET_DAYS of silence the occurrence is skipped and the row re-armed, so
+        # it resumes the day they're back. One-offs they asked for still fire. Live: user 42
+        # got 'go run' 13× over six silent weeks; users 33/53 water pings for 2+ silent weeks;
+        # user 40 seven water pings in five silent days (founder hand-sent "pause them?").
+        if (row.recur_days or row.every_hours) and _quiet_user(user, session, now):
+            nxt = _next_for_row(user, row, tz, after=now)
+            row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+            session.commit()
+            logger.info("REMINDER_GATED user=%s id=%s reason=quiet_user next=%s source=%s",
+                        row.user_id, rid, row.fire_at if row.active else None, row.source)
             return False
         # The program's standing "gym" ping (source='program') is code's own rhythm, not a time
         # they asked for: it honours the quiet window. Live 2026-10-28 (user 77): "gym time" at
@@ -894,6 +945,27 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
                 session.commit()
                 logger.info("REMINDER_GATED user=%s id=%s reason=quiet_hours until=%s next=%s source=program",
+                            row.user_id, rid, until, row.fire_at if row.active else None)
+                return False
+        # The program's ping doesn't land mid-class: inside a timed calendar block (model /
+        # gcal / bcourses / canvas rows — a saved class or work schedule) it slides to the block's
+        # end + catch-up when that's within the lateness tolerance of its slot, else today's
+        # occurrence is skipped. A block that IS the gym ("gym", "rsf", "lift") never gates it.
+        # Live 2026-11-03 (user 86): 'gym' 14:00 on Tue/Thu with class till 5.
+        if (not row.every_hours and row.source == "program"
+                and getattr(config, "PROGRAM_REMINDER_CALENDAR_GATE_ENABLED", True)):
+            until = _program_calendar_block_until(user, session, now)
+            if until is not None:
+                late_ok = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_QUIET_CATCHUP_MIN", 90)))
+                cand = until + timedelta(minutes=int(getattr(config, "INTERVAL_GATE_CATCHUP_MIN", 5)))
+                slot = _program_slot_today_utc(user, row, tz, now) or row.fire_at
+                if cand > now and (cand - slot) <= late_ok:
+                    nxt = cand
+                else:
+                    nxt = _next_for_row(user, row, tz, after=max(now, slot))   # past today's slot, not back onto it
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=calendar_block until=%s next=%s source=program",
                             row.user_id, rid, until, row.fire_at if row.active else None)
                 return False
         # The program's ping yields while the morning briefing is still owed (live 2026-10-30,

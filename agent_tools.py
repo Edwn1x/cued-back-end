@@ -1685,7 +1685,12 @@ LOG_EVENT_TOOL = {
         "block), ask which is right FIRST and do not log it in the same turn you question it "
         "— live 2026-10-15: 'midterm's today at 7 not tmrw?' was asked AND the event written, "
         "then the day was read wrong and the radar carried both. If they correct a date you "
-        "already logged, fix that row with manage_log (edit or delete) in the same turn."
+        "already logged, fix that row with manage_log (edit or delete) in the same turn. "
+        "A WEEKLY block — a class schedule photo, 'i work 6-10 tue/thu', 'lab fridays 11:30-3:30' — "
+        "is repeat_days (weekday list) + starts_at/ends_at: code writes every occurrence for the "
+        "next repeat_weeks weeks so the free-window + gym-window readers see it. Without that the "
+        "schedule exists only in this turn (live 2026-11-03, user 86: a class photo + work hours "
+        "were reasoned about and never saved)."
     ),
     "input_schema": {
         "type": "object",
@@ -1694,6 +1699,9 @@ LOG_EVENT_TOOL = {
             "starts_at": {"type": "string", "description": "local start time 'HH:MM' (24h, optional)"},
             "ends_at": {"type": "string", "description": "local end time 'HH:MM' (24h, optional)"},
             "date": {"type": "string", "description": "'today' (default), 'tomorrow', or 'YYYY-MM-DD'"},
+            "repeat_days": {"type": "array", "items": {"type": "string"},
+                            "description": "weekly block: the weekdays it repeats on, e.g. ['tue','thu'] (needs starts_at)"},
+            "repeat_weeks": {"type": "integer", "description": "how many weeks ahead to write (default 8, max 16)"},
             "events": {"type": "array",
                        "description": "OR log several at once (a calendar screenshot): a list of "
                                       "{description, starts_at?, ends_at?, date?} objects.",
@@ -1701,6 +1709,8 @@ LOG_EVENT_TOOL = {
                            "description": {"type": "string"},
                            "starts_at": {"type": "string"}, "ends_at": {"type": "string"},
                            "date": {"type": "string"},
+                           "repeat_days": {"type": "array", "items": {"type": "string"}},
+                           "repeat_weeks": {"type": "integer"},
                        }, "required": ["description"]}},
         },
     },
@@ -1841,7 +1851,12 @@ ADJUST_PROGRAM_TOOL = {
         "properties": {
             "days": {"type": "array", "items": {"type": "string"}, "description": "weekdays to train, e.g. ['mon','wed','fri']"},
             "split": {"type": "string", "enum": ["full_body", "upper_lower", "ppl"], "description": "a split they asked for"},
-            "time": {"type": "string", "description": "their training time, local 'HH:MM' (24h)"},
+            "time": {"type": "string", "description": "their training time, local 'HH:MM' (24h) — the same every day"},
+            "times": {"type": "object",
+                      "description": "OR a time per day when it differs, e.g. {'tue':'17:00','thu':'17:00','sat':'14:00'} "
+                                     "(class till 5 on weekdays, 2pm weekends). Days not listed keep their time. "
+                                     "The standing gym ping follows each day's time.",
+                      "additionalProperties": {"type": "string"}},
         },
         "required": [],
     },
@@ -1859,6 +1874,15 @@ def handle_adjust_program(user_id: int, tool_input: dict, *, message_id=None) ->
     t = (tool_input.get("time") or "").strip() or None
     if t and parse_local_time(t) is None:
         return f"error: time {t!r} not understood — use local 'HH:MM' (24h)"
+    by_day = {}
+    raw_times = tool_input.get("times")
+    if isinstance(raw_times, dict):
+        for d, v in raw_times.items():
+            dk = str(d).strip().lower()[:3]
+            hm = parse_local_time(str(v or "").strip())
+            if dk not in DAYS or hm is None:
+                return f"error: times[{d!r}]={v!r} not understood — weekday abbreviations with local 'HH:MM' (24h)"
+            by_day[dk] = f"{hm[0]:02d}:{hm[1]:02d}"
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).with_for_update().one_or_none()
@@ -1867,7 +1891,17 @@ def handle_adjust_program(user_id: int, tool_input: dict, *, message_id=None) ->
         if t:
             h, m = parse_local_time(t)
             user.workout_time = f"{h:02d}:{m:02d}"
+            # the slot readers (training_time.slot_for) prefer confirmed_workout_time, which
+            # onboarding copied from the old value — a changed time has to land there too
+            # (live 2026-11-03, user 86: 14:00 stayed the slot after 'i train at 5').
+            user.confirmed_workout_time = user.workout_time
             user.workout_times = None
+            flag_modified(user, "workout_times")
+        if by_day:
+            cur = user.workout_times if isinstance(user.workout_times, dict) else {}
+            merged = dict(cur.get("by_day") or {})
+            merged.update(by_day)
+            user.workout_times = {"by_day": merged}
             flag_modified(user, "workout_times")
         if days:
             user.workout_days = ",".join(d for d in DAYS if d in days)
@@ -1880,7 +1914,7 @@ def handle_adjust_program(user_id: int, tool_input: dict, *, message_id=None) ->
     if not prog:
         return "error: program builder is off"
     _confirm(user_id, prog)
-    logger.info("ADJUST_PROGRAM user=%s days=%s split=%s time=%s → %s", user_id, days, split, t, list(prog["days"]))
+    logger.info("ADJUST_PROGRAM user=%s days=%s split=%s time=%s times=%s → %s", user_id, days, split, t, by_day, list(prog["days"]))
     return f"ok: program is now {describe_week(prog)} ({prog['split'].replace('_', '/')}); tell them the new week in one line"
 
 
@@ -2122,8 +2156,17 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
         session.close()
 
     logged = []
+    weekly = []
     for it in items:
         desc = it["description"].strip()
+        rd = it.get("repeat_days")
+        if isinstance(rd, list) and rd:
+            res = _log_weekly_block(user_id, tz_str, desc, rd, it.get("starts_at"), it.get("ends_at"),
+                                    it.get("repeat_weeks"))
+            if "error" in res:
+                return f"error: {res['error']}"
+            weekly.append((desc, res))
+            continue
         starts = _parse_local_dt(tz_str, it.get("date"), it.get("starts_at"))
         ends = _parse_local_dt(tz_str, it.get("date"), it.get("ends_at"))
         if starts is None and ends is None:
@@ -2152,12 +2195,73 @@ def handle_log_event(user_id: int, tool_input: dict, *, message_id=None) -> str:
     if getattr(config, "LOG_EVENT_WHERE_NOTE_ENABLED", True) and _gcal_rows(user_id):
         where = (" — on your side only, NOT on their google calendar: say 'noted' / 'got it', never 'on ur "
                  "calendar'. if they want it on google, offer it (create_calendar_event, after their yes)")
+    wk = ""
+    if weekly:
+        wk = "; ".join(f"'{d}' {r['days']} {r['starts_at']}–{r['ends_at'] or '?'} for {r['weeks']} weeks "
+                       f"({r['count']} rows, series {r['series_id']})" for d, r in weekly)
+        wk = f"ok: saved weekly {wk}{where}"
+        if not logged:
+            return wk
+        wk = "; " + wk
     if len(logged) == 1:
         eid, desc, st = logged[0]
-        return f"ok: noted '{desc}'{f' at {st}' if st else ''} (event id={eid}){where}"
+        return f"ok: noted '{desc}'{f' at {st}' if st else ''} (event id={eid}){where}{wk}"
     ids = [e for e, _d, _s in logged]
     names = ", ".join(f"'{d}'" for _e, d, _s in logged)
-    return f"ok: noted {len(logged)} events: {names} (ids {ids}){where}"
+    return f"ok: noted {len(logged)} events: {names} (ids {ids}){where}{wk}"
+
+
+def _log_weekly_block(user_id: int, tz_str: str, desc: str, repeat_days, starts_at, ends_at, repeat_weeks) -> dict:
+    """A weekly class / work block as concrete dated rows (source='model', one series_id), so
+    the free-window, briefing gym-window and calendar-block readers — which only read dated
+    instances — see it. Live 2026-11-03 (user 86): a class photo + 'i work 6-10 tue/thu' were
+    reasoned about in one turn and never persisted (0 events)."""
+    import uuid
+    from events import record_event
+    from reminders import DAY_ABBR, parse_local_time
+    days = []
+    for d in repeat_days:
+        dk = str(d).strip().lower()[:3]
+        if dk not in DAY_ABBR:
+            return {"error": f"repeat_days {d!r} — use mon/tue/wed/thu/fri/sat/sun"}
+        if dk not in days:
+            days.append(dk)
+    st = parse_local_time(str(starts_at or "").strip())
+    if st is None:
+        return {"error": "a weekly block needs starts_at (local 'HH:MM')"}
+    en = parse_local_time(str(ends_at or "").strip()) if ends_at else None
+    try:
+        weeks = int(repeat_weeks) if repeat_weeks not in (None, "") else int(getattr(config, "LOG_EVENT_REPEAT_WEEKS_DEFAULT", 8))
+    except (TypeError, ValueError):
+        weeks = int(getattr(config, "LOG_EVENT_REPEAT_WEEKS_DEFAULT", 8))
+    weeks = max(1, min(weeks, int(getattr(config, "LOG_EVENT_REPEAT_WEEKS_MAX", 16))))
+    try:
+        tz = ZoneInfo(tz_str)
+    except Exception:
+        tz = ZoneInfo("America/Los_Angeles")
+    today = datetime.now(tz).date()
+    series_id = f"local:{uuid.uuid4().hex[:12]}"
+    count = 0
+    for offset in range(0, 7 * weeks):
+        d = today + timedelta(days=offset)
+        if DAY_ABBR[d.weekday()] not in days:
+            continue
+        s_local = datetime(d.year, d.month, d.day, st[0], st[1], tzinfo=tz)
+        e_local = datetime(d.year, d.month, d.day, en[0], en[1], tzinfo=tz) if en else s_local + timedelta(hours=1)
+        if e_local <= s_local:
+            e_local += timedelta(days=1)
+        if offset == 0 and e_local <= datetime.now(tz):
+            continue                                   # today's block already over
+        record_event(user_id, "scheduled", source="model", raw_text=desc,
+                     occurred_at=s_local.astimezone(timezone.utc).replace(tzinfo=None),
+                     ends_at=e_local.astimezone(timezone.utc).replace(tzinfo=None),
+                     series_id=series_id, title=desc)
+        count += 1
+    logger.info("LOG_EVENT_WEEKLY user=%s desc=%r days=%s %s-%s weeks=%s rows=%s series=%s",
+                user_id, desc[:40], days, starts_at, ends_at, weeks, count, series_id)
+    return {"days": "/".join(days), "starts_at": f"{st[0]:02d}:{st[1]:02d}",
+            "ends_at": f"{en[0]:02d}:{en[1]:02d}" if en else None, "weeks": weeks, "count": count,
+            "series_id": series_id}
 
 
 _SYNCED_LABEL = {"bcourses": "bCourses", "canvas": "Canvas"}

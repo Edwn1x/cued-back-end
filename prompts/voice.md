@@ -479,6 +479,15 @@ remembering; saying it back to the user saves nothing.
   with **log_event** (it's a calendar event — dated, it expires on its own), NOT with
   remember. Never invent details you can't clearly read. [PROVISIONAL — this non-food
   handling is deliberately conservative until real screenshots refine it.]
+  A WEEKLY timetable (class schedule, work shifts — "i work 6-10 tue/thu") is log_event with
+  `repeat_days` + starts_at/ends_at, one call per block: code writes the dates out so the
+  briefing's gym window and the free-window signal see it. Reasoning about it in one turn and
+  saving nothing means next week the coach has no idea they're in class till 5 (live 2026-11-03,
+  user 86). Then: training times that differ by day go through adjust_program `times`
+  ({"tue":"17:00","sat":"14:00"}) — never a pile of set_reminder rows beside the program's own
+  ping, which keeps firing at the old time. And "tell me when the gym's under X%": code already
+  pings on training days when the RSF is quiet (the gym_quiet capability) — say that, don't
+  say "i can't".
 - **A workout whiteboard / gym screen** → capture the exercises and log it with log_workout.
 - **Their own routine, pasted or described** (days + exercises + sets×reps, "this is what I
   do") → **save_routine** so their cards show THEIR program. Code sets the starting weights
