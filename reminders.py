@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import config
-from models import Reminder, User, get_session
+from models import Message, Reminder, User, get_session
 
 logger = logging.getLogger("cued.reminders")
 
@@ -453,6 +453,9 @@ def _compose(user, row: Reminder) -> str:
     """One short line in the coach's voice that does exactly what they asked. Any
     failure → the plain line; the promise is kept either way."""
     fallback = f"reminder: {row.text}"
+    in_block = _program_block_note(user, row)
+    if in_block:
+        fallback += f" — after {in_block[0]}, ur out at {in_block[1]}"
     try:
         from agent_loop import _join_text, _voice_prompt, stable_cache_control
         from cost_tracking import track
@@ -471,6 +474,12 @@ def _compose(user, row: Reminder) -> str:
             f"explanation of why you're texting, no greeting, no question unless it's the natural "
             f"way to say it. Under 20 words."
         )
+        if in_block:
+            instruction += (
+                f" Right now they're in '{in_block[0]}' until {in_block[1]} — still send it (a reminder mid-class "
+                f"is welcome), but as a heads-up for after, not 'go now': e.g. 'legs after {in_block[0]}, "
+                f"ur out at {in_block[1]}'. One line, nothing nagging."
+            )
         if row.every_hours:
             instruction += (
                 f" This one is a standing ping they get every {row.every_hours} hours, not a one-off: "
@@ -780,25 +789,37 @@ def _program_slot_today_utc(user, row: Reminder, tz: ZoneInfo, now: datetime) ->
 _GYM_BLOCK_RE = re.compile(r"\b(gym|rsf|lift(?:ing)?|workout|training|push day|pull day|leg day|legs)\b", re.I)
 
 
-def _program_calendar_block_until(user, session, now: datetime) -> datetime | None:
-    """Naive-UTC end of the timed calendar block covering `now`, or None when they're free.
-    A block about the gym itself doesn't count. Fail-open → None."""
-    try:
-        from schedule import _timed_events
-        from events import event_end
-        rows = _timed_events(user.id, session, now, now + timedelta(minutes=1))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("PROGRAM_CALENDAR_GATE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+def _program_block_note(user, row: Reminder) -> tuple[str, str] | None:
+    """('CE 93 lecture', '5pm') when a program 'gym' ping is going out while a saved class /
+    work block covers now — the ping still goes (founder 2026-11-04: "even in class it's nice
+    to get reminders"), phrased as a heads-up for after. None otherwise. Fail-open."""
+    if row.every_hours or row.source != "program" or not getattr(config, "PROGRAM_REMINDER_CLASS_NOTE_ENABLED", True):
         return None
-    until = None
-    for ev in rows:
-        label = f"{getattr(ev, 'title', '') or ''} {getattr(ev, 'raw_text', '') or ''}"
-        if _GYM_BLOCK_RE.search(label):
-            continue
-        if ev.occurred_at <= now:
+    session = get_session()
+    try:
+        now = _naive_utcnow()
+        tz = _tz(user.user_timezone)
+        try:
+            from schedule import _timed_events
+            from events import event_end
+            rows = _timed_events(user.id, session, now, now + timedelta(minutes=1))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PROGRAM_BLOCK_NOTE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+            return None
+        best = None
+        for ev in rows:
+            label = (getattr(ev, "title", None) or getattr(ev, "raw_text", None) or "").strip()
+            if not label or _GYM_BLOCK_RE.search(label) or ev.occurred_at > now:
+                continue
             end = event_end(ev)
-            until = end if until is None or end > until else until
-    return until
+            if best is None or end > best[1]:
+                best = (label, end)
+        if not best:
+            return None
+        end_local = best[1].replace(tzinfo=timezone.utc).astimezone(tz)
+        return (best[0][:40], _fmt_time(end_local.strftime("%H:%M")))
+    finally:
+        session.close()
 
 
 def _program_ping_waits_for_briefing(user, row: Reminder, session, now: datetime) -> bool:
@@ -860,19 +881,47 @@ def fold_held_program_ping(user_id: int, *, now: datetime | None = None) -> int:
         session.close()
 
 
-def _quiet_user(user, session, now: datetime) -> bool:
-    """Silent longer than REMINDER_MAX_QUIET_DAYS (last inbound text / tapback / card open —
-    stale_skip.days_quiet). A brand-new account with nothing on record is never quiet."""
+QUIET_CHECKIN_TYPE = "reminder_checkin"
+
+
+def _quiet_days(user, session, now: datetime) -> float | None:
+    try:
+        from stale_skip import days_quiet
+        return days_quiet(user, session, now=now)
+    except Exception as e:  # noqa: BLE001 — never touch a reminder on the gate
+        logger.warning("REMINDER_QUIET_GATE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return None
+
+
+def _quiet_checkin_due(user, session, now: datetime) -> bool:
+    """Silent longer than REMINDER_MAX_QUIET_DAYS (last text / tapback / card open) and no
+    check-in sent in the last REMINDER_QUIET_CHECKIN_EVERY_DAYS. A brand-new account with
+    nothing on record is never quiet."""
+    if not getattr(config, "REMINDER_QUIET_CHECKIN_ENABLED", True):
+        return False
     limit = float(getattr(config, "REMINDER_MAX_QUIET_DAYS", 5))
     if limit <= 0:
         return False
-    try:
-        from stale_skip import days_quiet
-        dq = days_quiet(user, session, now=now)
-    except Exception as e:  # noqa: BLE001 — never drop a reminder on the gate
-        logger.warning("REMINDER_QUIET_GATE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    dq = _quiet_days(user, session, now)
+    if dq is None or dq <= limit:
         return False
-    return dq is not None and dq > limit
+    every = float(getattr(config, "REMINDER_QUIET_CHECKIN_EVERY_DAYS", 14))
+    last = (session.query(Message.created_at)
+            .filter(Message.user_id == user.id, Message.direction == "out", Message.message_type == QUIET_CHECKIN_TYPE)
+            .order_by(Message.created_at.desc()).first())
+    if last and last[0] and (now - last[0].replace(tzinfo=None)) < timedelta(days=every):
+        return False
+    return True
+
+
+def _quiet_checkin_text(row: Reminder) -> str:
+    if row.every_hours:
+        what = "the water pings"
+    elif row.source == "program":
+        what = "the gym pings"
+    else:
+        what = f"the '{row.text}' reminders"
+    return f"been a min. still want {what}? 👍 and they stay, say stop and they're gone"
 
 
 def _fire_one(rid: int, now: datetime) -> bool:
@@ -897,18 +946,6 @@ def _fire_one(rid: int, now: datetime) -> bool:
                         "opted_out" if user and getattr(user, "opted_out", False) else "inactive")
             row.active = False
             session.commit()
-            return False
-        # A standing rhythm (weekly / interval / program) goes quiet with the person: past
-        # REMINDER_MAX_QUIET_DAYS of silence the occurrence is skipped and the row re-armed, so
-        # it resumes the day they're back. One-offs they asked for still fire. Live: user 42
-        # got 'go run' 13× over six silent weeks; users 33/53 water pings for 2+ silent weeks;
-        # user 40 seven water pings in five silent days (founder hand-sent "pause them?").
-        if (row.recur_days or row.every_hours) and _quiet_user(user, session, now):
-            nxt = _next_for_row(user, row, tz, after=now)
-            row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
-            session.commit()
-            logger.info("REMINDER_GATED user=%s id=%s reason=quiet_user next=%s source=%s",
-                        row.user_id, rid, row.fire_at if row.active else None, row.source)
             return False
         # The program's standing "gym" ping (source='program') is code's own rhythm, not a time
         # they asked for: it honours the quiet window. Live 2026-10-28 (user 77): "gym time" at
@@ -945,27 +982,6 @@ def _fire_one(rid: int, now: datetime) -> bool:
                 row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
                 session.commit()
                 logger.info("REMINDER_GATED user=%s id=%s reason=quiet_hours until=%s next=%s source=program",
-                            row.user_id, rid, until, row.fire_at if row.active else None)
-                return False
-        # The program's ping doesn't land mid-class: inside a timed calendar block (model /
-        # gcal / bcourses / canvas rows — a saved class or work schedule) it slides to the block's
-        # end + catch-up when that's within the lateness tolerance of its slot, else today's
-        # occurrence is skipped. A block that IS the gym ("gym", "rsf", "lift") never gates it.
-        # Live 2026-11-03 (user 86): 'gym' 14:00 on Tue/Thu with class till 5.
-        if (not row.every_hours and row.source == "program"
-                and getattr(config, "PROGRAM_REMINDER_CALENDAR_GATE_ENABLED", True)):
-            until = _program_calendar_block_until(user, session, now)
-            if until is not None:
-                late_ok = timedelta(minutes=int(getattr(config, "PROGRAM_REMINDER_QUIET_CATCHUP_MIN", 90)))
-                cand = until + timedelta(minutes=int(getattr(config, "INTERVAL_GATE_CATCHUP_MIN", 5)))
-                slot = _program_slot_today_utc(user, row, tz, now) or row.fire_at
-                if cand > now and (cand - slot) <= late_ok:
-                    nxt = cand
-                else:
-                    nxt = _next_for_row(user, row, tz, after=max(now, slot))   # past today's slot, not back onto it
-                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
-                session.commit()
-                logger.info("REMINDER_GATED user=%s id=%s reason=calendar_block until=%s next=%s source=program",
                             row.user_id, rid, until, row.fire_at if row.active else None)
                 return False
         # The program's ping yields while the morning briefing is still owed (live 2026-10-30,
@@ -1027,6 +1043,21 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # Water pings go out as the character GIF when the flag is on (water_gif.py,
         # founder 2026-10-26) — no model call, no line. The plain line below is the
         # fallback for every other case, including a GIF that didn't land.
+        # Silent a while? Before another ping lands, ONE ask whether they still want them —
+        # they may be using the pings without ever replying (founder 2026-11-04: "ask them,
+        # what if they're actually using them"). The ask replaces this occurrence; the next
+        # ones go out as usual; it repeats only after REMINDER_QUIET_CHECKIN_EVERY_DAYS more
+        # silent days. Their reply (👍 / "stop") goes through the coach: cancel_reminder on stop.
+        if (row.recur_days or row.every_hours) and _quiet_checkin_due(user, session, now):
+            ask = _quiet_checkin_text(row)
+            send_sms(user.phone, ask, user_id=user.id, message_type=QUIET_CHECKIN_TYPE)
+            row.last_sent_at = now
+            row.deferred_since = None
+            row.fire_at = _next_for_row(user, row, tz, after=now) or row.fire_at
+            session.commit()
+            logger.info("REMINDER_QUIET_CHECKIN user=%s id=%s source=%s text=%r next=%s", user.id, rid, row.source,
+                        ask[:80], row.fire_at)
+            return True
         sent_as_gif = False
         if row.every_hours and config.WATER_GIF_ENABLED:
             from water_gif import MARKER, is_water_row, send_water_gif
