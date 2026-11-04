@@ -99,6 +99,9 @@ class User(Base):
     # "I ate the Wednesday burrito" logs from saved macros. See saved_menus.py.
     # {key: {name, items:[{item, calories?, protein_g?, carbs_g?, fat_g?, note?}], captured_at}}
     saved_menus = Column(JSON, default=None)
+    # Sources on file: where THEIR stuff is posted (house menu page, a syllabus, a club
+    # calendar) — [{id, name, url, purpose, recheck, added_at, last_checked_at}]. See sources.py.
+    sources = Column(JSON, default=None)
     # Cross-turn image persistence (recent_media.py): a short, per-user record of the
     # last few inbound photos and what the coach read off them, so a later turn can say
     # "the photo you sent showed X" instead of re-asking or denying a pic was sent.
@@ -1271,7 +1274,12 @@ class AgentTask(Base):
     last_run_at = Column(DateTime, default=None)
     finished_at = Column(DateTime, default=None)
     result = Column(Text)                                # the sent text / failure note
-    watch_last = Column(Text)                            # last observation (watch)
+    watch_last = Column(Text)                            # last observation (watch) / source fingerprint (routine)
+    # routine (recurring check of a source on file — sources.py / agent_tasks.run_routine):
+    source_url = Column(String(300), default=None)
+    at_local = Column(String(5), default=None)           # "HH:MM" local run time
+    weekday = Column(Integer, default=None)              # 0=Mon … 6=Sun for a weekly routine; None = daily
+    cycle_at = Column(DateTime, default=None)            # when the current cycle was due (retries hang off it)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 

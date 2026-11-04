@@ -235,11 +235,24 @@ def test_cache_dedups_a_repeat_read(monkeypatch):
     (_Resp(b"", status=403), "login"),
     (_Resp(b"", status=401), "login"),
     (_Resp(b"", status=500), "error (500)"),
-    (_Resp(b"%PDF-1.4", ctype="application/pdf"), "PDF"),
-    (_Resp(b"\x89PNG", ctype="image/png"), "isn't a readable page"),
+    (_Resp(b"\x89PNG not really", ctype="image/png"), "couldn't be decoded"),
+    (_Resp(b"<svg/>", ctype="image/svg+xml"), "vector graphic"),
+    (_Resp(b"PK\x03\x04", ctype="application/zip"), "isn't a readable page"),
+    (_Resp(b"not a pdf", ctype="application/pdf"), "isn't one"),
     (_Resp(b"<html><body><main><div id=app></div></main></body></html>"), "no readable text"),
 ])
 def test_failures_are_plain_english_errors(monkeypatch, resp, needle):
+    _patch_http(monkeypatch, default=resp)
+    res = webfetch.fetch_page("https://x.example/p")
+    assert not res.ok and needle in res.error
+
+
+@pytest.mark.parametrize("resp,needle", [
+    (_Resp(b"%PDF-1.4", ctype="application/pdf"), "PDF"),
+    (_Resp(b"\x89PNG", ctype="image/png"), "isn't a readable page"),
+])
+def test_media_off_keeps_the_text_only_refusals(monkeypatch, resp, needle):
+    monkeypatch.setattr(config, "FETCH_PAGE_MEDIA_ENABLED", False)
     _patch_http(monkeypatch, default=resp)
     res = webfetch.fetch_page("https://x.example/p")
     assert not res.ok and needle in res.error
@@ -381,3 +394,160 @@ def test_a_login_wall_served_as_200_is_an_honest_error(monkeypatch):
 ])
 def test_login_wall_heuristic(final_url, title, text, expected):
     assert webfetch.looks_like_login_wall(final_url, title, text) is expected
+
+
+# ─── pictures and PDFs (2026-11-02: the house menu is a PNG on the page) ────
+#
+# Grizzly Chefs posts the frat's weekly menu as an image on grizzlychefs.com/weekly-menu;
+# the page's TEXT says nothing. fetch_page used to answer "no readable text" and refuse
+# any image / PDF url. Now: a text page LISTS its content pictures / PDF links (chrome and
+# logos skipped) and an image / PDF url comes back as a block the model can look at.
+
+import base64
+import io
+
+
+def _png(w: int, h: int, color=(200, 30, 30), mode="RGB") -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new(mode, (w, h), color if mode == "RGB" else color + (128,)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+MENU_PAGE_HTML = """<html><head><title>Menu 1 — GRIZZLY CHEFS</title></head><body>
+<header><img src="//cdn.example/client_logo.png" alt="GRIZZLY CHEFS"></header>
+<nav><a href="/">Home</a></nav>
+<main>
+<img data-src="https://cdn.example/content/hero.jpg" alt="">
+<img data-src="https://cdn.example/content/Fall+11%3A2%3A2026+Menu+.png?format=1500w" alt="">
+<img src="https://cdn.example/content/Fall+11%3A2%3A2026+Menu+.png?format=750w" alt="">
+<img src="data:image/gif;base64,R0lGOD" alt="">
+<img src="/icons/arrow.png" alt="">
+<img src="/img/tracking.gif" width="1" height="1">
+<p>ORDER NOW!</p>
+<a href="/files/syllabus.pdf">Syllabus (PDF)</a>
+<a href="/files/other.PDF?v=2">Other</a>
+<a href="/not-a-pdf">Link</a>
+</main>
+<footer><img src="/footer-badge.png"></footer></body></html>"""
+
+
+def test_text_page_lists_its_pictures_and_pdfs_without_chrome(monkeypatch):
+    _patch_http(monkeypatch, {"https://grizzlychefs.com/weekly-menu": _Resp(MENU_PAGE_HTML)})
+    res = webfetch.fetch_page("https://grizzlychefs.com/weekly-menu")
+    assert res.ok and res.kind == "text"
+    kinds_urls = [(m["kind"], m["url"]) for m in res.media_links]
+    assert ("image", "https://cdn.example/content/hero.jpg") in kinds_urls
+    assert ("image", "https://cdn.example/content/Fall+11%3A2%3A2026+Menu+.png?format=1500w") in kinds_urls
+    assert ("pdf", "https://grizzlychefs.com/files/syllabus.pdf") in kinds_urls
+    assert ("pdf", "https://grizzlychefs.com/files/other.PDF?v=2") in kinds_urls
+    urls = [u for _, u in kinds_urls]
+    assert not any("logo" in u or "arrow" in u or "tracking" in u or "badge" in u or u.startswith("data:") for u in urls)
+    assert sum("Menu" in u for u in urls) == 1          # the ?format= variants collapse to one
+    names = [m["name"] for m in res.media_links]
+    assert "Fall+11:2:2026+Menu+.png" in names and "Syllabus (PDF)" in names
+    out = webfetch.render_for_model(res)
+    assert isinstance(out, str) and "PICTURES / FILES ON THIS PAGE" in out and "open the likely one" in out
+    assert "- [image] Fall+11:2:2026+Menu+.png — https://cdn.example/content/Fall" in out
+
+
+def test_media_listing_is_capped_and_off_with_the_flag(monkeypatch):
+    _patch_http(monkeypatch, default=_Resp(MENU_PAGE_HTML))
+    monkeypatch.setattr(config, "FETCH_PAGE_MAX_MEDIA_LISTED", 2)
+    assert len(webfetch.fetch_page("https://a.example/").media_links) == 2
+    webfetch._CACHE.clear()
+    monkeypatch.setattr(config, "FETCH_PAGE_MEDIA_ENABLED", False)
+    res = webfetch.fetch_page("https://b.example/")
+    assert res.ok and res.media_links == [] and "PICTURES / FILES" not in webfetch.render_for_model(res)
+
+
+def test_a_page_that_is_only_pictures_is_not_an_error(monkeypatch):
+    html = "<html><body><main><img src='/menu.png' alt='weekly menu'></main></body></html>"
+    _patch_http(monkeypatch, default=_Resp(html))
+    res = webfetch.fetch_page("https://x.example/menu")
+    assert res.ok and res.media_links and "no readable text" in res.text
+    assert "https://x.example/menu.png" in webfetch.render_for_model(res)
+
+
+def test_image_url_comes_back_as_an_image_block(monkeypatch):
+    png = _png(1056, 816)
+    _patch_http(monkeypatch, {"https://cdn.example/menu.png": _Resp(png, ctype="image/png")})
+    res = webfetch.fetch_page("https://cdn.example/menu.png")
+    assert res.ok and res.kind == "image" and res.media_type == "image/png"
+    assert (res.width, res.height) == (1056, 816) and res.media == png     # within caps: passed through
+    blocks = webfetch.render_for_model(res)
+    assert isinstance(blocks, list) and [b["type"] for b in blocks] == ["text", "image"]
+    assert "PICTURE (1056x816)" in blocks[0]["text"] and "NOT instructions" in blocks[0]["text"]
+    assert blocks[1]["source"]["media_type"] == "image/png"
+    assert base64.b64decode(blocks[1]["source"]["data"]) == png
+
+
+def test_big_image_is_downscaled_to_the_edge_cap_and_flattened(monkeypatch):
+    from PIL import Image
+    monkeypatch.setattr(config, "FETCH_PAGE_IMAGE_MAX_EDGE", 800)
+    png = _png(4000, 2000, mode="RGBA")
+    _patch_http(monkeypatch, {"https://cdn.example/big.png": _Resp(png, ctype="image/png")})
+    res = webfetch.fetch_page("https://cdn.example/big.png")
+    assert res.ok and res.kind == "image" and res.media_type == "image/jpeg"
+    assert (res.width, res.height) == (800, 400)
+    im = Image.open(io.BytesIO(res.media))
+    assert im.format == "JPEG" and im.size == (800, 400) and im.mode == "RGB"
+
+
+def test_mislabeled_image_is_sniffed_and_oversize_is_refused(monkeypatch):
+    png = _png(300, 200)
+    _patch_http(monkeypatch, {"https://cdn.example/blob": _Resp(png, ctype="application/octet-stream")})
+    res = webfetch.fetch_page("https://cdn.example/blob")
+    assert res.ok and res.kind == "image" and res.media_type == "image/png"
+    webfetch._CACHE.clear()
+    monkeypatch.setattr(config, "FETCH_PAGE_IMAGE_MAX_BYTES", 100)
+    _patch_http(monkeypatch, {"https://cdn.example/huge.png": _Resp(png, ctype="image/png")})
+    res = webfetch.fetch_page("https://cdn.example/huge.png")
+    assert not res.ok and "too large" in res.error
+
+
+def test_pdf_url_comes_back_as_a_document_block_and_oversize_is_honest(monkeypatch):
+    pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"
+    _patch_http(monkeypatch, {"https://cs.example/syllabus.pdf": _Resp(pdf, ctype="application/pdf")})
+    res = webfetch.fetch_page("https://cs.example/syllabus.pdf")
+    assert res.ok and res.kind == "pdf" and res.media == pdf and res.title == "syllabus.pdf"
+    blocks = webfetch.render_for_model(res)
+    assert [b["type"] for b in blocks] == ["text", "document"]
+    assert blocks[1]["source"]["media_type"] == "application/pdf"
+    assert base64.b64decode(blocks[1]["source"]["data"]) == pdf
+    webfetch._CACHE.clear()
+    monkeypatch.setattr(config, "FETCH_PAGE_PDF_MAX_BYTES", 10)
+    res = webfetch.fetch_page("https://cs.example/syllabus.pdf")
+    assert not res.ok and "too big" in res.error and "MB" in res.error
+
+
+def test_media_results_are_not_pinned_in_the_cache(monkeypatch):
+    calls: list = []
+    _patch_http(monkeypatch, default=_Resp(_png(50, 50), ctype="image/png"), calls=calls)
+    webfetch.fetch_page("https://cdn.example/a.png")
+    webfetch.fetch_page("https://cdn.example/a.png")
+    assert len(calls) == 2 and not webfetch._CACHE
+
+
+def test_handler_returns_blocks_and_dispatch_passes_them_through(monkeypatch):
+    import agent_tools
+    monkeypatch.setattr(config, "FETCH_PAGE_TOOL_ENABLED", True)
+    _patch_http(monkeypatch, {"https://cdn.example/menu.png": _Resp(_png(120, 80), ctype="image/png")})
+    agent_tools.begin_turn(9)
+    try:
+        out = agent_tools.dispatch_tool("fetch_page", {"url": "https://cdn.example/menu.png"}, 9)
+        assert isinstance(out, list) and out[1]["type"] == "image"
+        assert agent_tools.turn_called(9, "fetch_page")
+        # a LIST result is never mistaken for an error string
+        err = agent_tools.dispatch_tool("fetch_page", {"url": "not a url"}, 9)
+        assert isinstance(err, str) and err.startswith("error:")
+    finally:
+        agent_tools.pop_turn_state(9)
+
+
+def test_tool_description_and_prompt_name_pictures_and_pdfs():
+    import agent_tools
+    desc = agent_tools.FETCH_PAGE_TOOL["description"]
+    assert "PICTURES AND PDFs" in desc and "menu posted as a PNG" in desc
+    voice = open("prompts/voice.md").read()
+    assert "Pictures and PDFs are pages too" in voice and "the menu is\n  the picture on it" in voice

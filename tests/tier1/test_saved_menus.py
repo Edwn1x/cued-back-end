@@ -120,4 +120,115 @@ def test_save_menu_tool_is_wired():
     import agent_tools
     assert agent_tools._HANDLERS.get("save_menu") is agent_tools.handle_save_menu
     assert agent_tools.SAVE_MENU_TOOL["name"] == "save_menu"
-    assert agent_tools.SAVE_MENU_TOOL["input_schema"]["required"] == ["name", "items"]
+    # items became optional on the wire (a confirm-by-reference names a staged menu); the
+    # handler still refuses a first save with no items
+    assert agent_tools.SAVE_MENU_TOOL["input_schema"]["required"] == ["name"]
+
+
+# ─── a menu the COACH found waits on their yes (2026-11-02, Grizzly Chefs) ─────
+#
+# The public page showed lunch + dinner; Alexey's house gets breakfast + dinner. A menu
+# the coach finds itself goes through the same code-enforced confirm gate the calendar
+# writes use; the staged proposal carries the items, so the confirming call only names it.
+# A menu THEY sent still saves on the spot. A menu that names its week ages out with it.
+
+WEB = "https://images.squarespace-cdn.com/x/Fall+11%3A2%3A2026+Menu+.png"
+DINNERS = [{"item": "Mon dinner: Bruschetta Chicken", "note": "bacon mashed potatoes"},
+           {"item": "Tue dinner: Taco Bar", "note": "mexican rice, corn tortillas"}]
+
+
+def _menus(user_id):
+    from models import get_session, User
+    s = get_session()
+    try:
+        return dict(s.get(User, user_id).saved_menus or {})
+    finally:
+        s.close()
+
+
+def test_week_of_parses_to_monday_and_the_menu_ages_out_with_its_week(monkeypatch):
+    assert saved_menus.parse_week_of("2026-11-04") == "2026-11-02"      # a Wednesday → that Monday
+    assert saved_menus.parse_week_of("2026-11-02T10:00:00") == "2026-11-02"
+    assert saved_menus.parse_week_of("nov 2") is None and saved_menus.parse_week_of(None) is None
+    today = datetime.now(timezone.utc).date()
+    this_monday = (today - timedelta(days=today.weekday())).isoformat()
+    last_monday = (today - timedelta(days=today.weekday() + 7)).isoformat()
+    m = saved_menus.apply_menu(None, "house menu", DINNERS, week_of=last_monday, source_url=WEB)
+    assert m["house menu"]["week_of"] == last_monday and m["house menu"]["source_url"] == WEB
+    assert saved_menus.render_menus_block(m) == ""                       # captured today, but its week is over
+    m = saved_menus.apply_menu(None, "house menu", DINNERS, week_of=this_monday, source_url=WEB)
+    blk = saved_menus.render_menus_block(m)
+    assert "week of" in blk and "from their menu page" in blk and "Taco Bar" in blk
+
+
+def test_found_menu_is_held_until_their_yes_and_confirms_by_reference(db):
+    from agent_tools import handle_save_menu, _pending_list
+    user = make_user(db)
+    first = handle_save_menu(user.id, {"name": "house menu", "items": DINNERS, "source_url": WEB,
+                                       "week_of": "2026-11-02"}, message_id="m1")
+    assert first.startswith("not saved yet") and "confirm with the user first" in first
+    assert "2 items" in first and "week of Nov 2" in first and "send_image" in first
+    assert "am/pm" not in first
+    assert _menus(user.id) == {}
+    staged = _pending_list(user.id)
+    assert len(staged) == 1 and staged[0]["kind"] == "save_menu" and staged[0]["n"] == 2
+    # confirmed in the SAME turn → refused (they haven't seen it)
+    same = handle_save_menu(user.id, {"name": "house menu", "source_url": WEB, "confirmed": True}, message_id="m1")
+    assert same.startswith("not saved") and "SAME turn" in same and _menus(user.id) == {}
+    # next turn, their yes: the model names it (no items) and the staged payload is what's saved
+    ok = handle_save_menu(user.id, {"name": "house menu", "source_url": WEB, "confirmed": True}, message_id="m2")
+    assert ok.startswith("ok: saved 'house menu' (week of Nov 2) with 2 items")
+    saved = _menus(user.id)["house menu"]
+    assert [i["item"] for i in saved["items"]] == [i["item"] for i in DINNERS]
+    assert saved["source_url"] == WEB and saved["week_of"] == "2026-11-02"
+    assert _pending_list(user.id) == []                                  # the entry is cleared after the write
+
+
+def test_confirming_a_menu_that_was_never_staged_or_whose_url_changed_is_refused(db):
+    from agent_tools import handle_save_menu
+    user = make_user(db)
+    out = handle_save_menu(user.id, {"name": "house menu", "items": DINNERS, "source_url": WEB, "confirmed": True},
+                           message_id="m1")
+    assert out.startswith("not saved") and "nothing was staged" in out and _menus(user.id) == {}
+    # a confirm that names a DIFFERENT picture than the one staged is a new proposal, not a write
+    out = handle_save_menu(user.id, {"name": "house menu", "items": DINNERS, "source_url": WEB + "?other",
+                                     "confirmed": True}, message_id="m2")
+    assert out.startswith("not saved") and _menus(user.id) == {}
+    # and confirming by name alone with nothing staged can't invent items
+    out = handle_save_menu(user.id, {"name": "ghost", "source_url": WEB, "confirmed": True}, message_id="m3")
+    assert out.startswith("error:") and "nothing staged" in out
+
+
+def test_a_menu_they_sent_still_saves_on_the_spot_and_the_flag_turns_the_gate_off(db, monkeypatch):
+    from agent_tools import handle_save_menu
+    user = make_user(db)
+    out = handle_save_menu(user.id, {"name": "frat house lunch", "items": MENU, "week_of": "2026-11-03"}, message_id="m1")
+    assert out.startswith("ok: saved 'frat house lunch' (week of Nov 2) with 4 items")
+    assert _menus(user.id)["frat house lunch"]["week_of"] == "2026-11-02"
+    monkeypatch.setattr(config, "SAVE_MENU_CONFIRM_WEB_ENABLED", False)
+    out = handle_save_menu(user.id, {"name": "house menu", "items": DINNERS, "source_url": WEB}, message_id="m1")
+    assert out.startswith("ok:") and _menus(user.id)["house menu"]["source_url"] == WEB
+
+
+def test_a_staged_menu_and_a_staged_calendar_event_wait_side_by_side(db, monkeypatch):
+    from agent_tools import handle_save_menu, _pending_list, _set_pending_calendar_event
+    user = make_user(db)
+    _set_pending_calendar_event(user.id, {"kind": "create", "summary": "gym", "start_utc": "2026-11-03T16:00:00",
+                                          "staged_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                                          "turn": "m0", "reflect": "gym tue 8am"})
+    out = handle_save_menu(user.id, {"name": "house menu", "items": DINNERS, "source_url": WEB}, message_id="m1")
+    assert "ALSO waiting on their yes: gym tue 8am" in out
+    kinds = sorted(p["kind"] for p in _pending_list(user.id))
+    assert kinds == ["create", "save_menu"]
+    handle_save_menu(user.id, {"name": "house menu", "source_url": WEB, "confirmed": True}, message_id="m2")
+    assert [p["kind"] for p in _pending_list(user.id)] == ["create"]    # only ITS entry is cleared
+
+
+def test_tool_schema_and_prompt_carry_the_found_menu_rule():
+    import agent_tools
+    props = agent_tools.SAVE_MENU_TOOL["input_schema"]["properties"]
+    assert {"source_url", "week_of", "confirmed"} <= set(props)
+    assert agent_tools.SAVE_MENU_TOOL["input_schema"]["required"] == ["name"]
+    assert "A menu YOU found" in agent_tools.SAVE_MENU_TOOL["description"]
+    voice = open("prompts/voice.md").read()
+    assert "A menu YOU found" in voice and "never save a found menu silently" in voice

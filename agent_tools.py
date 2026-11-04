@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
+import time
 import uuid
 
 from datetime import datetime, date, timezone, timedelta
@@ -3428,7 +3429,18 @@ _TURN_STATE: dict = {}
 
 
 def begin_turn(user_id: int) -> None:
-    _TURN_STATE[user_id] = {"reacted": False, "reply_to": None}
+    _TURN_STATE[user_id] = {"reacted": False, "reply_to": None, "started_at": time.monotonic()}
+
+
+def live_turn_in_progress(user_id: int, *, max_age_s: float = 300.0) -> bool:
+    """True while a turn's state for this user is open and young — a background run must
+    not begin_turn over it (that would make the live turn's confirmed=true inert and pop its
+    reacted / reply_to state). A state older than max_age_s is a leak, not a turn."""
+    st = _TURN_STATE.get(user_id)
+    if not st or st.get("background"):
+        return False
+    started = st.get("started_at")
+    return started is not None and (time.monotonic() - started) < max_age_s
 
 
 def pop_turn_state(user_id: int) -> dict:
@@ -3601,6 +3613,11 @@ FETCH_PAGE_TOOL = {
         "place's own page for hours or a menu; an event or club page; or a page web_search "
         "surfaced whose actual contents you need rather than the snippet. Prefer the OFFICIAL "
         "page (the course's own site, the venue's own site, a .edu page). "
+        "PICTURES AND PDFs: a url that IS an image (.png/.jpg) or a PDF comes back as the picture "
+        "/ document itself — look at it and read what's on it (a house menu posted as a PNG, a "
+        "flyer, a schedule screenshot, a syllabus PDF). A page's result lists the pictures and "
+        "PDF links it carries; when the thing they need is probably in one of those (the page text "
+        "is thin and says 'menu' / 'schedule' / 'flyer'), open the likely one next. "
         "Do NOT use it for a general question (that's web_search), for anything behind a "
         "login (bCourses, CalCentral, Gmail — it will fail and you should say so), or to "
         "browse around — one page, maybe two, per reply. "
@@ -3641,10 +3658,116 @@ def handle_fetch_page(user_id: int, tool_input: dict, *, message_id=None) -> str
     url = (tool_input or {}).get("url") or ""
     focus = (tool_input or {}).get("focus") or ""
     res = webfetch.fetch_page(url, focus=focus)
-    logger.info("FETCH_PAGE user=%s ok=%s status=%s chars=%s total=%s truncated=%s focus=%r url=%r err=%r",
-                user_id, res.ok, res.status, len(res.text), res.total_chars, res.truncated,
-                focus, res.final_url or url, res.error)
+    logger.info("FETCH_PAGE user=%s ok=%s kind=%s status=%s chars=%s total=%s truncated=%s media_bytes=%s "
+                "listed=%s focus=%r url=%r err=%r",
+                user_id, res.ok, res.kind, res.status, len(res.text), res.total_chars, res.truncated,
+                len(res.media or b""), len(res.media_links), focus, res.final_url or url, res.error)
     return webfetch.render_for_model(res)
+
+
+# fetch_page lets the coach SEE a picture; send_image puts one in the thread. Transport,
+# caps, repeat guard and the honest fallback live in outbound_images.py.
+SEND_IMAGE_TOOL = {
+    "name": "send_image",
+    "description": (
+        "Send the user a PICTURE from a public image url, as its own bubble in the thread. "
+        "Use it when the thing is visual and seeing it beats reading it out: the house / dining "
+        "menu you just opened with fetch_page (so they can confirm it's the right one), a flyer, "
+        "a map, a posted schedule, an event poster. Typical flow: fetch_page the page → it lists "
+        "pictures → fetch_page the likely picture to LOOK at it → if it's the one, send_image that "
+        "same url → your reply is the one sentence around it (what it is + the question or the "
+        "point). Rules: only an image url (not a page); only a picture you have actually looked at "
+        "this turn or that they asked for; never a photo THEY sent you; at most one or two per "
+        "reply; don't resend one that's already in the thread. The result tells you whether the "
+        "picture itself landed or only a link to it — say which, never claim they can see it when "
+        "the result says link. If this tool isn't available you CANNOT send pictures — say so, "
+        "don't paste a url."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "the public image url (the one fetch_page listed or opened)"},
+            "caption": {"type": "string",
+                        "description": "optional 2-8 word label for the thread log, e.g. 'grizzly chefs menu week of 11/2'"},
+        },
+        "required": ["url"],
+    },
+}
+
+
+def handle_send_image(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Send a picture from a public url (outbound_images.send_image_url). Per-turn cap on
+    the turn state so a reply can't become a photo dump; every failure is an honest line."""
+    if not config.SEND_IMAGE_TOOL_ENABLED:
+        return "error: sending pictures is not enabled"
+    st = _TURN_STATE.get(user_id)
+    if st is not None:
+        n = int(st.get("images_sent", 0))
+        if n >= config.SEND_IMAGE_MAX_PER_TURN:
+            return (f"error: picture limit reached for this reply ({config.SEND_IMAGE_MAX_PER_TURN}) — "
+                    "answer in text")
+    url = str((tool_input or {}).get("url") or "").strip()
+    caption = str((tool_input or {}).get("caption") or "").strip()
+    if not url:
+        return "error: url is required (a public image url)"
+    from outbound_images import send_image_url
+    out = send_image_url(user_id, url, caption=caption)
+    if st is not None and out.startswith("ok:"):
+        st["images_sent"] = int(st.get("images_sent", 0)) + 1
+    logger.info("SEND_IMAGE user=%s ok=%s url=%r caption=%r", user_id, out.startswith("ok:"), url[-80:], caption)
+    return out
+
+
+SAVE_SOURCE_TOOL = {
+    "name": "save_source",
+    "description": (
+        "Put WHERE their stuff is posted on file: the provider / page behind a recurring thing "
+        "they showed you — the house or dining menu page (e.g. 'Grizzly Chefs weekly menu'), a "
+        "syllabus or course site, a club's event page, a team schedule. Call it when you have the "
+        "url (they texted it, it's printed on the picture, or ONE web_search found the official "
+        "page) and the thing will come again. `recheck`: 'weekly' for a weekly menu / schedule, "
+        "'daily' for a daily one, 'none' for a one-time reference (syllabus). With a recheck on, "
+        "code opens the page on schedule and, when something new is posted, shows it to them and "
+        "stages it for their yes (you don't have to ask them to send it again); say that in one "
+        "line. Re-saving the same url updates it; recheck 'none' stops the checks. Never save a "
+        "url you haven't opened or found — guess nothing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "what it is, e.g. 'Grizzly Chefs weekly menu'"},
+            "url": {"type": "string", "description": "the public page url"},
+            "purpose": {"type": "string", "description": "2-5 words: 'house menu', 'CS61C syllabus', 'club events'"},
+            "recheck": {"type": "string", "enum": ["none", "daily", "weekly"], "description": "default none"},
+        },
+        "required": ["name", "url"],
+    },
+}
+
+
+def handle_save_source(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    if not config.SOURCES_ENABLED:
+        return "error: sources on file are not enabled"
+    from sources import save_source_for_user
+    ti = tool_input or {}
+    r = save_source_for_user(user_id, name=str(ti.get("name") or ""), url=str(ti.get("url") or ""),
+                             purpose=str(ti.get("purpose") or ""), recheck=str(ti.get("recheck") or "none"))
+    if "error" in r:
+        return f"error: {r['error']}"
+    row, routine = r["row"], r.get("routine")
+    line = f"ok: on file — {row['name']} ({row['url']})"
+    if routine:
+        from agent_tasks import _tz, _fmt_local
+        session = get_session()
+        try:
+            tz = _tz(session.get(User, user_id))
+        finally:
+            session.close()
+        line += (f"; code will check it {row['recheck']} (first look {_fmt_local(routine['run_at'], tz)}) and, when "
+                 "something new is posted, show it to them and ask before saving. Tell them that in one line.")
+    elif row["recheck"] == "none":
+        line += "; no re-checks (open it with fetch_page when they ask)"
+    return line
 
 
 # ─── schedule_task / cancel_task (deferred work — agent_tasks.py) ─────────────
@@ -3804,12 +3927,23 @@ SAVE_MENU_TOOL = {
         "(required) plus `calories`, `protein_g`, `carbs_g`, `fat_g`, and a short `note` "
         "(key ingredients) when they're on the menu — put macros you can actually read, omit "
         "the ones you can't (don't invent them). Re-sending the same menu REPLACES it. This "
-        "is for reference options to log from, NOT a meal they ate (that's log_meal)."
+        "is for reference options to log from, NOT a meal they ate (that's log_meal). "
+        "`week_of` (YYYY-MM-DD) when the menu names its week — it stops showing once that week "
+        "is over. A menu YOU found (a public page / picture, not something they sent): pass "
+        "`source_url`; code then holds it until they confirm it's theirs — send_image the picture, "
+        "ask ('this week's house menu, that right?'), and on their yes/👍 call save_menu again "
+        "with confirmed=true (same name + source_url; the items you staged are kept, you may "
+        "pass them again or leave them out). A menu THEY sent saves on the spot (no source_url)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "short menu label, e.g. 'frat house lunch'"},
+            "week_of": {"type": "string", "description": "optional YYYY-MM-DD of the week the menu covers"},
+            "source_url": {"type": "string",
+                           "description": "optional: the public page / picture url YOU read it from (not for menus they sent)"},
+            "confirmed": {"type": "boolean",
+                          "description": "true only in a LATER turn after they said yes to a menu you found (source_url set)"},
             "items": {
                 "type": "array",
                 "items": {
@@ -3826,25 +3960,66 @@ SAVE_MENU_TOOL = {
                 },
             },
         },
-        "required": ["name", "items"],
+        "required": ["name"],
     },
 }
 
 
 def handle_save_menu(user_id: int, tool_input: dict, *, message_id=None) -> str:
-    """Persist a user-sent menu so later 'I ate the <item>' logs from its macros."""
-    name = str((tool_input or {}).get("name") or "").strip()
-    items = (tool_input or {}).get("items")
+    """Persist a menu so later 'I ate the <item>' logs from its macros. One they SENT saves
+    now. One the coach FOUND (source_url) waits on their yes behind the shared confirm gate;
+    the staged proposal carries the items, so the confirming call only names it."""
+    from saved_menus import save_menu_for_user, parse_week_of, _clean_items, week_label
+    ti = tool_input or {}
+    name = str(ti.get("name") or "").strip()
+    items = ti.get("items")
+    source_url = str(ti.get("source_url") or "").strip() or None
+    week_of = parse_week_of(ti.get("week_of"))
     if not name:
         return "error: name is required (a short menu label)"
-    if not isinstance(items, list) or not items:
+    if items is not None and not isinstance(items, list):
+        return "error: items must be a list of {item, ...} entries"
+    proposal = None
+    if source_url and config.SAVE_MENU_CONFIRM_WEB_ENABLED:
+        from saved_menus import _key as _menu_key
+        staged = _staged_proposal(user_id, "save_menu", {"name": name, "source_url": source_url})
+        if staged and bool(ti.get("confirmed")):
+            # Confirm by reference: what they said yes to is what was STAGED — the confirming
+            # call's items (re-typed from memory, maybe shortened) and a missing week_of don't
+            # get to change it. A different list is a new proposal: stage it without confirmed.
+            items = staged.get("items")
+            week_of = staged.get("week_of") or week_of
+        elif not items and staged:
+            items = staged.get("items")
+            week_of = week_of or staged.get("week_of")
+        cleaned = _clean_items(items or [])
+        if not cleaned:
+            return "error: items must be a non-empty list of {item, ...} entries (nothing staged to confirm)"
+        n = len(cleaned)
+        wk = week_label(week_of)
+        reflect = (f"saving '{name}' ({n} item{'s' if n != 1 else ''}{', ' + wk if wk else ''}) from "
+                   f"{source_url} as their menu")
+        proposal = {"kind": "save_menu", "slot": _menu_key(name), "name": name, "source_url": source_url,
+                    "week_of": week_of, "items": cleaned, "n": n}
+        confirmed = bool(ti.get("confirmed")) and not get_turn_note(user_id, "background")
+        gate = _confirm_gate(user_id, proposal, confirmed=confirmed, message_id=message_id,
+                             verb="saved", tool="save_menu", reflect=reflect,
+                             match_keys=("name", "source_url"), reflect_note="",
+                             hint=" Show them the picture (send_image) if you haven't, and ask if it's the right one.")
+        if gate:
+            return gate
+        items = cleaned
+    if not items:
         return "error: items must be a non-empty list of {item, ...} entries"
-    from saved_menus import save_menu_for_user
-    saved_count, total = save_menu_for_user(user_id, name, items)
+    saved_count, total = save_menu_for_user(user_id, name, items, source_url=source_url, week_of=week_of)
     if saved_count == 0:
         return "error: no usable items — each needs at least an `item` name"
-    logger.info("SAVE_MENU user=%s name=%r items=%d total_menus=%d", user_id, name, saved_count, total)
-    return f"ok: saved '{name}' with {saved_count} items — you can log from it when they eat one"
+    if proposal:
+        _clear_pending(user_id, proposal)
+    logger.info("SAVE_MENU user=%s name=%r items=%d total_menus=%d source=%s week_of=%s",
+                user_id, name, saved_count, total, "web" if source_url else "user", week_of)
+    extra = f" ({week_label(week_of)})" if week_of else ""
+    return f"ok: saved '{name}'{extra} with {saved_count} items — you can log from it when they eat one"
 
 
 STOCK_PANTRY_TOOL = {
@@ -5072,7 +5247,8 @@ def _merge_guests(existing: list[dict] | None, new_emails: list[str]) -> list[di
 
 
 def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, verb: str,
-                  tool: str, reflect: str, match_keys: tuple, hint: str = "") -> str | None:
+                  tool: str, reflect: str, match_keys: tuple, hint: str = "",
+                  reflect_note: str = " (with am/pm)") -> str | None:
     """Confirm-before-write, enforced in CODE (live 2026-10-02: the model called create with
     confirmed=true on the first go and wrote an 8am block for a bare "8" said at 4am; the
     user meant 8pm). The staged proposal is persisted on the user; confirmed=true is honoured
@@ -5081,16 +5257,21 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
     replied. Returns None when the write may proceed, else the message to hand the model.
     `verb` = 'created' / 'deleted' / 'moved' (past tense, for 'not <verb> yet').
     Several proposals can be staged at once (one per target, see _pending_slot); a confirm
-    matches ITS entry, and the write's handler clears only that entry (_clear_pending)."""
+    matches ITS entry, and the write's handler clears only that entry (_clear_pending).
+    GENERAL, not calendar-only (2026-11-02): any write that should wait for a yes stages a
+    proposal with a `kind` and a `slot`; the staged entry can carry the PAYLOAD (a menu's
+    items read off a picture) so the confirming call only has to name it — see
+    _staged_proposal. `reflect_note` is the parenthetical after "reflect that back"."""
     proposal = dict(proposal)
     proposal.setdefault("kind", "create")
     proposal["turn"] = str(message_id) if message_id is not None else None
     proposal["staged_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     proposal["reflect"] = reflect
+    proposal["tool"] = tool
     slot = _pending_slot(proposal)
     items = _pending_list(user_id)
     others = [p for p in items if _pending_slot(p) != slot
-              and (age := _pending_age(p)) is not None and age <= _PENDING_STALE]
+              and (age := _pending_age(p)) is not None and age <= _pending_stale_for(p)]
     also = ""
     if others:
         names = "; ".join(p.get("reflect") or p.get("summary") or p.get("title") or "" for p in others[-4:])
@@ -5098,8 +5279,8 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
                 f"all of them (then call each tool again with confirmed=true).")
     if not confirmed:
         _set_pending_calendar_event(user_id, proposal)
-        return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back "
-                f"(with am/pm), and once they say yes call {tool} again with confirmed=true in that "
+        return (f"not {verb} yet — confirm with the user first: {reflect}. reflect that back"
+                f"{reflect_note}, and once they say yes call {tool} again with confirmed=true in that "
                 f"next turn.{hint}{also}")
     pending = next((p for p in items if (p.get("kind") or "create") == proposal["kind"]
                     and all(p.get(k) == proposal.get(k) for k in match_keys)), None)
@@ -5112,7 +5293,7 @@ def _confirm_gate(user_id: int, proposal: dict, *, confirmed: bool, message_id, 
         return (f"not {verb} — nothing was staged. reflect it back first: {reflect}. "
                 f"once they say yes, call again with confirmed=true.{hint}{also}")
     age = _pending_age(pending)
-    if age is None or age > _PENDING_STALE:
+    if age is None or age > _pending_stale_for(pending):
         _set_pending_calendar_event(user_id, proposal)
         return (f"not {verb} — the earlier one is stale. reflect the new one back: {reflect}. "
                 f"once they say yes, call again with confirmed=true.{hint}{also}")
@@ -6122,11 +6303,20 @@ def _parse_iso(s):
 _PENDING_MAX = 8
 _PENDING_STALE = timedelta(hours=3)     # a confirm on anything older is refused ("stale")
 _PENDING_KEEP = timedelta(hours=24)     # OTHER entries older than this are dropped when staging
+# A routine's ask arrives between turns (Monday 09:30) and the yes comes when they look at
+# their phone — hours later. The calendar's 3h window is for a same-conversation confirm.
+_PENDING_STALE_BY_KIND = {"save_menu": timedelta(hours=36)}
+
+
+def _pending_stale_for(p: dict) -> timedelta:
+    return _PENDING_STALE_BY_KIND.get((p or {}).get("kind") or "create", _PENDING_STALE)
 
 
 def _pending_slot(p: dict) -> tuple:
     """What a proposal is ABOUT — a revised proposal for the same target replaces the old one."""
     kind = p.get("kind") or "create"
+    if p.get("slot"):                       # non-calendar proposals name their target
+        return (kind, str(p.get("slot")))
     if p.get("event_id") or p.get("query"):
         return (kind, str(p.get("event_id") or p.get("query")))
     # a create: same title on the same LOCAL day is the same thing (a new time replaces it);
@@ -6165,6 +6355,42 @@ def _save_pending(user_id: int, items: list) -> None:
         session.commit()
     finally:
         session.close()
+
+
+def _staged_proposal(user_id: int, kind: str, match: dict) -> dict | None:
+    """The staged (unexpired) proposal of `kind` whose fields equal `match` — so a confirming
+    call can take its PAYLOAD from what was staged instead of re-deriving it."""
+    for p in reversed(_pending_list(user_id)):
+        if (p.get("kind") or "create") != kind:
+            continue
+        if all(p.get(k) == v for k, v in match.items()):
+            age = _pending_age(p)
+            if age is not None and age <= _pending_stale_for(p):
+                return p
+    return None
+
+
+def render_pending_block(user_id: int) -> str:
+    """The staged-but-unwritten proposals, for context: a yes/👍 in THIS turn is only actionable
+    if the model knows what is waiting and which call commits it (a routine's ask arrives
+    between turns, so the conversation alone may not carry the exact name + url)."""
+    items = [p for p in _pending_list(user_id)
+             if (age := _pending_age(p)) is not None and age <= _pending_stale_for(p)]
+    if not items:
+        return ""
+    lines = ["## WAITING ON THEIR YES (staged, NOT written — if their latest message is a yes / 👍 to one "
+             "of these, call that tool again with confirmed=true and the same identifying fields; a no "
+             "or a correction means don't call it, or stage the corrected one)"]
+    for p in items[-6:]:
+        tool = p.get("tool") or {"create": "create_calendar_event", "delete": "delete_calendar_event",
+                                 "delete_all": "delete_calendar_event", "move": "move_calendar_event",
+                                 "rsvp": "rsvp_calendar_event", "save_menu": "save_menu"}.get(p.get("kind") or "create", "")
+        what = p.get("reflect") or p.get("summary") or p.get("title") or p.get("name") or ""
+        ident = ""
+        if (p.get("kind") or "") == "save_menu":
+            ident = f" — confirm with save_menu(name={p.get('name')!r}, source_url={p.get('source_url')!r}, confirmed=true)"
+        lines.append(f"- {tool}: {what}{ident}")
+    return "\n".join(lines)
 
 
 def _get_pending_calendar_event(user_id: int) -> dict | None:
@@ -6210,7 +6436,9 @@ _HANDLERS = {
     "stock_pantry": handle_stock_pantry,
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
+    "send_image": handle_send_image,
     "schedule_task": handle_schedule_task,
+    "save_source": handle_save_source,
     "cancel_task": handle_cancel_task,
     "set_weather_location": handle_set_weather_location,
     "set_card_delivery": handle_set_card_delivery,
@@ -6263,7 +6491,10 @@ def turn_wrote(user_id: int) -> bool:
     return bool(_TURN_STATE.get(user_id, {}).get("wrote"))
 
 
-def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> str:
+def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None) -> "str | list":
+    """Run one tool. Returns the tool_result content: a string for almost every tool, or a
+    LIST of content blocks (text + image / document) when a tool hands the model something
+    to look at (fetch_page on a picture / PDF). Both are what the Messages API accepts."""
     handler = _HANDLERS.get(name)
     if handler is None:
         return f"error: unknown tool {name!r}"
@@ -6277,7 +6508,8 @@ def dispatch_tool(name: str, tool_input: dict, user_id: int, *, message_id=None)
     # success signal here). Only the turn's own state is touched — never the result.
     st = _TURN_STATE.setdefault(user_id, {"reacted": False, "reply_to": None})
     st.setdefault("called", set()).add(name)
-    if name not in READ_ONLY_TOOLS and not str(out or "").lstrip().lower().startswith("error"):
+    is_error = isinstance(out, str) and out.lstrip().lower().startswith("error")
+    if name not in READ_ONLY_TOOLS and not is_error:
         st["wrote"] = True
     return out
 

@@ -135,6 +135,21 @@ TASKS_MAX_TOKENS = int(os.getenv("TASKS_MAX_TOKENS", "6000"))
 # fallback names a short topic or nothing — never the model-written goal (live 2026-10-28, user 77:
 # "couldn't find it — find short PT/coach reference videos for … text Alexey one link per move").
 TASK_HONEST_FALLBACK_ENABLED = os.getenv("TASK_HONEST_FALLBACK_ENABLED", "true").lower() == "true"
+# Sources on file (sources.py): the coach remembers WHERE their stuff is posted — the house
+# menu page, a syllabus, a club calendar — as structured rows the fetch tools can open, and
+# routines (agent_tasks kind "routine"): a recurring check of a source that fetches cheaply
+# (fingerprint; no model call when nothing changed), and when something new is posted runs
+# a bounded model turn that may SHOW (send_image) and STAGE (save_menu with source_url — the
+# confirm gate holds it) and asks in one line; the user's yes in a normal turn does the write.
+# A background run can never commit (handlers ignore confirmed=true under the background note).
+# Founder 2026-11-02: routines may text the user unprompted ("more useful, will actually see
+# the light of day"). ROUTINES_ENABLED needs TASKS_ENABLED (same sweep).
+SOURCES_ENABLED = os.getenv("SOURCES_ENABLED", "false").lower() == "true"
+ROUTINES_ENABLED = os.getenv("ROUTINES_ENABLED", "false").lower() == "true"
+SOURCES_MAX_PER_USER = int(os.getenv("SOURCES_MAX_PER_USER", "12"))
+ROUTINE_RUN_AT_LOCAL = os.getenv("ROUTINE_RUN_AT_LOCAL", "09:30")          # default local check time
+ROUTINE_RETRY_HOURS = float(os.getenv("ROUTINE_RETRY_HOURS", "6"))          # re-look when nothing new yet
+ROUTINE_CYCLE_WINDOW_HOURS = float(os.getenv("ROUTINE_CYCLE_WINDOW_HOURS", "30"))  # keep re-looking this long
 # Feature flag — when false, build_memory_block returns legacy user.memory blob for every agent_type.
 # Extractions still WRITE to user_profile_memory so flipping back to true preserves data.
 USER_PROFILE_MEMORY_ENABLED = os.getenv("USER_PROFILE_MEMORY_ENABLED", "true").lower() == "true"
@@ -388,6 +403,26 @@ FETCH_PAGE_MAX_CHARS = int(os.getenv("FETCH_PAGE_MAX_CHARS", "12000"))
 FETCH_PAGE_MAX_REDIRECTS = int(os.getenv("FETCH_PAGE_MAX_REDIRECTS", "5"))
 FETCH_PAGE_CACHE_TTL_S = int(os.getenv("FETCH_PAGE_CACHE_TTL_S", "600"))     # 10 min per-process cache
 FETCH_PAGE_MAX_PER_TURN = int(os.getenv("FETCH_PAGE_MAX_PER_TURN", "3"))
+# fetch_page media: the page the coach needs is often a PICTURE or a PDF, not text — a
+# house menu posted as a PNG (Grizzly Chefs, 2026-11-02), a flyer, a schedule screenshot,
+# a syllabus PDF. With this on, an image / PDF url comes back to the model as an image /
+# document block it can actually look at, and an HTML page lists the content images and
+# PDF links it carries so the coach can open the right one. Bounded: download caps, a
+# long-edge downscale (token cost), a send-size cap, a short list. Off = the old text-only
+# behaviour (images and PDFs refused with a plain reason).
+FETCH_PAGE_MEDIA_ENABLED = os.getenv("FETCH_PAGE_MEDIA_ENABLED", "true").lower() == "true"
+FETCH_PAGE_IMAGE_MAX_BYTES = int(os.getenv("FETCH_PAGE_IMAGE_MAX_BYTES", str(15_000_000)))     # download cap
+FETCH_PAGE_IMAGE_MAX_EDGE = int(os.getenv("FETCH_PAGE_IMAGE_MAX_EDGE", "1568"))                # px, long edge
+FETCH_PAGE_IMAGE_MAX_SEND_BYTES = int(os.getenv("FETCH_PAGE_IMAGE_MAX_SEND_BYTES", str(3_500_000)))
+FETCH_PAGE_PDF_MAX_BYTES = int(os.getenv("FETCH_PAGE_PDF_MAX_BYTES", str(10_000_000)))
+FETCH_PAGE_MAX_MEDIA_LISTED = int(os.getenv("FETCH_PAGE_MAX_MEDIA_LISTED", "8"))               # images + pdf links on a page
+# send_image — the coach puts a PICTURE from a public url in the thread (outbound_images.py):
+# the house menu PNG it just read, a flyer, a map, a posted schedule. Same fetch envelope
+# as reading; iMessage attachment / SMS MMS; per-turn cap + repeat guard; a refused
+# attachment degrades to the link as text, never to a claim.
+SEND_IMAGE_TOOL_ENABLED = os.getenv("SEND_IMAGE_TOOL_ENABLED", "false").lower() == "true"
+SEND_IMAGE_MAX_PER_TURN = int(os.getenv("SEND_IMAGE_MAX_PER_TURN", "2"))
+SEND_IMAGE_REPEAT_MIN = int(os.getenv("SEND_IMAGE_REPEAT_MIN", "30"))
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).
@@ -526,6 +561,12 @@ SAVE_MENU_TOOL_ENABLED = os.getenv("SAVE_MENU_TOOL_ENABLED", "true").lower() == 
 SAVED_MENU_TTL_DAYS = int(os.getenv("SAVED_MENU_TTL_DAYS", "14"))
 SAVED_MENU_MAX = int(os.getenv("SAVED_MENU_MAX", "5"))            # most-recent N kept
 SAVED_MENU_MAX_ITEMS = int(os.getenv("SAVED_MENU_MAX_ITEMS", "40"))
+# A menu the COACH found (a public page / picture, source_url set) is saved only after the
+# user confirms it's theirs — the same code-enforced confirm gate the calendar writes use
+# (live 2026-11-02, user 77: the public Grizzly Chefs page shows lunch + dinner; his house
+# gets breakfast + dinner — an unconfirmed save would have been wrong food with confidence).
+# A menu THEY sent still saves on the spot.
+SAVE_MENU_CONFIRM_WEB_ENABLED = os.getenv("SAVE_MENU_CONFIRM_WEB_ENABLED", "true").lower() == "true"
 # Weather (open-meteo — FREE, NO API KEY): a concise weather line in the morning brief
 # plus a reactive get_weather answer + a correctable set_weather_location. Location
 # resolves per-user (weather_lat/lng/place) else the Berkeley default. Short HTTP timeout,

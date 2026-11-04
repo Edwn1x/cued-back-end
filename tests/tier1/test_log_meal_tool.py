@@ -307,10 +307,14 @@ def test_single_item_date_move_returns_target_day_then_source_day(db, monkeypatc
     assert out.index("YESTERDAY") < out.index("DAY TOTAL NOW")
 
 
-def test_today_only_log_day_total_text_is_byte_identical(db):
-    """Regression guard for the today path: no label, no date, same text as before."""
+def test_today_only_log_day_total_text_is_byte_identical(db, monkeypatch):
+    """Regression guard for the today path: no label, no date, same text as before.
+    The evening-meal protein line is its own feature (clock-gated on the user's local hour,
+    tested on its own); off here so this guard doesn't flip red after dinner time PT."""
+    import config
     from tests.factories import make_user
     from agent_tools import handle_log_meal
+    monkeypatch.setattr(config, "EVENING_PROTEIN_NUDGE_ENABLED", False)
     user = make_user(db, protein_target=140)
     out = handle_log_meal(user.id, _item("eggs", 300, 20))
     assert out == ("ok: logged 'eggs' id=1 (300cal/20g) | DAY TOTAL NOW: 300 cal, 20g protein, "

@@ -446,6 +446,13 @@ MIGRATIONS = [
         created_at TIMESTAMP DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_agent_tasks_due ON agent_tasks (status, run_at)",
+    # Sources on file + routines (sources.py / agent_tasks routine kind, 2026-11-02): where
+    # their stuff is posted, and the recurring check that proposes (never commits) from it.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS sources JSON",
+    "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS source_url VARCHAR(300)",
+    "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS at_local VARCHAR(5)",
+    "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS weekday INTEGER",
+    "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS cycle_at TIMESTAMP",
     "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id)",
     # Daily rhythm (2026-09-22): per-user check-in level + interval (water) reminders
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_level VARCHAR(10)",
