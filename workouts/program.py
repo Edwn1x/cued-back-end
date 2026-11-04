@@ -282,13 +282,16 @@ def rationale(prog: dict, user) -> list[str]:
 
 
 def describe_week(prog: dict) -> str:
-    """'mon upper · tue lower · thu upper · fri lower' (+ ' at 10:30pm' when one time)."""
-    parts = [f"{d} {day_label(prog['days'][d])}" for d in DAYS if d in prog["days"]]
+    """'mon upper · tue lower · thu upper · fri lower' (+ ' at 10:30pm' when one time; per-day
+    times inline — 'tue push 5pm · sat push 2pm' — when they differ)."""
     times = {t for t in prog.get("times", {}).values() if t}
-    tail = ""
-    if len(times) == 1:
-        from workouts.start import _when
-        tail = f" at {_when(next(iter(times)))}"
+    from workouts.start import _when
+    if len(times) > 1:
+        parts = [f"{d} {day_label(prog['days'][d])}" + (f" {_when(prog['times'][d])}" if prog.get("times", {}).get(d) else "")
+                 for d in DAYS if d in prog["days"]]
+        return " · ".join(parts)
+    parts = [f"{d} {day_label(prog['days'][d])}" for d in DAYS if d in prog["days"]]
+    tail = f" at {_when(next(iter(times)))}" if len(times) == 1 else ""
     return " · ".join(parts) + tail
 
 
@@ -635,41 +638,75 @@ def _confirm(user_id: int, prog: dict) -> None:
 
 
 def _ping_line(prog: dict) -> str:
-    times = {t for t in (prog.get("times") or {}).values() if t}
-    if len(times) == 1 and getattr(config, "PROGRAM_REMINDER_ENABLED", True):
+    groups = program_ping_groups(prog)
+    if groups and getattr(config, "PROGRAM_REMINDER_ENABLED", True):
         from workouts.start import _when
-        return f"i'll ping u those days at {_when(next(iter(times)))}. say 'stop the gym reminders' if u don't want that"
+        if len(groups) == 1:
+            return f"i'll ping u those days at {_when(groups[0][1])}. say 'stop the gym reminders' if u don't want that"
+        spoken = ", ".join(f"{'/'.join(days)} {_when(t)}" for days, t in groups)
+        return f"i'll ping u {spoken}. say 'stop the gym reminders' if u don't want that"
     return "first card comes when u're heading in"
+
+
+def program_ping_groups(prog: dict) -> list[tuple[list[str], str]]:
+    """The program's days grouped by their time, in week order: [(['tue','thu'], '17:00'),
+    (['fri'], '17:05'), (['sat','sun'], '14:00')]. One group when every day shares a time."""
+    days = [d for d in DAYS if d in (prog.get("days") or {})]
+    times = prog.get("times") or {}
+    out: list[tuple[list[str], str]] = []
+    for d in days:
+        t = times.get(d)
+        if not t:
+            continue
+        for grp in out:
+            if grp[1] == t:
+                grp[0].append(d)
+                break
+        else:
+            out.append(([d], t))
+    return out
 
 
 PROGRAM_REMINDER_TEXT = "gym"
 
 
 def ensure_program_reminder(user_id: int) -> dict | None:
-    """One standing reminder on the program's days at their time (source='program'),
-    replaced on every change, cancelled when the program has no single time."""
+    """The standing 'gym' reminders (source='program'): one row per distinct time, on the
+    days that share it — one row when every day is at the same time, several when a class
+    schedule puts weekdays at 5 and weekends at 2 (live 2026-11-03, user 86: the single
+    14:00 row kept firing mid-class). Idempotent: rows that no longer match are cancelled,
+    missing ones created, matching ones kept (their re-arm state survives). Returns the last
+    created row's result, or None when nothing is armed."""
     if not getattr(config, "PROGRAM_REMINDER_ENABLED", True):
         return None
     from models import get_session, User, Reminder
-    from reminders import create_reminder
+    from reminders import create_reminder, cancel_reminder, parse_days
     session = get_session()
     try:
         u = session.get(User, user_id)
         prog = (u.program or {}) if u else {}
-        existing = (session.query(Reminder).filter(Reminder.user_id == user_id, Reminder.source == "program",
-                                                   Reminder.active.is_(True)).first())
-        existing_id = existing.id if existing else None
+        existing = [(r.id, r.local_time, r.recur_days or "")
+                    for r in session.query(Reminder).filter(Reminder.user_id == user_id, Reminder.source == "program",
+                                                            Reminder.active.is_(True)).all()]
     finally:
         session.close()
-    days = [d for d in DAYS if d in (prog.get("days") or {})]
-    times = {t for t in (prog.get("times") or {}).values() if t}
-    if not days or len(times) != 1:
-        if existing_id:
-            from reminders import cancel_reminder
-            cancel_reminder(user_id, existing_id)
+    groups = program_ping_groups(prog)
+    wanted = {(t, parse_days(days) or "") for days, t in groups}
+    keep = set()
+    for rid, lt, rd in existing:
+        key = (lt, rd)
+        if key in wanted and key not in keep:
+            keep.add(key)
+        else:
+            cancel_reminder(user_id, rid)
+    res = None
+    for days, t in groups:
+        if (t, parse_days(days) or "") in keep:
+            continue
+        r = create_reminder(user_id, PROGRAM_REMINDER_TEXT, t, days=days, source="program")
+        if "error" not in r:
+            res = r
+            logger.info("PROGRAM_REMINDER_SET user=%s days=%s at=%s id=%s", user_id, days, r["local_time"], r["id"])
+    if not groups:
         return None
-    res = create_reminder(user_id, PROGRAM_REMINDER_TEXT, next(iter(times)), days=days, source="program",
-                          replace_id=existing_id)
-    if "error" not in res:
-        logger.info("PROGRAM_REMINDER_SET user=%s days=%s at=%s id=%s", user_id, days, res["local_time"], res["id"])
-    return res
+    return res if res is not None else {"kept": len(keep)}

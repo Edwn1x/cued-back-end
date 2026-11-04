@@ -237,6 +237,17 @@ CAPABILITIES: list[Capability] = [
         section="campus", rundown="i know how full rsf is at any given time, and when it's packed i send u the line link",
     ),
     Capability(
+        id="gym_quiet",
+        what="on ur training days i'll ping u when rsf is quiet so u walk into an empty floor",
+        how="nothing to set up — code watches the meter and texts once a day when it's under about a third full and u haven't trained yet",
+        tools=(),  # rides on gym_beats.sweep (code), no model tool
+        enabled=lambda u: config.RSF_METER_ENABLED and config.RSF_BEATS_ENABLED,
+        relevance=lambda u: 6,
+        used=lambda session, u: session.query(__import__("models").Message.id).filter_by(user_id=u.id, direction="out", message_type="gym_dead").first() is not None,
+        reveal_when="they ask to be told when the gym is empty / under N% — say what code already does; the threshold isn't per person",
+        section="campus", rundown="on training days i ping u when rsf is quiet",
+    ),
+    Capability(
         id="study_rooms",
         what="when you need somewhere to study i'll find you a real open room at moffitt and send the booking link, or tell you which libraries are open right now",
         how="text me 'need a room for 4 at 3' or 'what's open late tonight' — i check the live booking grid and the hours page, you tap the link and book with calnet",

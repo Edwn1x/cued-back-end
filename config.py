@@ -513,6 +513,17 @@ UPDATE_REMINDER_TOOL_ENABLED = os.getenv("UPDATE_REMINDER_TOOL_ENABLED", "true")
 # tomorrow (source='rearm'), so "go tomorrow" is a row, not a sentence (live 2026-10-17, u40).
 REMINDER_GYM_REARM_ENABLED = os.getenv("REMINDER_GYM_REARM_ENABLED", "true").lower() == "true"
 REMINDER_GYM_REARM_AFTER_H = float(os.getenv("REMINDER_GYM_REARM_AFTER_H", "3"))
+# Standing reminders (weekly / interval water / program) skip while the person has been silent
+# longer than this many days (stale_skip.days_quiet: last text, tapback or card open); the row
+# stays armed and resumes when they're back. One-offs still fire. 0 disables. Live 2026-11-03:
+# u42 'go run' 13× over six silent weeks, u33/u53 water pings 2+ weeks silent, u40 five days.
+REMINDER_MAX_QUIET_DAYS = float(os.getenv("REMINDER_MAX_QUIET_DAYS", "5"))
+# The program's 'gym' ping slides past a timed calendar block it would land inside (class /
+# work saved as events), or skips the day when the block runs past the lateness tolerance.
+PROGRAM_REMINDER_CALENDAR_GATE_ENABLED = os.getenv("PROGRAM_REMINDER_CALENDAR_GATE_ENABLED", "true").lower() == "true"
+# log_event repeat_days: how many weeks of dated rows a weekly block writes (default / cap).
+LOG_EVENT_REPEAT_WEEKS_DEFAULT = int(os.getenv("LOG_EVENT_REPEAT_WEEKS_DEFAULT", "8"))
+LOG_EVENT_REPEAT_WEEKS_MAX = int(os.getenv("LOG_EVENT_REPEAT_WEEKS_MAX", "16"))
 # A session they only SAID ("hitting the gym now, just doing upper", card declined, no sets) is
 # written as a completed workouts row once it has clearly happened (at_gym state older than
 # SETTLE_MIN, no row and no card session that local day) — the briefings count from that table.

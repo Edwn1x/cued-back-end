@@ -1944,13 +1944,17 @@ def is_past_workout_report(body: str) -> bool:
     return bool(body) and bool(_PAST_WORKOUT_REPORT_RE.search(body))
 
 
+_IMAGE_FOOD_RE = re.compile(r"\b(food|ate|eating|lunch|dinner|breakfast|meal|snack)\b")
+
+
 def classify_message(body: str, has_image: bool = False) -> str:
     """Simple heuristic to classify incoming message type."""
     body_lower = body.lower().strip()
 
-    # Image-based classification
+    # Image-based classification. Whole words: "ate" inside "late" made a class-schedule photo
+    # a food_photo (live 2026-11-03, user 86: "frat stuff weekends late").
     if has_image:
-        if any(kw in body_lower for kw in ["food", "ate", "eating", "lunch", "dinner", "breakfast", "meal", "snack"]):
+        if _IMAGE_FOOD_RE.search(body_lower):
             return "food_photo"
         if any(kw in body_lower for kw in ["progress", "physique", "body", "mirror", "before", "after"]):
             return "progress_photo"

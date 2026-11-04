@@ -107,7 +107,7 @@ def _resolve_class_end_utc(end_spec, user_tz: ZoneInfo, now_local: datetime) -> 
 
 
 def record_event(user_id: int, event_type: str, *, ends_at=None, source="regex",
-                 raw_text: str = None, occurred_at=None) -> int:
+                 raw_text: str = None, occurred_at=None, series_id: str = None, title: str = None) -> int:
     """Append one Event. Returns the new event id."""
     session = get_session()
     try:
@@ -115,6 +115,10 @@ def record_event(user_id: int, event_type: str, *, ends_at=None, source="regex",
                    source=source, raw_text=(raw_text or "")[:1000])
         if occurred_at is not None:
             ev.occurred_at = occurred_at
+        if series_id:
+            ev.series_id = series_id
+        if title:
+            ev.title = title[:200]
         session.add(ev)
         session.commit()
         return ev.id
