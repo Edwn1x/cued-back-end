@@ -102,7 +102,7 @@ def test_ping_line_and_week_line_speak_per_day_times():
     assert describe_week(one) == "mon upper · wed lower at 6pm"
 
 
-# ─── 2. the program ping slides past a class block ────────────────────────────
+# ─── 2. the program ping still goes out in class, phrased for after ───────────
 
 def _class_block(db, uid, start_utc, minutes, title="CE 93 lecture"):
     from events import record_event
@@ -110,44 +110,44 @@ def _class_block(db, uid, start_utc, minutes, title="CE 93 lecture"):
                         occurred_at=start_utc, ends_at=start_utc + timedelta(minutes=minutes))
 
 
-def test_program_ping_inside_a_class_block_slides_to_its_end(db, program_on, monkeypatch, caplog):
+def test_program_ping_inside_a_class_block_still_sends_as_a_heads_up(db, program_on, monkeypatch, caplog):
+    """Founder 2026-11-04: "even when im in class, its nice to get reminders" — the ping goes,
+    the wording points at after class, and nothing else about it changes."""
     import logging, config
-    from reminders import create_reminder, _fire_one
-    from models import Reminder
+    from reminders import create_reminder, _fire_one, _program_block_note
+    from models import Reminder, get_session, User
     caplog.set_level(logging.INFO)
     monkeypatch.setattr(config, "PROGRAM_REMINDER_YIELDS_TO_BRIEFING_ENABLED", False)
     monkeypatch.setattr(config, "PROGRAM_REMINDER_QUIET_GATE_ENABLED", False)
     sent = []
-    import sms
-    monkeypatch.setattr(sms, "send_sms", lambda *a, **k: sent.append(a) or {"ok": True})
+    import sms, reminders
+    monkeypatch.setattr(sms, "send_sms", lambda phone, text, **k: sent.append(text) or {"ok": True})
+    import llm_client
+    monkeypatch.setattr(llm_client, "make_client", lambda: (_ for _ in ()).throw(RuntimeError("no model")))   # plain-line path
     u = make_user(db, **JAMES)
     now = _now()
     rid = create_reminder(u.id, "gym", "14:00", days="mon,tue,wed,thu,fri,sat,sun", source="program")["id"]
-    row = db.get(Reminder, rid)
-    row.fire_at = now - timedelta(minutes=1)
+    db.get(Reminder, rid).fire_at = now - timedelta(minutes=1)
     db.commit()
     _class_block(db, u.id, now - timedelta(minutes=30), 70)            # class till now+40
-    assert _fire_one(rid, now) is False and sent == []
-    db.expire_all()
-    row = db.get(Reminder, rid)
-    assert row.active and abs((row.fire_at - (now + timedelta(minutes=45))).total_seconds()) < 60
-    assert "reason=calendar_block" in caplog.text
-    # a block that runs way past the slot → today's occurrence skipped, next day armed
-    v = make_user(db, **JAMES, phone="+15550006001")
-    vid = create_reminder(v.id, "gym", "14:00", days="mon,tue,wed,thu,fri,sat,sun", source="program")["id"]
-    db.get(Reminder, vid).fire_at = now - timedelta(minutes=1)
-    db.commit()
-    _class_block(db, v.id, now - timedelta(minutes=10), 240)
-    assert _fire_one(vid, now) is False
-    db.expire_all()
-    assert db.get(Reminder, vid).fire_at > now + timedelta(hours=12)
-    # a block that IS the gym never gates it
+    s = get_session()
+    try:
+        note = _program_block_note(s.get(User, u.id), db.get(Reminder, rid))
+    finally:
+        s.close()
+    assert note and note[0] == "CE 93 lecture"
+    assert _fire_one(rid, now) is True and len(sent) == 1
+    assert sent[0].startswith("reminder: gym") and "after CE 93 lecture, ur out at" in sent[0]
+    assert "REMINDER_SENT" in caplog.text and "calendar_block" not in caplog.text
+    # a block that IS the gym adds nothing; no block adds nothing
     w = make_user(db, **JAMES, phone="+15550006002")
     wid = create_reminder(w.id, "gym", "14:00", days="mon,tue,wed,thu,fri,sat,sun", source="program")["id"]
-    db.get(Reminder, wid).fire_at = now - timedelta(minutes=1)
-    db.commit()
     _class_block(db, w.id, now - timedelta(minutes=5), 90, title="gym — push")
-    assert _fire_one(wid, now) is True and len(sent) == 1
+    s = get_session()
+    try:
+        assert _program_block_note(s.get(User, w.id), db.get(Reminder, wid)) is None
+    finally:
+        s.close()
 
 
 # ─── 3. the schedule is saved: log_event repeat_days ─────────────────────────
