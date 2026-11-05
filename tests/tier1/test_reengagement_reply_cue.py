@@ -238,3 +238,111 @@ def test_heartbeat_block_expires_and_ignores_ordinary_gaps(db, monkeypatch):
     _add(w.id, "in", "hey", at=now - timedelta(days=26))
     _add(w.id, "in", "👍", at=now - timedelta(minutes=45))
     assert "THEY JUST CAME BACK" not in _hb_ctx(w.id)          # flag off
+
+
+# ---- person-specific offers, each with its own condition (founder: "add that as well") ----
+
+def _offers(user_id, **flags):
+    from models import get_session, User
+    from stale_skip import return_offers
+    s = get_session()
+    try:
+        return return_offers(s.get(User, user_id), session=s)
+    finally:
+        s.close()
+
+
+def _menu(name, *, days_ago=1):
+    return {name.lower(): {"name": name, "items": [{"item": "bruschetta chicken", "calories": 680, "protein_g": 52}],
+                           "captured_at": (_now() - timedelta(days=days_ago)).isoformat()}}
+
+
+def _event(user_id, title, when, *, source="gcal", all_day=False):
+    from events import upsert_external_event
+    upsert_external_event(user_id, source=source, external_id=title, title=title, occurred_at=when, all_day=all_day)
+
+
+def _day_label(user_id, when):
+    from models import get_session, User
+    from timefmt import to_local
+    s = get_session()
+    try:
+        return to_local(when, s.get(User, user_id)).strftime("%A")
+    finally:
+        s.close()
+
+
+def test_meal_offer_names_their_saved_menu(db, monkeypatch):
+    import config
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", False)
+    u = make_user(db, saved_menus=_menu("Grizzly Chefs"))
+    assert _offers(u.id) == ["log today's meals off their saved 'Grizzly Chefs' menu — they just say what they "
+                             "had (a pic or one line works too)"]
+    stale = make_user(db, saved_menus=_menu("Grizzly Chefs", days_ago=40))
+    assert "saved" not in _offers(stale.id)[0] and "a pic or one line is enough" in _offers(stale.id)[0]
+
+
+def test_study_room_offer_names_the_exam_on_their_calendar(db, monkeypatch):
+    import config
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", True)
+    u = make_user(db)
+    when = _now() + timedelta(days=3)
+    _event(u.id, "CS 61B Midterm", when)
+    study = _offers(u.id)[1]
+    assert f"ahead of their CS 61B Midterm on {_day_label(u.id, when)}" in study, study
+    assert "send_study_room_link" in study and "you can't book it" in study
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", False)
+    assert "rundown of what's due around their CS 61B Midterm" in _offers(u.id)[1]
+
+
+def test_near_assignment_is_named_and_a_far_one_is_not(db, monkeypatch):
+    import config
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", True)
+    near = make_user(db)
+    _event(near.id, "due: HW4", _now() + timedelta(days=2), source="bcourses")
+    assert "before their HW4 is due" in _offers(near.id)[1], _offers(near.id)
+    far = make_user(db)
+    _event(far.id, "due: Lab 9", _now() + timedelta(days=8), source="bcourses")
+    assert "Lab 9" not in " ".join(_offers(far.id)) and "midterm or finals stretch" in _offers(far.id)[1]
+
+
+def test_exam_beats_a_nearer_assignment(db, monkeypatch):
+    import config
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", True)
+    u = make_user(db)
+    _event(u.id, "due: HW4", _now() + timedelta(days=1), source="bcourses")
+    _event(u.id, "Chem 3A Midterm", _now() + timedelta(days=6))
+    assert "Chem 3A Midterm" in _offers(u.id)[1] and "HW4" not in _offers(u.id)[1]
+
+
+def test_card_only_with_history_week_look_only_with_room_left(db, monkeypatch):
+    import config, stale_skip
+    import workouts.session_ops as so
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", True)
+    monkeypatch.setattr(stale_skip, "_calendar_connected", lambda user: True)
+    u = make_user(db)
+    monkeypatch.setattr(so, "completed_template_keys", lambda uid: ["push"])
+    offers = _offers(u.id)                         # one session ≠ history: no card, week look fits
+    assert len(offers) == 3 and "week looks like" in offers[2] and not any("card" in o for o in offers)
+    monkeypatch.setattr(so, "completed_template_keys", lambda uid: ["push", "pull"])
+    offers = _offers(u.id)                         # card takes the third slot; never more than three
+    assert len(offers) == 3 and "short easy card" in offers[2] and not any("week looks like" in o for o in offers)
+
+
+def test_cue_carries_the_named_offers_into_the_reply_context(db, monkeypatch):
+    import config
+    from tests.factories import make_user
+    monkeypatch.setattr(config, "CAMPUS_LIBRARIES_ENABLED", True)
+    u = make_user(db, saved_menus=_menu("Grizzly Chefs"))
+    now = _now()
+    _event(u.id, "CS 61B Midterm", now + timedelta(days=3))
+    _add(u.id, "in", "hey", at=now - timedelta(days=12))
+    _add(u.id, "in", "👍", at=now - timedelta(seconds=5))
+    ctx = _ctx(u.id)
+    cue = ctx[ctx.index("## FIRST TEXT FROM THEM"):]
+    assert "'Grizzly Chefs' menu" in cue and "CS 61B Midterm" in cue, cue[:900]

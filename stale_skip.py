@@ -356,26 +356,103 @@ def last_return(user, session, *, now=None) -> dict | None:
     }
 
 
-def return_offers(user, *, now=None) -> list[str]:
+RETURN_OFFERS_MAX = 3
+_EXAM_OFFER_DAYS = 10      # an exam this close is worth naming
+_DUE_OFFER_DAYS = 5        # an assignment only when it is nearly here
+
+
+def _next_on_their_calendar(user, session, now_n: datetime) -> tuple[str, str, bool] | None:
+    """(title, when-label, is_exam) for the nearest exam within _EXAM_OFFER_DAYS, else the
+    nearest deadline within _DUE_OFFER_DAYS — off THEIR calendar / bCourses / Canvas rows
+    (schedule.deadline_items). None when nothing is on file; fail-open."""
+    try:
+        from schedule import deadline_items
+        from timefmt import to_local
+        items = deadline_items(user.id, session, days=_EXAM_OFFER_DAYS, now=now_n)
+        pick = next((d for d in items if d.is_exam), None)
+        if pick is None:
+            pick = next((d for d in items if d.days_until(now_n) <= _DUE_OFFER_DAYS), None)
+        if pick is None:
+            return None
+        title = re.sub(r"^due:\s*", "", pick.title, flags=re.IGNORECASE).strip()[:60] or "deadline"
+        day_gap = (to_local(pick.when, user).date() - to_local(now_n, user).date()).days
+        label = ("today" if day_gap <= 0 else "tomorrow" if day_gap == 1
+                 else to_local(pick.when, user).strftime("%A"))
+        return title, label, pick.is_exam
+    except Exception as e:  # noqa: BLE001 — an offer list must never break a turn
+        logger.warning("RETURN_OFFERS_CALENDAR_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return None
+
+
+def _calendar_connected(user) -> bool:
+    try:
+        from integrations.base import is_connected
+        return any(is_connected(user.id, p) for p in ("gcal", "bcourses", "canvas"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def return_offers(user, *, session=None, now=None) -> list[str]:
     """Concrete things the coach can actually do for someone who just came back — the founder's
-    "offer instead of vaguely asking". Only what is true for THIS person and enabled here."""
-    offers = ["log today's meals (a pic or one line is enough — that's all it takes)"]
-    if config.CAMPUS_LIBRARIES_ENABLED:
+    "offer instead of vaguely asking" (2026-11-04). Built in CODE, at most RETURN_OFFERS_MAX,
+    each with its own condition, because the model given "offer something concrete" reaches
+    for whatever is on its capability list (live replay: a gym-crowd check and "say starting
+    at the gym" to someone who trained once). What is on file for THIS person comes first:
+
+      1. meals — off their saved menu by name when a fresh one is on file, else a pic / a line
+      2. what's coming up — a study-room link ahead of the exam (or due date) on their own
+         calendar, named; with nothing on file, the generic study-room link + the month
+         (campus libraries on); without campus libraries, a rundown around that exam
+      3. a short easy card — only with 2+ completed sessions (never a push)
+      4. a look at their week — only with a connected calendar and room left
+    """
+    now_n = _now(now)
+    offers: list[str] = []
+
+    menu = None
+    try:
+        from saved_menus import fresh_menu_names
+        names = fresh_menu_names(getattr(user, "saved_menus", None))
+        menu = names[0] if names else None
+    except Exception:  # noqa: BLE001
+        menu = None
+    if menu:
+        offers.append(f"log today's meals off their saved '{menu}' menu — they just say what they had "
+                      "(a pic or one line works too)")
+    else:
+        offers.append("log today's meals (a pic or one line is enough — that's all it takes)")
+
+    nxt = _next_on_their_calendar(user, session, now_n) if session is not None else None
+    link_note = "send_study_room_link — you send the link, you can't book it for them"
+    if nxt and config.CAMPUS_LIBRARIES_ENABLED:
+        title, label, is_exam = nxt
+        lead = (f"ahead of their {title} {'' if label in ('today', 'tomorrow') else 'on '}{label}" if is_exam
+                else f"before their {title} is due {label}")
+        offers.append(f"a study-room booking link {lead} ({link_note}; it's on their calendar, so name it)")
+    elif nxt:
+        title, label, is_exam = nxt
+        offers.append(f"a quick rundown of what's due around their {title} "
+                      f"({'' if label in ('today', 'tomorrow') else 'on '}{label}; it's on their calendar, so name it)")
+    elif config.CAMPUS_LIBRARIES_ENABLED:
         try:
             from timefmt import to_local
-            month = to_local(_now(now), user).strftime("%B")
+            month = to_local(now_n, user).strftime("%B")
         except Exception:  # noqa: BLE001
-            month = _now(now).strftime("%B")
-        offers.append(f"a study-room booking link (send_study_room_link — you send the link, you can't "
-                      f"book it for them; it's {month}, so if that's a midterm or finals stretch, name it)")
+            month = now_n.strftime("%B")
+        offers.append(f"a study-room booking link ({link_note}; it's {month}, so if that's a midterm "
+                      "or finals stretch, name it)")
+
     try:
         from workouts.session_ops import completed_template_keys
         trained = len(completed_template_keys(user.id)) >= 2
-    except Exception:  # noqa: BLE001 — an offer list must never break a turn
+    except Exception:  # noqa: BLE001
         trained = False
     if trained:
         offers.append("a short easy card whenever they want back in (an offer, not a push)")
-    return offers
+
+    if len(offers) < RETURN_OFFERS_MAX and not nxt and _calendar_connected(user):
+        offers.append("a quick look at what their week looks like (it's on their calendar)")
+    return offers[:RETURN_OFFERS_MAX]
 
 
 def backoff_tiers() -> list[tuple[float, float]]:

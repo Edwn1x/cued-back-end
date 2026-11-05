@@ -334,7 +334,7 @@ def _reengagement_cue(user, session) -> str | None:
         return None   # not the live turn for that text, or it has already been answered
     from timefmt import render_date
     since = render_date(ret["prev_at"], user)
-    offers = return_offers(user)
+    offers = return_offers(user, session=session)
     lines = [
         f"## FIRST TEXT FROM THEM IN {round(ret['gap_days'])} DAYS — re-engagement turn",
         f"They went quiet on {since} and just texted. Whatever they sent — a 👍, an 'ok', a pic — is a "

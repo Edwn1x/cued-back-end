@@ -5,7 +5,9 @@ parametrized x3 per the founder rule.
   1. Her exact turn — 26 days dark under water gifs, the ping check-in, then "👍" — gets a
      TEXT back (not a bare tapback): the pings stay, a meal-logging offer, a study-room
      offer, no training-gap talk, and the water reminder is still armed.
-  2. Control: an engaged user's "ok cool" is still a reaction-only turn — the carve-out
+  2. Same turn for someone with a saved house menu and a midterm on their calendar — the
+     offers name THEIR menu and THEIR exam instead of the generic ones.
+  3. Control: an engaged user's "ok cool" is still a reaction-only turn — the carve-out
      must not turn every acknowledgment into a paragraph.
 Run: pytest tests/tier2/test_reengagement_reply_live.py --run-tier2 -s
 """
@@ -112,3 +114,33 @@ def test_engaged_users_ok_cool_is_still_reaction_only(db, monkeypatch, imessage_
     reply = _run(user.id, "ok cool")
     print(f"\n[run {run}] control reply: {reply!r}")
     assert (not reply.strip()) or is_reaction_only_text(reply, True), f"paragraph back to 'ok cool': {reply!r}"
+
+
+@pytest.mark.parametrize("run", [1, 2, 3])
+def test_offers_name_their_saved_menu_and_their_exam(db, monkeypatch, imessage_on, sidecar_ok, run):
+    from agent_tools import is_reaction_only_text
+    from events import upsert_external_event
+    _flags(monkeypatch)
+    now = _now()
+    menu = {"grizzly chefs": {"name": "Grizzly Chefs", "captured_at": (now - timedelta(days=2)).isoformat(),
+                              "items": [{"item": "bruschetta chicken", "calories": 680, "protein_g": 52},
+                                        {"item": "beef bulgogi bowl", "calories": 740, "protein_g": 45}]}}
+    user = make_user(db, **dict(KRLA, name="Alexey", gender="male"), created_at=_old_account(), saved_menus=menu)
+    upsert_external_event(user.id, source="gcal", external_id="cs61b-mt2", title="CS 61B Midterm",
+                          occurred_at=now + timedelta(days=3), all_day=False)
+    _msg(db, user.id, "in", "had the bulgogi bowl", at=now - timedelta(days=12, minutes=1))
+    _msg(db, user.id, "out", "logged, 740 cal 45g protein", at=now - timedelta(days=12))
+    for d in (2, 1):
+        _msg(db, user.id, "out", "[water-break gif]", at=now - timedelta(days=d), mtype="water_reminder")
+    _msg(db, user.id, "out", CHECKIN, at=now - timedelta(minutes=1), mtype="reminder_checkin")
+    _msg(db, user.id, "in", "👍", at=now - timedelta(seconds=5), sid="spc-msg-alexey-1")
+
+    reply = _run(user.id, "👍")
+    print(f"\n[run {run}] named-offers reply: {reply!r}")
+    assert reply.strip() and not is_reaction_only_text(reply, True), f"bare tapback / silence: {reply!r}"
+    low = reply.lower()
+    assert "stay" in low, f"never said the pings stay: {reply!r}"
+    assert "grizzly" in low, f"meal offer didn't name their saved menu: {reply!r}"
+    assert re.search(r"61b|midterm", low), f"study offer didn't name their exam: {reply!r}"
+    assert not re.search(r"\b(gym|workout|workouts|train|trained|training|lift|lifting|session)\b", low), \
+        f"brought up training on the way back in: {reply!r}"

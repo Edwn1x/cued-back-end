@@ -1899,7 +1899,7 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
                          "re-engagement bubble: say what their text did in a few words, ask how they've been, "
                          "and OFFER two or three concrete things you can do for them right now — exactly "
                          "these, in this order, nothing else off your capability list: "
-                         + "; ".join(return_offers(user)) + ". Close with that you're around ('lmk if u need "
+                         + "; ".join(return_offers(user, session=session)) + ". Close with that you're around ('lmk if u need "
                          "anything, i got you'). Not the training gap, not their numbers, nothing to fix.")
             parts.append(f"## THEY JUST CAME BACK — first text in {round(_ret['gap_days'])} days, "
                          f"~{_ret['hours_ago']:.1f}h ago\n{_body}")
