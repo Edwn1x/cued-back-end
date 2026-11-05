@@ -51,6 +51,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import config
+from sqlalchemy import or_
 from models import (HeartbeatTick, Message, Meal, Workout, WorkoutSession, Event, WearableDay,
                     WeightLog, TargetAdjustment, Signal, AgentTask)
 
@@ -288,6 +289,93 @@ def days_quiet(user, session, *, now=None) -> float | None:
     if not cands:
         return None
     return max(0.0, (now_n - max(cands)).total_seconds() / 86400)
+
+
+# ---- the return after a long silence -----------------------------------------
+#
+# Live 2026-11-04 (u33): 26 days dark under 179 water gifs, then a tapback + "👍" to the ping
+# check-in within a minute. The reply turn answered with a bare 👍 (nothing dated the previous
+# text for it) and the heartbeat's first look 44 min later sent "u eat yet today". Founder: that
+# 👍 is a door — react AND one bubble of concrete offers, and don't stack a weaker text on it.
+# last_return is the code-dated fact both the reply turn and the heartbeat read.
+
+_STANDING_PING_TYPES = ("reaction", "water_reminder", "reminder", "reminder_checkin")
+
+
+def last_return(user, session, *, now=None) -> dict | None:
+    """Their latest text, when it ended REENGAGE_REPLY_GAP_DAYS+ of silence. None otherwise
+    (flag off, no texts, first-ever text, or an ordinary gap).
+
+    The previous text is the last inbound BEFORE the coach's last non-tapback outbound that
+    precedes the latest one — so a burst ("👍" then "hey" seconds apart, nothing from the coach
+    between) still dates back to the old text, while the second turn of the conversation it
+    starts (the coach's reply sits between) does not. Measured off messages only:
+    users.last_active_at keeps just the latest stamp, so it cannot date the previous one."""
+    if not getattr(config, "REENGAGE_REPLY_ENABLED", True):
+        return None
+    floor = float(getattr(config, "REENGAGE_REPLY_GAP_DAYS", 7))
+    if floor <= 0:
+        return None
+    now_n = _now(now)
+    latest = (session.query(Message)
+              .filter(Message.user_id == user.id, Message.direction == "in")
+              .order_by(Message.created_at.desc()).first())
+    if not latest or not latest.created_at:
+        return None
+    last_out = (session.query(Message)
+                .filter(Message.user_id == user.id, Message.direction == "out",
+                        Message.created_at < latest.created_at,
+                        or_(Message.message_type.is_(None), Message.message_type != "reaction"))
+                .order_by(Message.created_at.desc()).first())
+    # No coach text before it at all (never true in prod — onboarding always spoke): fall back to
+    # a 30-minute cluster so a burst still isn't read as its own previous text.
+    before = (last_out.created_at if (last_out and last_out.created_at)
+              else latest.created_at - timedelta(minutes=30))
+    prev = (session.query(Message)
+            .filter(Message.user_id == user.id, Message.direction == "in",
+                    Message.created_at < before, Message.id != latest.id)
+            .order_by(Message.created_at.desc()).first())
+    if not prev or not prev.created_at:
+        return None
+    gap_days = (_naive(latest.created_at) - _naive(prev.created_at)).total_seconds() / 86400
+    if gap_days < floor:
+        return None
+    coach_text_after = (session.query(Message.id)
+                        .filter(Message.user_id == user.id, Message.direction == "out",
+                                Message.created_at > latest.created_at,
+                                or_(Message.message_type.is_(None),
+                                    Message.message_type.notin_(_STANDING_PING_TYPES)))
+                        .first()) is not None
+    return {
+        "gap_days": gap_days,
+        "prev_at": _naive(prev.created_at),
+        "latest_at": _naive(latest.created_at),
+        "hours_ago": max(0.0, (now_n - _naive(latest.created_at)).total_seconds() / 3600),
+        "answers_checkin": bool(last_out is not None and (last_out.message_type or "") == "reminder_checkin"),
+        "coach_text_after": coach_text_after,
+    }
+
+
+def return_offers(user, *, now=None) -> list[str]:
+    """Concrete things the coach can actually do for someone who just came back — the founder's
+    "offer instead of vaguely asking". Only what is true for THIS person and enabled here."""
+    offers = ["log today's meals (a pic or one line is enough — that's all it takes)"]
+    if config.CAMPUS_LIBRARIES_ENABLED:
+        try:
+            from timefmt import to_local
+            month = to_local(_now(now), user).strftime("%B")
+        except Exception:  # noqa: BLE001
+            month = _now(now).strftime("%B")
+        offers.append(f"a study-room booking link (send_study_room_link — you send the link, you can't "
+                      f"book it for them; it's {month}, so if that's a midterm or finals stretch, name it)")
+    try:
+        from workouts.session_ops import completed_template_keys
+        trained = len(completed_template_keys(user.id)) >= 2
+    except Exception:  # noqa: BLE001 — an offer list must never break a turn
+        trained = False
+    if trained:
+        offers.append("a short easy card whenever they want back in (an offer, not a push)")
+    return offers
 
 
 def backoff_tiers() -> list[tuple[float, float]]:

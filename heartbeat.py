@@ -1880,6 +1880,32 @@ def _proactive_context(user, session, *, state: dict | None = None) -> str:
         parts.append(f"## TIME SINCE THEIR LAST MESSAGE\n~{hrs_in:.1f} hours — judge "
                      "'mid-conversation' by THIS number, not by where the transcript ends.")
 
+    # They just came back after a long silence (stale_skip.last_return — the same fact the
+    # reply turn reads). Live 2026-11-04 (u33): 44 min after her first text in 26 days this
+    # tick sent "u eat yet today" — a weak second text. If the coach has texted since her
+    # return, that text is the open thread: don't stack. If only a tapback went back, THIS
+    # tick is the backstop for the one bubble of offers (founder: "offer instead").
+    try:
+        from stale_skip import last_return, return_offers
+        _ret = last_return(user, session)
+        if _ret and _ret["hours_ago"] <= float(getattr(config, "REENGAGE_HEARTBEAT_HOLD_HOURS", 18)):
+            if _ret["coach_text_after"]:
+                _body = ("You have already texted them since. That text is the open thread and the only thing "
+                         "on the table: do NOT stack another on it today — no meal check ('u eat yet'), no "
+                         "training nudge, no second ask. stay_silent (recheck tomorrow morning). Tomorrow's "
+                         "briefing is fair game and opens warm, never with the gap.")
+            else:
+                _body = ("Nothing but a tapback has gone back to them. THIS is the moment for the one "
+                         "re-engagement bubble: say what their text did in a few words, ask how they've been, "
+                         "and OFFER two or three concrete things you can do for them right now — exactly "
+                         "these, in this order, nothing else off your capability list: "
+                         + "; ".join(return_offers(user)) + ". Close with that you're around ('lmk if u need "
+                         "anything, i got you'). Not the training gap, not their numbers, nothing to fix.")
+            parts.append(f"## THEY JUST CAME BACK — first text in {round(_ret['gap_days'])} days, "
+                         f"~{_ret['hours_ago']:.1f}h ago\n{_body}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REENGAGE_HEARTBEAT_CUE_FAILED user=%s err=%s", user.id, e)
+
     thread = _open_thread_signal(user, session)
     if thread:
         parts.append(thread)

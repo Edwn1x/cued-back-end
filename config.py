@@ -527,6 +527,10 @@ REMINDER_QUIET_CHECKIN_EVERY_DAYS = float(os.getenv("REMINDER_QUIET_CHECKIN_EVER
 # i got you") — never the training gap, never a second nudge.
 REENGAGE_REPLY_ENABLED = os.getenv("REENGAGE_REPLY_ENABLED", "true").lower() == "true"
 REENGAGE_REPLY_GAP_DAYS = float(os.getenv("REENGAGE_REPLY_GAP_DAYS", "7"))
+# The heartbeat reads the same return for this many hours: a coach text since the return = the open
+# thread, don't stack on it ("u eat yet today" 44 min after u33's 👍); only a tapback back = this
+# tick sends the one offers bubble.
+REENGAGE_HEARTBEAT_HOLD_HOURS = float(os.getenv("REENGAGE_HEARTBEAT_HOLD_HOURS", "18"))
 # The program's 'gym' ping still goes out inside a saved class / work block (founder 2026-11-04:
 # "even in class it's nice to get reminders") — phrased as a heads-up for after, never a nag.
 PROGRAM_REMINDER_CLASS_NOTE_ENABLED = os.getenv("PROGRAM_REMINDER_CLASS_NOTE_ENABLED", "true").lower() == "true"

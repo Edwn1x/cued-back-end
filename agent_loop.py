@@ -324,55 +324,33 @@ def _reengagement_cue(user, session) -> str | None:
     reply turn, with the founder's call attached: their 👍 is a door, so react AND send one
     bubble of concrete OFFERS ("ok, they stay. how u been? any meals from today you want to
     log? midterm season — want a study room link? i got you"), not a vague "anything you
-    need?" and never a training-gap nudge. Measured off messages only: users.last_active_at
-    keeps just the latest stamp (this very text), so it can't date the previous engagement."""
-    if not getattr(config, "REENGAGE_REPLY_ENABLED", True):
+    need?" and never a training-gap nudge. The dating is stale_skip.last_return (burst-safe;
+    the heartbeat reads the same fact so it never stacks a second text on this one)."""
+    from stale_skip import last_return, return_offers
+    ret = last_return(user, session)
+    if not ret:
         return None
-    floor = float(getattr(config, "REENGAGE_REPLY_GAP_DAYS", 7))
-    if floor <= 0:
-        return None
-    last_two = (session.query(Message)
-                .filter(Message.user_id == user.id, Message.direction == "in")
-                .order_by(Message.created_at.desc()).limit(2).all())
-    if len(last_two) < 2 or not last_two[0].created_at or not last_two[1].created_at:
-        return None   # first-ever text: onboarding's job, not a re-engagement
-    latest, prev = last_two
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if (now - latest.created_at.replace(tzinfo=None)) > timedelta(hours=2):
-        return None   # not the live turn for that text
-    gap_days = (latest.created_at - prev.created_at).total_seconds() / 86400
-    if gap_days < floor:
-        return None
-    from timefmt import render_date, to_local
-    since = render_date(prev.created_at, user)
-    offers = ["log today's meals (a pic or one line is enough — that's all it takes)"]
-    if config.CAMPUS_LIBRARIES_ENABLED:
-        month = to_local(now, user).strftime("%B")
-        offers.append(f"a study-room booking link (send_study_room_link; it's {month} — if that's a "
-                      "midterm or finals stretch for them, name it)")
-    try:
-        from workouts.session_ops import completed_template_keys
-        trained = len(completed_template_keys(user.id)) >= 2
-    except Exception:  # noqa: BLE001 — an offer list must never break the turn
-        trained = False
-    if trained:
-        offers.append("a short easy card whenever they want back in (an offer, not a push)")
-    last_out = (session.query(Message)
-                .filter(Message.user_id == user.id, Message.direction == "out",
-                        Message.created_at < latest.created_at)
-                .order_by(Message.created_at.desc()).first())
+    if ret["hours_ago"] > 2 or ret["coach_text_after"]:
+        return None   # not the live turn for that text, or it has already been answered
+    from timefmt import render_date
+    since = render_date(ret["prev_at"], user)
+    offers = return_offers(user)
     lines = [
-        f"## FIRST TEXT FROM THEM IN {round(gap_days)} DAYS — re-engagement turn",
+        f"## FIRST TEXT FROM THEM IN {round(ret['gap_days'])} DAYS — re-engagement turn",
         f"They went quiet on {since} and just texted. Whatever they sent — a 👍, an 'ok', a pic — is a "
         "door opening, not an acknowledgment, and this turn is the one shot at it: the react-only "
         "rule does NOT apply here. React if it's earned, then ALSO send ONE short bubble, friend "
         "first: say what their text did in a few words, ask how they've been, and OFFER two or three "
-        "concrete things you can actually do for them right now — " + "; ".join(offers) + ". Close "
-        "with that you're around ('lmk if u need anything, i got you'). Leave out: how long it's "
-        "been (beyond 'been a min'), the training gap, their numbers, anything to fix. If they don't "
-        "answer, that's the end of it — no second nudge.",
+        "concrete things you can actually do for them right now — exactly these, in this order, and "
+        "nothing else off your capability list (no gym-crowd check, no workout card unless it is "
+        "listed here): " + "; ".join(offers) + ". Close "
+        "with that you're around ('lmk if u need anything, i got you'). If their text carries a real "
+        "ask or something to log, handle that FIRST and let the offers shrink to whatever is left — "
+        "the full offers bubble is for a bare 👍 / ok / hey. Leave out: how long it's been (beyond "
+        "'been a min'), the training gap, their numbers, anything to fix. If they don't answer, "
+        "that's the end of it — no second nudge.",
     ]
-    if last_out is not None and (last_out.message_type or "") == "reminder_checkin":
+    if ret["answers_checkin"]:
         lines.append("Their text answers the ping check-in you sent ('still want the water pings?'): a 👍 "
                      "or anything warm means the pings STAY — code already kept them, there is nothing "
                      "to call, just say so ('ok, they stay'). Only an explicit stop means cancel_reminder.")
