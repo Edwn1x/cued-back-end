@@ -5,6 +5,18 @@ instead of a boring old drink water text." The character is the cued ball in the
 blue-ink sketch style (static/water/*.gif, one loop per pose); the pings rotate through
 the files so two in a row never look the same. GIF alone — no caption (founder).
 
+The polished set (founder 2026-11-04/05, after the sketch loops: "more professional and
+polished ones"; then live on their phone: "smaller", "the blue is way too strong", and of
+the fully transparent look, "which i do prefer"). static/water/polished/*.png — a progress
+ring, a porthole of water, a drop and its ripple, a glass that pours, "Drink water." in
+type, the logo's dot dripping, and the ball as a soft 3D figure. They are ANIMATED PNG, not
+GIF: real alpha, so brand-blue art sits straight on a light or a dark thread with no card
+and no jagged 1-bit edge. Each file is a 640x384 canvas with the art in the left 384 (60%):
+iMessage scales an image to the bubble width by its proportions, so that padding is what
+makes it land smaller on screen. iMessage only — an MMS flattens the animation and the
+alpha, so an SMS user keeps the GIF loops. Which pool a ping draws from is
+config.WATER_STICKER_SET: "sketch" (default — nothing changes on deploy), "polished", "both".
+
 Where it sits: reminders._fire_one calls send_water_gif() for an interval (every_hours)
 row that is about water, BEFORE composing the line. True → the GIF landed and the row
 is logged as a water_reminder (same message_type as the line, so the 👍/"drank" ack
@@ -32,6 +44,12 @@ GIF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "wa
 # turns; this is how it knows a water ping went out without a line to quote.
 MARKER = "[water-break gif]"
 MIME = "image/gif"
+POLISHED_DIR = "polished"      # static/water/polished/*.png — the polished set (animated PNG)
+_MIME_BY_EXT = {".gif": "image/gif", ".png": "image/png"}
+
+
+def _mime(name: str) -> str:
+    return _MIME_BY_EXT.get(os.path.splitext(name)[1].lower(), MIME)
 
 
 def is_water_row(row) -> bool:
@@ -48,6 +66,28 @@ def gif_files() -> list[str]:
         return sorted(f for f in os.listdir(GIF_DIR) if f.lower().endswith(".gif"))
     except FileNotFoundError:
         return []
+
+
+def polished_files() -> list[str]:
+    """The polished set, as names relative to GIF_DIR ('polished/water-ring.png') so the
+    same name opens the file, builds the static URL and can be asked for at the admin
+    preview. Empty when the folder isn't there."""
+    try:
+        d = os.path.join(GIF_DIR, POLISHED_DIR)
+        return sorted(f"{POLISHED_DIR}/{f}" for f in os.listdir(d) if f.lower().endswith(".png"))
+    except FileNotFoundError:
+        return []
+
+
+def _pool(channel: str | None) -> list[str]:
+    """The files this ping may draw from. The polished set needs iMessage (see the module
+    docstring) and config.WATER_STICKER_SET to ask for it; anything else is the GIF loops."""
+    files = gif_files()
+    mode = (getattr(config, "WATER_STICKER_SET", "sketch") or "sketch").strip().lower()
+    polished = polished_files() if (channel == "imessage" and mode in ("polished", "both")) else []
+    if polished and mode == "polished":
+        return polished
+    return files + polished
 
 
 def _slot(user_id: int, n: int, count: int) -> int:
@@ -92,12 +132,13 @@ def _bed_window_open(user, now=None) -> bool:
         return True
 
 
-def pick_gif(row, user_id: int | None = None, *, user=None, now=None) -> str | None:
+def pick_gif(row, user_id: int | None = None, *, user=None, now=None, channel: str | None = None) -> str | None:
     """Next GIF for this row: shuffled per user and per ping (founder: 'a few distinct
     ones so it never gets repetitive'), never the same file twice in a row. With `user`,
     the bed loop (BED_GIF_HINT) is only in the draw during the evening window — live
-    2026-10-28 "sip before bed" went out at 17:05."""
-    files = gif_files()
+    2026-10-28 "sip before bed" went out at 17:05. `channel` decides whether the polished set
+    is in the pool (_pool); without it the pool is the GIF loops, as before."""
+    files = _pool(channel)
     if not files:
         return None
     if user is not None and getattr(config, "WATER_GIF_BED_WINDOW_ENABLED", True) and not _bed_window_open(user, now):
@@ -130,7 +171,7 @@ def send_gif(user, name: str, *, message_type: str = WATER_REMINDER_TYPE) -> boo
                 return False
             with open(os.path.join(GIF_DIR, name), "rb") as f:
                 data = f.read()
-            sid = sms._send_imessage_attachment(user.phone, data, name, MIME)
+            sid = sms._send_imessage_attachment(user.phone, data, os.path.basename(name), _mime(name))
         else:
             sid = sms._send_single_mms(user.phone, gif_url(name))
         sms._log_message(user.id, MARKER, message_type, channel=channel,
@@ -163,7 +204,12 @@ def send_water_gif(user, row) -> bool:
     False → the caller sends the plain line, whose own send path owns failover / hold."""
     if not config.WATER_GIF_ENABLED:
         return False
-    name = pick_gif(row, user.id, user=user)
+    try:
+        import sms
+        channel = sms._resolve_channel(user.id)
+    except Exception:  # noqa: BLE001 — unknown channel → the GIF loops, which every channel can show
+        channel = None
+    name = pick_gif(row, user.id, user=user, channel=channel)
     if not name:
         logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
         return False

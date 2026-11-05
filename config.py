@@ -1165,6 +1165,13 @@ WATER_GIF_BED_WINDOW_H = int(os.getenv("WATER_GIF_BED_WINDOW_H", "3"))
 WATER_GIF_AMBIGUOUS_AS_SENT_ENABLED = os.getenv("WATER_GIF_AMBIGUOUS_AS_SENT_ENABLED", "true").lower() == "true"
 # Public base Twilio fetches the MMS media from. Empty → INTEGRATIONS_BASE_URL.
 WATER_GIF_BASE_URL = os.getenv("WATER_GIF_BASE_URL", "")
+# Which stickers a water ping draws from (water_gif._pool). "sketch" = the hand-drawn GIF loops
+# (static/water/*.gif) — the default, so deploying the polished set changes nothing by itself.
+# "polished" = the polished animated-PNG set (static/water/polished/*.png: ring, porthole, ripple,
+# glass, type, logo drip, 3D figure — founder 2026-11-05: 60% size, fully transparent, "i like
+# them all") for iMessage users; SMS users keep the GIFs (an MMS flattens the animation and the
+# alpha). "both" = one shuffle over the two.
+WATER_STICKER_SET = os.getenv("WATER_STICKER_SET", "sketch").strip().lower()
 # Card setup step at onboarding completion (workouts/card_setup.py): the extension
 # framing (an iMessage extension like GamePigeon, not an app), their first card sent
 # right then so the install happens at home, and a one-time tour of the card. When ON,
