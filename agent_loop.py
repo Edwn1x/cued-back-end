@@ -315,6 +315,48 @@ def _new_here_block(user, *, now: datetime | None = None) -> str | None:
     )
 
 
+def _reengagement_cue(user, session) -> str | None:
+    """First text back after a long gap (founder 2026-11-04). Live u33: 26 days dark under
+    179 water gifs, tapbacked + typed 👍 to the ping check-in within a minute; the reply
+    turn read "Coach: <ask> / Krla: 👍", followed the react-instead-of-texting rule and
+    sent a bare 👍 — nothing in the reactive context said it was her first text in 26 days
+    (only the heartbeat gets TIME SINCE THEIR LAST MESSAGE). This cue is that line for the
+    reply turn, with the founder's call attached: their 👍 is a door, so react AND send one
+    bubble of concrete OFFERS ("ok, they stay. how u been? any meals from today you want to
+    log? midterm season — want a study room link? i got you"), not a vague "anything you
+    need?" and never a training-gap nudge. The dating is stale_skip.last_return (burst-safe;
+    the heartbeat reads the same fact so it never stacks a second text on this one)."""
+    from stale_skip import last_return, return_offers
+    ret = last_return(user, session)
+    if not ret:
+        return None
+    if ret["hours_ago"] > 2 or ret["coach_text_after"]:
+        return None   # not the live turn for that text, or it has already been answered
+    from timefmt import render_date
+    since = render_date(ret["prev_at"], user)
+    offers = return_offers(user, session=session)
+    lines = [
+        f"## FIRST TEXT FROM THEM IN {round(ret['gap_days'])} DAYS — re-engagement turn",
+        f"They went quiet on {since} and just texted. Whatever they sent — a 👍, an 'ok', a pic — is a "
+        "door opening, not an acknowledgment, and this turn is the one shot at it: the react-only "
+        "rule does NOT apply here. React if it's earned, then ALSO send ONE short bubble, friend "
+        "first: say what their text did in a few words, ask how they've been, and OFFER two or three "
+        "concrete things you can actually do for them right now — exactly these, in this order, and "
+        "nothing else off your capability list (no gym-crowd check, no workout card unless it is "
+        "listed here): " + "; ".join(offers) + ". Close "
+        "with that you're around ('lmk if u need anything, i got you'). If their text carries a real "
+        "ask or something to log, handle that FIRST and let the offers shrink to whatever is left — "
+        "the full offers bubble is for a bare 👍 / ok / hey. Leave out: how long it's been (beyond "
+        "'been a min'), the training gap, their numbers, anything to fix. If they don't answer, "
+        "that's the end of it — no second nudge.",
+    ]
+    if ret["answers_checkin"]:
+        lines.append("Their text answers the ping check-in you sent ('still want the water pings?'): a 👍 "
+                     "or anything warm means the pings STAY — code already kept them, there is nothing "
+                     "to call, just say so ('ok, they stay'). Only an explicit stop means cancel_reminder.")
+    return "\n".join(lines)
+
+
 def build_loop_context(user, session) -> str:
     """The VOLATILE per-user block, injected AFTER the cached voice prefix.
 
@@ -852,6 +894,15 @@ def build_loop_context(user, session) -> str:
             parts.append(_rb)
     except Exception as e:  # noqa: BLE001
         logger.warning("REMINDER_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
+    # 7e. First text back after a long gap — their 👍 is a door, not an ack (founder 2026-11-04;
+    # live u33). Code-dated because the model cannot date the transcript's previous message.
+    try:
+        _re_cue = _reengagement_cue(user, session)
+        if _re_cue:
+            parts.append(_re_cue)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("REENGAGE_CUE_FAILED user=%s err=%s", user.id, e)
 
     # 8. Known gaps + follow-up permission.
     gaps = _known_gaps(user)

@@ -144,6 +144,16 @@ def _macro_str(item: dict) -> str:
     return macros or (note or "no macros given")
 
 
+def fresh_menu_names(saved: dict | None) -> list[str]:
+    """Names of the menus still showing in context (fresh, week not over), newest first."""
+    if not saved:
+        return []
+    fresh = [m for m in saved.values()
+             if isinstance(m, dict) and _is_fresh(m.get("captured_at"), m.get("week_of"))]
+    fresh.sort(key=lambda m: m.get("captured_at") or "", reverse=True)
+    return [(m.get("name") or "menu").strip() for m in fresh]
+
+
 def render_menus_block(saved: dict | None) -> str:
     """The context block: only FRESH menus (stale ones age out silently). '' when none."""
     if not saved:
