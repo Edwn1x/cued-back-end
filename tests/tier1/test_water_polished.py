@@ -44,9 +44,20 @@ def test_polished_set_is_the_whole_pool_for_an_imessage_user(polished):
     assert all(a != b for a, b in zip(picks, picks[1:])), "never the same file twice in a row"
 
 
-def test_an_sms_user_keeps_the_gif_loops_whatever_the_setting(polished):
+def test_an_sms_user_gets_the_same_seven_as_gifs(polished):
+    from water_gif import pick_gif, polished_files, polished_gif_files
+    assert [f[:-4] for f in polished_gif_files()] == [f[:-4] for f in polished_files()], "one GIF per PNG, same names"
+    for channel in ("sms", None):                       # an unreadable channel gets the format every pipe animates
+        picks = [pick_gif(_row(c), 51, channel=channel) for c in range(200)]
+        assert set(picks) == set(polished_gif_files())
+        assert all(a != b for a, b in zip(picks, picks[1:]))
+
+
+def test_sketch_mode_is_the_hand_drawn_loops_for_every_channel(monkeypatch):
+    import config
     from water_gif import gif_files, pick_gif
-    for channel in ("sms", None):
+    monkeypatch.setattr(config, "WATER_STICKER_SET", "sketch")
+    for channel in ("imessage", "sms", None):
         picks = {pick_gif(_row(c), 51, channel=channel) for c in range(60)}
         assert picks and picks <= set(gif_files())
 
@@ -65,8 +76,10 @@ def test_both_shuffles_the_two_sets_together_and_the_bed_loop_still_keeps_to_the
 def test_polished_asked_for_but_missing_falls_back_to_the_gifs(polished, monkeypatch):
     import water_gif
     monkeypatch.setattr(water_gif, "polished_files", lambda: [])
-    picks = {water_gif.pick_gif(_row(c), 7, channel="imessage") for c in range(20)}
-    assert picks and picks <= set(water_gif.gif_files())
+    monkeypatch.setattr(water_gif, "polished_gif_files", lambda: [])
+    for channel in ("imessage", "sms"):
+        picks = {water_gif.pick_gif(_row(c), 7, channel=channel) for c in range(20)}
+        assert picks and picks <= set(water_gif.gif_files())
 
 
 # ─── a real ping ─────────────────────────────────────────────────────────────────
@@ -92,13 +105,19 @@ def test_an_imessage_ping_goes_out_as_an_animated_png_with_its_own_mime(db, gif_
     assert len(rows) == 5 and {(m.message_type, m.channel) for m in rows} == {("water_reminder", "imessage")}
 
 
-def test_an_sms_ping_is_still_the_gif_over_mms(db, gif_on, mms_ok, anthropic_stub, polished):
-    from reminders import fire_due
+def test_an_sms_ping_is_a_polished_gif_over_mms_and_carries_the_line_once(db, gif_on, mms_ok, sms_capture,
+                                                                         anthropic_stub, polished):
+    import config
+    from water_gif import MARKER, polished_gif_files
     _no_model(anthropic_stub)
     u = make_user(db)
     row = _water_row(db, u)
-    assert fire_due(now=row.fire_at) == 1
-    assert len(mms_ok) == 1 and mms_ok[0][1].endswith(".gif") and "/polished/" not in mms_ok[0][1]
+    _fire(db, row, times=3)
+    urls = [url for _, url in mms_ok]
+    base = f"{config.INTEGRATIONS_BASE_URL.rstrip('/')}/static/water/"
+    assert len(urls) == 3 and all(url.startswith(base) and url[len(base):] in polished_gif_files() for url in urls)
+    bodies = [m.body for m in _out(db, u.id)]
+    assert bodies.count(MARKER) == 3 and bodies.count(NOTE) == 1 and bodies[:2] == [MARKER, NOTE]
 
 
 # ─── admin preview ───────────────────────────────────────────────────────────────
@@ -117,14 +136,29 @@ def test_admin_preview_sends_the_polished_set_in_order_or_one_by_name(db, client
     assert {m.message_type for m in _out(db, u.id)} == {"admin"}
 
 
-def test_admin_preview_all_is_still_only_the_gifs_and_unknown_lists_both_sets(db, client, mms_ok, monkeypatch):
+def test_admin_preview_all_is_still_only_the_gifs_and_unknown_lists_every_set(db, client, mms_ok, monkeypatch):
     import time
-    from water_gif import gif_files, polished_files
+    from water_gif import gif_files, polished_files, polished_gif_files
     monkeypatch.setattr(time, "sleep", lambda s: None)
     u = make_user(db)
     assert client.post("/admin/water-gif/send", data={"user_id": str(u.id), "name": "all"}).get_json()["sent"] == gif_files()
     r = client.post("/admin/water-gif/send", data={"user_id": str(u.id), "name": "polished/nope.png"})
-    assert r.status_code == 404 and r.get_json()["available"] == gif_files() + polished_files()
+    assert r.status_code == 404 and r.get_json()["available"] == gif_files() + polished_files() + polished_gif_files()
+
+
+def test_admin_preview_polished_follows_the_channel_and_polished_gif_forces_the_gifs(db, client, imessage_on, attachment_ok,
+                                                                                    mms_ok, monkeypatch):
+    import time
+    from water_gif import polished_gif_files
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    sms_user = make_user(db)
+    r = client.post("/admin/water-gif/send", data={"user_id": str(sms_user.id), "name": "polished"})
+    assert r.status_code == 200 and r.get_json()["sent"] == polished_gif_files()
+    assert [url.rsplit("/static/water/", 1)[1] for _, url in mms_ok] == polished_gif_files()
+    im = make_user(db, preferred_channel="imessage")
+    r = client.post("/admin/water-gif/send", data={"user_id": str(im.id), "name": "polished-gif"})
+    assert r.status_code == 200 and r.get_json()["sent"] == polished_gif_files()
+    assert [c[3] for c in attachment_ok] == ["image/gif"] * len(polished_gif_files())
 
 
 # ─── the files ───────────────────────────────────────────────────────────────────
@@ -200,22 +234,23 @@ def test_a_thumbs_up_after_the_line_is_still_a_water_ack(db, gif_on, imessage_on
     assert is_water_ack(u.id, "👍") is True and is_water_ack(u.id, "drank") is True
 
 
-def test_no_line_with_the_sketch_set_for_an_sms_user_or_at_the_admin_preview(db, client, gif_on, imessage_on,
-                                                                              attachment_ok, mms_ok, sidecar_text_ok,
-                                                                              anthropic_stub, monkeypatch):
+def test_no_line_with_the_sketch_set_or_at_the_admin_preview(db, client, gif_on, imessage_on, attachment_ok, mms_ok,
+                                                            sidecar_text_ok, sms_capture, anthropic_stub, monkeypatch):
     import config
     import time
     _no_model(anthropic_stub)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     u = make_user(db, preferred_channel="imessage")                     # default set: the GIF loops
     _fire(db, _water_row(db, u))
-    monkeypatch.setattr(config, "WATER_STICKER_SET", "polished")
-    sms_user = make_user(db)                                            # polished on, but SMS keeps GIFs
+    sms_user = make_user(db)
     _fire(db, _water_row(db, sms_user))
+    monkeypatch.setattr(config, "WATER_STICKER_SET", "polished")
     adm = make_user(db, preferred_channel="imessage")                   # a preview is not a ping
     assert client.post("/admin/water-gif/send", data={"user_id": str(adm.id), "name": "polished"}).status_code == 200
+    adm_sms = make_user(db)
+    assert client.post("/admin/water-gif/send", data={"user_id": str(adm_sms.id), "name": "polished"}).status_code == 200
     assert not sidecar_text_ok
-    for x in (u, sms_user, adm):
+    for x in (u, sms_user, adm, adm_sms):
         assert NOTE not in [m.body for m in _out(db, x.id)]
 
 
@@ -259,3 +294,29 @@ def test_the_line_can_be_switched_off_or_reworded_and_a_failure_never_costs_the_
     c = make_user(db, preferred_channel="imessage")
     row = _fire(db, _water_row(db, c))
     assert row.sent_count == 1 and [m.body for m in _out(db, c.id)] == [MARKER]
+
+
+def test_the_gif_versions_are_there_animated_clear_cornered_and_mms_sized(client):
+    from PIL import Image
+    from water_gif import GIF_DIR, polished_gif_files
+    names = polished_gif_files()
+    assert len(names) == 7
+    for name in names:
+        path = os.path.join(GIF_DIR, name)
+        assert os.path.getsize(path) < 600_000, f"{name}: stays comfortably MMS-sized"
+        im = Image.open(path)
+        assert getattr(im, "is_animated", False) and im.n_frames >= 10, name
+        assert im.size == (640, 384)
+        seen = 0
+        for i in range(0, im.n_frames, max(1, im.n_frames // 6)):
+            im.seek(i)
+            alpha = im.convert("RGBA").getchannel("A")
+            assert alpha.getpixel((0, 0)) == 0 and alpha.getpixel((639, 0)) == 0
+            assert sum(alpha.histogram()[1:255]) == 0, "one-bit alpha"
+            box = alpha.getbbox()
+            if box:
+                seen += 1
+                assert box[2] <= 384, f"{name}: art stays in the left 60%"
+        assert seen, f"{name}: something is drawn"
+        r = client.get(f"/static/water/{name}")
+        assert r.status_code == 200 and r.mimetype == "image/gif" and r.data[:4] == b"GIF8"

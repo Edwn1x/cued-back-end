@@ -13,9 +13,13 @@ type, the logo's dot dripping, and the ball as a soft 3D figure. They are ANIMAT
 GIF: real alpha, so brand-blue art sits straight on a light or a dark thread with no card
 and no jagged 1-bit edge. Each file is a 640x384 canvas with the art in the left 384 (60%):
 iMessage scales an image to the bubble width by its proportions, so that padding is what
-makes it land smaller on screen. iMessage only — an MMS flattens the animation and the
-alpha, so an SMS user keeps the GIF loops. Which pool a ping draws from is
-config.WATER_STICKER_SET: "sketch" (default — nothing changes on deploy), "polished", "both".
+makes it land smaller on screen. The PNGs are for iMessage: an MMS shows an animated PNG as
+a still and may flatten its alpha. An SMS user gets the same seven as GIFs
+(static/water/polished/*.gif, founder 2026-11-05: "why do sms users stay on the old
+stickers?" → "yeah go ahead and do that"): same canvas, same motion, hard one-bit edges, and
+every see-through fill turned into a solid light blue that reads on a white thread and a
+black one. Which pool a ping draws from is config.WATER_STICKER_SET: "sketch" (the hand-drawn
+loops), "polished", "both".
 
 Where it sits: reminders._fire_one calls send_water_gif() for an interval (every_hours)
 row that is about water, BEFORE composing the line. True → the GIF landed and the row
@@ -79,12 +83,26 @@ def polished_files() -> list[str]:
         return []
 
 
+def polished_gif_files() -> list[str]:
+    """The polished set as GIFs ('polished/water-ring.gif') — what an SMS user gets, and
+    anyone whose channel we couldn't read: a GIF animates on every pipe."""
+    try:
+        d = os.path.join(GIF_DIR, POLISHED_DIR)
+        return sorted(f"{POLISHED_DIR}/{f}" for f in os.listdir(d) if f.lower().endswith(".gif"))
+    except FileNotFoundError:
+        return []
+
+
 def _pool(channel: str | None) -> list[str]:
-    """The files this ping may draw from. The polished set needs iMessage (see the module
-    docstring) and config.WATER_STICKER_SET to ask for it; anything else is the GIF loops."""
+    """The files this ping may draw from. With config.WATER_STICKER_SET asking for the
+    polished set, an iMessage user draws the animated PNGs and everyone else the GIF versions
+    of the same seven (see the module docstring); otherwise, or when the polished files for
+    their channel aren't there, the hand-drawn loops."""
     files = gif_files()
     mode = (getattr(config, "WATER_STICKER_SET", "sketch") or "sketch").strip().lower()
-    polished = polished_files() if (channel == "imessage" and mode in ("polished", "both")) else []
+    polished: list[str] = []
+    if mode in ("polished", "both"):
+        polished = polished_files() if channel == "imessage" else polished_gif_files()
     if polished and mode == "polished":
         return polished
     return files + polished
