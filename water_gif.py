@@ -221,8 +221,8 @@ def send_water_gif(user, row) -> bool:
 
 def announce_new_stickers_once(user) -> bool:
     """The first polished sticker a user gets comes with one line under it — "new sticker
-    update!" (founder 2026-11-05: "next time the water stickers go out send out an
-    accompanying message") — and never again: a later ping finds the line already in their
+    drop!" (founder 2026-11-05: "next time the water stickers go out send out an
+    accompanying message", wording theirs) — and never again: a later ping finds the line already in their
     thread and stays a sticker alone.
 
     It is typed as the water ping it belongs to, not as a line of its own. reminders.

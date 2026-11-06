@@ -156,9 +156,9 @@ def test_the_seven_are_there_animated_transparent_and_sized_to_land_at_sixty_per
         assert r.status_code == 200 and r.mimetype == "image/png" and r.data[:8] == PNG_SIG
 
 
-# ─── "new sticker update!" — once, under the first polished sticker ───────────────
+# ─── "new sticker drop!" — once, under the first polished sticker ───────────────
 
-NOTE = "new sticker update!"
+NOTE = "new sticker drop!"
 
 
 def _fire(db, row, times=1):

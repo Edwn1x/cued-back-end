@@ -1174,10 +1174,11 @@ WATER_GIF_BASE_URL = os.getenv("WATER_GIF_BASE_URL", "")
 WATER_STICKER_SET = os.getenv("WATER_STICKER_SET", "sketch").strip().lower()
 # One line under the FIRST polished sticker each user gets, then never again
 # (water_gif.announce_new_stickers_once; founder 2026-11-05: "next time the water stickers go
-# out send out an accompanying message that reads 'new sticker update!'"). Typed as the water
+# out send out an accompanying message that reads 'new sticker update!'", then "actually make it
+# read 'new sticker drop!'"). Typed as the water
 # ping, so their 👍 still closes it. An empty text turns it off too.
 WATER_STICKER_NOTE_ENABLED = os.getenv("WATER_STICKER_NOTE_ENABLED", "true").lower() == "true"
-WATER_STICKER_NOTE_TEXT = os.getenv("WATER_STICKER_NOTE_TEXT", "new sticker update!")
+WATER_STICKER_NOTE_TEXT = os.getenv("WATER_STICKER_NOTE_TEXT", "new sticker drop!")
 # Card setup step at onboarding completion (workouts/card_setup.py): the extension
 # framing (an iMessage extension like GamePigeon, not an app), their first card sent
 # right then so the install happens at home, and a one-time tour of the card. When ON,
