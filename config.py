@@ -1169,8 +1169,8 @@ WATER_GIF_BASE_URL = os.getenv("WATER_GIF_BASE_URL", "")
 # (static/water/*.gif) — the default, so deploying the polished set changes nothing by itself.
 # "polished" = the polished animated-PNG set (static/water/polished/*.png: ring, porthole, ripple,
 # glass, type, logo drip, 3D figure — founder 2026-11-05: 60% size, fully transparent, "i like
-# them all") for iMessage users; SMS users keep the GIFs (an MMS flattens the animation and the
-# alpha). "both" = one shuffle over the two.
+# them all") for iMessage users, and the same seven as GIFs for SMS users (an MMS shows an
+# animated PNG as a still). "both" = one shuffle over the two.
 WATER_STICKER_SET = os.getenv("WATER_STICKER_SET", "sketch").strip().lower()
 # One line under the FIRST polished sticker each user gets, then never again
 # (water_gif.announce_new_stickers_once; founder 2026-11-05: "next time the water stickers go
