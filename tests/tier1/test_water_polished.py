@@ -10,7 +10,7 @@ import pytest
 
 from tests.factories import make_user
 from tests.tier1.test_water_gif import (  # noqa: F401 — fixtures
-    _no_model, _out, _water_row, attachment_ok, gif_on, imessage_on, mms_ok,
+    _no_model, _out, _water_row, attachment_ok, gif_on, imessage_on, mms_ok, sidecar_text_ok,
 )
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -72,7 +72,7 @@ def test_polished_asked_for_but_missing_falls_back_to_the_gifs(polished, monkeyp
 # ─── a real ping ─────────────────────────────────────────────────────────────────
 
 def test_an_imessage_ping_goes_out_as_an_animated_png_with_its_own_mime(db, gif_on, imessage_on, attachment_ok,
-                                                                        anthropic_stub, polished):
+                                                                        sidecar_text_ok, anthropic_stub, polished):
     from models import Reminder
     from reminders import fire_due
     from water_gif import MARKER, polished_files
@@ -88,8 +88,8 @@ def test_an_imessage_ping_goes_out_as_an_animated_png_with_its_own_mime(db, gif_
     assert set(names) <= {os.path.basename(f) for f in polished_files()}, "the bubble's file name carries no folder"
     for _, data, name, mime in attachment_ok:
         assert name.endswith(".png") and mime == "image/png" and data[:8] == PNG_SIG
-    rows = _out(db, u.id)
-    assert {(m.message_type, m.body, m.channel) for m in rows} == {("water_reminder", MARKER, "imessage")}
+    rows = [m for m in _out(db, u.id) if m.body == MARKER]
+    assert len(rows) == 5 and {(m.message_type, m.channel) for m in rows} == {("water_reminder", "imessage")}
 
 
 def test_an_sms_ping_is_still_the_gif_over_mms(db, gif_on, mms_ok, anthropic_stub, polished):
@@ -154,3 +154,108 @@ def test_the_seven_are_there_animated_transparent_and_sized_to_land_at_sixty_per
         assert seen, f"{name}: something is drawn"
         r = client.get(f"/static/water/{name}")
         assert r.status_code == 200 and r.mimetype == "image/png" and r.data[:8] == PNG_SIG
+
+
+# ─── "new sticker drop!" — once, under the first polished sticker ───────────────
+
+NOTE = "new sticker drop!"
+
+
+def _fire(db, row, times=1):
+    from models import Reminder
+    from reminders import fire_due
+    for _ in range(times):
+        db.expire_all()
+        row = db.get(Reminder, row.id)
+        assert fire_due(now=row.fire_at) == 1
+    db.expire_all()
+    return db.get(Reminder, row.id)
+
+
+def test_the_first_polished_sticker_comes_with_the_line_and_later_ones_do_not(db, gif_on, imessage_on, attachment_ok,
+                                                                              sidecar_text_ok, anthropic_stub, polished):
+    import config
+    from water_gif import MARKER
+    assert config.WATER_STICKER_NOTE_ENABLED is True and config.WATER_STICKER_NOTE_TEXT == NOTE
+    _no_model(anthropic_stub)
+    u = make_user(db, preferred_channel="imessage")
+    row = _water_row(db, u)
+    _fire(db, row)
+    assert sidecar_text_ok == [(u.phone, NOTE)]
+    rows = _out(db, u.id)
+    assert [(m.message_type, m.body) for m in rows] == [("water_reminder", MARKER), ("water_reminder", NOTE)], \
+        "the sticker lands first, the line under it, both part of the water ping"
+    _fire(db, row, times=3)
+    assert sidecar_text_ok == [(u.phone, NOTE)], "said once, never again"
+    assert len(attachment_ok) == 4
+
+
+def test_a_thumbs_up_after_the_line_is_still_a_water_ack(db, gif_on, imessage_on, attachment_ok, sidecar_text_ok,
+                                                         anthropic_stub, polished):
+    from reminders import is_water_ack
+    _no_model(anthropic_stub)
+    u = make_user(db, preferred_channel="imessage")
+    _fire(db, _water_row(db, u))
+    assert _out(db, u.id)[-1].body == NOTE
+    assert is_water_ack(u.id, "👍") is True and is_water_ack(u.id, "drank") is True
+
+
+def test_no_line_with_the_sketch_set_for_an_sms_user_or_at_the_admin_preview(db, client, gif_on, imessage_on,
+                                                                              attachment_ok, mms_ok, sidecar_text_ok,
+                                                                              anthropic_stub, monkeypatch):
+    import config
+    import time
+    _no_model(anthropic_stub)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    u = make_user(db, preferred_channel="imessage")                     # default set: the GIF loops
+    _fire(db, _water_row(db, u))
+    monkeypatch.setattr(config, "WATER_STICKER_SET", "polished")
+    sms_user = make_user(db)                                            # polished on, but SMS keeps GIFs
+    _fire(db, _water_row(db, sms_user))
+    adm = make_user(db, preferred_channel="imessage")                   # a preview is not a ping
+    assert client.post("/admin/water-gif/send", data={"user_id": str(adm.id), "name": "polished"}).status_code == 200
+    assert not sidecar_text_ok
+    for x in (u, sms_user, adm):
+        assert NOTE not in [m.body for m in _out(db, x.id)]
+
+
+def test_no_line_when_the_sticker_did_not_land_and_it_is_tried_again_next_time(db, gif_on, imessage_on, monkeypatch,
+                                                                               sidecar_text_ok, anthropic_stub, polished):
+    import sms
+    calls = []
+
+    def _flaky(phone, data, name, mime):
+        calls.append(name)
+        if len(calls) == 1:
+            raise RuntimeError("sidecar /send-attachment 502: nope")
+        return f"photon-att-{len(calls)}"
+    monkeypatch.setattr(sms, "_send_imessage_attachment", _flaky)
+    anthropic_stub.reply_with(lambda kw: "water break, go")
+    u = make_user(db, preferred_channel="imessage")
+    row = _water_row(db, u)
+    row = _fire(db, row)
+    assert sidecar_text_ok == [(u.phone, "water break, go")], "fallback line only — nothing to announce"
+    _fire(db, row)
+    assert sidecar_text_ok[-1] == (u.phone, NOTE)
+
+
+def test_the_line_can_be_switched_off_or_reworded_and_a_failure_never_costs_the_ping(db, gif_on, imessage_on,
+                                                                                    attachment_ok, sidecar_text_ok,
+                                                                                    anthropic_stub, polished, monkeypatch):
+    import config
+    import sms
+    from water_gif import MARKER
+    _no_model(anthropic_stub)
+    monkeypatch.setattr(config, "WATER_STICKER_NOTE_ENABLED", False)
+    a = make_user(db, preferred_channel="imessage")
+    _fire(db, _water_row(db, a))
+    assert not sidecar_text_ok
+    monkeypatch.setattr(config, "WATER_STICKER_NOTE_ENABLED", True)
+    monkeypatch.setattr(config, "WATER_STICKER_NOTE_TEXT", "fresh stickers just dropped")
+    b = make_user(db, preferred_channel="imessage")
+    _fire(db, _water_row(db, b))
+    assert sidecar_text_ok == [(b.phone, "fresh stickers just dropped")]
+    monkeypatch.setattr(sms, "send_sms", lambda *a_, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    c = make_user(db, preferred_channel="imessage")
+    row = _fire(db, _water_row(db, c))
+    assert row.sent_count == 1 and [m.body for m in _out(db, c.id)] == [MARKER]
