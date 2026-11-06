@@ -213,4 +213,44 @@ def send_water_gif(user, row) -> bool:
     if not name:
         logger.warning("WATER_GIF_NO_FILES dir=%s", GIF_DIR)
         return False
-    return send_gif(user, name)
+    ok = send_gif(user, name)
+    if ok and name.startswith(POLISHED_DIR + "/"):
+        announce_new_stickers_once(user)
+    return ok
+
+
+def announce_new_stickers_once(user) -> bool:
+    """The first polished sticker a user gets comes with one line under it — "new sticker
+    update!" (founder 2026-11-05: "next time the water stickers go out send out an
+    accompanying message") — and never again: a later ping finds the line already in their
+    thread and stays a sticker alone.
+
+    It is typed as the water ping it belongs to, not as a line of its own. reminders.
+    is_water_ack reads the LAST outbound, so with any other type their 👍 right after would
+    stop being a water ack; and no gate should read it as the coach speaking. Only the
+    reminder path calls this (never the admin preview), only after the sticker landed, and a
+    failure here never touches the ping. A failed send leaves no 'seen' row, so the next
+    polished ping tries again."""
+    text = (getattr(config, "WATER_STICKER_NOTE_TEXT", "") or "").strip()
+    if not getattr(config, "WATER_STICKER_NOTE_ENABLED", True) or not text:
+        return False
+    try:
+        import sms
+        from models import Message, get_session
+        from sms_encoding import normalize_for_sms
+        session = get_session()
+        try:
+            seen = (session.query(Message.id)
+                    .filter(Message.user_id == user.id, Message.direction == "out",
+                            Message.body.in_({text, normalize_for_sms(text)}),
+                            Message.delivery_status != "failed").first())
+        finally:
+            session.close()
+        if seen:
+            return False
+        sms.send_sms(user.phone, text, user_id=user.id, message_type=WATER_REMINDER_TYPE)
+        logger.info("WATER_STICKER_NOTE_SENT user=%s text=%r", user.id, text)
+        return True
+    except Exception as e:  # noqa: BLE001 — the line is extra; the sticker already went
+        logger.warning("WATER_STICKER_NOTE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+        return False
