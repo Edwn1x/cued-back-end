@@ -112,12 +112,23 @@ _NOT_COLLEGE_RE = re.compile(
     r"\d{1,2}(?:st|nd|rd|th) grade|(?:freshman|sophomore|junior|senior) in high)\b", re.I)
 
 
+# "not a student" says the opposite of the substring it contains. Live 2026-11-05 (user 93,
+# 28, works full time): an occupation of "works full time, not a student" read as a student —
+# the calendar step went out about classes and due dates, then the bCourses step.
+_NOT_A_STUDENT_RE = re.compile(
+    r"\b(?:not|isn'?t|ain'?t|no longer|never)\s+(?:a\s+|an\s+)?(?:\w+\s+){0,2}student\b|"
+    r"\bnon[- ]?student\b|\b(?:former|ex)[- ]student\b|\bgraduated\b", re.I)
+
+
 def is_student(user) -> bool:
     """A COLLEGE student — the campus integrations (bCourses, dining halls, RSF, library
     rooms) are Berkeley's. A class year on file (the sign-up form's) counts; an occupation
-    that names a school below college does not, even with 'student' in it."""
+    that names a school below college does not, even with 'student' in it, and neither does
+    one that says they are NOT a student."""
     occ = (getattr(user, "occupation", None) or "").lower()
     if _NOT_COLLEGE_RE.search(occ):
+        return False
+    if _NOT_A_STUDENT_RE.search(occ):
         return False
     return "student" in occ or bool(getattr(user, "year", None))
 

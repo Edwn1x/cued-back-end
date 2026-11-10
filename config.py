@@ -28,6 +28,11 @@ ONBOARDING_REENGAGE_SECOND_HOURS = int(os.getenv("ONBOARDING_REENGAGE_SECOND_HOU
 # (log_meal + the numbers) until a meal is logged, then code asks the next intake field.
 ONBOARDING_REENGAGE_MODEL_COPY_ENABLED = os.getenv("ONBOARDING_REENGAGE_MODEL_COPY_ENABLED", "true").lower() == "true"
 ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED = os.getenv("ONBOARDING_REENGAGE_FOOD_FIRST_ENABLED", "true").lower() == "true"
+# Per-user hold (founder 2026-11-05, user 93: "do not send any other follow up text without
+# getting my approval first"): comma-separated user ids the stalled-setup sweep never nudges.
+# Their own texts are still answered; only the code-initiated nudge is held.
+ONBOARDING_REENGAGE_HOLD_USER_IDS = frozenset(
+    int(x) for x in os.getenv("ONBOARDING_REENGAGE_HOLD_USER_IDS", "").replace(" ", "").split(",") if x.isdigit())
 # Meals mid-setup (onboarding_meals.py, founder 2026-10-27): a meal text / any photo from a
 # user still in onboarding runs the normal agent loop (log_meal etc.), then code asks the
 # next intake field. Off → the intake agent answers every mid-setup text, as before.
@@ -36,6 +41,12 @@ ONBOARDING_REENGAGE_FOOD_FIRST_HOURS = int(os.getenv("ONBOARDING_REENGAGE_FOOD_F
 # Founder 2026-10-25: "have the first nudges go out tmr morning, like 10am" — an ISO UTC instant
 # before which the sweep sends nothing (flag on, job armed, first tick at/after this sends).
 ONBOARDING_REENGAGE_START_AT = os.getenv("ONBOARDING_REENGAGE_START_AT", "")
+# "A number texting cued is a Berkeley student" holds for the campus, not for everyone the
+# sign-up page reaches. Live 2026-11-05 (user 93: 28, signed up off the hero page, occupation
+# blank) the first reply was about to be "im assuming ur a berkeley student? what major" — as it
+# was for user 80 (26, desk job). A sign-up age past this, or an occupation on file that isn't a
+# college student's, drops the assumption and the campus from the intake asks. 0 = always assume.
+ONBOARDING_ASSUME_STUDENT_MAX_AGE = int(os.getenv("ONBOARDING_ASSUME_STUDENT_MAX_AGE", "24"))
 # Legacy public sign-up surface (2026-10-15 retirement, after the probe). The live site
 # signs up through /waitlist only; /signup (JSON) + /activate-sms are retired (410) unless
 # this is flipped on for a rollback. GET /signup always redirects to the site.
@@ -359,6 +370,13 @@ PLAN_TEXT_RECARD_NUDGE_ENABLED = os.getenv("PLAN_TEXT_RECARD_NUDGE_ENABLED", "tr
 # capitals and the pronoun I are lowered on every coach reply. Live 2026-10-05/06 (user 48):
 # "What", "Nice. go film it", "Yeah, you're at 980 for the day, 35g protein."
 LOWERCASE_REPLIES_ENABLED = os.getenv("LOWERCASE_REPLIES_ENABLED", "true").lower() == "true"
+# Plain English for the people who don't text in slang (plain_voice.py). Founder 2026-11-09, user 94
+# (67, met in person): "for older folks, like robert, we drop the whole slang spelling and all of
+# that. we type out normally and text like a normal regular person." A hand-set users.plain_voice
+# wins; otherwise a sign-up age at or past the floor. The model is told, and every send to them is
+# re-spelled in code (u → you, ur → your / you're, sentences capitalized). 0 = age never decides.
+PLAIN_VOICE_ENABLED = os.getenv("PLAIN_VOICE_ENABLED", "true").lower() == "true"
+PLAIN_VOICE_MIN_AGE = int(os.getenv("PLAIN_VOICE_MIN_AGE", "40"))
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"

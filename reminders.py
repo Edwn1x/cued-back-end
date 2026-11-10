@@ -468,6 +468,10 @@ def _compose(user, row: Reminder) -> str:
             {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
             {"type": "text", "text": f"Their name: {user.name}. It's {now_local} their time."},
         ]
+        from plain_voice import prompt_block as _plain_voice_block
+        _pv = _plain_voice_block(user)
+        if _pv:
+            system.append({"type": "text", "text": _pv})
         instruction = (
             f"Earlier they asked you to remind them: \"{row.text}\". It's time. Send that reminder "
             f"now — ONE short line in your voice that does exactly that. No preamble, no "

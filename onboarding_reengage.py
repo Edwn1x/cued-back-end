@@ -79,7 +79,7 @@ def _next_ask(user) -> str:
     from onboarding_agent import _plain, _BIG_ASK_NEVER
     missing = _remaining(user)
     field = next((f for f in missing if f[0] not in _BIG_ASK_NEVER), missing[0] if missing else None)
-    return _plain(field) if field else "how's ur day going"
+    return _plain(field, user) if field else "how's ur day going"
 
 
 def _first_name(user) -> str:
@@ -87,7 +87,7 @@ def _first_name(user) -> str:
 
 
 def goal_phrase(user) -> str:
-    """'build muscle' / 'lean out and get stronger' / 'get stronger, leaner and fitter'."""
+    """'build muscle' / 'lean out and get stronger' / 'build muscle, build endurance and get in shape'."""
     raw = [g.strip() for g in (getattr(user, "goal", None) or "").split(",") if g.strip()]
     words = [_GOAL_WORDS.get(g, g.replace("_", " ")) for g in raw]
     if not words:
@@ -96,7 +96,12 @@ def goal_phrase(user) -> str:
         return words[0]
     if len(words) == 2:
         return f"{words[0]} and {words[1]}"
-    return "get stronger, leaner and fitter"
+    if "fat_loss" in raw:
+        return "get stronger, leaner and fitter"
+    # "leaner" only for someone who picked it: the stock line told a three-goal sign-up with no
+    # fat loss on it that she signed up to get leaner (2026-11-05, user 93 preview).
+    words = list(dict.fromkeys(words))[:3]
+    return f"{', '.join(words[:-1])} and {words[-1]}"
 
 
 def food_ask(user, now: datetime | None = None) -> str:
@@ -201,6 +206,12 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
             f"Return only the text. Separate the two bubbles with a line containing just ---."
         )
         system = [{"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()}]
+        from plain_voice import prompt_block as _plain_voice_block
+        _pv = _plain_voice_block(user)
+        if _pv:
+            system.append({"type": "text", "text": _pv})
+            instruction += (" This person gets PLAIN ENGLISH (see the voice block): 'you' / 'your', not 'u' / 'ur'; "
+                            "a capital letter opens each sentence; 'Hey {name},' is fine.").format(name=name)
         client = make_client()
         from cache_keepalive import note as keepalive_note
         keepalive_note("onboarding.reengage", model=config.AGENT_LOOP_MODEL, system=system,
@@ -293,6 +304,8 @@ def eligible(session, user, now: datetime) -> tuple[bool, str, int, bool]:
         return False, "onboarded", 0, False
     if user.archived_at or getattr(user, "opted_out", False) or user.waitlist_status == "pending":
         return False, "excluded", 0, False
+    if user.id in (getattr(config, "ONBOARDING_REENGAGE_HOLD_USER_IDS", None) or ()):
+        return False, "held", 0, False
     if not user.preferred_channel and not user.phone:
         return False, "no_channel", 0, False
     sent = _nudges(session, user.id)
