@@ -146,6 +146,22 @@ def _is_berkeley_student(user) -> bool:
     return False
 
 
+def _assume_student(user) -> bool:
+    """The safe bet that a number texting cued is a Berkeley student — unless what's on file
+    says otherwise: an occupation that isn't a college student's, or (no class year, no
+    Berkeley signal) a sign-up age past ONBOARDING_ASSUME_STUDENT_MAX_AGE."""
+    if _is_berkeley_student(user):
+        return True
+    from connect_offers import is_student
+    if (getattr(user, "occupation", None) or "").strip():
+        return is_student(user)
+    cap = int(getattr(config, "ONBOARDING_ASSUME_STUDENT_MAX_AGE", 24) or 0)
+    age = getattr(user, "age", None)
+    if cap and isinstance(age, int) and age > cap:
+        return False
+    return True
+
+
 def _split_hint(user) -> str:
     """The split ask, shaped by the signup's experience (founder, 2026-10-13: "since i put my
     experience 6 months-2 years, it should have assumed that i already had a routine
@@ -166,10 +182,14 @@ def _get_missing_fields(user) -> list:
 
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
-    if not user.occupation:
+    student = _assume_student(user)
+    if not user.occupation and not student:
+        missing.append(("occupation", "what they do for work — ask it plainly ('what do u do for work'). They are past college age on the sign-up: do NOT assume a student, never ask a major, never mention berkeley, a campus, classes or a dining hall"))
+    elif not user.occupation:
         missing.append(("occupation", "what they do — ASSUME a UC Berkeley student and say so, NAMING berkeley the first time ('im assuming ur a berkeley student? what major, and any part time job' — 'student here' alone cost a round trip live 2026-10-11: 'Here?'); if they're working, at another school, or not a student, take it in stride and go from there"))
     if not user.activity_level or user.activity_level == "lightly_active":
-        missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"))
+        missing.append(("activity_level", "how active they are outside the gym — sedentary desk life, walking around campus, on their feet all day"
+                        if student else "how active they are outside the gym — at a desk most of the day, or on their feet"))
     if user.avg_steps is None:
         missing.append(("avg_steps", "average daily step count — if they don't know, tell them: iPhone Health app (Browse > Activity > Steps), or Google Fit / Samsung Health on Android. Most phones track this automatically."))
     if not nutrition_only:
@@ -188,7 +208,8 @@ def _get_missing_fields(user) -> list:
             else:
                 missing.append(("current_split", _split_hint(user)))
     if not user.cooking_situation:
-        missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"))
+        missing.append(("cooking_situation", "food situation — do they cook at home, eat at a dining hall, mostly eat out, or a mix"
+                        if student else "food situation — do they cook at home, mostly eat out / order in, or a mix"))
     # What they eat NOW (2026-10-27, user 77: ate ~2000, was handed 3100 — "I cannot afford that
     # much food"). The one input the equations never see; the first target ramps from it
     # (macro_calculator). 0 = asked, no idea — that is a complete answer, never re-asked.
@@ -394,6 +415,20 @@ def _build_system_prompt(user) -> str:
     else:
         unknown_block = "- nothing — you have what you need"
 
+    if _assume_student(user):
+        assume_rule = (
+            "- Assume what's safe to assume, and SAY the assumption. A number texting cued is a\n"
+            "  Berkeley student: \"im assuming ur a berkeley student? what major, and any part time job\" (name berkeley the first time — never just \"here\")\n"
+            "  — not \"student or working\". If they're working, at another school, or not a student,\n"
+            "  take it in stride and go from there.")
+    else:
+        assume_rule = (
+            "- Assume what's safe to assume, and SAY the assumption — but NOT that they're a student.\n"
+            "  What's on file (their age, what they do) says this is a working adult, not someone on\n"
+            "  campus: no \"im assuming ur a berkeley student\", no major, no classes, midterms, dining\n"
+            "  halls or the RSF, and no campus detail to sound local. Their day is work — meetings, a\n"
+            "  commute, their own gym — so that is what you're curious about. If they tell you they ARE\n"
+            "  a student, take it in stride and go from there.")
     history = _conversation_so_far(user.id) if getattr(user, "id", None) else ""
     history_block = history or "(nothing yet — you just said hey)"
 
@@ -434,10 +469,7 @@ the time of day; read it here.
   While STILL UNKNOWN has entries, EVERY reply ends with ONE question from it — a reply
   with no question stalls setup and puts the next move on them (founder, 2026-10-13).
   If nothing they said leads there, ask the first one plainly.
-- Assume what's safe to assume, and SAY the assumption. A number texting cued is a
-  Berkeley student: "im assuming ur a berkeley student? what major, and any part time job" (name berkeley the first time — never just "here")
-  — not "student or working". If they're working, at another school, or not a student,
-  take it in stride and go from there. A vague sleep answer ("hella late") is roughly
+{assume_rule} A vague sleep answer ("hella late") is roughly
   2am/11am: say the guess, say they can fix it, move on. A stated guess beats a third
   question.
 - One question by default. Two only when they're about the SAME thing and joined the
@@ -1389,7 +1421,16 @@ _BIG_ASK_GYM = ("current_split", "split_days", "workout_days", "workout_time", "
 _BIG_ASK_NEVER = ("wake_sleep",)
 
 
-def _plain(field: tuple) -> str:
+# The same asks for someone who is not a student (no major, no dining hall).
+PLAIN_ASKS_NOT_STUDENT = {
+    "occupation": "what u do for work",
+    "cooking_situation": "if u cook most nights or mostly eat out",
+}
+
+
+def _plain(field: tuple, user=None) -> str:
+    if user is not None and field[0] in PLAIN_ASKS_NOT_STUDENT and not _assume_student(user):
+        return PLAIN_ASKS_NOT_STUDENT[field[0]]
     return PLAIN_ASKS.get(field[0], field[1].split(" — ")[0])
 
 
@@ -1400,8 +1441,8 @@ def _build_big_ask_message(user, incoming_message: str, system_prompt: str, miss
     things are asked together in plain words; steps and the rest come after, as
     their own clause; sleep is never on the list."""
     asked = [f for f in missing_fields if f[0] not in _BIG_ASK_NEVER]
-    gym = [_plain(f) for f in asked if f[0] in _BIG_ASK_GYM]
-    day = [_plain(f) for f in asked if f[0] not in _BIG_ASK_GYM]
+    gym = [_plain(f, user) for f in asked if f[0] in _BIG_ASK_GYM]
+    day = [_plain(f, user) for f in asked if f[0] not in _BIG_ASK_GYM]
     parts = []
     if gym:
         parts.append("about the gym: " + ", ".join(gym))
@@ -1427,7 +1468,7 @@ def _build_big_ask_message(user, incoming_message: str, system_prompt: str, miss
 def _bundle_gap_questions(missing_fields: list, user, incoming_message: str, system_prompt: str) -> str:
     """Close out the last one or two unknowns in a single natural ask — used only
     when _intake_mode says so (late in the conversation, or they asked)."""
-    gaps_str = " and ".join(_plain(f) for f in missing_fields[:2])
+    gaps_str = " and ".join(_plain(f, user) for f in missing_fields[:2])
     instruction = (
         f"{user.name} just texted you: \"{incoming_message}\"\n\n"
         f"STEP 1: react to what they said like a friend (answer any question fully).\n"
@@ -2459,7 +2500,7 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
             and mode != "big_ask" and not privacy_turn and not _question_part(text)):
         field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
-        appended = f"also, {_plain(field)}?"
+        appended = f"also, {_plain(field, user_row)}?"
         logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
         text = f"{text.rstrip()} {appended}"
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
