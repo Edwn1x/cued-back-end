@@ -337,7 +337,10 @@ def _build_system_prompt(user) -> str:
     the safety rules, what we know, what's still unknown, and how this first
     conversation works (no intake block — one woven question at most)."""
     from agent_loop import identity_prompt
+    from plain_voice import prompt_block as _plain_voice_block
     identity = identity_prompt()
+    _pv = _plain_voice_block(user)
+    voice_section = f"{_pv}\n\n---\n\n" if _pv else ""
     safety = load_skill("safety")
     experience_context = _get_experience_context(user)
 
@@ -436,7 +439,7 @@ def _build_system_prompt(user) -> str:
 
 ---
 
-{safety}
+{voice_section}{safety}
 
 ---
 

@@ -591,6 +591,8 @@ MIGRATIONS = [
     # they typed on the site. Codes are generated in Python (referrals.backfill /
     # ensure_code), not here.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(16)",
+    # Plain voice (plain_voice.py, 2026-11-09): per-user override of the age gate; NULL = by age.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS plain_voice BOOLEAN",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_user_id INTEGER",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code_entered VARCHAR(32)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_referral_code ON users (referral_code)",

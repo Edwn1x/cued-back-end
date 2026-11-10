@@ -477,7 +477,11 @@ def _with_imessage_invite(user_id: int, body: str) -> str:
         link = None
     if not link:
         return body
-    return f"{body}\n\n{IMESSAGE_INVITE.format(link=link)}"
+    invite = IMESSAGE_INVITE.format(link=link)
+    from plain_voice import plain_voice_for, plainify
+    if plain_voice_for(user_id):
+        invite = plainify(invite)
+    return f"{body}\n\n{invite}"
 
 
 def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "freeform",
@@ -504,6 +508,17 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         if is_opted_out(user_id):
             logger.info("SEND_SUPPRESSED_OPTED_OUT user=%s type=%s", user_id, message_type)
             return None
+
+    # Plain English for the people who don't text in slang (plain_voice.py): the one funnel
+    # every outbound text takes — code templates and model replies alike — so "ur in" reaches
+    # a 67-year-old as "You're in". Idempotent; URLs and the --- separators are untouched.
+    if user_id:
+        from plain_voice import plain_voice_for, plainify
+        if plain_voice_for(user_id):
+            plained = plainify(body)
+            if plained != body:
+                logger.info("SEND_PLAIN_VOICE user=%s type=%s before=%r", user_id, message_type, body[:60])
+                body = plained
 
     # Buffer-race backstop: if this is byte-for-byte the reply we just sent this
     # user, the second (duplicate) turn from a raced flush is producing it — drop

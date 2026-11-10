@@ -370,6 +370,13 @@ PLAN_TEXT_RECARD_NUDGE_ENABLED = os.getenv("PLAN_TEXT_RECARD_NUDGE_ENABLED", "tr
 # capitals and the pronoun I are lowered on every coach reply. Live 2026-10-05/06 (user 48):
 # "What", "Nice. go film it", "Yeah, you're at 980 for the day, 35g protein."
 LOWERCASE_REPLIES_ENABLED = os.getenv("LOWERCASE_REPLIES_ENABLED", "true").lower() == "true"
+# Plain English for the people who don't text in slang (plain_voice.py). Founder 2026-11-09, user 94
+# (67, met in person): "for older folks, like robert, we drop the whole slang spelling and all of
+# that. we type out normally and text like a normal regular person." A hand-set users.plain_voice
+# wins; otherwise a sign-up age at or past the floor. The model is told, and every send to them is
+# re-spelled in code (u → you, ur → your / you're, sentences capitalized). 0 = age never decides.
+PLAIN_VOICE_ENABLED = os.getenv("PLAIN_VOICE_ENABLED", "true").lower() == "true"
+PLAIN_VOICE_MIN_AGE = int(os.getenv("PLAIN_VOICE_MIN_AGE", "40"))
 REMEMBER_TOOL_ENABLED = os.getenv("REMEMBER_TOOL_ENABLED", "false").lower() == "true"
 LOG_WORKOUT_TOOL_ENABLED = os.getenv("LOG_WORKOUT_TOOL_ENABLED", "false").lower() == "true"
 MANAGE_LOG_TOOL_ENABLED = os.getenv("MANAGE_LOG_TOOL_ENABLED", "false").lower() == "true"

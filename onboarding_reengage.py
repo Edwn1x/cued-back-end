@@ -206,6 +206,12 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
             f"Return only the text. Separate the two bubbles with a line containing just ---."
         )
         system = [{"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()}]
+        from plain_voice import prompt_block as _plain_voice_block
+        _pv = _plain_voice_block(user)
+        if _pv:
+            system.append({"type": "text", "text": _pv})
+            instruction += (" This person gets PLAIN ENGLISH (see the voice block): 'you' / 'your', not 'u' / 'ur'; "
+                            "a capital letter opens each sentence; 'Hey {name},' is fine.").format(name=name)
         client = make_client()
         from cache_keepalive import note as keepalive_note
         keepalive_note("onboarding.reengage", model=config.AGENT_LOOP_MODEL, system=system,

@@ -117,6 +117,8 @@ class User(Base):
     # extension needed to tap sets); False (default) = the Photon extension card. See
     # workouts/card.py + set_card_delivery.
     prefers_card_link = Column(Boolean, default=False)
+    # Plain English instead of the campus slang (plain_voice.py): True / False by hand, None = by age.
+    plain_voice = Column(Boolean, default=None)
     delivered_coaching_points = Column(Text, default=None)  # capped list of recommendations already given — prevents repetition
     last_compressed_message_id = Column(Integer, default=None)  # watermark for Phase B summary/raw-history boundary
     last_episodic_message_id = Column(Integer, default=None)  # Phase 5 watermark: episodic digest idempotency (independent of the summary watermark)

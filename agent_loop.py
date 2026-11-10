@@ -366,6 +366,13 @@ def build_loop_context(user, session) -> str:
     profile = user.user_profile_memory or {}
     parts: list[str] = []
 
+    # Plain English for the people who don't text in slang (plain_voice.py, founder 2026-11-09,
+    # user 94: 67). First block after the cached voice prefix so it reads as the override it is.
+    from plain_voice import prompt_block as _plain_voice_block
+    _pv = _plain_voice_block(user)
+    if _pv:
+        parts.append(_pv)
+
     # Render every timestamp in the user's LOCAL zone (burn-in fix) — the model has no
     # local clock to reason "tomorrow/later" against otherwise, and bare UTC is 7h ahead.
     from timefmt import render_time, render_date, now_anchor, local_day_bounds, to_local
@@ -2622,7 +2629,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             text = _finish_reactive_briefing(user, text, _briefing_parts)
         if text:
             _persist_recent_photo(user.id, image_data, combined_body, text)
-            if config.LOWERCASE_REPLIES_ENABLED:
+            from plain_voice import plain_voice as _plain_voice
+            if config.LOWERCASE_REPLIES_ENABLED and not _plain_voice(user):
                 from voice_norm import lowercase_lead
                 lowered = lowercase_lead(text)
                 if lowered != text:
