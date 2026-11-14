@@ -441,6 +441,14 @@ FETCH_PAGE_MAX_MEDIA_LISTED = int(os.getenv("FETCH_PAGE_MAX_MEDIA_LISTED", "8"))
 SEND_IMAGE_TOOL_ENABLED = os.getenv("SEND_IMAGE_TOOL_ENABLED", "false").lower() == "true"
 SEND_IMAGE_MAX_PER_TURN = int(os.getenv("SEND_IMAGE_MAX_PER_TURN", "2"))
 SEND_IMAGE_REPEAT_MIN = int(os.getenv("SEND_IMAGE_REPEAT_MIN", "30"))
+# send_poll — inbound kinds steps 7+8 (2026-11-14): the coach puts an iMessage poll (iOS 26) in
+# the thread via the sidecar's /poll (polls.py); SMS users get the same ask as a numbered list.
+# Logistics / self-report only (voice.md: "you prescribe; you don't poll"), never mid-setup, one
+# open poll per user for POLL_OPEN_HOURS. A vote comes back through /internal/inbound as text
+# naming the pick + a `poll` field (sidecar INBOUND_EXTRA_KINDS=poll_option). Off by default.
+SEND_POLL_TOOL_ENABLED = os.getenv("SEND_POLL_TOOL_ENABLED", "false").lower() == "true"
+POLL_OPEN_HOURS = int(os.getenv("POLL_OPEN_HOURS", "24"))
+POLL_MAX_OPTIONS = int(os.getenv("POLL_MAX_OPTIONS", "4"))
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).

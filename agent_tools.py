@@ -3822,6 +3822,48 @@ def handle_send_image(user_id: int, tool_input: dict, *, message_id=None) -> str
     return out
 
 
+# send_poll — a native iMessage poll in the thread (polls.py). Logistics and self-report
+# only; the coach never polls a beginner on a programming decision (voice.md).
+SEND_POLL_TOOL = {
+    "name": "send_poll",
+    "description": (
+        "Put a tappable POLL in the thread: one short question, 2 to 4 short options, as its own "
+        "bubble (iMessage polls; an SMS user gets the same ask as a numbered list — the result says "
+        "which). Use it ONLY for logistics or self-report where the options are genuinely theirs to "
+        "pick: what time they're hitting the gym today, which dish off their saved menu they're "
+        "having, how the session felt (easy / about right / brutal), how they slept, which day works. "
+        "Never for anything you should prescribe — exercises, sets, weights, program changes, what to "
+        "eat — you're the coach, you decide and explain (never poll a beginner). Never during setup, "
+        "never when a poll is already open (the result tells you), at most one per conversation "
+        "beat. Keep options to a few words each; add 'not today' / 'something else' when the honest "
+        "answer might be neither. Your reply is the one line around the poll — don't repeat the "
+        "options in words. Their pick comes back as a message naming it; act on it, don't re-ask. "
+        "If this tool isn't available you can't send polls — ask in words."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "the question, one short line, e.g. 'gym time today?'"},
+            "options": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4,
+                        "description": "2–4 options, a few words each, e.g. ['4', '5:30', '7', 'not today']"},
+        },
+        "required": ["title", "options"],
+    },
+}
+
+
+def handle_send_poll(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """An iMessage poll (or its SMS list fallback) via polls.send_poll_to_user — every gate
+    (setup done, one open poll, 2–4 distinct short options) answers with an honest line."""
+    if not config.SEND_POLL_TOOL_ENABLED:
+        return "error: sending polls is not enabled — ask in words"
+    from polls import send_poll_to_user
+    ti = tool_input or {}
+    out = send_poll_to_user(user_id, ti.get("title"), ti.get("options"), source="coach")
+    logger.info("SEND_POLL user=%s ok=%s title=%r", user_id, out.startswith("ok:"), str(ti.get("title") or "")[:60])
+    return out
+
+
 SAVE_SOURCE_TOOL = {
     "name": "save_source",
     "description": (
@@ -6541,6 +6583,7 @@ _HANDLERS = {
     "get_weather": handle_get_weather,
     "fetch_page": handle_fetch_page,
     "send_image": handle_send_image,
+    "send_poll": handle_send_poll,
     "schedule_task": handle_schedule_task,
     "save_source": handle_save_source,
     "cancel_task": handle_cancel_task,

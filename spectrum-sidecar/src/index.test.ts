@@ -52,6 +52,10 @@ function deps(overrides: Partial<Deps> = {}): Deps & { calls: unknown[][] } {
       calls.push(["sendAttachment", phone, bytes.length, name, mimeType]);
       return { provider_message_id: "photon-att-1" };
     },
+    sendPoll: async (phone, title, options) => {
+      calls.push(["sendPoll", phone, title, options]);
+      return { provider_message_id: "photon-poll-1" };
+    },
     ...overrides,
     calls,
   };
@@ -70,7 +74,7 @@ function req(path: string, init: RequestInit & { secret?: string | null } = {}) 
 describe("auth", () => {
   test("every route 401s without the shared secret", async () => {
     const h = createHandler(deps());
-    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"], ["POST", "/read"], ["POST", "/send-attachment"]] as const) {
+    for (const [m, p] of [["GET", "/health"], ["POST", "/send"], ["POST", "/contact-card"], ["POST", "/typing"], ["POST", "/react"], ["POST", "/read"], ["POST", "/send-attachment"], ["POST", "/poll"]] as const) {
       const res = await h(req(p, { method: m, secret: null, body: m === "POST" ? "{}" : undefined }));
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
@@ -963,5 +967,97 @@ describe("buildInbound voice (step 5a)", () => {
     } finally {
       if (prev === undefined) delete process.env.INBOUND_EXTRA_KINDS; else process.env.INBOUND_EXTRA_KINDS = prev;
     }
+  });
+});
+
+
+// ─── inbound kinds initiative, steps 7 + 8: polls ──────────────────────────────
+// Outbound: POST /poll → the SDK's poll(title, ...options) into the DM (iMessage polls,
+// iOS 26). Inbound: a vote lands as `poll.changed` → `{ type: "poll_option", option,
+// poll, selected, title }` whose message id is `${pollMessageGuid}:${sender}:${optionId}:
+// ${selected|deselected}:${ms}` — the poll's id is the prefix before `:<sender>:`.
+
+describe("POST /poll", () => {
+  const body = { phone: "+12094205037", title: "gym time today?", options: ["4", "5:30", "7", "not today"] };
+
+  test("sends the poll, returns the Photon id", async () => {
+    const d = deps();
+    const res = await createHandler(d)(req("/poll", { method: "POST", body: JSON.stringify(body) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, provider_message_id: "photon-poll-1" });
+    expect(d.calls).toEqual([["sendPoll", "+12094205037", "gym time today?", ["4", "5:30", "7", "not today"]]]);
+  });
+
+  test("400: missing phone/title, fewer than 2 or more than 6 options, a blank option, bad json", async () => {
+    const d = deps();
+    const h = createHandler(d);
+    for (const b of ["nope", "{}",
+                     JSON.stringify({ ...body, title: "" }),
+                     JSON.stringify({ ...body, options: ["only one"] }),
+                     JSON.stringify({ ...body, options: ["1", "2", "3", "4", "5", "6", "7"] }),
+                     JSON.stringify({ ...body, options: ["4", "  "] }),
+                     JSON.stringify({ ...body, options: "4,5" })]) {
+      const res = await h(req("/poll", { method: "POST", body: b }));
+      expect(res.status).toBe(400);
+    }
+    expect(d.calls).toEqual([]);
+  });
+
+  test("options are trimmed; provider throw → 502 with the text; stream down → 503", async () => {
+    const d = deps();
+    await createHandler(d)(req("/poll", { method: "POST", body: JSON.stringify({ ...body, options: [" 4 ", "7"] }) }));
+    expect(d.calls[0]![3]).toEqual(["4", "7"]);
+    const boom = await createHandler(deps({ sendPoll: async () => { throw new Error("polls unsupported on this chat"); } }))(
+      req("/poll", { method: "POST", body: JSON.stringify(body) }));
+    expect(boom.status).toBe(502);
+    expect(((await boom.json()) as { error: string }).error).toContain("polls unsupported");
+    const down = await createHandler(deps({ connected: () => false }))(req("/poll", { method: "POST", body: JSON.stringify(body) }));
+    expect(down.status).toBe(503);
+  });
+});
+
+const voteNode = (over: Record<string, unknown> = {}) => ({
+  type: "poll_option", option: { title: "5:30" }, selected: true, title: "gym time today?",
+  poll: { type: "poll", title: "gym time today?", options: [{ title: "4" }, { title: "5:30" }, { title: "7" }, { title: "not today" }] },
+  ...over,
+});
+const VOTE_ID = "A1B2-POLL-GUID:+12094205037:opt-2:selected:1763100000000";
+
+describe("buildInbound poll_option (step 7)", () => {
+  test("flag unset → a vote is skipped and shape-logged (today's behaviour)", async () => {
+    const cap = captureLogs();
+    try {
+      expect(await buildInbound(fakeSpace, fakeMessage({ id: VOTE_ID, content: voteNode() }), { extraKinds: new Set() })).toBeNull();
+    } finally { cap.restore(); }
+    expect(cap.lines.filter((l) => l.msg === "inbound skipped").map((l) => l.type)).toEqual(["poll_option"]);
+  });
+
+  test("flag names poll_option → a vote is a text inbound naming the pick, plus the structured poll field", async () => {
+    const out = await buildInbound(fakeSpace, fakeMessage({ id: VOTE_ID, content: voteNode() }), { extraKinds: new Set(["poll_option"]) });
+    expect(out).not.toBeNull();
+    expect(out!.payload.text).toBe('[picked "5:30" on the poll "gym time today?"]');
+    expect(out!.payload.kinds).toEqual(["poll_option"]);
+    expect(out!.payload.poll).toEqual({
+      poll_id: "A1B2-POLL-GUID", title: "gym time today?", option: "5:30", selected: true,
+      options: ["4", "5:30", "7", "not today"],
+    });
+    expect(out!.payload.provider_message_id).toBe(VOTE_ID);
+    expect(out!.files).toEqual([]);
+  });
+
+  test("a deselect is forwarded as such (Flask decides what to do with it)", async () => {
+    const out = await buildInbound(fakeSpace, fakeMessage({ id: VOTE_ID.replace("selected", "deselected"), content: voteNode({ selected: false }) }),
+                                   { extraKinds: new Set(["poll_option"]) });
+    expect(out!.payload.text).toBe('[un-picked "5:30" on the poll "gym time today?"]');
+    expect(out!.payload.poll!.selected).toBe(false);
+  });
+
+  test("an id that doesn't carry the sender → poll_id null, never a crash", async () => {
+    const out = await buildInbound(fakeSpace, fakeMessage({ id: "weird-id", content: voteNode() }), { extraKinds: new Set(["poll_option"]) });
+    expect(out!.payload.poll!.poll_id).toBeNull();
+  });
+
+  test("the voice flag alone does not open poll_option", async () => {
+    expect(await buildInbound(fakeSpace, fakeMessage({ id: VOTE_ID, content: voteNode() }), { extraKinds: new Set(["voice"]) })).toBeNull();
   });
 });

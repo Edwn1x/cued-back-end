@@ -524,7 +524,8 @@ CAPABILITIES: list[Capability] = [
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.
-INTERNAL_TOOLS = frozenset({"react_to_message", "reply_in_thread"})
+# send_poll is HOW an ask goes out (a tappable bubble), not a thing the coach can do for them.
+INTERNAL_TOOLS = frozenset({"react_to_message", "reply_in_thread", "send_poll"})
 
 OBSTACLE_LINES = {
     "consistency": "you said staying consistent is the hard part — that's where i'll be on you most",

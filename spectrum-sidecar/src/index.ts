@@ -15,7 +15,7 @@
  * `delivery_status='failed'` row (the keystone) happen there, never hidden here.
  */
 
-import { Emoji, Spectrum, app as appCard, attachment, edit, reaction, reply, text, type Message, type Space } from "spectrum-ts";
+import { Emoji, Spectrum, app as appCard, attachment, edit, poll, reaction, reply, text, type Message, type Space } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 
 // ─── small helpers ───────────────────────────────────────────────────────────
@@ -70,6 +70,11 @@ export type Deps = {
    *  GIF: `attachment(bytes, {name, mimeType})`). No caption — a GIF bubble stands
    *  alone. Throws on failure. */
   sendAttachment: (phone: string, bytes: Uint8Array, name: string, mimeType: string) => Promise<{ provider_message_id: string | null }>;
+  /** Inbound kinds step 8: an iMessage poll (iOS 26) into the DM with `phone` —
+   *  `poll(title, ...options)`. Returns the poll's Photon message id, which is also the
+   *  prefix of every vote's id (step 7) — Flask stores it on the outbound row and routes
+   *  the pick back by it. Throws on failure. */
+  sendPoll: (phone: string, title: string, options: string[]) => Promise<{ provider_message_id: string | null }>;
   /** Series §3.0 (b): Photon's continuous-share read, IF the SDK exposes one. Left
    *  undefined in this build — spectrum-ts 12.8.0 has no `locations` API — so
    *  GET /location/:phone answers 501 with that reason. */
@@ -93,6 +98,10 @@ const MAX_IMAGE_B64 = 2_000_000;
 // /send-attachment ceiling: ~4.5 MB of file. The water GIFs are ~0.3–0.6 MB; MMS
 // (the SMS-side twin) tops out at 5 MB, so nothing bigger belongs here either.
 const MAX_ATTACHMENT_B64 = 6_000_000;
+/** /poll bounds. The coach-side tool caps lower (2–4); this is the transport's sanity. */
+const MIN_POLL_OPTIONS = 2;
+const MAX_POLL_OPTIONS = 6;
+const MAX_POLL_TITLE = 200;
 
 export function pickLayout(v: unknown): CardLayout | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -343,6 +352,31 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       }
     }
 
+    if (req.method === "POST" && pathname === "/poll") {
+      // Step 8: an iMessage poll as its own bubble. The coach decides WHAT to ask and
+      // WHEN (Flask: send_poll tool + "prescribe, don't poll a beginner"); this route
+      // only knows HOW. Options come back trimmed; blanks are a 400, not a silent drop.
+      const body = await readJson(req);
+      if (!body || !isNonEmptyString(body.phone) || !isNonEmptyString(body.title) || !Array.isArray(body.options)) {
+        return json(400, { ok: false, error: "expected JSON {phone, title, options: string[]}" });
+      }
+      if (body.title.length > MAX_POLL_TITLE) return json(400, { ok: false, error: `title over ${MAX_POLL_TITLE} chars` });
+      const options = (body.options as unknown[]).map((o) => (typeof o === "string" ? o.trim() : ""));
+      if (options.length < MIN_POLL_OPTIONS || options.length > MAX_POLL_OPTIONS) {
+        return json(400, { ok: false, error: `options must have ${MIN_POLL_OPTIONS}–${MAX_POLL_OPTIONS} entries` });
+      }
+      if (options.some((o) => !o)) return json(400, { ok: false, error: "every option must be a non-empty string" });
+      if (!deps.connected()) return json(503, { ok: false, error: "spectrum stream not connected" });
+      try {
+        const { provider_message_id } = await deps.sendPoll(body.phone, body.title, options);
+        log("info", "poll sent", { to: last4(body.phone), provider_message_id, options: options.length });
+        return json(200, { ok: true, provider_message_id });
+      } catch (err) {
+        log("error", "poll failed", { to: last4(body.phone), error: String(err) });
+        return json(502, { ok: false, error: String(err) });
+      }
+    }
+
     if (req.method === "POST" && pathname === "/contact-card") {
       const body = await readJson(req);
       if (!body || !isNonEmptyString(body.phone)) return json(400, { ok: false, error: "expected JSON {phone}" });
@@ -383,6 +417,10 @@ export type InboundPayload = {
    *  memo rides in attachment_N with an audio/* mime; Flask stores "a voice memo came"
    *  (never "a picture") and, until transcription (5b), replies text-only and says so. */
   kinds?: string[];
+  /** Step 7: a vote on a poll WE sent (`poll_option`). `text` already names the pick in
+   *  words; this is the structured copy. `poll_id` = the poll's Photon message id (the
+   *  prefix of the vote's id before `:<sender>:`), null if the id didn't carry one. */
+  poll?: { poll_id: string | null; title: string; option: string; selected: boolean; options: string[] };
 };
 export type InboundFile = { name: string; mimeType: string; bytes: Uint8Array };
 export type BuildInboundOpts = {
@@ -459,7 +497,7 @@ export async function buildInbound(
 
   const files: InboundFile[] = [];
   let unavailable = 0;
-  const acc: { body: string; reaction?: InboundPayload["reaction"] } = { body: "" };
+  const acc: { body: string; reaction?: InboundPayload["reaction"]; poll?: InboundPayload["poll"] } = { body: "" };
   const extra = opts.extraKinds ?? parseExtraKinds(process.env.INBOUND_EXTRA_KINDS);
   const kinds = new Set<string>();
 
@@ -502,6 +540,26 @@ export async function buildInbound(
       }
       const name = v.name || `voice-memo.${AUDIO_EXT[v.mimeType.toLowerCase()] ?? "audio"}`;
       files.push({ name, mimeType: v.mimeType, bytes: await v.read() });
+      return true;
+    }
+    if (node.type === "poll_option" && extra.has("poll_option")) {
+      // Step 7. A vote on a poll we sent: { option: {title}, poll: {title, options}, selected,
+      // title }. The provider's id for it is `${pollGuid}:${sender}:${optionId}:${action}:${ms}`.
+      // Forwarded as a text inbound that names the pick (the coach reads it like a reply)
+      // plus the structured copy for code routing (poll_id → whichever ask sent the poll).
+      const po = node as unknown as { option?: { title?: string }; poll?: { title?: string; options?: { title?: string }[] }; selected?: boolean; title?: string };
+      const option = po.option?.title ?? "";
+      const title = po.poll?.title ?? po.title ?? "";
+      const selected = po.selected !== false;
+      const marker = `:${sender.id}:`;
+      const at = message.id.indexOf(marker);
+      acc.poll = {
+        poll_id: at > 0 ? message.id.slice(0, at) : null, title, option, selected,
+        options: (po.poll?.options ?? []).map((o) => o?.title ?? "").filter(Boolean),
+      };
+      const t = `[${selected ? "picked" : "un-picked"} ${JSON.stringify(option)} on the poll ${JSON.stringify(title)}]`;
+      acc.body = acc.body ? `${acc.body}\n${t}` : t;
+      kinds.add("poll_option");
       return true;
     }
     return false;
@@ -560,6 +618,7 @@ export async function buildInbound(
       ...(reaction ? { reaction } : {}),
       ...(unavailable ? { attachments_unavailable: unavailable } : {}),
       ...(kinds.size ? { kinds: [...kinds].sort() } : {}),
+      ...(acc.poll ? { poll: acc.poll } : {}),
     },
     files,
   };
@@ -807,6 +866,16 @@ async function main() {
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
       const sent = await dm.send(attachment(Buffer.from(bytes), { name, mimeType }));
+      await dm.stopTyping().catch(() => undefined);
+      return { provider_message_id: (Array.isArray(sent) ? sent[0]?.id : sent?.id) ?? null };
+    },
+    sendPoll: async (phone, title, options) => {
+      const app = current;
+      if (!app) throw new Error("spectrum stream not connected");
+      const dm = await dmFor(app, phone);
+      // The provider's `case "poll"` → remote.polls.create(chat, title, options); the
+      // returned record's id is the poll message guid every later vote id starts with.
+      const sent = await dm.send(poll(title, options));
       await dm.stopTyping().catch(() => undefined);
       return { provider_message_id: (Array.isArray(sent) ? sent[0]?.id : sent?.id) ?? null };
     },

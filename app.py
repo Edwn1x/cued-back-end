@@ -1844,6 +1844,9 @@ def internal_inbound():
     body = str(payload.get("text") or "").strip()
     provider_message_id = str(payload.get("provider_message_id") or "")
     reaction = payload.get("reaction") if isinstance(payload.get("reaction"), dict) else None
+    # Inbound kinds step 7: a vote on a poll we sent (sidecar INBOUND_EXTRA_KINDS=poll_option).
+    # `text` already names the pick; this is the structured copy (poll_id, option, selected).
+    poll_vote = payload.get("poll") if isinstance(payload.get("poll"), dict) else None
 
     # Same E.164 shape the Twilio webhook receives. An Apple-ID email can never
     # match a phone-keyed User; it falls straight into the unknown path.
@@ -1935,6 +1938,20 @@ def internal_inbound():
                 except Exception as e:  # noqa: BLE001 — never break the webhook
                     logger.warning("SETUP_SEQUENCE_REACTION_FAILED user=%s err=%s", user.id, e)
             return jsonify({"ok": True, "known": True, "reaction": True, "workout_hit": hit}), 200
+        if poll_vote is not None:
+            if poll_vote.get("selected") is False:
+                # They un-tapped an option. Not a message; a re-tap (or a different pick) will
+                # arrive as its own vote. Never a model turn.
+                logger.info("POLL_UNVOTE_IN user=%s poll=%s option=%r", user.id,
+                            str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
+                return jsonify({"ok": True, "known": True, "ignored": "poll_unvote"}), 200
+            if not body:
+                body = f'[picked "{poll_vote.get("option") or "?"}" on the poll "{poll_vote.get("title") or "?"}"]'
+            logger.info("POLL_VOTE_IN user=%s poll=%s option=%r", user.id,
+                        str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
+            _process_inbound(session, user, handle, body, provider_message_id, None, None,
+                             channel="imessage", provider_sid=provider_message_id, image_list=[])
+            return jsonify({"ok": True, "known": True, "poll_vote": True}), 200
         # Nothing to say and nothing attached — a presence event that slipped through.
         # An outage-lost attachment (image_name / has_voice set, files empty) is NOT empty:
         # the marker row must exist so the coach can say it didn't get it.
@@ -3148,6 +3165,32 @@ def admin_send():
         return jsonify({"status": "error"}), 400
     finally:
         session.close()
+
+
+@app.route("/admin/poll/send", methods=["POST"])
+def admin_poll_send():
+    """Send a poll to a user right now (inbound kinds step 8; the founder's live check that
+    an iMessage poll renders in a 1:1 DM from the Photon line). Form: user_id, title,
+    options = 'a | b | c' (pipe or newline separated, 2–POLL_MAX_OPTIONS). Bypasses the
+    tool flag and the setup gate — not the archive guard, the channel router or the
+    validation. Logged as message_type 'poll' like the coach's."""
+    from polls import send_poll_to_user
+    session = get_session()
+    try:
+        user = session.get(User, int(request.form.get("user_id") or 0))
+        if not user:
+            return jsonify({"status": "error", "message": "User not found."}), 404
+        if user.archived_at:
+            return jsonify({"status": "error", "message": "User is archived — restore first."}), 400
+    finally:
+        session.close()
+    raw = (request.form.get("options") or "").replace("\n", "|")
+    options = [o.strip() for o in raw.split("|") if o.strip()]
+    out = send_poll_to_user(user.id, request.form.get("title") or "", options, source="admin")
+    if not out.startswith("ok:"):
+        return jsonify({"status": "error", "message": out}), 400
+    logger.info("ADMIN_POLL_SENT user=%s title=%r", user.id, (request.form.get("title") or "")[:60])
+    return jsonify({"status": "ok", "message": out})
 
 
 @app.route("/admin/water-gif/send", methods=["POST"])
