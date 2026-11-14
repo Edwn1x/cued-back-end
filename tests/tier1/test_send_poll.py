@@ -94,6 +94,7 @@ def test_gates_flag_setup_option_count_and_lengths(db, poll_ok, monkeypatch):
         ({"title": "x?", "options": ["a", "b" * 41]}, "40 chars"),
         ({"title": "q" * 121, "options": ["a", "b"]}, "120 chars"),
         ({"title": "x?", "options": ["a", "a"]}, "distinct"),
+        ({"title": "x?", "options": ["a", "b"], "topic": "t" * 61}, "topic"),
     ]
     for ti, needle in bad:
         out = agent_tools.dispatch_tool("send_poll", ti, u.id)
@@ -107,27 +108,80 @@ def test_gates_flag_setup_option_count_and_lengths(db, poll_ok, monkeypatch):
     assert not poll_ok
 
 
-def test_one_open_poll_per_user_until_they_pick_or_it_ages_out(db, poll_ok, monkeypatch):
-    import agent_tools
+def _age(db, row, hours):
     from datetime import datetime, timedelta, timezone
+    row.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+    db.commit()
+
+
+def _vote(db, user, title, option="x"):
     from models import Message
-    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
-    assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
-    again = agent_tools.dispatch_tool("send_poll", {"title": "and lunch?", "options": ["bowl", "wrap"]}, u.id)
-    assert again.startswith("error:") and "already open" in again and "gym time today?" in again
-    # their pick closes it
-    db.add(Message(user_id=u.id, direction="in", body='[picked "5:30" on the poll "gym time today?"]',
-                   message_type="freeform", channel="imessage", provider_sid="POLL-GUID-1:+1:o:selected:1",
+    db.add(Message(user_id=user.id, direction="in", body=f'[picked "{option}" on the poll "{title}"]',
+                   message_type="freeform", channel="imessage", provider_sid=f"v-{title[:8]}-{option}",
                    delivery_status="delivered"))
     db.commit()
-    assert agent_tools.dispatch_tool("send_poll", {"title": "and lunch?", "options": ["bowl", "wrap"]}, u.id).startswith("ok:")
-    # an unanswered poll older than the window no longer blocks
-    db.expire_all()
-    last = _rows(db, u.id, "out")[-1]
-    last.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=config.POLL_OPEN_HOURS + 1)
-    db.commit()
-    assert agent_tools.dispatch_tool("send_poll", {"title": "dinner?", "options": ["in", "out"]}, u.id).startswith("ok:")
+
+
+def test_same_topic_still_open_is_blocked_a_different_topic_is_not(db, poll_ok):
+    """The gate keys on the QUESTION, not on 'a poll exists': an unanswered 'gym time?' must
+    not stop 'how'd legs feel?' hours later, but re-asking gym time while it's open is nagging."""
+    import agent_tools
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
+    again = agent_tools.dispatch_tool("send_poll", {"title": "when u hitting the gym?", "options": ["now", "later"],
+                                                    "topic": "Gym Time!"}, u.id)
+    assert again.startswith("error:") and "already" in again and "gym time today?" in again
+    other = agent_tools.dispatch_tool("send_poll", {"title": "how'd legs feel?", "options": ["easy", "about right", "brutal"],
+                                                    "topic": "session feel"}, u.id)
+    assert other.startswith("ok:")
+    assert len(poll_ok) == 2
+
+
+def test_topic_defaults_to_the_title(db, poll_ok):
+    import agent_tools
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
+    same = agent_tools.dispatch_tool("send_poll", {"title": "Gym time today", "options": ["4", "7"]}, u.id)
+    assert same.startswith("error:") and "already" in same
+    (row,) = _rows(db, u.id, "out")
+    assert row.body == '[poll "gym time today?": 4 / 5:30 / 7 / not today]', "no topic suffix when it's just the title"
+    import polls
+    assert polls.poll_topic(row.body) == polls.normalize_topic("gym time today?")
+
+
+def test_a_pick_or_the_lifetime_closes_a_topic(db, poll_ok):
+    import agent_tools
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
+    _vote(db, u, "gym time today?", "5:30")
+    assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
+    _age(db, _rows(db, u.id, "out")[-1], config.POLL_LIFETIME_HOURS + 1)
+    assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
     assert len(poll_ok) == 3
+
+
+def test_two_unanswered_polls_means_ask_in_words(db, poll_ok):
+    """Per-topic alone would let the coach fire five polls at someone who isn't tapping. Two
+    ignored polls is the signal: fall back to words until one is answered or ages out."""
+    import agent_tools
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert agent_tools.dispatch_tool("send_poll", {"title": "gym time today?", "options": ["4", "7"], "topic": "gym"}, u.id).startswith("ok:")
+    assert agent_tools.dispatch_tool("send_poll", {"title": "lunch?", "options": ["bowl", "wrap"], "topic": "lunch"}, u.id).startswith("ok:")
+    third = agent_tools.dispatch_tool("send_poll", {"title": "sleep?", "options": ["good", "rough"], "topic": "sleep"}, u.id)
+    assert third.startswith("error:") and "unanswered" in third and "ask in words" in third
+    _vote(db, u, "lunch?", "bowl")
+    assert agent_tools.dispatch_tool("send_poll", {"title": "sleep?", "options": ["good", "rough"], "topic": "sleep"}, u.id).startswith("ok:")
+    assert len(poll_ok) == 3
+
+
+def test_topic_rides_on_the_row_when_it_differs_from_the_title(db, poll_ok):
+    import agent_tools, polls
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    agent_tools.dispatch_tool("send_poll", {"title": "when u hitting rsf?", "options": ["4", "7"], "topic": "gym time"}, u.id)
+    (row,) = _rows(db, u.id, "out")
+    assert row.body == '[poll "when u hitting rsf?" (gym time): 4 / 7]'
+    assert polls.poll_topic(row.body) == "gym time"
+    assert polls.poll_title(row.body) == "when u hitting rsf?"
 
 
 def test_sidecar_failure_is_an_honest_error_and_no_row(db, monkeypatch):
@@ -184,8 +238,8 @@ def test_a_vote_is_stored_and_answered_like_a_reply(db, client, driver, anthropi
     driver.flush(u.phone)
     assert [m.body for m in _rows(db, u.id, "in")] == [text]
     assert seen and seen[0][0]["content"] == text, "the model sees the pick as the user's message"
-    # and the poll is no longer open
-    assert agent_tools.dispatch_tool("send_poll", {"title": "lunch?", "options": ["bowl", "wrap"]}, u.id).startswith("ok:")
+    # and that topic is no longer open — the same ask can go out again
+    assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
 
 
 def test_a_deselect_is_dropped_before_any_model_turn(db, client, driver, anthropic_stub):

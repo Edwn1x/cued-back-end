@@ -443,11 +443,15 @@ SEND_IMAGE_MAX_PER_TURN = int(os.getenv("SEND_IMAGE_MAX_PER_TURN", "2"))
 SEND_IMAGE_REPEAT_MIN = int(os.getenv("SEND_IMAGE_REPEAT_MIN", "30"))
 # send_poll — inbound kinds steps 7+8 (2026-11-14): the coach puts an iMessage poll (iOS 26) in
 # the thread via the sidecar's /poll (polls.py); SMS users get the same ask as a numbered list.
-# Logistics / self-report only (voice.md: "you prescribe; you don't poll"), never mid-setup, one
-# open poll per user for POLL_OPEN_HOURS. A vote comes back through /internal/inbound as text
-# naming the pick + a `poll` field (sidecar INBOUND_EXTRA_KINDS=poll_option). Off by default.
+# Logistics / self-report only (voice.md: "you prescribe; you don't poll"), never mid-setup. The
+# gate keys on the QUESTION, not on "a poll exists" (founder 2026-11-14: an unanswered poll must
+# not block unrelated ones): a poll carries a free-form `topic` (defaults to its title); the same
+# topic still open → blocked; POLL_MAX_OUTSTANDING unanswered polls → ask in words; every poll
+# ages out after POLL_LIFETIME_HOURS. A vote comes back through /internal/inbound as text naming
+# the pick + a `poll` field (sidecar INBOUND_EXTRA_KINDS=poll_option). Off by default.
 SEND_POLL_TOOL_ENABLED = os.getenv("SEND_POLL_TOOL_ENABLED", "false").lower() == "true"
-POLL_OPEN_HOURS = int(os.getenv("POLL_OPEN_HOURS", "24"))
+POLL_LIFETIME_HOURS = int(os.getenv("POLL_LIFETIME_HOURS", "4"))
+POLL_MAX_OUTSTANDING = int(os.getenv("POLL_MAX_OUTSTANDING", "2"))
 POLL_MAX_OPTIONS = int(os.getenv("POLL_MAX_OPTIONS", "4"))
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until

@@ -3171,7 +3171,7 @@ def admin_send():
 def admin_poll_send():
     """Send a poll to a user right now (inbound kinds step 8; the founder's live check that
     an iMessage poll renders in a 1:1 DM from the Photon line). Form: user_id, title,
-    options = 'a | b | c' (pipe or newline separated, 2–POLL_MAX_OPTIONS). Bypasses the
+    options = 'a | b | c' (pipe or newline separated, 2–POLL_MAX_OPTIONS), topic (optional). Bypasses the
     tool flag and the setup gate — not the archive guard, the channel router or the
     validation. Logged as message_type 'poll' like the coach's."""
     from polls import send_poll_to_user
@@ -3186,7 +3186,8 @@ def admin_poll_send():
         session.close()
     raw = (request.form.get("options") or "").replace("\n", "|")
     options = [o.strip() for o in raw.split("|") if o.strip()]
-    out = send_poll_to_user(user.id, request.form.get("title") or "", options, source="admin")
+    out = send_poll_to_user(user.id, request.form.get("title") or "", options,
+                            topic=request.form.get("topic") or None, source="admin")
     if not out.startswith("ok:"):
         return jsonify({"status": "error", "message": out}), 400
     logger.info("ADMIN_POLL_SENT user=%s title=%r", user.id, (request.form.get("title") or "")[:60])

@@ -3833,9 +3833,9 @@ SEND_POLL_TOOL = {
         "pick: what time they're hitting the gym today, which dish off their saved menu they're "
         "having, how the session felt (easy / about right / brutal), how they slept, which day works. "
         "Never for anything you should prescribe — exercises, sets, weights, program changes, what to "
-        "eat — you're the coach, you decide and explain (never poll a beginner). Never during setup, "
-        "never when a poll is already open (the result tells you), at most one per conversation "
-        "beat. Keep options to a few words each; add 'not today' / 'something else' when the honest "
+        "eat — you're the coach, you decide and explain (never poll a beginner). Never during setup. "
+        "Don't re-ask a question that's still out as a poll, and when two polls sit unanswered ask "
+        "in words instead (the result tells you both). Keep options to a few words each; add 'not today' / 'something else' when the honest "
         "answer might be neither. Your reply is the one line around the poll — don't repeat the "
         "options in words. Their pick comes back as a message naming it; act on it, don't re-ask. "
         "If this tool isn't available you can't send polls — ask in words."
@@ -3846,6 +3846,9 @@ SEND_POLL_TOOL = {
             "title": {"type": "string", "description": "the question, one short line, e.g. 'gym time today?'"},
             "options": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 4,
                         "description": "2–4 options, a few words each, e.g. ['4', '5:30', '7', 'not today']"},
+            "topic": {"type": "string",
+                      "description": "optional 2-3 word tag for WHAT this asks ('gym time', 'lunch', 'session feel') "
+                                     "so the same question isn't re-asked while it's open; defaults to the title"},
         },
         "required": ["title", "options"],
     },
@@ -3859,7 +3862,7 @@ def handle_send_poll(user_id: int, tool_input: dict, *, message_id=None) -> str:
         return "error: sending polls is not enabled — ask in words"
     from polls import send_poll_to_user
     ti = tool_input or {}
-    out = send_poll_to_user(user_id, ti.get("title"), ti.get("options"), source="coach")
+    out = send_poll_to_user(user_id, ti.get("title"), ti.get("options"), topic=ti.get("topic"), source="coach")
     logger.info("SEND_POLL user=%s ok=%s title=%r", user_id, out.startswith("ok:"), str(ti.get("title") or "")[:60])
     return out
 
