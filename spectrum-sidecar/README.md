@@ -67,7 +67,14 @@ All routes: `X-Internal-Secret` required, else `401`.
   (`inbound dropped after retries`). Logs: `inbound parked for retry`,
   `inbound retry ok`, `inbound retry failed`.
 - Skipped, never forwarded: our own outbound echoes, non-iMessage platforms,
-  reactions / typing / read receipts / polls.
+  typing / read receipts / polls / contact cards. (Reactions ARE forwarded — below.)
+- `INBOUND_EXTRA_KINDS` (env, comma list, default empty) opens one more content kind at a
+  time; unset = nothing changes on deploy, unsetting it is the rollback. Forwarded kinds
+  are named in the payload's `kinds: [...]` (absent when none rode along).
+  - `voice` — an iMessage audio message (`{type:"voice", mimeType: audio/*, read}` from
+    the provider) is forwarded like a photo: bytes in `attachment_N` with the audio mime,
+    plus `kinds: ["voice"]`. Flask stores `[voice memo attached]` (not a picture) and,
+    until transcription lands, replies text-only and says it can't listen yet.
 
 ## Allowlist (Free / Pro plans)
 
@@ -106,4 +113,11 @@ is acknowledged and dropped.
 - `INBOUND_DEBUG_LOG=1` (env, experiment window only) logs the FULL shape of every inbound
   — content kinds, field names, attachment name/mime/size, the text, contact/richlink
   bodies — with the phone reduced to its last 4. Any content kind we don't forward is
-  logged as `inbound skipped` with its type.
+  logged as `inbound skipped` with its type, outer type and field NAMES (always on).
+- What the pinned provider (`@spectrum-ts/imessage` 12.8) actually emits inbound, read
+  from its `buildUnwrappedContentMessage` / stream dispatch: `text`, `attachment`,
+  `voice` (audio message), `contact` (vCard), `group` (multipart), `custom`
+  (`imessage_type: "unsupported-message"`), each optionally inside `reply`; plus
+  `reaction`, `read`, `poll_option` (a vote on a poll WE sent) and group-membership
+  events. It never emits `effect`, `richlink`, `edit` or `unsend` inbound — an
+  effect-wrapped text arrives as plain `text`; user edits/unsends have no stream event.

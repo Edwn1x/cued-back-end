@@ -378,12 +378,32 @@ export type InboundPayload = {
    *  outage outlasted its window) and forwarded text-only: how many were lost.
    *  Flask keeps the "a picture came" marker so the coach can say it didn't get it. */
   attachments_unavailable?: number;
+  /** Inbound kinds initiative (2026-11-14): the content kinds beyond text / image /
+   *  reaction this inbound carried, present only when one did. Step 5a: `voice` — the
+   *  memo rides in attachment_N with an audio/* mime; Flask stores "a voice memo came"
+   *  (never "a picture") and, until transcription (5b), replies text-only and says so. */
+  kinds?: string[];
 };
 export type InboundFile = { name: string; mimeType: string; bytes: Uint8Array };
 export type BuildInboundOpts = {
   /** Don't call `read()` on attachments; count them into `attachments_unavailable`
    *  instead. The retry queue's last resort — the text still reaches Flask. */
   skipAttachments?: boolean;
+  /** Content kinds beyond text / attachment / reaction to forward (lowercase names:
+   *  "voice", later "contact", "poll_option", …). Defaults to the INBOUND_EXTRA_KINDS
+   *  env (comma list). Unset = nothing new is forwarded — a deploy is a no-op until the
+   *  flag names a kind, and unsetting it is the rollback. */
+  extraKinds?: ReadonlySet<string>;
+};
+
+/** INBOUND_EXTRA_KINDS="voice, poll_option" → {"voice","poll_option"}; unset → empty. */
+export function parseExtraKinds(raw: string | undefined): Set<string> {
+  return new Set((raw ?? "").split(",").map((k) => k.trim().toLowerCase()).filter(Boolean));
+}
+
+const AUDIO_EXT: Record<string, string> = {
+  "audio/x-caf": "caf", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac",
+  "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg", "audio/amr": "amr",
 };
 
 /**
@@ -440,10 +460,12 @@ export async function buildInbound(
   const files: InboundFile[] = [];
   let unavailable = 0;
   const acc: { body: string; reaction?: InboundPayload["reaction"] } = { body: "" };
+  const extra = opts.extraKinds ?? parseExtraKinds(process.env.INBOUND_EXTRA_KINDS);
+  const kinds = new Set<string>();
 
   // Pull ONE content node into the accumulator. Returns true if it was a kind we
-  // forward (text / attachment / reaction), false for anything we don't (typing,
-  // read, poll, richlink, contact, …).
+  // forward (text / attachment / reaction, plus whatever INBOUND_EXTRA_KINDS opens),
+  // false for anything we don't (typing, read, poll, richlink, contact, …).
   const take = async (node: { type?: string } & Record<string, unknown>): Promise<boolean> => {
     if (node.type === "text") {
       const t = (node as { text?: string }).text ?? "";
@@ -464,6 +486,22 @@ export async function buildInbound(
     if (node.type === "reaction") {
       const r = node as unknown as { emoji: string; target?: { id?: string } };
       acc.reaction = { emoji: r.emoji, target_id: r.target?.id ?? null };
+      return true;
+    }
+    if (node.type === "voice" && extra.has("voice")) {
+      // Step 5a. The provider hands an iMessage audio message over as `voice`
+      // ({ id, name, mimeType: audio/*, size, read }) — until now a kind we dropped, so
+      // every voice memo vanished without a trace. Forwarded exactly like a photo
+      // (bytes in attachment_N, the audio mime on the part) plus kinds:["voice"], so
+      // Flask can store the honest marker and, once transcription lands (5b), listen.
+      const v = node as unknown as { id?: string; name?: string; mimeType: string; read: () => Promise<Uint8Array> };
+      kinds.add("voice");
+      if (opts.skipAttachments) {
+        unavailable += 1;
+        return true;
+      }
+      const name = v.name || `voice-memo.${AUDIO_EXT[v.mimeType.toLowerCase()] ?? "audio"}`;
+      files.push({ name, mimeType: v.mimeType, bytes: await v.read() });
       return true;
     }
     return false;
@@ -521,6 +559,7 @@ export async function buildInbound(
       attachments: files.map((f) => ({ name: f.name, mime_type: f.mimeType, size: f.bytes.byteLength || null })),
       ...(reaction ? { reaction } : {}),
       ...(unavailable ? { attachments_unavailable: unavailable } : {}),
+      ...(kinds.size ? { kinds: [...kinds].sort() } : {}),
     },
     files,
   };

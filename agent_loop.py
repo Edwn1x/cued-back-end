@@ -1768,6 +1768,22 @@ def _persist_recent_photo(user_id: int, image_data, caption: str, reply: str) ->
         logger.warning("RECENT_MEDIA_PERSIST_FAILED user=%s err=%s", user_id, e)
 
 
+# Inbound kinds step 5a: what the model is told in place of the stored VOICE_MARKER.
+# Code-dated and plain: no transcription exists yet (5b), so the only honest move is
+# to say so and ask for the words — never to guess, summarize or act on a memo unheard.
+_VOICE_MEMO_NOTE = ("[they sent a voice memo. you can't listen to audio yet — tell them that in "
+                    "plain words and ask them to type it out (or just the gist). never guess, "
+                    "summarize or act on what it might have said.]")
+
+
+def _split_voice_marker(text: str) -> tuple[str, str | None]:
+    """(text without the marker, the note) when a voice memo rode in on this turn; else (text, None)."""
+    from sms import VOICE_MARKER
+    if not text or VOICE_MARKER not in text:
+        return text, None
+    return text.replace(VOICE_MARKER, "").strip(), _VOICE_MEMO_NOTE
+
+
 def _is_failed_image_text(text: str) -> bool:
     """True when `text` is essentially just ￼ placeholder(s) with no real words — an
     image that didn't come through. Must contain at least one ￼ and, once ￼ and
@@ -2172,13 +2188,20 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         receipt_reply = handle_receipt_image(user.id, image_data, caption=combined_body)
         if receipt_reply is not None:
             return receipt_reply
+    # Step 5a: a voice memo on this turn → the stored marker becomes the code note.
+    text_body, voice_note = _split_voice_marker(combined_body)
+    if voice_note:
+        logger.info("AGENT_LOOP_VOICE_MEMO user=%s words=%d — no transcription yet, honesty note",
+                    user.id, len(text_body))
     if image_data and config.READ_IMAGE_ENABLED:
         # The model sees the image and routes it in-call (food/calendar/whiteboard/
         # other) — no pre-classifier beyond the receipt check. Log the receipt as corpus.
         logger.info("AGENT_LOOP_IMAGE user=%s images=%d — vision routing (read_image corpus marker)",
                     user.id, len(images))
-        caption = combined_body or ("(the user sent an image)" if len(images) == 1
-                                    else f"(the user sent {len(images)} images)")
+        caption = text_body or ("(the user sent an image)" if len(images) == 1
+                                else f"(the user sent {len(images)} images)")
+        if voice_note:
+            caption = f"{caption}\n{voice_note}"
         user_content = [*images, {"type": "text", "text": caption}]
     elif image_data:
         # read_image off: don't send vision; note it so the coach can ask, never invent.
@@ -2195,6 +2218,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                         "placeholder with no attachment (stripped before it reached you). "
                         "Tell them the pic didn't come through and ask them to resend it; do "
                         "NOT describe or guess what it might have shown.]")
+    elif voice_note:
+        user_content = f"{text_body}\n{voice_note}".strip()
     else:
         user_content = combined_body
 
