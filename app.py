@@ -1373,7 +1373,7 @@ def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
 
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 def _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
-                     channel="sms", provider_sid=None, image_list=None):
+                     channel="sms", provider_sid=None, image_list=None, has_voice=False):
     """The inbound pipeline, from the idempotency claim through the buffer arm.
 
     Extracted verbatim from the Twilio webhook (Photon migration Phase 4B) so
@@ -1393,6 +1393,14 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     if not claim_message_sid(message_sid, user.id):
         logger.info("WEBHOOK_DUPLICATE sid=%s user=%s", message_sid, user.name)
         return get_twiml_response(), 200, {"Content-Type": "text/xml"}
+
+    # Inbound kinds step 5a: a voice memo came with (or instead of) the words. The marker
+    # rides in `body` from here — the stored row keeps it (the window records that audio
+    # came) and the buffered turn carries it to the agent loop, which swaps it for the
+    # honesty note. The bytes themselves stop at the route until transcription (5b).
+    if has_voice:
+        from sms import VOICE_MARKER
+        body = f"{body} {VOICE_MARKER}".strip()
 
     # Photon migration: breaker reset. An iMessage arriving FROM this user is
     # proof the pipe works for them — clear channel_failed_over so the next
@@ -1858,12 +1866,21 @@ def internal_inbound():
     # forwards them all as attachment_N). image_data is the first for single-image
     # signals/paths; image_list carries all of them to the vision call. Capped.
     image_name, image_data, image_list = None, None, []
+    # Inbound kinds step 5a: a voice memo (sidecar INBOUND_EXTRA_KINDS=voice) rides in as an
+    # audio/* part + kinds:["voice"]. It is NOT a picture — it never goes near Pillow or
+    # vision, and the stored row says a voice memo came. Transcription is step 5b; until
+    # then the turn runs text-only with a code note so the coach says it can't listen yet.
+    kinds = [str(k) for k in payload.get("kinds")] if isinstance(payload.get("kinds"), list) else []
+    voice_count = 0
     from image_normalize import normalize_image
     cap = config.MAX_INBOUND_IMAGES if config.MULTI_IMAGE_ENABLED else 1
     for f in files:
+        if (f.mimetype or "").lower().startswith("audio/"):
+            voice_count += 1
+            continue
         image_name = image_name or f.filename or "attachment"
         if len(image_list) >= cap:
-            break
+            continue
         norm = normalize_image(f.read(), f.mimetype, name=f.filename)
         if norm is not None:
             image_list.append(norm)
@@ -1876,10 +1893,16 @@ def internal_inbound():
         unavailable = int(payload.get("attachments_unavailable") or 0)
     except (TypeError, ValueError):
         unavailable = 0
-    if unavailable > 0 and image_name is None:
-        image_name = "attachment (unavailable)"
-        logger.warning("IMESSAGE_INBOUND_ATTACHMENTS_UNAVAILABLE from=%s n=%d id=%s",
-                       _last4(raw_handle), unavailable, provider_message_id)
+    if unavailable > 0:
+        logger.warning("IMESSAGE_INBOUND_ATTACHMENTS_UNAVAILABLE from=%s n=%d kinds=%s id=%s",
+                       _last4(raw_handle), unavailable, kinds, provider_message_id)
+        if "voice" in kinds:
+            # The lost part was (at least) the memo. A memo + photo both lost in one
+            # outage reads as a memo only — the words still land, the coach still says so.
+            voice_count = voice_count or 1
+        elif image_name is None:
+            image_name = "attachment (unavailable)"
+    has_voice = voice_count > 0
 
     session = get_session()
     try:
@@ -1912,11 +1935,16 @@ def internal_inbound():
                 except Exception as e:  # noqa: BLE001 — never break the webhook
                     logger.warning("SETUP_SEQUENCE_REACTION_FAILED user=%s err=%s", user.id, e)
             return jsonify({"ok": True, "known": True, "reaction": True, "workout_hit": hit}), 200
-        if not body and not files:
+        # Nothing to say and nothing attached — a presence event that slipped through.
+        # An outage-lost attachment (image_name / has_voice set, files empty) is NOT empty:
+        # the marker row must exist so the coach can say it didn't get it.
+        if not body and not files and image_name is None and not has_voice:
             return jsonify({"ok": True, "known": True, "ignored": "empty"}), 200
-        logger.info("Incoming iMessage from %s: %s", _last4(handle), body[:120])
+        logger.info("Incoming iMessage from %s: %s%s", _last4(handle), body[:120],
+                    " [voice memo]" if has_voice else "")
         _process_inbound(session, user, handle, body, provider_message_id, image_name, image_data,
-                         channel="imessage", provider_sid=provider_message_id, image_list=image_list)
+                         channel="imessage", provider_sid=provider_message_id, image_list=image_list,
+                         has_voice=has_voice)
         return jsonify({"ok": True, "known": True}), 200
     except Exception as e:
         # Unlike Twilio, the sidecar DOES retry 5xx (3 attempts). Release the claim

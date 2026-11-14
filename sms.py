@@ -99,6 +99,11 @@ SMS_SEGMENT_WARN_THRESHOLD = 6  # ~900+ GSM-7 chars; log when bodies get this la
 # pic earlier but i didn't save the detail" instead of "nothing came through".
 # voice.md's retrieval-gap honesty rule references this literal string.
 IMAGE_MARKER = "[image attached]"
+# Inbound kinds step 5a (2026-11-14): a voice memo arrived (sidecar INBOUND_EXTRA_KINDS=voice).
+# Stored on the inbound row like IMAGE_MARKER so the window records that audio came; the
+# agent loop swaps it for the honesty note (can't listen yet, ask them to type it) on the
+# turn itself. Never a substring of IMAGE_MARKER: capabilities._sent_a_photo must not match.
+VOICE_MARKER = "[voice memo attached]"
 
 
 def _send_single(phone: str, body: str) -> str:

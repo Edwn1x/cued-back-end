@@ -867,3 +867,101 @@ describe("createInboundRetryQueue", () => {
     expect(attempts.map((a) => a.id)).toEqual(["first", "second"]);
   });
 });
+
+// ─── inbound kinds initiative, step 5a: voice memos (honest marker, no transcription) ──
+// The pinned provider (@spectrum-ts/imessage 12.8) delivers an iMessage audio message
+// as `{ type: "voice", id, name, mimeType: "audio/x-caf", size, read }` — a kind
+// `take` returned false for, so every voice memo a user sent was dropped silently.
+// Behind INBOUND_EXTRA_KINDS (comma list; unset = today's behaviour) a voice memo
+// is forwarded like an attachment — audio/* mime, bytes in attachment_N — plus
+// `kinds: ["voice"]` so Flask stores "a voice memo came", not "a picture came".
+
+import { parseExtraKinds } from "./index.ts";
+
+const voiceNode = (over: Record<string, unknown> = {}) => ({
+  type: "voice", id: "att-v1", name: "Audio Message.caf", mimeType: "audio/x-caf", size: 6,
+  read: async () => new Uint8Array([0x63, 0x61, 0x66, 0x66, 0, 1]), ...over,
+});
+
+describe("INBOUND_EXTRA_KINDS parsing", () => {
+  test("comma list, trimmed, lowercased, blanks dropped; unset → empty", () => {
+    expect([...parseExtraKinds("voice, Richlink ,,")].sort()).toEqual(["richlink", "voice"]);
+    expect(parseExtraKinds(undefined).size).toBe(0);
+    expect(parseExtraKinds("").size).toBe(0);
+  });
+});
+
+describe("buildInbound voice (step 5a)", () => {
+  test("flag unset → a voice memo is still skipped and shape-logged (today's behaviour)", async () => {
+    const cap = captureLogs();
+    try {
+      expect(await buildInbound(fakeSpace, fakeMessage({ content: voiceNode() }), { extraKinds: new Set() })).toBeNull();
+    } finally { cap.restore(); }
+    const skipped = cap.lines.filter((l) => l.msg === "inbound skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.type).toBe("voice");
+  });
+
+  test("flag names voice → forwarded as an audio attachment with kinds:['voice'], empty text", async () => {
+    let reads = 0;
+    const msg = fakeMessage({ content: voiceNode({ read: async () => { reads += 1; return new Uint8Array([1, 2, 3]); } }) });
+    const out = await buildInbound(fakeSpace, msg, { extraKinds: new Set(["voice"]) });
+    expect(out).not.toBeNull();
+    expect(reads).toBe(1);
+    expect(out!.payload.text).toBe("");
+    expect(out!.payload.kinds).toEqual(["voice"]);
+    expect(out!.payload.attachments).toEqual([{ name: "Audio Message.caf", mime_type: "audio/x-caf", size: 3 }]);
+    expect(out!.files).toHaveLength(1);
+    expect(out!.files[0]!.mimeType).toBe("audio/x-caf");
+    expect(Buffer.from(out!.files[0]!.bytes).equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
+  test("a nameless voice node gets a file name from its mime", async () => {
+    const out = await buildInbound(fakeSpace, fakeMessage({ content: voiceNode({ name: undefined, mimeType: "audio/mp4" }) }),
+                                   { extraKinds: new Set(["voice"]) });
+    expect(out!.files[0]!.name).toBe("voice-memo.m4a");
+    expect(out!.payload.attachments[0]!.name).toBe("voice-memo.m4a");
+  });
+
+  test("group: a voice memo sent with a caption → caption text + the audio, kinds once", async () => {
+    const msg = fakeMessage({ content: { type: "group", items: [
+      { content: { type: "text", text: "heres my day" } },
+      { content: voiceNode() },
+    ] } });
+    const out = await buildInbound(fakeSpace, msg, { extraKinds: new Set(["voice"]) });
+    expect(out!.payload.text).toBe("heres my day");
+    expect(out!.payload.kinds).toEqual(["voice"]);
+    expect(out!.files.map((f) => f.mimeType)).toEqual(["audio/x-caf"]);
+  });
+
+  test("skipAttachments (retry queue's last resort): no read(), counted unavailable, kinds kept", async () => {
+    let reads = 0;
+    const msg = fakeMessage({ content: voiceNode({ read: async () => { reads += 1; return new Uint8Array(1); } }) });
+    const out = await buildInbound(fakeSpace, msg, { extraKinds: new Set(["voice"]), skipAttachments: true });
+    expect(reads).toBe(0);
+    expect(out!.files).toEqual([]);
+    expect(out!.payload.attachments_unavailable).toBe(1);
+    expect(out!.payload.kinds).toEqual(["voice"]);
+  });
+
+  test("the flag opens ONLY the kinds it names; text/photo payloads carry no kinds field", async () => {
+    const extra = new Set(["voice"]);
+    expect(await buildInbound(fakeSpace, fakeMessage({ content: { type: "richlink", url: "https://x.y" } }), { extraKinds: extra })).toBeNull();
+    const text = await buildInbound(fakeSpace, fakeMessage(), { extraKinds: extra });
+    expect("kinds" in text!.payload).toBe(false);
+    const photo = await buildInbound(fakeSpace, fakeMessage({ content: { type: "attachment", id: "a", name: "p.jpg", mimeType: "image/jpeg", read: async () => new Uint8Array(2) } }), { extraKinds: extra });
+    expect("kinds" in photo!.payload).toBe(false);
+  });
+
+  test("default opts read INBOUND_EXTRA_KINDS from the environment", async () => {
+    const prev = process.env.INBOUND_EXTRA_KINDS;
+    try {
+      process.env.INBOUND_EXTRA_KINDS = "voice";
+      expect((await buildInbound(fakeSpace, fakeMessage({ content: voiceNode() })))!.payload.kinds).toEqual(["voice"]);
+      delete process.env.INBOUND_EXTRA_KINDS;
+      expect(await buildInbound(fakeSpace, fakeMessage({ content: voiceNode() }))).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.INBOUND_EXTRA_KINDS; else process.env.INBOUND_EXTRA_KINDS = prev;
+    }
+  });
+});
