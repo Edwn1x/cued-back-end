@@ -5,7 +5,7 @@
  * builder, Flask forwarder) and only boots the Spectrum stream under
  * `import.meta.main`, so importing it here has no side effects.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   buildInbound,
   createHandler,
@@ -685,6 +685,80 @@ describe("inbound debug log (series §3.0 experiment a)", () => {
   test("an unknown content kind is logged as skipped, not dropped silently", async () => {
     const built = await buildInbound(fakeSpace, fakeMessage({ content: { type: "contact", user: undefined, raw: "BEGIN:VCARD" } }));
     expect(built).toBeNull();
+  });
+});
+
+// ─── inbound kinds initiative, step 0: learn the wire shape of what we skip ───
+// Before forwarding effect / richlink / edit / unsend / voice / poll_option we need
+// their REAL shapes (the location pin arrived as `custom`, not what the docs said).
+// The skip log carries the field NAMES of the content node — never values, never
+// the phone — so prod logs teach us the shape without INBOUND_DEBUG_LOG.
+
+function captureLogs() {
+  const lines: Record<string, unknown>[] = [];
+  const spy = spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(JSON.parse(String(line))); });
+  return { lines, restore: () => spy.mockRestore() };
+}
+
+describe("inbound skipped log (step 0)", () => {
+  test("names the kind and the content's field names, no values", async () => {
+    const cap = captureLogs();
+    try {
+      const built = await buildInbound(fakeSpace, fakeMessage({
+        content: { type: "effect", effect: "slam", content: { type: "text", text: "LEG DAY" } },
+      }));
+      expect(built).toBeNull();
+    } finally { cap.restore(); }
+    const skipped = cap.lines.filter((l) => l.msg === "inbound skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.type).toBe("effect");
+    expect(skipped[0]!.outer_type).toBe("effect");
+    expect(skipped[0]!.fields).toEqual(["content", "effect", "type"]);
+    expect(skipped[0]!.from).toBe("…5037");
+    expect(JSON.stringify(skipped[0])).not.toContain("LEG DAY");
+    expect(JSON.stringify(skipped[0])).not.toContain("12094205037");
+  });
+
+  test("a skipped kind inside a threaded reply reports both the outer and inner type", async () => {
+    const cap = captureLogs();
+    try {
+      await buildInbound(fakeSpace, fakeMessage({
+        content: { type: "reply", target: { id: "ours-1" }, content: { type: "richlink", url: "https://example.com/x" } },
+      }));
+    } finally { cap.restore(); }
+    const skipped = cap.lines.filter((l) => l.msg === "inbound skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.outer_type).toBe("reply");
+    expect(skipped[0]!.type).toBe("richlink");
+    expect(skipped[0]!.fields).toEqual(["type", "url"]);
+    expect(JSON.stringify(skipped[0])).not.toContain("example.com");
+  });
+
+  test("a group whose items are all skipped kinds lists each item's type", async () => {
+    const cap = captureLogs();
+    try {
+      await buildInbound(fakeSpace, fakeMessage({
+        content: { type: "group", items: [
+          { content: { type: "poll_option", option: "Pizza", poll: { id: "p1" }, selected: true, title: "Lunch?" } },
+          { content: { type: "typing", state: "start" } },
+        ] },
+      }));
+    } finally { cap.restore(); }
+    const skipped = cap.lines.filter((l) => l.msg === "inbound skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.type).toBe("group");
+    expect(skipped[0]!.item_types).toEqual(["poll_option", "typing"]);
+    expect(JSON.stringify(skipped[0])).not.toContain("Pizza");
+  });
+
+  test("today's forwarded kinds never hit the skip log (regression lock)", async () => {
+    const cap = captureLogs();
+    try {
+      await buildInbound(fakeSpace, fakeMessage());
+      await buildInbound(fakeSpace, fakeMessage({ content: { type: "reaction", emoji: "👍", target: { id: "x" } } }));
+      await buildInbound(fakeSpace, fakeMessage({ content: { type: "attachment", id: "a", name: "p.jpg", mimeType: "image/jpeg", read: async () => new Uint8Array(2) } }));
+    } finally { cap.restore(); }
+    expect(cap.lines.filter((l) => l.msg === "inbound skipped")).toHaveLength(0);
   });
 });
 

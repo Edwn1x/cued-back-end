@@ -489,7 +489,21 @@ export async function buildInbound(
   }
 
   if (!took) {
-    log("info", "inbound skipped", { from: last4(sender.address ?? sender.id), type: (c as { type?: string }).type });
+    // Inbound kinds initiative (2026-11-14), step 0: the skip log names the SHAPE of
+    // what we drop — outer type (reply wrapper or not), inner type, the content's
+    // field names, and for a group each item's type. Names only, never values and
+    // never the phone: prod logs teach us the real wire shape of effect / richlink /
+    // edit / unsend / voice / poll_option before each one is forwarded.
+    const outerType = (message.content as { type?: string }).type;
+    const fields = c && typeof c === "object" ? Object.keys(c as object).sort() : [];
+    const itemTypes = c.type === "group"
+      ? (((content as { items?: unknown }).items as Array<{ content?: { type?: string } }> | undefined) ?? [])
+          .map((it) => it?.content?.type ?? "?")
+      : undefined;
+    log("info", "inbound skipped", {
+      from: last4(sender.address ?? sender.id), type: c.type, outer_type: outerType, fields,
+      ...(itemTypes ? { item_types: itemTypes } : {}),
+    });
     return null; // typing, read, poll, richlink, contact, empty group, … — not coaching input (yet)
   }
   const body = acc.body;
