@@ -16,6 +16,20 @@ from tests.factories import make_user
 PT = ZoneInfo("America/Los_Angeles")
 
 
+def _card_day():
+    """A day inside the WEEK CARD's grid on ANY day of the week: tomorrow on a weekday, but on
+    a weekend the card's window is the coming Mon-Fri (stat_cards._week_start), so 'tomorrow'
+    (Sunday) falls outside it, the grid is empty and no card is queued — the suite went red
+    every Saturday (2026-11-14). Pin the fixture to the later of tomorrow and the card's start."""
+    from stat_cards import _week_start
+    now = datetime.now(PT)
+    tomorrow = (now + timedelta(days=1)).replace(hour=11, minute=0, second=0, microsecond=0)
+    start = _week_start(now.date())
+    if start > tomorrow.date():
+        tomorrow = tomorrow.replace(year=start.year, month=start.month, day=start.day)
+    return tomorrow
+
+
 @pytest.mark.parametrize("text, asked", [
     ("What's my week look like", True),
     ("Send me my week", True),
@@ -70,8 +84,7 @@ def test_week_question_carries_the_full_rundown_in_context(db, anthropic_stub, m
     monkeypatch.setattr(config, "GCAL_ENABLED", True)
     u = make_user(db)
     _connected_gcal(u.id)
-    now = datetime.now(PT)
-    tomorrow = (now + timedelta(days=1)).replace(hour=11, minute=0, second=0, microsecond=0)
+    tomorrow = _card_day()
     _event(u.id, "CS 70 Lecture", tomorrow)
     _event(u.id, "ENGIN 183 Seminar", tomorrow.replace(hour=18), 2)
     _event(u.id, "due: Homework 4 [CS70]", tomorrow.replace(hour=16), source="bcourses")

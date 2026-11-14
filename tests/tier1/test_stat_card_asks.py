@@ -18,6 +18,20 @@ from tests.factories import make_user
 PT = ZoneInfo("America/Los_Angeles")
 
 
+def _card_day():
+    """A day inside the WEEK CARD's grid on ANY day of the week: tomorrow on a weekday, but on
+    a weekend the card's window is the coming Mon-Fri (stat_cards._week_start), so 'tomorrow'
+    (Sunday) falls outside it, the grid is empty and no card is queued — the suite went red
+    every Saturday (2026-11-14). Pin the fixture to the later of tomorrow and the card's start."""
+    from stat_cards import _week_start
+    now = datetime.now(PT)
+    tomorrow = (now + timedelta(days=1)).replace(hour=11, minute=0, second=0, microsecond=0)
+    start = _week_start(now.date())
+    if start > tomorrow.date():
+        tomorrow = tomorrow.replace(year=start.year, month=start.month, day=start.day)
+    return tomorrow
+
+
 def _seen_text(calls) -> str:
     out = []
     for c in calls:
@@ -108,7 +122,7 @@ def test_week_ask_queues_the_card_and_the_rundown_becomes_reference(db, anthropi
     monkeypatch.setattr(config, "GCAL_ENABLED", True)
     u = make_user(db)
     _connected_gcal(u.id)
-    tomorrow = (datetime.now(PT) + timedelta(days=1)).replace(hour=11, minute=0, second=0, microsecond=0)
+    tomorrow = _card_day()
     _event(u.id, "CS 70 Lecture", tomorrow)
     _event(u.id, "due: Homework 4 [CS70]", tomorrow.replace(hour=16), source="bcourses")
     anthropic_stub.reply_with(lambda kw: "hw4 tmrw is the one")
