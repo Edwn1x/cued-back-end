@@ -341,6 +341,10 @@ def _band(env, default):
 ONBOARDING_BUFFER_S = _band("ONBOARDING_BUFFER_S", "5,8")
 REPLY_BUFFER_S = _band("REPLY_BUFFER_S", "10,15")
 PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
+# A poll vote is a complete answer — nobody types a follow-up to a tap (founder 2026-11-14:
+# "replies to a poll should be near instant… i wasn't gonna send a follow up"). The buffer
+# machinery still runs (a tap + an immediate text still merge) but the wait is ~1s.
+POLL_VOTE_BUFFER_S = _band("POLL_VOTE_BUFFER_S", "1,1")
 # Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
 # dots up for a minute, so those get dots at flush (existing behaviour).
 TYPING_ON_ARRIVAL_MAX_S = int(os.getenv("TYPING_ON_ARRIVAL_MAX_S", "20"))
