@@ -147,6 +147,24 @@ def _send_imessage_attachment(phone: str, data: bytes, name: str, mime_type: str
     return data_.get("provider_message_id")
 
 
+def _send_imessage_poll(phone: str, title: str, options: list[str]) -> str | None:
+    """POST a poll to the sidecar's /poll (iMessage polls, iOS 26). Returns the poll's
+    Photon message id — the prefix of every vote's id — so the caller can store it on
+    the outbound row and route the pick back. Raises on non-2xx / ok=false / transport."""
+    resp = requests.post(
+        config.SIDECAR_URL.rstrip("/") + "/poll",
+        json={"phone": phone, "title": title, "options": list(options)},
+        headers={"X-Internal-Secret": config.INTERNAL_SHARED_SECRET},
+        timeout=config.SIDECAR_TIMEOUT_S,
+    )
+    if resp.status_code >= 300:
+        raise RuntimeError(f"sidecar /poll {resp.status_code}: {resp.text[:200]}")
+    data_ = resp.json()
+    if not isinstance(data_, dict) or not data_.get("ok"):
+        raise RuntimeError(f"sidecar /poll not ok: {resp.text[:200]}")
+    return data_.get("provider_message_id")
+
+
 def _log_message(user_id: int, body: str, message_type: str,
                  channel: str = "sms", provider_sid: str | None = None,
                  delivery_status: str = "sent"):

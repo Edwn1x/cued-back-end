@@ -49,6 +49,7 @@ All routes: `X-Internal-Secret` required, else `401`.
 - `POST /send-attachment` `{phone, name, mime_type, data_base64}` → `200 {ok:true, provider_message_id}`; `400` bad body / non-image mime (`image/gif|png|jpeg|webp` only) / over ~4.5 MB; `503` / `502` as above. One file as its own bubble, no caption (`attachment(bytes, {name, mimeType})`). Flask uses it for the water-break GIF (`water_gif.py`); the plain line is Flask's fallback when this fails.
 - `POST /read` `{phone, message_id}` → `200` / `400` / `503` / `502`. Read receipt up to that message (remote iMessage marks the whole chat read). Flask fires it when reply generation begins, right before typing `start`, and when it thumbs-ups a suppressed ack.
 - `POST /typing` `{phone, state?: "start"|"stop"}` → `200` / `400` / `503` / `502`. iMessage typing bubble in that DM (default `start`; `/send` also clears it). Flask fires `start` the moment reply generation begins — after the read-buffer, never during it — and `stop` on failure / SMS failover.
+- `POST /poll` `{phone, title, options: string[]}` → `200 {ok, provider_message_id}` / `400` / `503` / `502`. An iMessage poll (iOS 26) as its own bubble via the SDK's `poll(title, ...options)`; 2–6 options, trimmed, none blank. The returned id is the poll's message guid — every later vote's id starts with it. Flask: `polls.py` (`send_poll` tool, `/admin/poll/send`).
 - `POST /react` `{phone, message_id, emoji}` → `200` / `400` / `503` / `502`. Tapback on one of the user's messages (`emoji` = love|like|dislike|laugh|emphasize|question, or a raw emoji). `message_id` is the Photon id Flask stored on the inbound row; resolved via `space.getMessage`. `/send` accepts `reply_to` (same id) for a threaded reply. The coach decides WHEN on the Flask side — see `rewrite/proposals/reactions-and-threaded-replies.md`.
 
 ## Inbound → Flask
@@ -75,6 +76,12 @@ All routes: `X-Internal-Secret` required, else `401`.
     the provider) is forwarded like a photo: bytes in `attachment_N` with the audio mime,
     plus `kinds: ["voice"]`. Flask stores `[voice memo attached]` (not a picture) and,
     until transcription lands, replies text-only and says it can't listen yet.
+  - `poll_option` — a vote on a poll WE sent (`poll.changed` voted/unvoted → `{type:
+    "poll_option", option, poll, selected, title}`, id `${pollGuid}:${sender}:${optionId}:
+    ${selected|deselected}:${ms}`) is forwarded as a text inbound naming the pick
+    (`[picked "5:30" on the poll "gym time today?"]`) plus `poll: {poll_id, title, option,
+    selected, options}`. Flask stores and answers a pick like any reply; a deselect is
+    dropped before any model turn.
 
 ## Allowlist (Free / Pro plans)
 

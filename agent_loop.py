@@ -2356,6 +2356,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # a map) as its own bubble; transport + caps in outbound_images.py.
         from agent_tools import SEND_IMAGE_TOOL
         tools.append(SEND_IMAGE_TOOL)
+    if config.SEND_POLL_TOOL_ENABLED:
+        # A tappable iMessage poll for logistics / self-report (polls.py); gates in code.
+        from agent_tools import SEND_POLL_TOOL
+        tools.append(SEND_POLL_TOOL)
     if config.SOURCES_ENABLED:
         # WHERE their stuff is posted, on file (sources.py) — and the routine that re-checks it.
         from agent_tools import SAVE_SOURCE_TOOL
