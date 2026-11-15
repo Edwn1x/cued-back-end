@@ -450,6 +450,10 @@ SEND_IMAGE_REPEAT_MIN = int(os.getenv("SEND_IMAGE_REPEAT_MIN", "30"))
 # ages out after POLL_LIFETIME_HOURS. A vote comes back through /internal/inbound as text naming
 # the pick + a `poll` field (sidecar INBOUND_EXTRA_KINDS=poll_option). Off by default.
 SEND_POLL_TOOL_ENABLED = os.getenv("SEND_POLL_TOOL_ENABLED", "false").lower() == "true"
+# Staged rollout (founder 2026-11-14: "turn it on only for me and see how the coach handles it"):
+# when set, the coach gets send_poll ONLY for these user ids; empty = everyone the flag covers.
+SEND_POLL_USER_IDS = frozenset(
+    int(x) for x in os.getenv("SEND_POLL_USER_IDS", "").replace(" ", "").split(",") if x.isdigit())
 POLL_LIFETIME_HOURS = int(os.getenv("POLL_LIFETIME_HOURS", "4"))
 POLL_MAX_OUTSTANDING = int(os.getenv("POLL_MAX_OUTSTANDING", "2"))
 POLL_MAX_OPTIONS = int(os.getenv("POLL_MAX_OPTIONS", "4"))

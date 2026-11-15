@@ -210,6 +210,34 @@ def test_sidecar_failure_is_an_honest_error_and_no_row(db, monkeypatch):
     assert [r.message_type for r in rows] == ["poll_question"], "the question went out; no poll row, so the gate stays open"
 
 
+def test_allowlist_narrows_the_tool_to_named_users(db, poll_ok, client, driver, anthropic_stub, monkeypatch):
+    """Staged rollout: SEND_POLL_USER_IDS set → the handler refuses other users AND the loop never
+    offers them the tool; empty → the flag alone decides."""
+    import agent_tools
+    from polls import send_poll_enabled_for
+    me = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    other = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    monkeypatch.setattr(config, "SEND_POLL_USER_IDS", frozenset({me.id}))
+    assert send_poll_enabled_for(me.id) and not send_poll_enabled_for(other.id)
+    assert agent_tools.dispatch_tool("send_poll", ASK, me.id).startswith("ok:")
+    out = agent_tools.dispatch_tool("send_poll", ASK, other.id)
+    assert out.startswith("error:") and "not enabled" in out
+    assert len(poll_ok) == 1
+    # the loop's offered tool set follows the same answer
+    offered: set = set()
+    def handler(kw):
+        offered.update(t.get("name") for t in (kw.get("tools") or []))   # every model call this inbound made
+        return "ok"
+    anthropic_stub.reply_with(handler)
+    driver.send(other, "yo")
+    assert offered and "send_poll" not in offered
+    offered.clear()
+    driver.send(me, "yo")
+    assert "send_poll" in offered
+    monkeypatch.setattr(config, "SEND_POLL_USER_IDS", frozenset())
+    assert send_poll_enabled_for(other.id)
+
+
 def test_loop_offers_the_tool_only_when_on_and_the_rules_are_pinned():
     import agent_loop, agent_tools
     src = open(agent_loop.__file__).read()

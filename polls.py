@@ -56,6 +56,14 @@ def normalize_topic(raw) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", str(raw or "").lower()).split())
 
 
+def send_poll_enabled_for(user_id: int) -> bool:
+    """The flag, narrowed to SEND_POLL_USER_IDS when that's set (staged rollout: the founder
+    first). One answer for both the loop (offer the tool) and the handler (honour a call)."""
+    if not config.SEND_POLL_TOOL_ENABLED:
+        return False
+    return not config.SEND_POLL_USER_IDS or int(user_id) in config.SEND_POLL_USER_IDS
+
+
 def poll_row_body(title: str, options: list[str], topic: str | None = None) -> str:
     """'[poll "title": a / b]', or '[poll "title" (topic): a / b]' when the topic isn't just the
     title — the row is the only place the topic lives, and the window reads it as prose."""

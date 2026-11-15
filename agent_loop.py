@@ -2358,8 +2358,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         tools.append(SEND_IMAGE_TOOL)
     if config.SEND_POLL_TOOL_ENABLED:
         # A tappable iMessage poll for logistics / self-report (polls.py); gates in code.
-        from agent_tools import SEND_POLL_TOOL
-        tools.append(SEND_POLL_TOOL)
+        # Offered per user: SEND_POLL_USER_IDS narrows the flag for a staged rollout.
+        from polls import send_poll_enabled_for
+        if send_poll_enabled_for(user.id):
+            from agent_tools import SEND_POLL_TOOL
+            tools.append(SEND_POLL_TOOL)
     if config.SOURCES_ENABLED:
         # WHERE their stuff is posted, on file (sources.py) — and the routine that re-checks it.
         from agent_tools import SAVE_SOURCE_TOOL
