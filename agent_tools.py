@@ -3858,9 +3858,9 @@ SEND_POLL_TOOL = {
 def handle_send_poll(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """An iMessage poll (or its SMS list fallback) via polls.send_poll_to_user — every gate
     (setup done, one open poll, 2–4 distinct short options) answers with an honest line."""
-    if not config.SEND_POLL_TOOL_ENABLED:
+    from polls import send_poll_enabled_for, send_poll_to_user
+    if not send_poll_enabled_for(user_id):
         return "error: sending polls is not enabled — ask in words"
-    from polls import send_poll_to_user
     ti = tool_input or {}
     out = send_poll_to_user(user_id, ti.get("title"), ti.get("options"), topic=ti.get("topic"), source="coach")
     logger.info("SEND_POLL user=%s ok=%s title=%r", user_id, out.startswith("ok:"), str(ti.get("title") or "")[:60])
