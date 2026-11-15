@@ -2503,8 +2503,16 @@ def waitlist_signup():
         "experience": str(data.get("experience") or "").strip() or "none",
         "equipment": str(data.get("equipment") or "").strip() or "full_gym",
     }
+    # Occupation + school (the site's "occupation?" row, 2026-11-14 — the founder is
+    # building profiles by occupation and by school; non-students sign up too). Free
+    # text as the site phrases it ("student at uc berkeley" / "nurse" / "student at
+    # sjsu, works as barista"), so _assume_student / is_student / _is_berkeley_student
+    # keep reading it; `school` on its own column for the profiles. Blank stays NULL —
+    # never defaulted — so onboarding still asks what they do when the form didn't say.
+    profile["occupation"] = str(data.get("occupation") or "").strip() or None
+    profile["school"] = str(data.get("school") or "").strip() or None
     for col, cap in (("gender", 20), ("goal", 200), ("biggest_obstacle", 50),
-                     ("experience", 20), ("equipment", 100)):
+                     ("experience", 20), ("equipment", 100), ("occupation", 200), ("school", 200)):
         if profile[col] and len(profile[col]) > cap:
             return jsonify({"status": "error",
                             "message": f"That {col.replace('_', ' ')} doesn't look right."}), 400
