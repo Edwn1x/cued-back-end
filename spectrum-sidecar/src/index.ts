@@ -86,7 +86,7 @@ export type Deps = {
  *  text fields; `image` is not exposed here. */
 export type CardLayout = {
   caption?: string; subcaption?: string; trailingCaption?: string; trailingSubcaption?: string; summary?: string;
-  image?: Uint8Array; imageTitle?: string; imageSubtitle?: string;
+  image?: Uint8Array<ArrayBuffer>; imageTitle?: string; imageSubtitle?: string;
 };
 
 // A layout image arrives as base64 JPEG (`imageBase64`) — JSON can't carry bytes. The
@@ -846,10 +846,11 @@ async function main() {
       const app = current;
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
-      // AppOptions only types `live`; at runtime `...options` overrides the SDK's
-      // Open-Graph-derived layout when a `layout` accessor is given (core asApp).
-      const opts = (layout ? { live, layout: async () => layout } : { live }) as Parameters<typeof appCard>[1];
-      const sent = await dm.send(appCard(url, opts));
+      // spectrum-ts 12.16: AppOptions.layout is the decoded layout OBJECT; core asApp wraps it
+      // in its own accessor and skips the Open-Graph fetch. (12.8 wanted an accessor function
+      // here — passing one to 12.16 fails the schema: "expected object, received function",
+      // every image/static card refused, live 2026-11-14 after #323.)
+      const sent = await dm.send(appCard(url, layout ? { live, layout } : { live }));
       const msg = Array.isArray(sent) ? sent[0] : sent;
       const cs = serializeCardSession(msg);
       // Keep the SDK's own Message for in-place edits: `edit()` wants the object
@@ -862,10 +863,10 @@ async function main() {
       if (!app) throw new Error("spectrum stream not connected");
       const dm = await dmFor(app, phone);
       const target = sentCards.get(cardSession.id) ?? rebuildCardTarget(cardSession);
-      const opts: Record<string, unknown> = {};
+      const opts: Parameters<typeof appCard>[1] = {};
       if (live !== undefined) opts.live = live;
-      if (layout) opts.layout = async () => layout;
-      await dm.send(edit(appCard(url, opts as Parameters<typeof appCard>[1]), target));
+      if (layout) opts.layout = layout;
+      await dm.send(edit(appCard(url, opts), target));
       // The provider refreshes miniAppCardSession on the target after each update.
       sentCards.set(cardSession.id, target);
     },
