@@ -242,6 +242,24 @@ def test_a_vote_is_stored_and_answered_like_a_reply(db, client, driver, anthropi
     assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
 
 
+def test_a_titleless_vote_takes_its_title_from_our_row(db, client, driver, anthropic_stub, poll_ok):
+    """Photon returns polls titleless (live 2026-11-14) and the wire's `title` is the OPTION's
+    title, so the sidecar's text can't name the poll — the row with provider_sid == poll_id can."""
+    import agent_tools
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    agent_tools.dispatch_tool("send_poll", ASK, u.id)                       # provider_sid POLL-GUID-1
+    seen = []
+    anthropic_stub.reply_with(_turns(seen))
+    r = _post(client, _payload(u.phone, '[picked "5:30" on the poll ""]', kinds=["poll_option"],
+                               poll={"poll_id": "POLL-GUID-1", "title": "", "option": "5:30",
+                                     "selected": True, "options": ASK["options"]}))
+    assert r.status_code == 200 and r.get_json()["poll_vote"] is True
+    driver.flush(u.phone)
+    assert [m.body for m in _rows(db, u.id, "in")] == ['[picked "5:30" on the poll "gym time today?"]']
+    # …and the gate sees that poll as answered
+    assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
+
+
 def test_a_deselect_is_dropped_before_any_model_turn(db, client, driver, anthropic_stub):
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
     seen = []

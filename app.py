@@ -1945,8 +1945,11 @@ def internal_inbound():
                 logger.info("POLL_UNVOTE_IN user=%s poll=%s option=%r", user.id,
                             str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
                 return jsonify({"ok": True, "known": True, "ignored": "poll_unvote"}), 200
-            if not body:
-                body = f'[picked "{poll_vote.get("option") or "?"}" on the poll "{poll_vote.get("title") or "?"}"]'
+            # The title comes from OUR row for that poll (provider_sid == poll_id), never from the
+            # wire: Photon returns polls titleless (live 2026-11-14), so the sidecar's text may say
+            # "" — and the open-poll gate matches a pick to its poll by title.
+            from polls import vote_body
+            body = vote_body(session, user.id, poll_vote, fallback=body)
             logger.info("POLL_VOTE_IN user=%s poll=%s option=%r", user.id,
                         str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
             _process_inbound(session, user, handle, body, provider_message_id, None, None,
