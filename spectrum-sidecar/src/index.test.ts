@@ -1070,3 +1070,39 @@ describe("buildInbound poll_option (step 7)", () => {
     expect(await buildInbound(fakeSpace, fakeMessage({ id: VOTE_ID, content: voteNode() }), { extraKinds: new Set(["voice"]) })).toBeNull();
   });
 });
+
+// ─── the SDK's app-card builder with a layout we supply ─────────────────────
+// spectrum-ts 12.16 takes `layout` as the decoded object and wraps it in its own
+// accessor (12.8 wanted the accessor). Passing a function to 12.16 fails the schema
+// ("expected object, received function") — every image/static card refused in prod
+// 2026-11-14. This builds through the real SDK, so a shape change fails here first.
+import { app as sdkAppCard } from "spectrum-ts";
+
+describe("spectrum-ts app() with a supplied layout", () => {
+  test("a static layout (caption / subcaption / summary) comes back verbatim, no OG fetch", async () => {
+    const layout = { caption: "push · wed", subcaption: "4 sets bench", summary: "today" };
+    const built = await sdkAppCard("https://cued.fit/card.html?t=x", { live: false, layout }).build() as unknown as
+      { type: string; live?: boolean; layout: () => Promise<unknown>; url: () => Promise<string> };
+    expect(built.type).toBe("app");
+    expect(built.live).toBe(false);
+    expect(await built.layout()).toEqual(layout);
+    expect(await built.url()).toBe("https://cued.fit/card.html?t=x");
+  });
+
+  test("an image layout (bytes + imageTitle, no caption) is accepted", async () => {
+    const layout = pickLayout({ imageBase64: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString("base64"),
+      imageTitle: "⠀", summary: "rsf right now" })!;
+    const built = await sdkAppCard("https://cued.fit/card/stat/rsf?t=x", { live: false, layout }).build() as unknown as
+      { layout: () => Promise<{ image?: Uint8Array; imageTitle?: string; caption?: string }> };
+    const got = await built.layout();
+    expect(got.imageTitle).toBe("⠀");
+    expect(got.caption).toBeUndefined();
+    expect(Array.from(got.image!)).toEqual([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+  });
+
+  test("the 12.8 shape (an accessor function) is what 12.16 refuses — when the provider reads the layout", async () => {
+    const asFn = { live: false, layout: async () => ({ caption: "x" }) } as unknown as Parameters<typeof sdkAppCard>[1];
+    const built = await sdkAppCard("https://cued.fit/card.html", asFn).build() as unknown as { layout: () => Promise<unknown> };
+    await expect(built.layout()).rejects.toThrow(/expected object, received function/);
+  });
+});
