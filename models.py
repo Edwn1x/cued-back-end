@@ -345,7 +345,10 @@ class Message(Base):
     # increment_unanswered): a message we KNOW didn't land is never an unanswered
     # strike, so a relay outage can't masquerade as user churn.
     channel = Column(String(10), default="sms")            # 'sms' | 'imessage'
-    provider_sid = Column(String(80), index=True)          # Twilio SID or Photon message id
+    # Twilio SID or Photon message id. 200, not 80: a poll vote's Photon id is
+    # `${pollGuid}:${phone}:${optionUUID}:selected:${ms}` ≈ 120 chars (live 2026-11-14: the first
+    # vote 500'd on StringDataRightTruncation and never got a reply).
+    provider_sid = Column(String(200), index=True)
     delivery_status = Column(String(12), default="sent")   # 'sent' | 'failed' | 'delivered'
 
     user = relationship("User", back_populates="messages")
@@ -646,7 +649,7 @@ class ProcessedMessage(Base):
     __tablename__ = "processed_messages"
 
     id = Column(Integer, primary_key=True)
-    message_sid = Column(String(64), unique=True, nullable=False)
+    message_sid = Column(String(200), unique=True, nullable=False)   # 200: poll vote ids ≈ 120 chars
     # ON DELETE SET NULL so deleting a user never fails on this ledger (same
     # discipline as token_usage); the dedup row is not worth blocking a delete.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -1247,7 +1250,7 @@ class HeldOutbound(Base):
     phone = Column(String(20), nullable=False)
     body = Column(Text, nullable=False)                       # the full coach message (pre-split)
     message_type = Column(String(30), default="freeform")
-    reply_to_sid = Column(String(80), default=None)           # threaded-reply target, if any
+    reply_to_sid = Column(String(200), default=None)          # threaded-reply target, if any (poll vote ids ≈ 120)
     status = Column(String(12), default="held", index=True)   # held | sending | sent | expired
     attempts = Column(Integer, default=0)
     last_error = Column(String(300), default=None)

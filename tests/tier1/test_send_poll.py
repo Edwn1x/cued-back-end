@@ -31,10 +31,21 @@ def _on(monkeypatch):
     # The coach's reply to a vote goes out over iMessage: route it to a fake sidecar so a
     # real connect attempt never parks the line (note_outage is module state that would
     # leak into the next test file).
-    monkeypatch.setattr(sms, "_send_imessage", lambda phone, body: f"photon-{abs(hash(body)) % 10**6}")
+    sent: list = []
+
+    def _fake_imessage(phone, body):
+        sent.append((phone, body))
+        return f"photon-{len(sent)}"
+    monkeypatch.setattr(sms, "_send_imessage", _fake_imessage)
     monkeypatch.setattr(sms, "outage_active", lambda: False)
-    yield
+    yield sent
     sms.clear_outage()
+
+
+@pytest.fixture
+def imessage_sends(_on):
+    """(phone, body) of every iMessage text the code sent — the poll's question bubble lands here."""
+    return _on
 
 
 @pytest.fixture
@@ -61,13 +72,17 @@ ASK = {"title": "gym time today?", "options": ["4", "5:30", "7", "not today"]}
 
 # ── outbound: the tool ────────────────────────────────────────────────────────────
 
-def test_imessage_user_gets_a_poll_bubble_and_the_row_carries_the_poll_id(db, poll_ok):
+def test_imessage_user_gets_a_poll_bubble_plus_the_question_and_the_row_carries_the_poll_id(db, poll_ok, imessage_sends):
+    """Photon drops the poll's title (live 2026-11-14: choices, no question — twice), so the
+    question goes out as its own text bubble; the poll row carries the poll id for vote routing."""
     import agent_tools
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
     out = agent_tools.dispatch_tool("send_poll", ASK, u.id)
-    assert out.startswith("ok: poll sent") and "don't repeat the options" in out
+    assert out.startswith("ok: poll sent") and "never restate the question" in out
     assert poll_ok == [(u.phone, "gym time today?", ["4", "5:30", "7", "not today"])]
-    (row,) = _rows(db, u.id, "out")
+    assert imessage_sends == [(u.phone, "gym time today?")], "the question is its own bubble"
+    q, row = _rows(db, u.id, "out")
+    assert (q.message_type, q.body) == ("poll_question", "gym time today?")
     assert row.message_type == "poll" and row.provider_sid == "POLL-GUID-1" and row.channel == "imessage"
     assert row.body == '[poll "gym time today?": 4 / 5:30 / 7 / not today]'
 
@@ -80,7 +95,7 @@ def test_sms_user_gets_the_same_ask_as_a_numbered_list(db, poll_ok, sms_capture)
     assert not poll_ok
     assert sms_capture and sms_capture[-1][1] == "gym time today?\n1. 4\n2. 5:30\n3. 7\n4. not today"
     (row,) = _rows(db, u.id, "out")
-    assert row.message_type == "poll" and row.channel == "sms"
+    assert row.message_type == "poll" and row.channel == "sms", "the list carries the question — no separate bubble"
 
 
 def test_gates_flag_setup_option_count_and_lengths(db, poll_ok, monkeypatch):
@@ -143,7 +158,7 @@ def test_topic_defaults_to_the_title(db, poll_ok):
     assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
     same = agent_tools.dispatch_tool("send_poll", {"title": "Gym time today", "options": ["4", "7"]}, u.id)
     assert same.startswith("error:") and "already" in same
-    (row,) = _rows(db, u.id, "out")
+    (row,) = [r for r in _rows(db, u.id, "out") if r.message_type == "poll"]
     assert row.body == '[poll "gym time today?": 4 / 5:30 / 7 / not today]', "no topic suffix when it's just the title"
     import polls
     assert polls.poll_topic(row.body) == polls.normalize_topic("gym time today?")
@@ -155,7 +170,7 @@ def test_a_pick_or_the_lifetime_closes_a_topic(db, poll_ok):
     assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
     _vote(db, u, "gym time today?", "5:30")
     assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
-    _age(db, _rows(db, u.id, "out")[-1], config.POLL_LIFETIME_HOURS + 1)
+    _age(db, [r for r in _rows(db, u.id, "out") if r.message_type == "poll"][-1], config.POLL_LIFETIME_HOURS + 1)
     assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
     assert len(poll_ok) == 3
 
@@ -178,7 +193,7 @@ def test_topic_rides_on_the_row_when_it_differs_from_the_title(db, poll_ok):
     import agent_tools, polls
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
     agent_tools.dispatch_tool("send_poll", {"title": "when u hitting rsf?", "options": ["4", "7"], "topic": "gym time"}, u.id)
-    (row,) = _rows(db, u.id, "out")
+    (row,) = [r for r in _rows(db, u.id, "out") if r.message_type == "poll"]
     assert row.body == '[poll "when u hitting rsf?" (gym time): 4 / 7]'
     assert polls.poll_topic(row.body) == "gym time"
     assert polls.poll_title(row.body) == "when u hitting rsf?"
@@ -190,8 +205,9 @@ def test_sidecar_failure_is_an_honest_error_and_no_row(db, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sidecar /poll 502: polls unsupported on this chat")))
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
     out = agent_tools.dispatch_tool("send_poll", ASK, u.id)
-    assert out.startswith("error:") and "couldn't send the poll" in out and "ask in words" in out
-    assert not _rows(db, u.id, "out")
+    assert out.startswith("error:") and "poll itself didn't" in out and "options in words" in out
+    rows = _rows(db, u.id, "out")
+    assert [r.message_type for r in rows] == ["poll_question"], "the question went out; no poll row, so the gate stays open"
 
 
 def test_loop_offers_the_tool_only_when_on_and_the_rules_are_pinned():
@@ -207,8 +223,12 @@ def test_loop_offers_the_tool_only_when_on_and_the_rules_are_pinned():
 
 # ── inbound: the vote ─────────────────────────────────────────────────────────────
 
+# The REAL shape of a vote's Photon id (live 2026-11-14, 121 chars): poll guid : phone : option UUID : action : ms.
+VOTE_ID = "spc-msg-363e8fae-728e-453b-886f-e67a65661a16:%s:066F1AD7-DAF6-45F6-8FCD-E83BD3E3E6A7:selected:1794705409446"
+
+
 def _payload(phone, text, **extra):
-    return {"phone": phone, "text": text, "provider_message_id": extra.pop("pid", "POLL-GUID-1:%s:opt-2:selected:1" % phone),
+    return {"phone": phone, "text": text, "provider_message_id": extra.pop("pid", VOTE_ID % phone),
             "chat_guid": f"any;-;{phone}", "service": "iMessage", "line_phone": "+15102646604",
             "timestamp": "2026-11-14T12:00:00.000Z", "attachments": [], **extra}
 
@@ -260,6 +280,21 @@ def test_a_titleless_vote_takes_its_title_from_our_row(db, client, driver, anthr
     assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:")
 
 
+def test_a_real_length_vote_id_fits_the_row_and_the_idempotency_claim(db):
+    """Live 2026-11-14 01:17 UTC: the first vote 500'd — provider_sid was VARCHAR(80), the vote id is
+    121 chars — and processed_messages.message_sid (64) made the claim fail open. Both are 200 now."""
+    from models import claim_message_sid, Message
+    from sms import log_incoming
+    u = make_user(db)
+    sid = VOTE_ID % u.phone
+    assert len(sid) > 100
+    assert claim_message_sid(sid, u.id) is True
+    assert claim_message_sid(sid, u.id) is False, "the second claim is the duplicate — the first one really landed"
+    log_incoming(u.id, '[picked "x" on the poll "y"]', channel="imessage", provider_sid=sid)
+    db.expire_all()
+    assert db.query(Message).filter(Message.user_id == u.id, Message.provider_sid == sid).count() == 1
+
+
 def test_a_deselect_is_dropped_before_any_model_turn(db, client, driver, anthropic_stub):
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
     seen = []
@@ -281,7 +316,7 @@ def test_admin_poll_send_bypasses_the_tool_flag_but_not_the_archive_guard(db, cl
     r = client.post("/admin/poll/send", data={"user_id": u.id, "title": "renders in a dm?", "options": "yes | no"})
     assert r.status_code == 200 and r.get_json()["status"] == "ok"
     assert poll_ok == [(u.phone, "renders in a dm?", ["yes", "no"])]
-    (row,) = _rows(db, u.id, "out")
+    (row,) = [r for r in _rows(db, u.id, "out") if r.message_type == "poll"]
     assert row.message_type == "poll"
     from datetime import datetime, timezone
     u2 = make_user(db, preferred_channel="imessage", onboarding_step=3)
