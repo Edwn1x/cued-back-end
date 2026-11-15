@@ -41,6 +41,11 @@ def make_user(session, **overrides):
         sleep_time="23:00",
         experience="intermediate",
         equipment="full_gym",
+        # The sign-up used to default these on insert; since 2026-11-15 a skipped field is
+        # NULL and onboarding asks for it. A factory user is one who answered the form,
+        # so the old defaults live here now — tests about the skip path override them.
+        gender="prefer_not_to_say",
+        goal="general_fitness",
         reported_intake=0,            # the setup intake ask was answered ("no idea") — tests that care override it
         active=True,
     )
