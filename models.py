@@ -21,6 +21,7 @@ class User(Base):
     age = Column(Integer)
     gender = Column(String(20))  # male, female, non_binary, prefer_not_to_say
     occupation = Column(String(200))  # what they do — student, desk job, physical labor, etc.
+    school = Column(String(200))  # which school, when the sign-up said student (2026-11-14; profiles by school are planned)
     goal = Column(String(200))  # comma-separated: fat_loss,muscle_building,etc.
     goal_other = Column(Text)  # freeform if they picked "other"
     biggest_obstacle = Column(String(50))  # consistency, nutrition, knowledge, time, motivation, injuries
@@ -285,6 +286,7 @@ class User(Base):
             f"Age: {self.age}" if self.age else None,
             f"Gender: {self.gender}" if self.gender and self.gender != "prefer_not_to_say" else None,
             f"Occupation: {self.occupation}" if self.occupation else None,
+            f"School: {self.school}" if self.school else None,
             f"Goal: {self.goal}" + (f" — {self.goal_other}" if self.goal_other else ""),
             f"Biggest obstacle: {self.biggest_obstacle}" if self.biggest_obstacle else None,
             f"Experience: {self.experience}",

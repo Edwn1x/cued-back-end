@@ -624,6 +624,9 @@ MIGRATIONS = [
     "ALTER TABLE messages ALTER COLUMN provider_sid TYPE VARCHAR(200)",
     "ALTER TABLE processed_messages ALTER COLUMN message_sid TYPE VARCHAR(200)",
     "ALTER TABLE held_outbound ALTER COLUMN reply_to_sid TYPE VARCHAR(200)",
+    # The site's "occupation?" sign-up row (2026-11-14): occupation already has a column;
+    # the school rides on its own for the profiles-by-school work.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS school VARCHAR(200)",
 ]
 
 def wait_for_db(retries=10, delay=3):
