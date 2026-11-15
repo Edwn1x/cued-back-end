@@ -106,6 +106,18 @@ Call EXACTLY ONE tool:
 If any part of your reasoning concludes a text is warranted, call send_text. NEVER call stay_silent and then say in the reason that you should have spoken — that is a contradiction; call send_text instead."""
 
 
+# Polls (inbound kinds step 8; founder 2026-11-14 "i want to see how it would be in full
+# fledged production"): a THIRD terminal decision, offered only when polls.send_poll_enabled_for
+# says so (SEND_POLL_TOOL_ENABLED + SEND_POLL_USER_IDS). The poll is sent in code inside decide
+# (question bubble, then the poll) and counts as this tick's SPOKE — its row body is the tick
+# message, so anti-repetition sees it. A gate refusal (same topic open, two unanswered, setup)
+# goes back to the model as the tool result and it falls through to send_text / stay_silent.
+_POLL_GUIDANCE = """ASK WITH A POLL when the check-in IS a pick that's theirs (send_poll is in your tools):
+- gym time today or tomorrow, which day this week, how the session felt, how they slept, which dish off their saved menu → call send_poll with the question and 2–4 short options (add "not today" / "something else" when neither might fit). The question goes out as its own bubble above the poll. send_poll IS this tick's text — do NOT also call send_text.
+- Never a poll for what you should prescribe (exercises, sets, weights, what to eat), never a generic one ("how's it going?"), and if the result says a poll is already open or two sit unanswered, fall back to send_text or stay_silent as usual.
+- A poll is still ONE proactive text: everything above about WHEN to speak applies first. Decide to speak, THEN pick the form."""
+
+
 # Wearable-aware decision guidance (build item 1). Appended to HEARTBEAT_PROMPT in `decide`
 # only when HEARTBEAT_WEARABLE_AWARE_ENABLED, so the prompt is byte-for-byte unchanged for
 # everyone with the flag off. Tells the model to ACT on the WEARABLE / RECOVERY blocks
@@ -2046,11 +2058,18 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     # prompt is byte-for-byte unchanged with it off; a no-op with no ACADEMIC LOAD block.
     if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_HIGH_LOAD_TONE_ENABLED:
         prompt = prompt + "\n\n" + _HIGH_LOAD_GUIDANCE
+    from polls import send_poll_enabled_for
+    polls_on = send_poll_enabled_for(user_id)
+    if polls_on:
+        prompt = prompt + "\n\n" + _POLL_GUIDANCE
     system = [
         {"type": "text", "text": _voice_prompt(), "cache_control": stable_cache_control()},
         {"type": "text", "text": prompt + "\n\n" + context},
     ]
     tools = [SEND_TEXT_TOOL, STAY_SILENT_TOOL]
+    if polls_on:
+        from agent_tools import SEND_POLL_TOOL
+        tools.append(SEND_POLL_TOOL)
     if search["available"]:
         from agent_tools import WEB_SEARCH_TOOL
         tools.append(WEB_SEARCH_TOOL)
@@ -2113,8 +2132,32 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 except (TypeError, ValueError):
                     pass
                 return (False, inp.get("reason", "chose silence"), search)
+            poll_tool = next((b for b in resp.content
+                              if getattr(b, "type", None) == "tool_use" and b.name == "send_poll"), None)
+            if poll_tool is not None and polls_on:
+                # The third decision: the poll goes out HERE (question bubble, then the poll).
+                # ok → this tick spoke, the poll's row body is its message (anti-repetition
+                # reads it; the caller sends nothing more). error → hand the reason back and
+                # let the model fall through to send_text / stay_silent.
+                from polls import send_poll_to_user, poll_row_body
+                inp = poll_tool.input or {}
+                out = send_poll_to_user(user_id, inp.get("title"), inp.get("options"),
+                                        topic=inp.get("topic"), source="heartbeat")
+                logger.info("HEARTBEAT_POLL user=%s ok=%s title=%r", user_id, out.startswith("ok:"),
+                            str(inp.get("title") or "")[:60])
+                if out.startswith("ok:"):
+                    search["poll_sent"] = True
+                    opts = [" ".join(str(o or "").split()) for o in (inp.get("options") or []) if str(o or "").strip()]
+                    return (True, poll_row_body(" ".join(str(inp.get("title") or "").split()), opts, inp.get("topic")), search)
+                messages.append({"role": "assistant", "content": resp.content})
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": b.id,
+                     "content": out if b.id == poll_tool.id else "n/a"}
+                    for b in resp.content if getattr(b, "type", None) == "tool_use"
+                ]})
+                continue
             # a server tool (web_search) — feed nothing back for client tools; continue
-            _decision_names = ("send_text", "stay_silent")
+            _decision_names = ("send_text", "stay_silent", "send_poll")
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": b.id, "content": "n/a"}
@@ -2205,7 +2248,10 @@ def heartbeat_tick(user_id: int):
             logger.info("HEARTBEAT_BACKOFF_SHADOW_HIT user=%s detail=%s reason=%r",
                         user_id, search.get("stale_detail"), payload[:120])
     if spoke:
-        send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
+        if not search.get("poll_sent"):
+            send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
+        # a poll already went out inside decide (question bubble + poll); the tick still
+        # records it as spoken, with the poll's row body as the message.
         _log_tick(user_id, True, "spoke", payload, search=search)
         if search.get("briefing_water") and getattr(config, "BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", True):
             try:

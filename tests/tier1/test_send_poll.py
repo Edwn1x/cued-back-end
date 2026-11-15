@@ -358,3 +358,77 @@ def test_admin_poll_send_bypasses_the_tool_flag_but_not_the_archive_guard(db, cl
     assert r.status_code == 400
     r = client.post("/admin/poll/send", data={"user_id": u.id, "title": "x?", "options": "only"})
     assert r.status_code == 400
+
+
+# ── heartbeat: the proactive path gets the same tool (founder: "full fledged production") ──
+
+def _hb_user(db, monkeypatch):
+    from tests.tier1.test_heartbeat import _allow
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    _allow(monkeypatch, u)
+    return u
+
+
+def _hb_ticks(user_id):
+    from tests.tier1.test_heartbeat import _ticks
+    return _ticks(user_id)
+
+
+def test_heartbeat_offers_send_poll_only_to_allowlisted_users(db, monkeypatch, anthropic_stub):
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    me = _hb_user(db, monkeypatch)
+    other = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    monkeypatch.setattr(config, "SEND_POLL_USER_IDS", frozenset({me.id}))
+    seen = {}
+    def handler(kw):
+        seen.setdefault("tools", []).append({t.get("name") for t in (kw.get("tools") or [])})
+        seen.setdefault("sys", []).append("".join(b["text"] for b in kw.get("system")))
+        return ToolUse("stay_silent", {"reason": "quiet"})
+    anthropic_stub.reply_with(handler)
+    heartbeat.decide(me.id)
+    monkeypatch.setattr(config, "HEARTBEAT_ALLOWLIST", [other.phone])
+    heartbeat.decide(other.id)
+    assert "send_poll" in seen["tools"][0] and "ASK WITH A POLL" in seen["sys"][0]
+    assert "send_poll" not in seen["tools"][1] and "ASK WITH A POLL" not in seen["sys"][1]
+
+
+def test_heartbeat_send_poll_is_the_ticks_text(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends, sms_capture):
+    """send_poll on a tick: question bubble + poll go out from decide, NO heartbeat text on top,
+    the tick is SPOKE with the poll's row body as its message (anti-repetition sees it)."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    u = _hb_user(db, monkeypatch)
+    anthropic_stub.reply_with(lambda kw: ToolUse("send_poll", {"title": "gym time today?", "options": ["4", "5:30", "not today"], "topic": "gym time"}))
+    heartbeat.heartbeat_tick(u.id)
+    assert poll_ok == [(u.phone, "gym time today?", ["4", "5:30", "not today"])]
+    assert imessage_sends == [(u.phone, "gym time today?")], "the question bubble and nothing else"
+    assert not sms_capture
+    tick = _hb_ticks(u.id)[-1]
+    assert tick.spoke is True and tick.message == '[poll "gym time today?" (gym time): 4 / 5:30 / not today]'
+    assert [r.message_type for r in _rows(db, u.id, "out")] == ["poll_question", "poll"], "no 'heartbeat' row on top"
+
+
+def test_heartbeat_poll_refused_falls_through_to_text(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends):
+    """Same topic already open → the gate's line comes back as the tool result and the model
+    sends a text instead; the tick is a normal spoke."""
+    import agent_tools, heartbeat
+    from tests._fake_anthropic import ToolUse
+    u = _hb_user(db, monkeypatch)
+    assert agent_tools.dispatch_tool("send_poll", {"title": "gym time today?", "options": ["4", "7"], "topic": "gym time"}, u.id).startswith("ok:")
+    imessage_sends.clear()
+    got = {}
+    def handler(kw):
+        msgs = kw.get("messages") or []
+        last = msgs[-1]["content"] if msgs else ""
+        if isinstance(last, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in last):
+            got["result"] = next(b["content"] for b in last if b.get("type") == "tool_result")
+            return ToolUse("send_text", {"message": "u still hitting the gym today?"})
+        return ToolUse("send_poll", {"title": "when u going today?", "options": ["4", "7"], "topic": "gym time"})
+    anthropic_stub.reply_with(handler)
+    heartbeat.heartbeat_tick(u.id)
+    assert got["result"].startswith("error:") and "already out as a poll" in got["result"]
+    assert len(poll_ok) == 1, "no second poll on the same topic"
+    assert imessage_sends == [(u.phone, "u still hitting the gym today?")]
+    tick = _hb_ticks(u.id)[-1]
+    assert tick.spoke is True and tick.message == "u still hitting the gym today?"
