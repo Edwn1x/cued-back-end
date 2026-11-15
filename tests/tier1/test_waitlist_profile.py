@@ -173,14 +173,16 @@ def test_admin_shows_the_full_name_and_email_after_activation(db, client):
     assert html.count("Ben") >= 1 and "Full name" in html
 
 
-def test_waitlist_goal_csv_and_defaults_match_signup(db, client):
+def test_waitlist_goal_csv_and_blanks_stay_null(db, client):
+    # No defaults since 2026-11-15: a skipped field is NULL and onboarding asks (see
+    # test_waitlist_skipped_profile.py); a defaulted row read as a full-gym beginner.
     from models import User
     code, _ = _waitlist(client, "5105550302", goal="muscle_building", gender=None, experience="",
                         equipment=None, biggest_obstacle=None, age=None)
     assert code == 200
     u = db.query(User).filter(User.phone == "+15105550302").one()
     assert u.goal == "muscle_building" and u.age is None and u.biggest_obstacle is None
-    assert (u.gender, u.experience, u.equipment) == ("prefer_not_to_say", "none", "full_gym")
+    assert (u.gender, u.experience, u.equipment) == (None, None, None)
 
 
 def test_waitlist_requires_sms_consent(db, client):

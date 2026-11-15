@@ -126,6 +126,11 @@ def _determine_coaching_branch(user) -> str:
     goal_parts = set((user.goal or "").replace(" ", "").split(","))
     if goal_parts & training_goals:
         return "training_nutrition"
+    # No goal on file yet (the form lets it be skipped, 2026-11-15) is UNKNOWN, not
+    # "no gym": the default branch, as the old general_fitness default was — the
+    # goal is the first thing onboarding asks, so the branch is set once they answer.
+    if not goal_parts - {""}:
+        return "training_nutrition"
     return "nutrition_only"
 
 
@@ -179,6 +184,26 @@ def _get_missing_fields(user) -> list:
     """Return list of (field_name, question_context) for fields still null."""
     missing = []
     nutrition_only = _is_nutrition_only(user)
+
+    # The sign-up form (2026-11-14) lets people skip everything but name, number,
+    # occupation and consent; what they skipped arrives NULL, never a default
+    # (2026-11-15), and is asked here FIRST — the program and the calorie math hang
+    # on it. The root page's chat still sends all four, so its users skip this block.
+    if not user.goal:
+        missing.append(("goal", "what they're training for — fat loss, muscle, strength, endurance, or just getting "
+                                "in shape. Ask it plainly ('what u tryna get out of this'); 'just wanna be healthier' "
+                                "is general_fitness, 'cut' is fat_loss, 'bulk' is muscle_building"))
+    if not user.experience:
+        missing.append(("experience", "how long they've been training — never, under 6 months, 6 months to 2 years, "
+                                      "or 2+ years. Ask plainly ('how long u been lifting'); 'never really' is none"))
+    if not nutrition_only and not user.equipment:
+        missing.append(("equipment", "what they have to train with — a full gym, a limited gym (dorm / apartment), a "
+                                     "home setup, or just bodyweight. Ask plainly ('u got a gym or working with "
+                                     "what's at home')"))
+    if not user.gender:
+        missing.append(("gender", "their sex, for the calorie math only — ask it plainly and ONCE ('last boring one, "
+                                  "for the calorie math: male or female? totally fine to skip'); 'rather not say', "
+                                  "'skip' or a dodge is a COMPLETE answer (prefer_not_to_say) — never re-ask"))
 
     if not user.height_ft or not user.weight_lbs:
         missing.append(("height_weight", "height and weight"))
@@ -629,6 +654,8 @@ Return ONLY valid JSON. Use null for anything NOT found in this message.
   "diet": "omnivore, vegetarian, vegan, pescatarian, keto, halal, kosher" or null,
   "food_dislikes": "comma-separated foods they say they don't/won't eat (mushrooms, tofu, raw fish)" or null,
   "experience": "none" (never trained) | "beginner" (under 6 months) | "intermediate" (6 months–2 years) | "advanced" (2+ years) or null — ONLY from an explicit statement about how long they've trained ("been lifting 3 years", "never really trained"); a detailed routine is NOT a statement,
+  "equipment": "full_gym" | "limited_gym" | "home_gym" | "bodyweight" or null — ONLY when they say what they have to train with ("the rsf" / "planet fitness" → full_gym, "my apartment gym" / "dorm gym" → limited_gym, "some dumbbells at home" / "a pull-up bar" → home_gym, "no gym" / "nothing" → bodyweight),
+  "gender": "male" | "female" | "non_binary" | "prefer_not_to_say" or null — ONLY when they state it, or decline when asked ("rather not say", "skip", "pass", "next" → prefer_not_to_say),
   "goal": "fat_loss" | "muscle_building" | "fat_loss,muscle_building" (recomp) | "strength" | "endurance" | "general_fitness" or null — ONLY when they say what they're going for ("tryna cut", "want to put on size", "training for a half"),
   "calorie_target": integer or null (ONLY a daily calorie number THEY say they aim for or track to — "staying under 2000 cals" → 2000; never a number the coach said),
   "protein_target": integer or null (same rule — grams of protein per day THEY track to),
@@ -825,6 +852,13 @@ def _store_extracted_data(user_id: int, data: dict):
             _set("experience", data["experience"])
         if isinstance(data.get("goal"), str) and data["goal"].strip().lower() in _GOALS:
             _set("goal", data["goal"].strip().lower())
+        # The two the form may have left NULL (2026-11-15) — the onboarding asks them.
+        _EQUIPMENT = {"full_gym", "limited_gym", "home_gym", "bodyweight"}
+        _GENDER = {"male", "female", "non_binary", "prefer_not_to_say"}
+        if isinstance(data.get("equipment"), str) and data["equipment"].strip().lower() in _EQUIPMENT:
+            _set("equipment", data["equipment"].strip().lower())
+        if isinstance(data.get("gender"), str) and data["gender"].strip().lower() in _GENDER:
+            _set("gender", data["gender"].strip().lower())
         for key in ("height_ft", "height_in", "weight_lbs", "occupation", "diet",
                     "cooking_situation", "injuries", "wake_time", "wake_time_alt",
                     "wake_days_alt", "sleep_time", "existing_tools", "tools_decision",
