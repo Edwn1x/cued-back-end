@@ -73,7 +73,7 @@ ASK = {"title": "gym time today?", "options": ["4", "5:30", "7", "not today"]}
 # ── outbound: the tool ────────────────────────────────────────────────────────────
 
 def test_imessage_user_gets_a_poll_bubble_plus_the_question_and_the_row_carries_the_poll_id(db, poll_ok, imessage_sends):
-    """Photon drops the poll's title (live 2026-11-14: choices, no question — twice), so the
+    """iMessage polls have no title (live 2026-11-14: choices, no question — and a person-to-person poll shows none either), so the
     question goes out as its own text bubble; the poll row carries the poll id for vote routing."""
     import agent_tools
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)
@@ -295,7 +295,7 @@ def test_a_vote_is_stored_and_answered_like_a_reply(db, client, driver, anthropi
 
 
 def test_a_titleless_vote_takes_its_title_from_our_row(db, client, driver, anthropic_stub, poll_ok):
-    """Photon returns polls titleless (live 2026-11-14) and the wire's `title` is the OPTION's
+    """iMessage polls have no title (the API field never renders) and the wire's `title` is the OPTION's
     title, so the sidecar's text can't name the poll — the row with provider_sid == poll_id can."""
     import agent_tools
     u = make_user(db, preferred_channel="imessage", onboarding_step=3)

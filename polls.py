@@ -36,9 +36,10 @@ import config
 logger = logging.getLogger("cued.polls")
 
 POLL_MESSAGE_TYPE = "poll"
-# The question, as its own text bubble right before the poll. Photon drops a poll's title
-# (live 2026-11-14: the founder's phone showed tappable choices and no question, twice), so
-# the poll never carries its question — the bubble above it does. Its own message_type so
+# The question, as its own text bubble right before the poll. iMessage polls have NO title
+# (founder 2026-11-14: ours showed choices and no question, and a poll he sent his sister
+# person-to-person shows none either), so the poll never carries its question — the bubble
+# above it does. Photon's API takes a title it can never render. Its own message_type so
 # the open-poll gate (which reads "poll" rows) and the ack window never mistake it.
 POLL_QUESTION_MESSAGE_TYPE = "poll_question"
 PICK_MARKER = " on the poll "          # what a vote's inbound text always carries
@@ -118,8 +119,8 @@ def validate(title, options, topic=None) -> tuple[str, list[str], str] | str:
 
 def vote_body(session, user_id: int, vote: dict, *, fallback: str = "") -> str:
     """The inbound text for a vote: '[picked "option" on the poll "title"]' with the title taken
-    from OUR outbound row for that poll (provider_sid == poll_id). Photon returns polls titleless
-    (live 2026-11-14), so the wire's title is "" or the option's own title — the row is the truth.
+    from OUR outbound row for that poll (provider_sid == poll_id). iMessage polls carry no title
+    at all, so the wire's title is "" or the option's own title — the row is the truth.
     Unknown poll_id → the sidecar's text as sent (or a line built from the wire)."""
     from models import Message
     option = " ".join(str(vote.get("option") or "").split())
@@ -212,9 +213,9 @@ def send_poll_to_user(user_id: int, title, options, *, topic=None, source: str =
         logger.info("POLL_SENT_AS_LIST user=%s source=%s title=%r n=%d", user_id, source, title, len(opts))
         return ("ok: they're on SMS so the ask went out as a numbered list (SMS can't do polls) — "
                 "they'll answer with a number or words; your reply is the one line around it")
-    # The question goes out FIRST as its own text bubble, then the poll under it: Photon drops a
-    # poll's title (live 2026-11-14, twice), so the bubble above is the only place the question
-    # shows. If the poll then fails, the question is already asked — the model lists the options.
+    # The question goes out FIRST as its own text bubble, then the poll under it: iMessage polls have no
+    # title field at all (founder 2026-11-14, confirmed person-to-person), so the bubble above
+    # is the only place the question shows. If the poll then fails, the question is already asked — the model lists the options.
     try:
         if sms.outage_active():
             raise RuntimeError("imessage pipe is down (outage_active)")
