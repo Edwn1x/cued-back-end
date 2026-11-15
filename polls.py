@@ -36,6 +36,11 @@ import config
 logger = logging.getLogger("cued.polls")
 
 POLL_MESSAGE_TYPE = "poll"
+# The question, as its own text bubble right before the poll. Photon drops a poll's title
+# (live 2026-11-14: the founder's phone showed tappable choices and no question, twice), so
+# the poll never carries its question — the bubble above it does. Its own message_type so
+# the open-poll gate (which reads "poll" rows) and the ack window never mistake it.
+POLL_QUESTION_MESSAGE_TYPE = "poll_question"
 PICK_MARKER = " on the poll "          # what a vote's inbound text always carries
 MAX_TITLE_CHARS = 120
 MAX_OPTION_CHARS = 40
@@ -199,14 +204,23 @@ def send_poll_to_user(user_id: int, title, options, *, topic=None, source: str =
         logger.info("POLL_SENT_AS_LIST user=%s source=%s title=%r n=%d", user_id, source, title, len(opts))
         return ("ok: they're on SMS so the ask went out as a numbered list (SMS can't do polls) — "
                 "they'll answer with a number or words; your reply is the one line around it")
+    # The question goes out FIRST as its own text bubble, then the poll under it: Photon drops a
+    # poll's title (live 2026-11-14, twice), so the bubble above is the only place the question
+    # shows. If the poll then fails, the question is already asked — the model lists the options.
     try:
         if sms.outage_active():
             raise RuntimeError("imessage pipe is down (outage_active)")
-        sid = sms._send_imessage_poll(phone, title, opts)
-    except Exception as e:  # noqa: BLE001 — a poll failing must never kill the reply
-        logger.warning("POLL_SEND_FAILED user=%s source=%s title=%r err=%s", user_id, source, title, e)
+        sms.send_sms(phone, title, user_id=user_id, message_type=POLL_QUESTION_MESSAGE_TYPE)
+    except Exception as e:  # noqa: BLE001 — nothing is out yet; the model asks in words
+        logger.warning("POLL_QUESTION_SEND_FAILED user=%s source=%s err=%s", user_id, source, e)
         return "error: couldn't send the poll — ask in words instead (a short question with the options)"
+    try:
+        sid = sms._send_imessage_poll(phone, title, opts)
+    except Exception as e:  # noqa: BLE001 — the question is out; the options must follow in words
+        logger.warning("POLL_SEND_FAILED user=%s source=%s title=%r err=%s", user_id, source, title, e)
+        return ("error: the question went out as a text bubble but the poll itself didn't — send the "
+                "options in words now, one short line, don't repeat the question")
     sms._log_message(user_id, body, POLL_MESSAGE_TYPE, channel="imessage", provider_sid=sid, delivery_status="sent")
     logger.info("POLL_SENT user=%s source=%s title=%r n=%d id=%s", user_id, source, title, len(opts), sid)
-    return ("ok: poll sent as its own bubble — your reply is the one line around it (why you're asking, "
-            "or nothing); don't repeat the options or ask the same thing in words")
+    return ("ok: poll sent as its own bubble with the question as a text bubble beside it — reply with "
+            "nothing, or one short line of why you're asking; never restate the question or the options")

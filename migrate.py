@@ -616,6 +616,14 @@ MIGRATIONS = [
         CONSTRAINT uq_activity_days_user_day_signal UNIQUE (user_id, day, signal)
     )""",
     "CREATE INDEX IF NOT EXISTS ix_activity_days_user_id ON activity_days (user_id)",
+    # Inbound kinds steps 7+8 (2026-11-14): a poll vote's Photon id is
+    # `${pollGuid}:${phone}:${optionUUID}:selected:${ms}` ≈ 120 chars. The first live vote hit
+    # StringDataRightTruncation on messages.provider_sid VARCHAR(80) (500, no reply) and the
+    # idempotency claim on processed_messages.message_sid VARCHAR(64) failed open. Widening a
+    # varchar is a catalog-only change in Postgres (no table rewrite).
+    "ALTER TABLE messages ALTER COLUMN provider_sid TYPE VARCHAR(200)",
+    "ALTER TABLE processed_messages ALTER COLUMN message_sid TYPE VARCHAR(200)",
+    "ALTER TABLE held_outbound ALTER COLUMN reply_to_sid TYPE VARCHAR(200)",
 ]
 
 def wait_for_db(retries=10, delay=3):
