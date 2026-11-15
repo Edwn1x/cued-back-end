@@ -545,7 +545,7 @@ export async function buildInbound(
     if (node.type === "poll_option" && extra.has("poll_option")) {
       // Step 7. A vote on a poll we sent: { option: {title, optionIdentifier?}, poll: {title?,
       // options, pollMessageGuid?}, selected, title (= the OPTION's title, not the poll's),
-      // pollMessageGuid? }. Photon returns polls TITLELESS (live 2026-11-14: SDK 12.8 refused to
+      // pollMessageGuid? }. iMessage polls have NO title (the API field never renders; 12.8 refused to
       // cache one — every vote dropped inside the SDK; 12.11+ keys on the guid instead), so the
       // poll's title here is usually "" and Flask fills it from its own row by poll_id. The
       // provider's message id is `${pollGuid}:${sender}:${optionId}:${action}:${ms}`.

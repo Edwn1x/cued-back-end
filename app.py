@@ -1952,7 +1952,7 @@ def internal_inbound():
                             str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
                 return jsonify({"ok": True, "known": True, "ignored": "poll_unvote"}), 200
             # The title comes from OUR row for that poll (provider_sid == poll_id), never from the
-            # wire: Photon returns polls titleless (live 2026-11-14), so the sidecar's text may say
+            # wire: iMessage polls have no title field (founder 2026-11-14: a person-to-person poll shows none either), so the sidecar's text may say
             # "" — and the open-poll gate matches a pick to its poll by title.
             from polls import vote_body
             body = vote_body(session, user.id, poll_vote, fallback=body)
