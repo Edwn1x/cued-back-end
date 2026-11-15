@@ -1373,7 +1373,8 @@ def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
 
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 def _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
-                     channel="sms", provider_sid=None, image_list=None, has_voice=False):
+                     channel="sms", provider_sid=None, image_list=None, has_voice=False,
+                     instant=False):
     """The inbound pipeline, from the idempotency claim through the buffer arm.
 
     Extracted verbatim from the Twilio webhook (Photon migration Phase 4B) so
@@ -1662,6 +1663,11 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     if image_data and not (body or "").strip():
         buffer_delay = (max(buffer_delay[0], config.PHOTO_BUFFER_S[0]),
                         max(buffer_delay[1], config.PHOTO_BUFFER_S[1]))
+
+    # A poll vote (inbound kinds step 7) is a complete answer: a tap, not the first of two
+    # texts. Near-instant band — the reply is the whole point of having asked with a poll.
+    if instant:
+        buffer_delay = config.POLL_VOTE_BUFFER_S
 
     # Dots right after "Read": a reply IS coming from this point (every no-reply
     # branch returned above), so the bubble goes up now rather than at flush — but
@@ -1953,7 +1959,8 @@ def internal_inbound():
             logger.info("POLL_VOTE_IN user=%s poll=%s option=%r", user.id,
                         str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
             _process_inbound(session, user, handle, body, provider_message_id, None, None,
-                             channel="imessage", provider_sid=provider_message_id, image_list=[])
+                             channel="imessage", provider_sid=provider_message_id, image_list=[],
+                             instant=True)
             return jsonify({"ok": True, "known": True, "poll_vote": True}), 200
         # Nothing to say and nothing attached — a presence event that slipped through.
         # An outage-lost attachment (image_name / has_voice set, files empty) is NOT empty:

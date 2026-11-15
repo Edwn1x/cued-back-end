@@ -283,6 +283,10 @@ def test_a_vote_is_stored_and_answered_like_a_reply(db, client, driver, anthropi
                                poll={"poll_id": "POLL-GUID-1", "title": "gym time today?", "option": "5:30",
                                      "selected": True, "options": ASK["options"]}))
     assert r.status_code == 200 and r.get_json() == {"ok": True, "known": True, "poll_vote": True}
+    # A tap is a complete answer: the reply is armed on the near-instant band, not the 10–15s
+    # text band (founder 2026-11-14: "i wasn't gonna send a follow up").
+    from tests._sync import PENDING_TIMERS
+    assert PENDING_TIMERS[u.phone].interval <= config.POLL_VOTE_BUFFER_S[1] <= 1
     driver.flush(u.phone)
     assert [m.body for m in _rows(db, u.id, "in")] == [text]
     assert seen and seen[0][0]["content"] == text, "the model sees the pick as the user's message"
