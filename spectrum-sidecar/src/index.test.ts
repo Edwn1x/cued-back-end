@@ -1016,8 +1016,9 @@ describe("POST /poll", () => {
   });
 });
 
+// `title` on a poll_option is the OPTION's title (the SDK's superRefine pins title === option.title).
 const voteNode = (over: Record<string, unknown> = {}) => ({
-  type: "poll_option", option: { title: "5:30" }, selected: true, title: "gym time today?",
+  type: "poll_option", option: { title: "5:30" }, selected: true, title: "5:30",
   poll: { type: "poll", title: "gym time today?", options: [{ title: "4" }, { title: "5:30" }, { title: "7" }, { title: "not today" }] },
   ...over,
 });
@@ -1055,6 +1056,14 @@ describe("buildInbound poll_option (step 7)", () => {
   test("an id that doesn't carry the sender → poll_id null, never a crash", async () => {
     const out = await buildInbound(fakeSpace, fakeMessage({ id: "weird-id", content: voteNode() }), { extraKinds: new Set(["poll_option"]) });
     expect(out!.payload.poll!.poll_id).toBeNull();
+  });
+
+  test("a TITLELESS poll (what Photon actually returns) → title \"\", poll_id from pollMessageGuid; Flask fills the title", async () => {
+    const node = voteNode({ pollMessageGuid: "A1B2-POLL-GUID",
+                            poll: { type: "poll", pollMessageGuid: "A1B2-POLL-GUID", options: [{ title: "4", optionIdentifier: "o1" }, { title: "5:30", optionIdentifier: "o2" }] } });
+    const out = await buildInbound(fakeSpace, fakeMessage({ id: "weird-id-without-sender", content: node }), { extraKinds: new Set(["poll_option"]) });
+    expect(out!.payload.text).toBe('[picked "5:30" on the poll ""]');
+    expect(out!.payload.poll).toEqual({ poll_id: "A1B2-POLL-GUID", title: "", option: "5:30", selected: true, options: ["4", "5:30"] });
   });
 
   test("the voice flag alone does not open poll_option", async () => {

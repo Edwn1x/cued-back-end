@@ -543,18 +543,26 @@ export async function buildInbound(
       return true;
     }
     if (node.type === "poll_option" && extra.has("poll_option")) {
-      // Step 7. A vote on a poll we sent: { option: {title}, poll: {title, options}, selected,
-      // title }. The provider's id for it is `${pollGuid}:${sender}:${optionId}:${action}:${ms}`.
+      // Step 7. A vote on a poll we sent: { option: {title, optionIdentifier?}, poll: {title?,
+      // options, pollMessageGuid?}, selected, title (= the OPTION's title, not the poll's),
+      // pollMessageGuid? }. Photon returns polls TITLELESS (live 2026-11-14: SDK 12.8 refused to
+      // cache one — every vote dropped inside the SDK; 12.11+ keys on the guid instead), so the
+      // poll's title here is usually "" and Flask fills it from its own row by poll_id. The
+      // provider's message id is `${pollGuid}:${sender}:${optionId}:${action}:${ms}`.
       // Forwarded as a text inbound that names the pick (the coach reads it like a reply)
       // plus the structured copy for code routing (poll_id → whichever ask sent the poll).
-      const po = node as unknown as { option?: { title?: string }; poll?: { title?: string; options?: { title?: string }[] }; selected?: boolean; title?: string };
-      const option = po.option?.title ?? "";
-      const title = po.poll?.title ?? po.title ?? "";
+      const po = node as unknown as {
+        option?: { title?: string }; poll?: { title?: string; options?: { title?: string }[]; pollMessageGuid?: string };
+        selected?: boolean; title?: string; pollMessageGuid?: string;
+      };
+      const option = po.option?.title ?? po.title ?? "";
+      const title = po.poll?.title ?? "";
       const selected = po.selected !== false;
       const marker = `:${sender.id}:`;
       const at = message.id.indexOf(marker);
+      const pollId = po.pollMessageGuid || po.poll?.pollMessageGuid || (at > 0 ? message.id.slice(0, at) : null);
       acc.poll = {
-        poll_id: at > 0 ? message.id.slice(0, at) : null, title, option, selected,
+        poll_id: pollId, title, option, selected,
         options: (po.poll?.options ?? []).map((o) => o?.title ?? "").filter(Boolean),
       };
       const t = `[${selected ? "picked" : "un-picked"} ${JSON.stringify(option)} on the poll ${JSON.stringify(title)}]`;
@@ -884,6 +892,17 @@ async function main() {
   // Railway private networking is IPv6-only; '::' binds dual-stack.
   Bun.serve({ hostname: "::", port, fetch: createHandler(deps) });
   log("info", "http listening", { port, hostname: "::", flask: flaskUrl });
+
+  // spectrum-ts 12.10+ no longer registers SIGINT/SIGTERM handlers or calls process.exit for
+  // us (release notes). Railway sends SIGTERM on every redeploy: close the stream cleanly so
+  // the cursor is flushed and the next container's catch-up starts where this one stopped.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.once(sig, async () => {
+      log("info", "shutdown", { signal: sig, retry_queue: retryQueue.size() });
+      try { await current?.stop(); } catch (err) { log("warn", "stop failed", { error: String(err) }); }
+      process.exit(0);
+    });
+  }
 
   // One inbound tick → Flask. Shared by the live loop and the retry queue.
   const processInbound = async (space: Space, message: Message, build: BuildInboundOpts = {}) => {

@@ -121,7 +121,12 @@ is acknowledged and dropped.
   — content kinds, field names, attachment name/mime/size, the text, contact/richlink
   bodies — with the phone reduced to its last 4. Any content kind we don't forward is
   logged as `inbound skipped` with its type, outer type and field NAMES (always on).
-- What the pinned provider (`@spectrum-ts/imessage` 12.8) actually emits inbound, read
+- SDK pinned at `spectrum-ts ^12.16.0` (bumped 2026-11-14 from 12.8: Photon returns polls
+  TITLELESS and 12.8's poll cache refused an empty title, so every vote was dropped inside the
+  SDK — "failed to cache poll / failed to resolve poll" ZodError in the logs; 12.11+ keys the
+  cache on `pollMessageGuid` + `optionIdentifier`). 12.10+ registers no signal handlers: the
+  sidecar now stops the stream itself on SIGTERM/SIGINT.
+- What the provider (`@spectrum-ts/imessage` 12.8, re-checked on 12.16) actually emits inbound, read
   from its `buildUnwrappedContentMessage` / stream dispatch: `text`, `attachment`,
   `voice` (audio message), `contact` (vCard), `group` (multipart), `custom`
   (`imessage_type: "unsupported-message"`), each optionally inside `reply`; plus

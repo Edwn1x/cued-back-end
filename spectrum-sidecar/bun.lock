@@ -5,7 +5,7 @@
     "": {
       "name": "spectrum-sidecar",
       "dependencies": {
-        "spectrum-ts": "^12.8.0",
+        "spectrum-ts": "^12.16.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -56,7 +56,7 @@
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],
 
-    "@photon-ai/advanced-imessage": ["@photon-ai/advanced-imessage@2.1.0", "", { "dependencies": { "@bufbuild/protobuf": "^2.11.0" }, "peerDependencies": { "@grpc/grpc-js": "^1.12.6", "nice-grpc": "^2.1.11", "nice-grpc-common": "^2.0.2" }, "optionalPeers": ["@grpc/grpc-js", "nice-grpc", "nice-grpc-common"] }, "sha512-KT/aCBWcq667alyKe8DclqDUa/0fUuW2ZYDCxfIKuQBm08U4JcNG56fCdNUd69MFkKkzZgW35j59EYsx5DnLcQ=="],
+    "@photon-ai/advanced-imessage": ["@photon-ai/advanced-imessage@2.5.0", "", { "dependencies": { "@bufbuild/protobuf": "^2.11.0" }, "peerDependencies": { "@grpc/grpc-js": "^1.12.6", "nice-grpc": "^2.1.11", "nice-grpc-common": "^2.0.2" }, "optionalPeers": ["@grpc/grpc-js", "nice-grpc", "nice-grpc-common"] }, "sha512-VSbA0jZvTbBNw7mABX5BmmlqUwWknCUzMquihwQDiUi96VUGPy9QGj0teef8BmVL/eE1xJdIvw+Vuo1jS7zz3A=="],
 
     "@photon-ai/otel": ["@photon-ai/otel@3.7.0", "", { "dependencies": { "@opentelemetry/api": "^1.9.1", "@opentelemetry/api-logs": "^0.218.0", "@opentelemetry/context-async-hooks": "^2.7.1", "@opentelemetry/core": "^2.7.1", "@opentelemetry/exporter-logs-otlp-http": "^0.218.0", "@opentelemetry/exporter-metrics-otlp-http": "^0.218.0", "@opentelemetry/exporter-trace-otlp-http": "^0.218.0", "@opentelemetry/resources": "^2.7.1", "@opentelemetry/sdk-logs": "^0.218.0", "@opentelemetry/sdk-metrics": "^2.7.1", "@opentelemetry/sdk-trace-base": "^2.7.1", "@opentelemetry/semantic-conventions": "^1.41.1" }, "optionalDependencies": { "@opentelemetry/instrumentation": "^0.219.0", "@opentelemetry/instrumentation-undici": "^0.29.0" }, "peerDependencies": { "typescript": "^5 || ^6.0.0" } }, "sha512-N+fwhvvx/T2tNR8747vFJQgUuLxqyjAVMMLwmakEupgcE4X2M8nbqrfZNSPKN5DL/lpLXYP27a/ACW+jSWAqyA=="],
 
@@ -66,7 +66,7 @@
 
     "@photon-ai/telegram-ts": ["@photon-ai/telegram-ts@10.0.0", "", { "dependencies": { "zod": "^4.4.3" } }, "sha512-kYGj/ieKOCG+OxoD1R69xHoT7zHl9dboF52LMPUl4FnorbwA8b2pid0uFoDYF55WIfoeo+VSqwlmY84GgpSedg=="],
 
-    "@photon-ai/whatsapp-business": ["@photon-ai/whatsapp-business@0.2.0", "", { "dependencies": { "@grpc/grpc-js": "^1.14.3", "long": "^5.3.2", "nice-grpc": "^2.1.15", "nice-grpc-common": "^2.0.3", "protobufjs": "^8.0.1" } }, "sha512-FL5hKSZcgXCiZO1hVbu2A2Bd226ZfDEcbvlVWCEJUukWPUL7Gcs0RSwsJm57FnF0J/KhZ1DiwMWLoSL06N+fGw=="],
+    "@photon-ai/whatsapp-business": ["@photon-ai/whatsapp-business@0.3.2", "", { "dependencies": { "@grpc/grpc-js": "^1.14.3", "long": "^5.3.2", "nice-grpc": "^2.1.15", "nice-grpc-common": "^2.0.3", "protobufjs": "^8.0.1" } }, "sha512-uloaWcAefUBIHPs177gMvtNl+kCRv6JbD9dpALAKGGS05TlfqcN9kJcL8FSllz25Iflq9WOaLd12yxItKL9Sdg=="],
 
     "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
 
@@ -88,17 +88,17 @@
 
     "@repeaterjs/repeater": ["@repeaterjs/repeater@3.1.0", "", {}, "sha512-TaoVksZRSx2KWYYpyLQtMQXXeS98VsgZImzW65xmiVgbYhXLk+aEsmzPLirqVuE4/XuUapH2iMtxUzaBNDzdSQ=="],
 
-    "@spectrum-ts/core": ["@spectrum-ts/core@12.8.0", "", { "dependencies": { "@photon-ai/otel": "^3.3.0", "@photon-ai/proto": "^0.2.4", "@repeaterjs/repeater": "^3.0.6", "marked": "^18.0.5", "mime-types": "^3.0.1", "open-graph-scraper": "^6.11.0", "uncrypto": "^0.1.3", "vcf": "^2.1.2", "zod": "^4.2.1" }, "peerDependencies": { "ffmpeg-static": "^5", "typescript": "^5 || ^6.0.0" }, "optionalPeers": ["ffmpeg-static"] }, "sha512-S79FOB5OZvFJ9wFnrYEKdaUEIPsIy6g2k1+q5/M9NS+1e0qLrSrLk96t1LgtdMZ+DDA1wTYU2doBipJXc2oA/w=="],
+    "@spectrum-ts/core": ["@spectrum-ts/core@12.16.0", "", { "dependencies": { "@photon-ai/otel": "^3.3.0", "@photon-ai/proto": "^0.2.4", "@repeaterjs/repeater": "^3.0.6", "marked": "^18.0.5", "mime-types": "^3.0.1", "open-graph-scraper": "^6.11.0", "uncrypto": "^0.1.3", "vcf": "^2.1.2", "zod": "^4.2.1" }, "peerDependencies": { "ffmpeg-static": "^5", "typescript": "^5 || ^6.0.0" }, "optionalPeers": ["ffmpeg-static"] }, "sha512-3s4RS7edj+n43ZNiYiaaNfW7ElJ0eJ1d42lsF9KRgIDp2cYVwglwFijGd8w48kjLrZ/X3ROvQubdNBCyz/t1Vg=="],
 
-    "@spectrum-ts/imessage": ["@spectrum-ts/imessage@12.8.0", "", { "dependencies": { "@grpc/grpc-js": "^1.14.4", "@photon-ai/advanced-imessage": "^2.0.2", "@photon-ai/otel": "^3.3.0", "lru-cache": "^11.0.0", "marked": "^18.0.5", "nice-grpc": "^2.1.16", "nice-grpc-common": "^2.0.3", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-j26u6DVisAY8hDZ9riLS6wdTX0TmBFbuZXFn5afcW9RCnzknvX0zMO6UQwYc9IxS7M6yWb94HKARUW13N+rHqQ=="],
+    "@spectrum-ts/imessage": ["@spectrum-ts/imessage@12.16.0", "", { "dependencies": { "@grpc/grpc-js": "^1.14.4", "@photon-ai/advanced-imessage": "^2.5.0", "@photon-ai/otel": "^3.3.0", "lru-cache": "^11.0.0", "marked": "^18.0.5", "nice-grpc": "^2.1.16", "nice-grpc-common": "^2.0.3", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-ZmZm2xfcEjlg0d4V7L1VzePkKdNP3obrVK7NgZH4f+GyFu23Kau113U0/YtgD8Ovn407raoQzmpUfpkZRbZpxA=="],
 
-    "@spectrum-ts/slack": ["@spectrum-ts/slack@12.8.0", "", { "dependencies": { "@photon-ai/slack": "^0.2.0", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-GKpRMbbXAJ4FYntHH6sQdtmjsY4p3XBRXrKp1vk9RJxrnRdSR9tHamLQKsWCT5953xpRdYAIK0sAS+u6nCgUMg=="],
+    "@spectrum-ts/slack": ["@spectrum-ts/slack@12.16.0", "", { "dependencies": { "@photon-ai/slack": "^0.2.0", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-sF8nTaiDq9lNeLWOCYHnOfuusczv0A6mkHdgTLO02emHRGO4g411QXo20nFJ1V0aXDfMVomI4rYR1G9qzSOHkg=="],
 
-    "@spectrum-ts/telegram": ["@spectrum-ts/telegram@12.8.0", "", { "dependencies": { "@photon-ai/telegram-ts": "10.0.0", "marked": "^18.0.5", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-G/IKGt/Pd6nI8I6SH1PuAx1gF83Is9LaCPlMaBDayRea+aB5NL7x6ILo75kKGboyxGmKv/CV3xNbY7FZK0d0wg=="],
+    "@spectrum-ts/telegram": ["@spectrum-ts/telegram@12.16.0", "", { "dependencies": { "@photon-ai/telegram-ts": "10.0.0", "marked": "^18.0.5", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-twuhJtadNcerayMIA1nbrXb1+yMZb/Oa+pDnu4YwYwHWJIYGfGGhwoEaW6E4uXDoEmcQbMo1mqPfKnnxZdcLWQ=="],
 
-    "@spectrum-ts/terminal": ["@spectrum-ts/terminal@12.8.0", "", { "dependencies": { "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-SSi7qiF3IzK/aOEiewhzxIPv1fbNJIubhEalbFzbr1naF1Ybm6/nzsmRZmRE2xzzUq3JsPqMxwzAGda4f+TmmQ=="],
+    "@spectrum-ts/terminal": ["@spectrum-ts/terminal@12.16.0", "", { "dependencies": { "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-fgUVVSjJXSLn6gYZghh3llwnGRRDrTua96OL1m5Tr3t7yz1xTwRnQdF+rNUpwbjKDfhNa9vHKbxkPsqIZ9B4RQ=="],
 
-    "@spectrum-ts/whatsapp-business": ["@spectrum-ts/whatsapp-business@12.8.0", "", { "dependencies": { "@photon-ai/whatsapp-business": "^0.2.0", "mime-types": "^3.0.1", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-4lqJJGBfwkJT1P2ZUzj8Q2JOOzOoVLPjmXo3I0Wbda7UwYJZ7Pl6Zbon5gI9ELaRcPj6Q2aR2BPUc7K5NDoxKA=="],
+    "@spectrum-ts/whatsapp-business": ["@spectrum-ts/whatsapp-business@12.16.0", "", { "dependencies": { "@photon-ai/whatsapp-business": "^0.3.0", "mime-types": "^3.0.1", "zod": "^4.2.1" }, "peerDependencies": { "@spectrum-ts/core": "^12.0.0", "typescript": "^5 || ^6.0.0" } }, "sha512-KTGkPvqGeBw4W0SyJjgJSXlOrRzpksZsyp/vDMo9X+TMVt2EdUdDD66aczy3+lDDqr9nOrV1HcBbRmq817OBow=="],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 
@@ -204,7 +204,7 @@
 
     "safer-buffer": ["safer-buffer@2.1.2", "", {}, "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg=="],
 
-    "spectrum-ts": ["spectrum-ts@12.8.0", "", { "dependencies": { "@spectrum-ts/core": "12.8.0", "@spectrum-ts/imessage": "12.8.0", "@spectrum-ts/slack": "12.8.0", "@spectrum-ts/telegram": "12.8.0", "@spectrum-ts/terminal": "12.8.0", "@spectrum-ts/whatsapp-business": "12.8.0" } }, "sha512-5qJxpB0XRwW1Zhcma8dTR8zTKH/2zkvyNnIle4WS05KQK5fkFdpRmwzuyEE25Wpkim2rGjb17gY11/z2bqHknQ=="],
+    "spectrum-ts": ["spectrum-ts@12.16.0", "", { "dependencies": { "@spectrum-ts/core": "12.16.0", "@spectrum-ts/imessage": "12.16.0", "@spectrum-ts/slack": "12.16.0", "@spectrum-ts/telegram": "12.16.0", "@spectrum-ts/terminal": "12.16.0", "@spectrum-ts/whatsapp-business": "12.16.0" } }, "sha512-vh33O+3uiHQdMaHrrc8W9yb4ISe29lIYcUVNutkLoecx1n1BGrnXcWVctjvtBzHWqq9oPR3Z5pwAZXMsnGEMSA=="],
 
     "string-width": ["string-width@4.2.3", "", { "dependencies": { "emoji-regex": "^8.0.0", "is-fullwidth-code-point": "^3.0.0", "strip-ansi": "^6.0.1" } }, "sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g=="],
 

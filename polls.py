@@ -103,6 +103,31 @@ def validate(title, options, topic=None) -> tuple[str, list[str], str] | str:
     return title, opts, topic_n
 
 
+def vote_body(session, user_id: int, vote: dict, *, fallback: str = "") -> str:
+    """The inbound text for a vote: '[picked "option" on the poll "title"]' with the title taken
+    from OUR outbound row for that poll (provider_sid == poll_id). Photon returns polls titleless
+    (live 2026-11-14), so the wire's title is "" or the option's own title — the row is the truth.
+    Unknown poll_id → the sidecar's text as sent (or a line built from the wire)."""
+    from models import Message
+    option = " ".join(str(vote.get("option") or "").split())
+    picked = "picked" if vote.get("selected") is not False else "un-picked"
+    poll_id = str(vote.get("poll_id") or "")
+    title = None
+    if poll_id:
+        row = (session.query(Message)
+               .filter(Message.user_id == user_id, Message.direction == "out",
+                       Message.message_type == POLL_MESSAGE_TYPE, Message.provider_sid == poll_id)
+               .order_by(Message.id.desc()).first())
+        if row:
+            title = poll_title(row.body)
+    if title is None:
+        wire = " ".join(str(vote.get("title") or "").split())
+        if not wire and fallback:
+            return fallback
+        title = wire or "?"
+    return f'[{picked} "{option or "?"}" on the poll "{title}"]'
+
+
 def open_polls(session, user_id: int) -> list:
     """Outbound poll rows within POLL_LIFETIME_HOURS that no later inbound answered, newest
     first. 'Answered' = a later inbound row that names a pick ON THAT POLL (the vote text
