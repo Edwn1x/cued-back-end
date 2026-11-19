@@ -488,3 +488,13 @@ def test_every_poll_attempt_is_recorded_with_its_gate_answer(db, poll_ok):
     assert [(r.source, r.ok, r.topic) for r in rows] == [("coach", True, "gym time"), ("coach", False, "gym time")]
     assert rows[1].result.startswith("error:") and "already out as a poll" in rows[1].result
     assert rows[0].title == "gym time today?"
+
+
+def test_reminder_times_and_yes_no_confirmations_are_poll_shaped_too():
+    """Alex (u42, 2026-11-16): 'what time works' for study pings, 'lmk if u want them every
+    week', 'want me to set a wake-up reminder?' — all asked in words. Those are polls."""
+    import agent_tools, heartbeat
+    desc = agent_tools.SEND_POLL_TOOL["description"]
+    assert "reminder" in desc and "every week" in desc and "yes-or-no" in desc
+    voice = open("prompts/voice.md").read()
+    assert "what time works" in voice and "yes-or-no" in voice

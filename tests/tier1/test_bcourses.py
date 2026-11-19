@@ -55,7 +55,12 @@ def _run_inbound(db, user, body, monkeypatch, inline_result=3):
     (f"here's my calendar {FEED} lmk", True),
     ("https://www.bcourses.berkeley.edu/feeds/calendars/user_abc.ics", True),
     ("HTTPS://BCOURSES.BERKELEY.EDU/feeds/calendars/user_ABC.ics", True),
+    # Any Canvas instance has the same feed shape — a UC Merced student pasted this twice on
+    # 2026-11-16 (user 42) and the coach said "not showing as connected" both times.
+    ("https://catcourses.ucmerced.edu/feeds/calendars/user_Nr1L9QjEoZANsoCpTtNUvCs3GgcAQd4SbyrLCr0p.ics", True),
+    ("https://canvas.instructure.com/feeds/calendars/user_abc-DEF_1.ics", True),
     ("https://bcourses.berkeley.edu/calendar", False),
+    ("https://evil.example/feeds/calendars/user_x.ics.html", False),
     ("https://calendar.google.com/calendar/ical/x/basic.ics", False),
     ("i use bcourses for everything", False),
     ("", False),
@@ -388,3 +393,11 @@ def test_all_day_item_on_dst_fallback_day_is_kept(db, monkeypatch):
         if "now" in upcoming_events.__code__.co_varnames else None
     if titles is not None:
         assert "Midterm review" in titles and "due: HW 5" in titles
+
+
+def test_empty_feed_reply_names_canvas_not_bcourses_for_another_school():
+    """The 'nothing on ur bcourses calendar' line is wrong for a UC Merced CatCourses feed."""
+    from integrations.bcourses import empty_feed_line
+    assert "bcourses" in empty_feed_line("https://bcourses.berkeley.edu/feeds/calendars/user_a.ics")
+    assert "canvas" in empty_feed_line("https://catcourses.ucmerced.edu/feeds/calendars/user_a.ics")
+    assert "bcourses" not in empty_feed_line("https://catcourses.ucmerced.edu/feeds/calendars/user_a.ics")

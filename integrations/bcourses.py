@@ -32,9 +32,12 @@ logger = logging.getLogger("cued.integrations.bcourses")
 
 SOURCE = "bcourses"
 
-# Canvas user feeds: https://bcourses.berkeley.edu/feeds/calendars/user_<token>.ics
+# Canvas user feeds: https://<any canvas host>/feeds/calendars/user_<token>.ics — the path is
+# Canvas's, the host is the school's (bcourses.berkeley.edu, catcourses.ucmerced.edu,
+# *.instructure.com). Live 2026-11-16 (user 42, UC Merced): the Berkeley-only host rule
+# ignored his link twice and the coach told him it wasn't connected.
 FEED_URL_RE = re.compile(
-    r"https?://(?:www\.)?bcourses\.berkeley\.edu/feeds/calendars/user_[A-Za-z0-9_-]+\.ics",
+    r"https?://[A-Za-z0-9.-]+\.[A-Za-z]{2,}/feeds/calendars/user_[A-Za-z0-9_-]+\.ics(?![\w.])",
     re.IGNORECASE,
 )
 
@@ -45,6 +48,13 @@ FAILS_BEFORE_ERROR = 3       # transient fetch blips don't flip the row to error
 INLINE_TIMEOUT_S = 8         # the paste reply waits this long for the first pull, then goes async
 GOT_IT = "got it. i'll pull ur due dates in and plan around them"
 GOT_IT_EMPTY = "got it. nothing on ur bcourses calendar yet tho, i'll keep checking"
+GOT_IT_EMPTY_CANVAS = "got it. nothing on ur canvas calendar yet tho, i'll keep checking"
+
+
+def empty_feed_line(feed_url: str) -> str:
+    """The empty-feed reply names the school's Canvas by what it is: bCourses at Berkeley,
+    plain 'canvas' anywhere else."""
+    return GOT_IT_EMPTY if "bcourses.berkeley.edu" in (feed_url or "").lower() else GOT_IT_EMPTY_CANVAS
 REDACTED = "[bcourses feed link]"
 
 
@@ -117,7 +127,7 @@ def handle_inbound_feed_url(session, user, body: str, *, channel: str = "sms") -
     n = _try_sync_now(user.id)
     if n is None:
         _spawn_first_sync(user.id)
-    line = GOT_IT_EMPTY if n == 0 else GOT_IT
+    line = empty_feed_line(url) if n == 0 else GOT_IT
     send_sms(user.phone, line, user_id=user.id, message_type="integration_connected")
     return True
 
