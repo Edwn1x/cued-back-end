@@ -21,6 +21,7 @@ class User(Base):
     age = Column(Integer)
     gender = Column(String(20))  # male, female, non_binary, prefer_not_to_say
     occupation = Column(String(200))  # what they do — student, desk job, physical labor, etc.
+    school = Column(String(200))  # which school, when the sign-up said student (2026-11-14; profiles by school are planned)
     goal = Column(String(200))  # comma-separated: fat_loss,muscle_building,etc.
     goal_other = Column(Text)  # freeform if they picked "other"
     biggest_obstacle = Column(String(50))  # consistency, nutrition, knowledge, time, motivation, injuries
@@ -285,11 +286,12 @@ class User(Base):
             f"Age: {self.age}" if self.age else None,
             f"Gender: {self.gender}" if self.gender and self.gender != "prefer_not_to_say" else None,
             f"Occupation: {self.occupation}" if self.occupation else None,
-            f"Goal: {self.goal}" + (f" — {self.goal_other}" if self.goal_other else ""),
+            f"School: {self.school}" if self.school else None,
+            (f"Goal: {self.goal}" + (f" — {self.goal_other}" if self.goal_other else "")) if self.goal else None,
             f"Biggest obstacle: {self.biggest_obstacle}" if self.biggest_obstacle else None,
-            f"Experience: {self.experience}",
+            f"Experience: {self.experience}" if self.experience else None,
             f"Has worked with a coach before: {self.prior_coaching}" if self.prior_coaching else None,
-            f"Equipment: {self.equipment}",
+            f"Equipment: {self.equipment}" if self.equipment else None,
             f"Injuries/limitations: {self.injuries}" if self.injuries else None,
             f"Activity level outside gym: {self.activity_level}" if self.activity_level else None,
             f"Diet: {self.diet}" if self.diet else None,
@@ -301,7 +303,7 @@ class User(Base):
             f"Wake time: {self.wake_time}, Bedtime: {self.sleep_time}" if self.wake_time or self.sleep_time else None,
             f"Sleep quality: {self.sleep_quality}" if self.sleep_quality else None,
             f"Stress level: {self.stress_level}" if self.stress_level else None,
-            f"Workout time: {self.workout_time}",
+            f"Workout time: {self.workout_time}" if self.workout_time else None,
             f"Height: {height_str}" if height_str else None,
             f"Weight: {self.weight_lbs}lbs" if self.weight_lbs else None,
             f"Body fat: ~{self.body_fat_pct}%" if self.body_fat_pct else None,

@@ -2495,16 +2495,29 @@ def waitlist_signup():
         goal_str = ",".join(str(g).strip() for g in goal_raw if str(g).strip())
     else:
         goal_str = str(goal_raw).strip() if goal_raw else ""
+    # Blank stays NULL — no defaults (2026-11-15). The site's form lets people skip
+    # everything but name, number, occupation and consent; a defaulted row read as a
+    # full-gym beginner with a general-fitness goal and onboarding never asked. Every
+    # consumer falls back on read (macro_calculator, workouts/start, agent_loop…);
+    # onboarding_agent._get_missing_fields asks these four first.
     profile = {
         "age": safe_int(data.get("age")),
-        "gender": str(data.get("gender") or "").strip() or "prefer_not_to_say",
-        "goal": goal_str or "general_fitness",
+        "gender": str(data.get("gender") or "").strip() or None,
+        "goal": goal_str or None,
         "biggest_obstacle": str(data.get("biggest_obstacle") or "").strip() or None,
-        "experience": str(data.get("experience") or "").strip() or "none",
-        "equipment": str(data.get("equipment") or "").strip() or "full_gym",
+        "experience": str(data.get("experience") or "").strip() or None,
+        "equipment": str(data.get("equipment") or "").strip() or None,
     }
+    # Occupation + school (the site's "occupation?" row, 2026-11-14 — the founder is
+    # building profiles by occupation and by school; non-students sign up too). Free
+    # text as the site phrases it ("student at uc berkeley" / "nurse" / "student at
+    # sjsu, works as barista"), so _assume_student / is_student / _is_berkeley_student
+    # keep reading it; `school` on its own column for the profiles. Blank stays NULL —
+    # never defaulted — so onboarding still asks what they do when the form didn't say.
+    profile["occupation"] = str(data.get("occupation") or "").strip() or None
+    profile["school"] = str(data.get("school") or "").strip() or None
     for col, cap in (("gender", 20), ("goal", 200), ("biggest_obstacle", 50),
-                     ("experience", 20), ("equipment", 100)):
+                     ("experience", 20), ("equipment", 100), ("occupation", 200), ("school", 200)):
         if profile[col] and len(profile[col]) > cap:
             return jsonify({"status": "error",
                             "message": f"That {col.replace('_', ' ')} doesn't look right."}), 400
