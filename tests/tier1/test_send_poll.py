@@ -432,3 +432,59 @@ def test_heartbeat_poll_refused_falls_through_to_text(db, monkeypatch, anthropic
     assert imessage_sends == [(u.phone, "u still hitting the gym today?")]
     tick = _hb_ticks(u.id)[-1]
     assert tick.spoke is True and tick.message == "u still hitting the gym today?"
+
+
+# ── 2026-11-18 watch (1 poll in 4 days): defaults, briefing + poll in one tick, a durable attempt ledger ──
+
+def test_polls_are_the_default_for_the_recurring_asks_in_both_paths():
+    """The misses were all the same three asks stated as sentences ('gym after', 'lift between
+    12:30 and 3:30 if u want', 'thurs or sat could work for a run'). Both paths now say: those are
+    polls, not sentences."""
+    import agent_tools, heartbeat
+    desc = agent_tools.SEND_POLL_TOOL["description"]
+    assert "a poll, not a sentence" in desc and "gym time" in desc and "run day" in desc and "which dish" in desc
+    voice = open("prompts/voice.md").read()
+    assert "a poll, not a sentence" in voice
+    assert "a poll, not a sentence" in heartbeat._POLL_GUIDANCE
+    assert "send_text AND send_poll" in heartbeat._POLL_GUIDANCE and "briefing" in heartbeat._POLL_GUIDANCE
+
+
+def test_heartbeat_can_send_the_briefing_and_a_poll_in_one_tick(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends, sms_capture):
+    """The morning briefing was exactly where 'legs after c104?' belonged, and the tick had to
+    choose. Now: send_text + send_poll in one response → the text first, then the question bubble,
+    then the poll; ONE tick row, message = text --- poll body; nothing sent twice."""
+    import heartbeat
+    from tests._fake_anthropic import MultiText, ToolUse
+    u = _hb_user(db, monkeypatch)
+    anthropic_stub.reply_with(lambda kw: MultiText(
+        ToolUse("send_text", {"message": "62° and clear. c104 at 3 then ur free"}, id="t1"),
+        ToolUse("send_poll", {"title": "legs after c104?", "options": ["right after", "tonight", "not today"], "topic": "gym time"}, id="t2"),
+        stop_reason="tool_use"))
+    heartbeat.heartbeat_tick(u.id)
+    assert imessage_sends == [(u.phone, "62° and clear. c104 at 3 then ur free"), (u.phone, "legs after c104?")], "text first, then the question bubble"
+    assert poll_ok == [(u.phone, "legs after c104?", ["right after", "tonight", "not today"])]
+    assert not sms_capture
+    ticks = _hb_ticks(u.id)
+    assert len(ticks) == 1 and ticks[-1].spoke is True
+    assert ticks[-1].message == '62° and clear. c104 at 3 then ur free --- [poll "legs after c104?" (gym time): right after / tonight / not today]'
+    assert [r.message_type for r in _rows(db, u.id, "out")] == ["heartbeat", "poll_question", "poll"]
+
+
+def test_every_poll_attempt_is_recorded_with_its_gate_answer(db, poll_ok):
+    """Refusals only went to the web log, which deploys rotate away — so 'did it try and get
+    blocked, or never try?' had no answer. poll_attempts keeps every call: source, title, topic,
+    ok, and the exact result line."""
+    import agent_tools
+    from models import get_session, PollAttempt
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id).startswith("ok:")
+    blocked = agent_tools.dispatch_tool("send_poll", {**ASK, "topic": "gym time"}, u.id)
+    assert blocked.startswith("error:")
+    s = get_session()
+    try:
+        rows = s.query(PollAttempt).filter(PollAttempt.user_id == u.id).order_by(PollAttempt.id).all()
+    finally:
+        s.close()
+    assert [(r.source, r.ok, r.topic) for r in rows] == [("coach", True, "gym time"), ("coach", False, "gym time")]
+    assert rows[1].result.startswith("error:") and "already out as a poll" in rows[1].result
+    assert rows[0].title == "gym time today?"

@@ -624,6 +624,18 @@ MIGRATIONS = [
     "ALTER TABLE messages ALTER COLUMN provider_sid TYPE VARCHAR(200)",
     "ALTER TABLE processed_messages ALTER COLUMN message_sid TYPE VARCHAR(200)",
     "ALTER TABLE held_outbound ALTER COLUMN reply_to_sid TYPE VARCHAR(200)",
+    # Polls: every send_poll attempt + the gate's answer (2026-11-18 watch — refusals were log-only).
+    """CREATE TABLE IF NOT EXISTS poll_attempts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        source VARCHAR(20) NOT NULL,
+        title VARCHAR(200),
+        topic VARCHAR(80),
+        ok BOOLEAN NOT NULL,
+        result TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_poll_attempts_user_id ON poll_attempts (user_id)",
     # The site's "occupation?" sign-up row (2026-11-14): occupation already has a column;
     # the school rides on its own for the profiles-by-school work.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS school VARCHAR(200)",

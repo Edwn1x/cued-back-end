@@ -177,9 +177,33 @@ def gate(session, user_id: int, topic: str) -> str | None:
     return None
 
 
+def _record_attempt(user_id: int, source: str, title, topic, out: str) -> None:
+    """poll_attempts row for every call, ok or refused — best-effort, own session."""
+    try:
+        from models import get_session, PollAttempt
+        s = get_session()
+        try:
+            s.add(PollAttempt(user_id=user_id, source=source,
+                              title=" ".join(str(title or "").split())[:200] or None,
+                              topic=(normalize_topic(topic) or normalize_topic(title) or None),
+                              ok=out.startswith("ok:"), result=out[:2000]))
+            s.commit()
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001 — the ledger never costs the send
+        logger.warning("POLL_ATTEMPT_RECORD_FAILED user=%s err=%s", user_id, e)
+
+
 def send_poll_to_user(user_id: int, title, options, *, topic=None, source: str = "coach") -> str:
-    """Validate, gate, send over the user's channel, log the row. Returns the status line
-    for the coach loop: 'ok: …' or 'error: …'. Never raises."""
+    """Validate, gate, send over the user's channel, log the row, and record the attempt
+    (poll_attempts) whatever the outcome. Returns the status line for the coach loop:
+    'ok: …' or 'error: …'. Never raises."""
+    out = _send_poll_to_user(user_id, title, options, topic=topic, source=source)
+    _record_attempt(user_id, source, title, topic, out)
+    return out
+
+
+def _send_poll_to_user(user_id: int, title, options, *, topic=None, source: str = "coach") -> str:
     import sms
     from models import get_session, User
 

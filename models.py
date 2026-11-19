@@ -635,6 +635,21 @@ class TokenUsage(Base):
     cost_usd = Column(Float, default=0.0)
 
 
+class PollAttempt(Base):
+    """Every send_poll call and what the gate said (inbound kinds step 8, 2026-11-18 watch:
+    refusals only went to the web log, which deploys rotate away — "did it try and get
+    blocked, or never try?" had no answer). Append-only; read by hand / the admin console."""
+    __tablename__ = "poll_attempts"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    source = Column(String(20), nullable=False)          # coach | heartbeat | admin
+    title = Column(String(200))
+    topic = Column(String(80))
+    ok = Column(Boolean, nullable=False)
+    result = Column(Text)                                 # the exact 'ok: …' / 'error: …' line
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class ProcessedMessage(Base):
     """
     Webhook idempotency ledger — one row per Twilio MessageSid we have accepted
