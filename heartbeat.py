@@ -113,7 +113,8 @@ If any part of your reasoning concludes a text is warranted, call send_text. NEV
 # message, so anti-repetition sees it. A gate refusal (same topic open, two unanswered, setup)
 # goes back to the model as the tool result and it falls through to send_text / stay_silent.
 _POLL_GUIDANCE = """ASK WITH A POLL when the check-in IS a pick that's theirs (send_poll is in your tools):
-- gym time today or tomorrow, which day this week, how the session felt, how they slept, which dish off their saved menu → call send_poll with the question and 2–4 short options (add "not today" / "something else" when neither might fit). The question goes out as its own bubble above the poll. send_poll IS this tick's text — do NOT also call send_text.
+- The recurring asks are a poll, not a sentence: gym time today or tomorrow, which day for a run, which dish off their saved menu, how the session felt, how they slept → call send_poll with the question and 2–4 short options (add "not today" / "something else" when neither might fit). "gym after, rsf open till 11" stated in a briefing is a MISS — it is a poll: legs after c104? → right after / tonight / not today.
+- You may call send_text AND send_poll in the same turn: the text goes first (the briefing, the weather, the win), then the poll under it. On a morning tick that is the shape: briefing + the day's gym-time poll. A poll alone (no send_text) is fine too — the question goes out as its own bubble above it either way.
 - Never a poll for what you should prescribe (exercises, sets, weights, what to eat), never a generic one ("how's it going?"), and if the result says a poll is already open or two sit unanswered, fall back to send_text or stay_silent as usual.
 - A poll is still ONE proactive text: everything above about WHEN to speak applies first. Decide to speak, THEN pick the form."""
 
@@ -2016,6 +2017,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     session = get_session()
     try:
         user = session.get(User, user_id)
+        phone = user.phone          # for a text sent inside decide (text + poll in one tick)
         state: dict = {}
         context = _proactive_context(user, session, state=state)
         search = {"available": _search_available(user, session), "used": False, "query": None}
@@ -2112,6 +2114,32 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
             # the message); stay_silent = quiet (payload is the reason).
             spoke_tool = next((b for b in resp.content
                                if getattr(b, "type", None) == "tool_use" and b.name == "send_text"), None)
+            poll_tool = next((b for b in resp.content
+                              if getattr(b, "type", None) == "tool_use" and b.name == "send_poll"), None)
+            if spoke_tool is not None and poll_tool is not None and polls_on:
+                # Briefing + the day's poll in ONE tick (2026-11-18 watch: the morning text was
+                # where "legs after c104?" belonged and the tick had to choose). The text goes
+                # out HERE so it lands before the question bubble and the poll; the caller sends
+                # nothing more. One tick row: text --- poll body. A refused poll leaves the
+                # text standing as a normal spoke.
+                from polls import send_poll_to_user, poll_row_body
+                msg = (spoke_tool.input or {}).get("message", "").strip()
+                if msg:
+                    msg = _guard_schedule_claims(_enforce_briefing(msg, briefing, user_id), user_id)
+                    send_sms(phone, msg, user_id=user_id, message_type="heartbeat")
+                inp = poll_tool.input or {}
+                out = send_poll_to_user(user_id, inp.get("title"), inp.get("options"),
+                                        topic=inp.get("topic"), source="heartbeat")
+                logger.info("HEARTBEAT_POLL user=%s ok=%s with_text=%s title=%r", user_id, out.startswith("ok:"),
+                            bool(msg), str(inp.get("title") or "")[:60])
+                search["sent_inline"] = True
+                if out.startswith("ok:"):
+                    opts = [" ".join(str(o or "").split()) for o in (inp.get("options") or []) if str(o or "").strip()]
+                    body = poll_row_body(" ".join(str(inp.get("title") or "").split()), opts, inp.get("topic"))
+                    return (True, f"{msg} --- {body}" if msg else body, search)
+                if msg:
+                    return (True, msg, search)
+                return (False, f"send_poll refused: {out[:120]}", search)
             if spoke_tool is not None:
                 msg = (spoke_tool.input or {}).get("message", "").strip()
                 # send_text is terminal either way — an empty message can't be sent, so
@@ -2132,8 +2160,6 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 except (TypeError, ValueError):
                     pass
                 return (False, inp.get("reason", "chose silence"), search)
-            poll_tool = next((b for b in resp.content
-                              if getattr(b, "type", None) == "tool_use" and b.name == "send_poll"), None)
             if poll_tool is not None and polls_on:
                 # The third decision: the poll goes out HERE (question bubble, then the poll).
                 # ok → this tick spoke, the poll's row body is its message (anti-repetition
@@ -2146,7 +2172,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 logger.info("HEARTBEAT_POLL user=%s ok=%s title=%r", user_id, out.startswith("ok:"),
                             str(inp.get("title") or "")[:60])
                 if out.startswith("ok:"):
-                    search["poll_sent"] = True
+                    search["sent_inline"] = True
                     opts = [" ".join(str(o or "").split()) for o in (inp.get("options") or []) if str(o or "").strip()]
                     return (True, poll_row_body(" ".join(str(inp.get("title") or "").split()), opts, inp.get("topic")), search)
                 messages.append({"role": "assistant", "content": resp.content})
@@ -2248,10 +2274,10 @@ def heartbeat_tick(user_id: int):
             logger.info("HEARTBEAT_BACKOFF_SHADOW_HIT user=%s detail=%s reason=%r",
                         user_id, search.get("stale_detail"), payload[:120])
     if spoke:
-        if not search.get("poll_sent"):
+        if not search.get("sent_inline"):
             send_sms(phone, payload, user_id=user_id, message_type="heartbeat")
-        # a poll already went out inside decide (question bubble + poll); the tick still
-        # records it as spoken, with the poll's row body as the message.
+        # sent_inline: the text and/or poll already went out inside decide (text first, then
+        # the question bubble, then the poll); the tick still records it as spoken.
         _log_tick(user_id, True, "spoke", payload, search=search)
         if search.get("briefing_water") and getattr(config, "BRIEFING_WATER_FOLDS_FIRST_PING_ENABLED", True):
             try:

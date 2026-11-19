@@ -134,7 +134,8 @@ class FakeAnthropicController:
         if isinstance(value, MultiText):
             r = _Response("")
             r.content = [
-                _Block(b[1], type=b[0]) if isinstance(b, tuple) else _Block(b)
+                _ToolUseBlock(b.name, b.input, b.id) if isinstance(b, ToolUse)
+                else (_Block(b[1], type=b[0]) if isinstance(b, tuple) else _Block(b))
                 for b in value.blocks
             ]
             r.stop_reason = value.stop_reason
