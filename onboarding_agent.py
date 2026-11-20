@@ -1956,8 +1956,15 @@ def is_duplicate_question(reply: str, prev: str, threshold: float | None = None)
     if shared:
         logger.debug("ONBOARDING_DUP_QUESTION_TOPIC topics=%s", sorted(shared))
         return True
+    # No shared intake topic: only the same WORDS again count. The 0.45 floor was tuned
+    # for a pair that also shared a topic; on its own it matches filler ("how … u …").
+    # Live 2026-11-20 12:20 PT, user 98 (Brandon): kickoff "how's ur day going" → 64s later
+    # "ok an hour tonight is plenty… how long u been lifting" scored 0.49 → the only question
+    # was stripped, a bare ack went out, setup parked (same shape as users 40/80/86/89).
+    if threshold is None:
+        thr = max(thr, _SAME_WORDS_THRESHOLD)
     score = _similarity(a, b)
-    logger.debug("ONBOARDING_DUP_QUESTION_SCORE score=%.2f a=%r b=%r", score, a[:80], b[:80])
+    logger.debug("ONBOARDING_DUP_QUESTION_SCORE score=%.2f thr=%.2f a=%r b=%r", score, thr, a[:80], b[:80])
     return score >= thr
 
 
