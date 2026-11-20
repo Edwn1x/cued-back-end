@@ -2451,7 +2451,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # Every search the model issued this call, logged with the user id
         # (WEB_SEARCH_QUERY) — the line that shows what the coach reaches for.
         from agent_tools import log_web_search_queries
-        log_web_search_queries(user.id, resp.content, "agent_loop.run")
+        if log_web_search_queries(user.id, resp.content, "agent_loop.run"):
+            # The turn knows a search ran; the log_meal handler reads it to decide whether
+            # a brand-named row is sourced (no nudge) or a guess (nudge in the tool result).
+            _st["web_search_used"] = True
 
         # Server-side tool (web_search) hit its iteration limit — re-send to resume.
         if stop == "pause_turn":

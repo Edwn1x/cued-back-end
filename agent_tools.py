@@ -1608,6 +1608,31 @@ def handle_log_meal(user_id: int, tool_input: dict, *, message_id=None) -> str:
                  "fix any of them at once (\"2 eggs, 3/4 cup yogurt, 2 toasts — fix any of those\"); "
                  "a correction is a manage_log edit on that id")
 
+    if getattr(config, "LOG_MEAL_BRAND_HINT_ENABLED", True) and not from_app:
+        # Named brand / chain / venue with published nutrition, written with no search this
+        # turn and no source in the description → the affordance goes in the TOOL RESULT (the
+        # surface that holds — description-level and prompt-level rules did not: live
+        # 2026-11-20 user 51, "insomnia cc cookie" logged as a 370-cal estimate, posted 250).
+        from named_brands import names_brand, has_source_tag
+        searched = bool(_TURN_STATE.get(user_id, {}).get("web_search_used"))
+        refined_ids = {r[0] for r in refined}
+        for mid, desc, _cal, _pro, _saw in logged:
+            if mid in refined_ids:
+                continue  # menu-matched — the hall is its source
+            brand = names_brand(desc)
+            if not brand:
+                continue
+            if searched or has_source_tag(desc):
+                logger.info("LOG_MEAL_BRAND_SOURCED user=%s meal_id=%s brand=%r searched=%s desc=%r",
+                            user_id, mid, brand, searched, desc[:60])
+                continue
+            logger.info("LOG_MEAL_BRAND_UNSOURCED user=%s meal_id=%s brand=%r desc=%r",
+                        user_id, mid, brand, desc[:60])
+            tail += (f" | '{desc}' [id {mid}] names a brand ({brand}) and no search ran this turn — "
+                     "those numbers are a guess. web_search the brand's OFFICIAL nutrition for that item "
+                     f"now, then manage_log edit id {mid} to the posted numbers and add the source to its "
+                     "description ('(official)'); say 'estimate' only if the brand posts nothing")
+
     if getattr(config, "LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED", True):
         for _mid, desc, _cal, _pro, _saw in logged:
             if _names_two_amounts(desc):
