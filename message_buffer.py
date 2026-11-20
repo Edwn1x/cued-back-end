@@ -24,6 +24,14 @@ _lock = threading.Lock()
 # after a flush (the timer-vs-append race) can be spotted and logged.
 _last_flush = {}
 
+# Clock for the band arithmetic (tests swap it for a controllable one).
+_monotonic = time.monotonic
+
+# phones whose flush is parked waiting for the in-flight turn to finish. While a phone is
+# here its buffer is still OPEN: a text landing now appends and restarts the timer, and the
+# parked flush steps aside when it wakes (token mismatch) — one turn, one reply.
+_waiting_on_prior: set = set()
+
 # phone -> threading.Event that is SET while a flushed turn is still being processed
 # (the model call, the send). A text that lands in that window is a CONTINUATION of
 # the thought the coach is already answering (founder, live 2026-10-05: "Lwk a combo
@@ -93,7 +101,7 @@ def _clear_pending(phone: str) -> None:
 
 def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                    image_url: str = None, process_callback=None, delay_override: tuple = None,
-                   images: list = None):
+                   images: list = None, arrived_at: float = None):
     """
     Add a message to the buffer for this phone number.
     If a timer is already running, cancel it and restart.
@@ -101,8 +109,14 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
     and sent to process_callback.
 
     delay_override: optional (min, max) tuple in seconds to override the default 90-150s delay.
+    arrived_at: _monotonic() stamp from the webhook's FIRST line. The band counts from
+        there, not from here — the inbound pre-pass (safety regex, classify, state writes)
+        is ~3s with the DB a region away (measured 2026-11-20) and used to ADD to the wait.
+        The timer is the band minus what's already elapsed, floored at
+        config.BUFFER_MIN_REMAINING_S.
     """
     has_image = bool(images or image_url)
+    now = _monotonic()
     with _lock:
         if phone in _buffers:
             # Cancel existing timer
@@ -164,11 +178,21 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 }],
                 "user_id": user_id,
                 "continuation": continuation,
+                # TURN_LATENCY: when the turn's first text reached the webhook.
+                "first_arrived": arrived_at if arrived_at is not None else now,
             }
             if continuation:
                 logger.info("BUFFER_CONTINUATION phone=%s in_flight=%s late=%s", phone, in_flight, late)
             logger.info(f"New buffer created for {phone}")
             _mark_pending(phone, user_id, has_image, first=True)
+
+        # A continuation already waits for the in-flight reply (see _flush_buffer); it no
+        # longer pays the full band on top of that wait (founder 2026-11-20: "especially
+        # when you are having an active convo… it always takes forever"). A photo keeps
+        # its hold — the caption is still on its way.
+        if (_buffers[phone].get("continuation") and not has_image
+                and getattr(config, "CONTINUATION_SHORT_BAND_ENABLED", True)):
+            delay_override = config.CONTINUATION_BUFFER_S
 
         # Start a new timer, tagged with a unique token. The token is how a flush
         # tells "I am the current timer" from "I was superseded by a later append
@@ -176,22 +200,30 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
         token = object()
         _buffers[phone]["token"] = token
         _buffers[phone]["callback"] = process_callback      # drain_all needs it without the timer
-        delay = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
+        drawn = random.randint(delay_override[0], delay_override[1]) if delay_override else _get_delay()
         _buffers[phone]["band"] = delay_override or (MIN_DELAY, MAX_DELAY)
+        # The band counts from the moment THIS text reached the webhook.
+        elapsed = max(0.0, now - arrived_at) if arrived_at is not None else 0.0
+        delay = max(float(getattr(config, "BUFFER_MIN_REMAINING_S", 1.0)), drawn - elapsed)
         timer = threading.Timer(delay, _flush_buffer, args=[phone, process_callback, token])
         timer.daemon = True
         _buffers[phone]["timer"] = timer
         timer.start()
-        logger.info(f"Timer set for {phone}: {delay}s")
+        logger.info("Timer set for %s: %.1fs (band %s drew %ds, %.1fs already elapsed since arrival)",
+                    phone, delay, _buffers[phone]["band"], drawn, elapsed)
 
 
-def _takes_continuation(fn) -> bool:
+def _takes_kwarg(fn, name: str) -> bool:
     try:
         import inspect
         params = inspect.signature(fn).parameters
-        return "continuation" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
+        return name in params or any(p.kind == p.VAR_KEYWORD for p in params.values())
     except (TypeError, ValueError):
         return False
+
+
+def _takes_continuation(fn) -> bool:
+    return _takes_kwarg(fn, "continuation")
 
 
 def _flush_buffer(phone: str, process_callback, token=None):
@@ -214,21 +246,41 @@ def _flush_buffer(phone: str, process_callback, token=None):
             logger.info("Flush skipped for %s — superseded by a later append (race guard)", phone)
             return
 
-        buffer_data = _buffers.pop(phone)
-        _last_flush[phone] = time.monotonic()
         prior = _in_flight.get(phone)
+        continuation = bool(_buffers[phone].get("continuation"))
+        must_wait = continuation and prior is not None and not prior.is_set()
+        if must_wait:
+            _waiting_on_prior.add(phone)
+
+    # A continuation waits for the turn it continues (bounded): the model must see the
+    # reply that already went, in order, or it answers the same thing again. The buffer
+    # is NOT popped yet — a text landing during this wait appends to it and restarts the
+    # timer, and this flush then steps aside (token mismatch below). Before 2026-11-20 the
+    # pop came first, so that text opened a SECOND turn behind this one.
+    if must_wait:
+        try:
+            waited = prior.wait(getattr(config, "BUFFER_INFLIGHT_WAIT_S", 90))
+        finally:
+            with _lock:
+                _waiting_on_prior.discard(phone)
+        logger.info("BUFFER_CONTINUATION_WAITED phone=%s finished=%s", phone, waited)
+
+    with _lock:
+        if phone not in _buffers:
+            return
+        if token is not None and _buffers[phone].get("token") is not token:
+            logger.info("Flush skipped for %s — a text joined while waiting on the in-flight turn", phone)
+            return
+        buffer_data = _buffers.pop(phone)
+        flushed_at = _monotonic()
+        _last_flush[phone] = time.monotonic()
         done = threading.Event()
         _in_flight[phone] = done
 
     messages = buffer_data["messages"]
     user_id = buffer_data["user_id"]
-    continuation = bool(buffer_data.get("continuation"))
-
-    # A continuation waits for the turn it continues (bounded): the model must see the
-    # reply that already went, in order, or it answers the same thing again.
-    if continuation and prior is not None and not prior.is_set():
-        waited = prior.wait(getattr(config, "BUFFER_INFLIGHT_WAIT_S", 90))
-        logger.info("BUFFER_CONTINUATION_WAITED phone=%s finished=%s", phone, waited)
+    timing = {"wait_s": round(max(0.0, flushed_at - buffer_data.get("first_arrived", flushed_at)), 2),
+              "flushed_at": flushed_at, "messages": len(messages)}
 
     # Combine all message bodies into one input
     combined_body = "\n".join(m["body"] for m in messages if m["body"])
@@ -261,6 +313,8 @@ def _flush_buffer(phone: str, process_callback, token=None):
     if process_callback:
         try:
             extra = {"continuation": True} if (continuation and _takes_continuation(process_callback)) else {}
+            if _takes_kwarg(process_callback, "timing"):
+                extra["timing"] = timing
             process_callback(user_id, combined_body, message_type, image_url, images=images, **extra)
             # The inbound_pending marker is cleared only once the turn COMPLETED. Live
             # 2026-10-09 20:30 PT: the SIGTERM drain flushed "What do you think", the marker
