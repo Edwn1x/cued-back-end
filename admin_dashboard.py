@@ -273,6 +273,11 @@ tr.clickable:hover td{background:rgba(124,110,255,.05)}
       <div class="stat-val green">{{ total_meals }}</div>
       <div class="stat-sub">{{ meals_today }} today</div>
     </div>
+    <div class="stat-card">
+      <div class="stat-label">Workouts Tracked</div>
+      <div class="stat-val green">{{ total_workouts }}</div>
+      <div class="stat-sub">{{ workouts_today }} today · {{ workouts_7d }} last 7d · card, text or said</div>
+    </div>
   </div>
 
   <!-- Engaged-day numbers (admin_engagement.py) — the accurate read, beside the legacy
