@@ -18,6 +18,7 @@ switching thinking modes would break the messages cache — see INVESTIGATION §
 from __future__ import annotations
 
 import logging
+import time
 import re
 import os
 from datetime import datetime, timezone, timedelta
@@ -2076,6 +2077,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     images = image_data_list if image_data_list else ([image_data] if image_data else [])
     image_data = images[0] if images else None
     _briefing_parts: dict | None = None   # set when this reply carries the morning briefing
+    _t_enter = time.perf_counter()        # AGENT_LOOP_TIMING: context build vs model vs tools
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -2402,6 +2404,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
     # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.
     _st = peek_turn_state(user.id)
+    # Where the turn's wall time goes (logged by app.py as AGENT_LOOP_TIMING once the
+    # reply is out). Measured 2026-11-20: the context build was 7.7s of a 15s "model"
+    # phase — 51 sequential queries to a DB a region away — and no log line showed it.
+    _st["timing"] = {"context_ms": round((time.perf_counter() - _t_enter) * 1000),
+                     "model_ms": [], "tool_ms": 0}
     _st["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
     if _card_kind:
         # The code-decided stat card rides the same queue the tool uses; app.py flushes it
@@ -2429,7 +2436,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from cache_keepalive import note as keepalive_note
         keepalive_note("agent_loop.run", model=kwargs["model"], system=system, tools=tools,
                        thinking=kwargs["thinking"], output_config=kwargs["output_config"])
+        _t_call = time.perf_counter()
         resp = client.messages.create(**kwargs)
+        _st["timing"]["model_ms"].append(round((time.perf_counter() - _t_call) * 1000))
 
         try:
             track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp)
@@ -2456,7 +2465,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             results = []
             for block in resp.content:
                 if getattr(block, "type", None) == "tool_use":
+                    _t_tool = time.perf_counter()
                     out = dispatch_tool(block.name, block.input, user.id, message_id=message_id)
+                    _st["timing"]["tool_ms"] += round((time.perf_counter() - _t_tool) * 1000)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
             messages.append({"role": "user", "content": results})
             continue

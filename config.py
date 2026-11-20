@@ -345,6 +345,24 @@ PHOTO_BUFFER_S = _band("PHOTO_BUFFER_S", "45,60")
 # "replies to a poll should be near instant… i wasn't gonna send a follow up"). The buffer
 # machinery still runs (a tap + an immediate text still merge) but the wait is ~1s.
 POLL_VOTE_BUFFER_S = _band("POLL_VOTE_BUFFER_S", "1,1")
+# Reply latency (founder 2026-11-20: "takes forever to reply… but we don't want to miss
+# texts"; prod p50 text→reply was 36s against the 10–15s band). Four knobs, none drops a text:
+#   REPLY_BUFFER_COMPLETE_S — a post-onboarding text that READS COMPLETE (a question, a
+#       direct ask, terminal punctuation; inbound_band.looks_complete) waits this shorter band.
+#       Fragments ("did legs and", bare "yeah") keep REPLY_BUFFER_S. 45d of prod: a text
+#       ending in ?/./! gets a follow-up 13–22% of the time vs 26–34% for unpunctuated ones.
+#   ADAPTIVE_REPLY_BAND_ENABLED — off → every text takes REPLY_BUFFER_S, as before.
+#   CONTINUATION_BUFFER_S — a text landing while a turn is IN FLIGHT (or within
+#       BUFFER_JOIN_WINDOW_S of a flush) already waits for that reply; it no longer ALSO
+#       pays the full band first. The buffer stays open during the in-flight wait, so a
+#       further text joins the same turn (message_buffer._flush_buffer).
+#   BUFFER_MIN_REMAINING_S — the band counts from webhook ARRIVAL (the pre-pass used to
+#       add ~3s on top); this is the floor when the pre-pass ate the whole band.
+REPLY_BUFFER_COMPLETE_S = _band("REPLY_BUFFER_COMPLETE_S", "6,8")
+ADAPTIVE_REPLY_BAND_ENABLED = os.getenv("ADAPTIVE_REPLY_BAND_ENABLED", "true").lower() == "true"
+CONTINUATION_BUFFER_S = _band("CONTINUATION_BUFFER_S", "2,2")
+CONTINUATION_SHORT_BAND_ENABLED = os.getenv("CONTINUATION_SHORT_BAND_ENABLED", "true").lower() == "true"
+BUFFER_MIN_REMAINING_S = float(os.getenv("BUFFER_MIN_REMAINING_S", "1.0"))
 # Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
 # dots up for a minute, so those get dots at flush (existing behaviour).
 TYPING_ON_ARRIVAL_MAX_S = int(os.getenv("TYPING_ON_ARRIVAL_MAX_S", "20"))

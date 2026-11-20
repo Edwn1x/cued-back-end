@@ -161,16 +161,21 @@ def test_read_then_dots_go_up_on_arrival_before_the_buffer_flushes(db, imessage_
 
 
 def test_onboarding_buffer_is_seconds_not_half_a_minute(db, imessage_on, sidecar, client, monkeypatch):
-    """Onboarding 5–8s; post-onboarding one short band (the old 90–150 'fresh thread' band
-    was dead code and is gone)."""
-    import app
+    """Onboarding 5–8s; post-onboarding a short band (the old 90–150 'fresh thread' band
+    was dead code and is gone). Since 2026-11-20 a text that reads complete — "what
+    should i eat" is a direct ask — takes the shorter REPLY_BUFFER_COMPLETE_S; a fragment
+    keeps REPLY_BUFFER_S (inbound_band.py)."""
+    import app, config
     armed = []
     monkeypatch.setattr(app, "buffer_message", lambda **kw: armed.append(kw))
     onboarding = make_user(db, preferred_channel="imessage", onboarding_step=2)
     done = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    fragment = make_user(db, preferred_channel="imessage", onboarding_step=3)
     _post_text(client, onboarding, "chicken and rice mostly", "spc-onb-2")
     _post_text(client, done, "what should i eat", "spc-done-1")
-    assert [a["delay_override"] for a in armed] == [(5, 8), (10, 15)]   # one short post-onboarding band
+    _post_text(client, fragment, "had chicken and rice and", "spc-frag-1")
+    assert [a["delay_override"] for a in armed] == [(5, 8), config.REPLY_BUFFER_COMPLETE_S, (10, 15)]
+    assert config.REPLY_BUFFER_COMPLETE_S[1] < (10, 15)[0]
 
 
 def test_sms_inbound_gets_no_receipt_or_dots_on_arrival(db, imessage_on, sidecar, client, monkeypatch):
