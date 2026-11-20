@@ -388,6 +388,12 @@ LOG_MEAL_TOOL_ENABLED = os.getenv("LOG_MEAL_TOOL_ENABLED", "false").lower() == "
 # A logged description that names TWO amounts ('chimichurri ~1 cup used (~2 tbsp)', live 2026-10-28 user
 # 51 → readback '1 cup', 150 cal) is flagged in the tool result so the readback says one.
 LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED = os.getenv("LOG_MEAL_TWO_AMOUNTS_HINT_ENABLED", "true").lower() == "true"
+# A logged description that names a BRAND / chain / venue with published nutrition
+# (named_brands.py) and arrived with no search this turn and no source in its text is
+# flagged in the tool result: search the official numbers now and manage_log-edit the row
+# (live 2026-11-20 user 51: "insomnia cc cookie" logged as a 370-cal estimate; posted 250).
+# LOG_MEAL_BRAND_SOURCED / LOG_MEAL_BRAND_UNSOURCED log lines are the offered-vs-used count.
+LOG_MEAL_BRAND_HINT_ENABLED = os.getenv("LOG_MEAL_BRAND_HINT_ENABLED", "true").lower() == "true"
 GET_DINING_MENU_TOOL_ENABLED = os.getenv("GET_DINING_MENU_TOOL_ENABLED", "false").lower() == "true"
 # web_search is Anthropic's SERVER-SIDE tool — runs inline, no client handler. Adds
 # per-search billing on top of tokens.
