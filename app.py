@@ -2924,6 +2924,16 @@ def admin():
         ) if total_meals > 0 else 0
         total_weight_logs = session.query(WeightLog).count()
 
+        # ── WORKOUT STATS ── (founder, 2026-11-19: "we don't have a workouts tracked metric")
+        # `workouts` is the one ledger every path lands in: a card session mirrors into it
+        # on close (session_ops), a text log writes it (log_workout), and "i'm at the gym"
+        # with no sets writes it too (said_sessions). Soft-deleted rows excluded via active().
+        from models import active as _active
+        all_workouts = _active(session, Workout).all()
+        total_workouts = len(all_workouts)
+        workouts_today = sum(1 for w in all_workouts if w.date and as_utc(w.date) >= today_start)
+        workouts_7d = sum(1 for w in all_workouts if w.date and as_utc(w.date) >= now - timedelta(days=7))
+
         # ── USER TABLE DATA ──
         users_data = []
         for u in all_users:
@@ -2939,7 +2949,7 @@ def admin():
                 last_active = "Never"
                 days_inactive = 99
 
-            workout_count = session.query(Workout).filter(Workout.user_id == u.id).count()
+            workout_count = sum(1 for w in all_workouts if w.user_id == u.id)
             meal_count = sum(1 for m in all_meals if m.user_id == u.id)
 
             user_ratings = [int(m.body.strip()) for m in user_incoming
@@ -3101,6 +3111,9 @@ def admin():
             meals_today=meals_today,
             avg_meal_calories=avg_meal_calories,
             total_weight_logs=total_weight_logs,
+            total_workouts=total_workouts,
+            workouts_today=workouts_today,
+            workouts_7d=workouts_7d,
             d1_responded=d1_responded,
             d1_rate=d1_rate,
             d7_active=d7_active, d7_eligible=d7_eligible,
