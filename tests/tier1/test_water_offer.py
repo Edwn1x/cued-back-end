@@ -251,3 +251,45 @@ def test_a_fired_water_ping_does_not_take_the_floor_from_the_offer(db, offer_on,
         s.close()
     assert handle_reply(u.id, "Nahh I drink a lot of water") == NO_REPLY
     assert _u(u.id).water_offer_status == "no" and _reminders(u.id) == []
+
+
+# ─── an explicit ask during onboarding (2026-11-20, user 56: told "can't" three times) ────
+
+@pytest.mark.parametrize("text", [
+    "wait like remind me to drink water",
+    "wait can i turn on hydration check",
+    "wait i want water reminder",
+    "can u remind me to drink more water every 2 hours",
+])
+def test_an_explicit_water_ask_turns_the_pings_on_in_code(db, offer_on, text):
+    from water_offer import maybe_capture_water_request
+    u = make_user(db, onboarding_step=2, water_offer_status=None)
+    r = maybe_capture_water_request(u.id, text, source="onboarding")
+    assert r and r.get("id"), r
+    rows = _reminders(u.id)
+    assert len(rows) == 1 and rows[0].text == "drink water" and rows[0].source == "offer"
+    assert rows[0].every_hours == (2 if "every 2" in text else 3)
+    assert _u(u.id).water_offer_status == "yes"
+    # asked again → the existing row, never a second one; the offer never goes out
+    assert maybe_capture_water_request(u.id, "water reminders pls") == {"existing": True}
+    assert len(_reminders(u.id)) == 1
+    from water_offer import send_offer
+    assert send_offer(u.id) is False
+
+
+@pytest.mark.parametrize("text", [
+    "i drink a lot of water", "stop the water reminders", "turn off the water pings",
+    "remind me to go to class at 9", "how much water should i drink",
+])
+def test_non_asks_and_stops_set_nothing(db, offer_on, text):
+    from water_offer import maybe_capture_water_request
+    u = make_user(db, onboarding_step=2, water_offer_status=None)
+    assert maybe_capture_water_request(u.id, text) is None
+    assert _reminders(u.id) == [] and _u(u.id).water_offer_status is None
+
+
+def test_onboarding_prompt_tells_the_coach_water_pings_exist(db, offer_on):
+    import onboarding_agent as oa
+    u = make_user(db, onboarding_step=2)
+    prompt = oa._build_system_prompt(_u(u.id))
+    assert "Water / hydration pings ARE a thing you do" in prompt

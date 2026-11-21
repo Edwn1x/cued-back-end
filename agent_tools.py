@@ -589,7 +589,9 @@ SET_LIFT_ANCHORS_TOOL = {
         "stated bench sets incline / fly / pushdown too). Use it whenever they state a working weight "
         "for a main lift, and after asking on their first card — for a beginner that can be 'just the "
         "bar' (45) or 'the 20s' on a press. Weight is what they SAID; reps as stated, else omit (code "
-        "assumes a ~5-rep working weight). Never a goal ('wanna bench 225'), never a number you "
+        "assumes a ~5-rep working weight) — EXCEPT a max: 'heaviest i've done', 'my pr', 'all time', "
+        "'most i ever squatted' is reps=1 (code plans the working sets from it; passing it bare puts "
+        "their max on the card for 5). Never a goal ('wanna bench 225'), never a number you "
         "inferred. Returns 'ok: …' with what was saved; if a first-card ask was pending, the card has "
         "already gone out and the result says so — reply [silent]."
     ),

@@ -430,6 +430,11 @@ def _build_system_prompt(user) -> str:
             profile += ("\n\nReminders you've set (code sends these at that time — you can say "
                         "you'll ping them; never promise one that isn't listed here):\n"
                         + "\n".join(f"- {describe(r, tz)}" for r in rows))
+        if config.WATER_REMINDERS_ENABLED and config.REMINDERS_ENABLED:
+            profile += ("\n\nWater / hydration pings ARE a thing you do: if they ask for them, code turns "
+                        "them on the moment they ask (the 'drink water' row appears above) — confirm it in "
+                        "a few words (\"bet, ur on, every few hours while ur up\"). Never say you can't "
+                        "or don't do water reminders yet.")
     except Exception as e:  # noqa: BLE001
         logger.warning("REMINDER_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
 
@@ -2399,13 +2404,37 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     except Exception as e:  # noqa: BLE001 — never block the reply on it
         logger.warning("LIFT_ANCHORS_ONBOARDING_FAILED user=%s err=%s", user_row.id, e)
 
+    # "remind me to drink water" / "turn on hydration check": the interval reminder is set in
+    # code (water_offer.maybe_capture_water_request) and shows under "Reminders you've set",
+    # so the coach confirms it instead of "idk if i can do that yet" (live 2026-11-20, user 56).
+    water_set = None
+    try:
+        from water_offer import maybe_capture_water_request
+        water_set = maybe_capture_water_request(user_row.id, incoming_message, source="onboarding")
+    except Exception as e:  # noqa: BLE001 — never block the reply on it
+        logger.warning("WATER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
+
     # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
     # small extraction sets (or corrects) the reminder in code and the prompt shows it.
+    if not water_set:
+        try:
+            from reminders import maybe_capture_onboarding_reminder
+            maybe_capture_onboarding_reminder(user_row.id, incoming_message, _conversation_so_far(user_row.id))
+        except Exception as e:  # noqa: BLE001 — never block the reply on it
+            logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
+
+    # "can i get a workout card / want to hit legs": the day they named is the first card's day
+    # (card_setup.run_onboarding_setup pops it) — live 2026-11-20 (user 56) the setup card was
+    # full body, then the model re-planned to legs: two cards.
     try:
-        from reminders import maybe_capture_onboarding_reminder
-        maybe_capture_onboarding_reminder(user_row.id, incoming_message, _conversation_so_far(user_row.id))
+        if _wants_workout(incoming_message):
+            from workouts.templates import requested_day_key
+            from workouts.calibrate import set_requested_card
+            rk = requested_day_key(incoming_message)
+            if rk:
+                set_requested_card(user_row.id, rk)
     except Exception as e:  # noqa: BLE001 — never block the reply on it
-        logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
+        logger.warning("REQUESTED_CARD_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
 
     missing_after = _get_missing_fields(user_row)
     system_prompt = _build_system_prompt(user_row)

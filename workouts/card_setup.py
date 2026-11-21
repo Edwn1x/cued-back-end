@@ -26,7 +26,7 @@ SMS users see none of this (no extension, per-exercise texts as before).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import config
 
@@ -44,6 +44,12 @@ EXTENSION_INTRO = (
 # Founder (2026-09-24): the browser link (PR #113) is offered ONLY when they push back on
 # installing — never up front. The framing is a confident ask; the model holds the link.
 EXTENSION_REMINDER = "heads up, the card needs that imessage extension (like gamepigeon, one tap to add)"
+# The one-liner never follows the full framing within this window: live 2026-11-20 (user 56)
+# the setup card and the model's re-planned legs card went out 14s apart and she got both.
+EXTENSION_REMINDER_MIN_GAP_S = 15 * 60
+# "im gonna go rn" / "starting legs" within this many minutes of the setup step = the first
+# card is for NOW (active, the coach's plan text), not a planned card to tap at home.
+GOING_NOW_LOOKBACK_MIN = 10
 # The tour is HIDDEN (founder 2026-10-09: the setup thread was too long on a phone). After
 # the first card, ONE line offers it; the coach explains in TOUR's words only if they ask
 # (context_line hands it over). At setup a second line says what happens next, because
@@ -105,7 +111,11 @@ def send_extension_intro_if_due(user_id: int, phone: str) -> list[str]:
     if getattr(u, "prefers_card_link", False) and config.CARD_LINK_FALLBACK_ENABLED:
         return []          # they chose the browser link (PR #113): no extension talk at all
     from sms import send_sms
-    lines = list(EXTENSION_INTRO) if not getattr(u, "card_setup_at", None) else [EXTENSION_REMINDER]
+    stamped = getattr(u, "card_setup_at", None)
+    if stamped and (_naive_utcnow() - stamped) < timedelta(seconds=EXTENSION_REMINDER_MIN_GAP_S):
+        logger.info("CARD_SETUP_REMINDER_SKIPPED user=%s reason=intro_just_sent", user_id)
+        return []
+    lines = list(EXTENSION_INTRO) if not stamped else [EXTENSION_REMINDER]
     for line in lines:
         send_sms(phone, line, user_id=user_id, message_type=MESSAGE_TYPE)
     _stamp(user_id, "card_setup_at")
@@ -187,6 +197,33 @@ def _has_planned_setup_card(user_id) -> bool:
         return False
 
 
+def going_now(user_id: int) -> bool:
+    """They're at the gym / heading in right now: session_state says at_gym, or an inbound in
+    the last GOING_NOW_LOOKBACK_MIN minutes is an arrival ("im gonna go rn", "starting legs")
+    with no future marker. Live 2026-11-20 (user 56): "can i get my workout card im gonna go
+    rn" completed onboarding; the setup card said "nothing to do rn — when ur heading to the
+    gym just say so"."""
+    try:
+        from models import get_session_state
+        st = get_session_state(user_id) or {}
+        if st.get("status") == "at_gym":
+            return True
+        from models import get_session, Message
+        from workouts.park import ARRIVAL_RE, FUTURE_RE
+        since = _naive_utcnow() - timedelta(minutes=GOING_NOW_LOOKBACK_MIN)
+        s = get_session()
+        try:
+            rows = (s.query(Message.body).filter(Message.user_id == user_id, Message.direction == "in",
+                                                 Message.created_at >= since)
+                    .order_by(Message.id.desc()).limit(6).all())
+        finally:
+            s.close()
+        return any(r[0] and ARRIVAL_RE.search(r[0]) and not FUTURE_RE.search(r[0]) for r in rows)
+    except Exception as e:  # noqa: BLE001 — never block a card on this read
+        logger.info("CARD_SETUP_GOING_NOW_CHECK_FAILED user=%s err=%s", user_id, e)
+        return False
+
+
 def ask_text(user) -> str:
     lvl = (getattr(user, "experience", None) or "").strip().lower()
     return ASK_TRAINED if lvl in ("intermediate", "advanced") else ASK_NEW
@@ -224,13 +261,26 @@ def run_onboarding_setup(user_id: int) -> str:
     if active_session_id(user_id):
         return "skipped:open_session"
     from workouts.start import start_workout_session, NeedsAnchors, send_defaults_note
+    from workouts.calibrate import pop_requested_card, set_pending_card, peek_pending_card
     u = _user(user_id)
     if u is None:
         return "skipped:no_user"
+    # The day they asked for during onboarding ("want to hit legs"), else the split's default.
+    key = pop_requested_card(user_id)
+    # Heading in right now → today's card (active, plan text), not a planned setup card.
+    live = going_now(user_id)
+    if key or live:
+        logger.info("CARD_SETUP_MODE user=%s requested_key=%s live=%s", user_id, key, live)
     try:
-        r = start_workout_session(user_id, setup=True)
+        r = start_workout_session(user_id, key, setup=not live)
         send_defaults_note(user_id, r)
     except NeedsAnchors:
+        if live:
+            # The parked ask is still the once-only SETUP step (setup_sequence._card_due reads
+            # it); only the card's mode is decided at answer time (handle_pending_card_reply).
+            parked = peek_pending_card(user_id)
+            if parked:
+                set_pending_card(user_id, parked, setup=True)
         send_sms(u.phone, ask_text(u), user_id=user_id, message_type=MESSAGE_TYPE)
         logger.info("CARD_SETUP_ASKED user=%s", user_id)
         return "asked"

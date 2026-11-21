@@ -214,6 +214,58 @@ def remainder_after_ack(text: str) -> str | None:
     return rest
 
 
+# "wait like remind me to drink water" / "can i turn on hydration check" / "i want water
+# reminder" — an explicit ask, in onboarding where the coach has no tools (live 2026-11-20,
+# user 56: asked three times, told "idk if i can send water reminders yet" twice). The same
+# interval row the offer's yes creates; the offer is then never sent.
+WATER_ASK_RE = re.compile(
+    r"(?=.*\b(?:water|hydrat\w*)\b)(?=.*\b(?:remind\w*|ping\w*|nudge\w*|check[- ]?ins?|checks?|alerts?|notif\w*|track\w*)\b)",
+    re.IGNORECASE | re.DOTALL)
+_WATER_ASK_NEGATIVE_RE = re.compile(r"\b(stop|cancel|turn (?:them |it |those )?off|no more|don'?t|dont|pause|unsubscribe)\b", re.IGNORECASE)
+
+
+def maybe_capture_water_request(user_id: int, text: str, *, source: str = "onboarding") -> dict | None:
+    """Code trigger for tool-less surfaces: an explicit water-reminder ask creates the interval
+    reminder (every WATER_OFFER_DEFAULT_HOURS, or the hours they named) and marks the offer
+    answered. Returns create_reminder's result, {"existing": True} when one is already on, or
+    None when the text isn't an ask. Never raises."""
+    if not (config.WATER_REMINDERS_ENABLED and config.REMINDERS_ENABLED):
+        return None
+    body = (text or "").strip()
+    if not body or not WATER_ASK_RE.search(body) or _WATER_ASK_NEGATIVE_RE.search(body):
+        return None
+    try:
+        from models import get_session, User
+        session = get_session()
+        try:
+            user = session.get(User, user_id)
+            if not user:
+                return None
+            if _has_interval_reminder(session, user_id):
+                if user.water_offer_status != STATUS_YES:
+                    user.water_offer_status = STATUS_YES
+                    session.commit()
+                return {"existing": True}
+            user.water_offer_status = STATUS_YES
+            user.water_offered_at = _naive_utcnow()
+            session.commit()
+        finally:
+            session.close()
+        m = HOURS_RE.search(body)
+        n = max(1, min(12, int(m.group(1)) if m else WATER_OFFER_DEFAULT_HOURS))
+        from reminders import create_reminder
+        r = create_reminder(user_id, REMINDER_TEXT, None, every_hours=n, source="offer")
+        if "error" in r:
+            logger.warning("WATER_REQUEST_CREATE_FAILED user=%s err=%s", user_id, r["error"])
+            return None
+        logger.info("WATER_REQUEST_CAPTURED user=%s every_hours=%s reminder=%s source=%s text=%r",
+                    user_id, n, r.get("id"), source, body[:60])
+        return r
+    except Exception as e:  # noqa: BLE001
+        logger.warning("WATER_REQUEST_CAPTURE_FAILED user=%s err=%s", user_id, e)
+        return None
+
+
 def handle_reply(user_id: int, text: str) -> str | None:
     """Deterministic reply to the offer. Returns the one line to send, or None when
     the inbound isn't an answer to a pending offer (normal turn). A non-yes/no reply

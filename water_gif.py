@@ -53,9 +53,10 @@ def _mime(name: str) -> str:
 
 
 def is_water_row(row) -> bool:
-    """An interval row created by the offer, or one whose text is about water."""
-    if not getattr(row, "every_hours", None):
-        return False
+    """A row created by the offer, or one whose text is about water — interval or one-off.
+    Live 2026-11-20 (user 56): "can u send me one rn im curious what it looks like" → the coach
+    set a one-off 'drink water' a minute out → it fired as plain text ("where's the fun
+    animation") because only interval rows took the sticker path."""
     if getattr(row, "source", None) == "offer":
         return True
     return "water" in (getattr(row, "text", "") or "").lower()

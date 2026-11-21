@@ -497,3 +497,59 @@ def test_a_typed_set_at_the_planned_number_is_evidence(db):
         assert _history_best(s, user.id, "face_pull", verified_only=True) is not None  # they typed it
     finally:
         s.close()
+
+
+# ─── "heaviest squat was 135" is a max (2026-11-20, user 56) ───────────────────────────
+
+@pytest.mark.parametrize("text, loose, bare_is_max, expect", [
+    ("like no clue i think heaviest squat was 135", True, False, [{"exercise": "squat", "weight": 135, "reps": 1}]),
+    ("my heaviest bench was 135", False, False, [{"exercise": "bench", "weight": 135, "reps": 1}]),
+    ("most ive ever squatted is 185", True, False, [{"exercise": "squat", "weight": 185, "reps": 1}]),
+    # the new-lifter ask asked for the heaviest → a bare number IS a max
+    ("squat 135", True, True, [{"exercise": "squat", "weight": 135, "reps": 1}]),
+    ("bench 65 for 5", True, True, [{"exercise": "bench", "weight": 65, "reps": 5}]),      # stated reps win
+    ("i bench 135", False, False, [{"exercise": "bench", "weight": 135}]),                   # strict stays a working weight
+])
+def test_heaviest_and_the_new_lifter_ask_read_as_a_max(text, loose, bare_is_max, expect):
+    from workouts.calibrate import parse_stated_anchors
+    assert parse_stated_anchors(text, loose=loose, bare_is_max=bare_is_max) == expect
+
+
+def test_a_remembered_max_from_a_novice_is_discounted_before_the_card(db):
+    """135×1 from a never-trained 115 lb woman → 105×5 on the card (0.9 × 135, Epley to 5),
+    not 115; the same number from an intermediate lifter is taken at face value (115)."""
+    from workouts.calibrate import calibrated_load, asks_for_a_max
+    from models import User
+    novice = make_user(db, **dict(SARAH, weight_lbs=115, experience="none",
+                                  lift_anchors={"squat": {"weight": 135, "reps": 1, "source": "reply"}}))
+    trained = make_user(db, **dict(ANGEL, phone="+15550009999",
+                                   lift_anchors={"squat": {"weight": 135, "reps": 1, "source": "reply"}}))
+    assert calibrated_load(db, db.get(User, novice.id), "squat", 5, 135, 5) == (105.0, "anchor")
+    assert calibrated_load(db, db.get(User, trained.id), "squat", 5, 135, 5) == (115.0, "anchor")
+    # the related lift follows the discounted number too
+    lp_novice = calibrated_load(db, db.get(User, novice.id), "leg_press", 10, 180, 10)
+    lp_trained = calibrated_load(db, db.get(User, trained.id), "leg_press", 10, 180, 10)
+    assert lp_novice[1] == "family" and lp_novice[0] < lp_trained[0]
+    assert asks_for_a_max(db.get(User, novice.id)) is True and asks_for_a_max(db.get(User, trained.id)) is False
+
+
+def test_the_pending_ask_answer_applies_the_level(db, monkeypatch):
+    """A novice's bare number to the setup ask is a max; a trained lifter's is a working weight."""
+    from agent_tools import handle_start_workout_session
+    from workouts.calibrate import handle_pending_card_reply, anchors_of
+    from models import User
+    import workouts.start as start_mod
+    monkeypatch.setattr(start_mod, "_resolve_channel", lambda uid: "sms")
+    sent = []
+    monkeypatch.setattr(start_mod, "send_sms", lambda phone, body, **kw: sent.append(body) or {"sid": f"m{len(sent)}"})
+    nov = make_user(db, **dict(KRLA, phone="+15550003333"))
+    assert handle_start_workout_session(nov.id, {"template_key": "legs"}).startswith("error: first card")
+    assert handle_pending_card_reply(nov.id, "squat 135") is True
+    db.expire_all()
+    assert anchors_of(db.get(User, nov.id))["squat"]["reps"] == 1
+    assert "starting u at 105 on squat" in sent[0], sent[0]
+    tr = make_user(db, **dict(ANGEL, phone="+15550004444"))
+    assert handle_start_workout_session(tr.id, {"template_key": "legs"}).startswith("error: first card")
+    assert handle_pending_card_reply(tr.id, "squat 135") is True
+    db.expire_all()
+    assert anchors_of(db.get(User, tr.id))["squat"]["reps"] == 5
