@@ -2478,6 +2478,18 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # ALL text blocks, concatenated (adaptive thinking + inline web_search / citations
         # split the reply across several — see _join_text). This is the burn-in fix.
         text = _join_text(resp.content)
+        # A tool call written as XML in the text (live 2026-11-20, reminders msg 11305;
+        # the loop has real tools, so here it is a plan that never became a call). A lone
+        # invoke → its line is the reply; XML in prose → the narration guard below nudges
+        # once, then drops. The wrapper itself is never sent.
+        if text:
+            from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+            if has_leaked_tool_xml(text):
+                inner = unwrap_leaked_tool_xml(text)
+                logger.warning("AGENT_LOOP_TOOL_XML_IN_TEXT user=%s iter=%d unwrapped=%s text=%r",
+                               user.id, i, bool(inner), text[:80])
+                if inner:
+                    text = inner
         if text:
             last_text = text
 
@@ -2548,6 +2560,14 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                                 user.id, bool(state.get("reacted")), (combined_body or "")[:60])
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
             return ""
+        # A real reply with the sentinel on a line of its own (the model answered AND
+        # appended the marker): send the words, never the marker.
+        if text and "[silent]" in text.lower():
+            from agent_tools import strip_sentinel_line
+            stripped = strip_sentinel_line(text)
+            if stripped != text:
+                logger.warning("AGENT_LOOP_SENTINEL_LINE_STRIPPED user=%s iter=%d kept=%r", user.id, i, stripped[:80])
+                text = stripped
         from agent_tools import leaked_tool_call
         leak = leaked_tool_call(text) if (text and tools) else None
         if leak and leak[0] == "react_to_message" and not state.get("reacted"):
@@ -2571,8 +2591,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # (2) ONE forced follow-up with a path for both branches: act with the tools,
         # then send the real words (or the silent sentinel); (3) a repeat is dropped,
         # never sent.
-        from agent_tools import looks_like_narration, salvage_direct_reply, REACTION_ONLY_SENTINEL
-        if text and looks_like_narration(text):
+        from agent_tools import looks_like_narration, salvage_direct_reply, REACTION_ONLY_SENTINEL, has_leaked_tool_xml
+        if text and (looks_like_narration(text) or has_leaked_tool_xml(text)):
             kept = salvage_direct_reply(text) if config.NARRATION_SALVAGE_ENABLED else None
             if kept:
                 logger.warning("AGENT_LOOP_NARRATION_SALVAGED user=%s iter=%d kept=%r dropped_chars=%d",

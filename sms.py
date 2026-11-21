@@ -550,6 +550,19 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         logger.info("SEND_SUPPRESSED_DUPLICATE user=%s type=%s", user_id, message_type)
         return None
 
+    # Tool-call XML is never a text a friend sends (live 2026-11-20, user 42, msg 11305:
+    # a reminder went out as a lone invoke element). The composers unwrap upstream; this
+    # is the backstop at the one door every outbound takes: a lone invoke is sent as its
+    # line, anything else with tool XML in it is refused and logged — no row, no bubble.
+    from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+    if has_leaked_tool_xml(body):
+        inner = unwrap_leaked_tool_xml(body)
+        if not inner:
+            logger.error("SEND_BLOCKED_TOOL_XML user=%s type=%s body=%r", user_id, message_type, body[:160])
+            return None
+        logger.warning("SEND_TOOL_XML_UNWRAPPED user=%s type=%s text=%r", user_id, message_type, inner[:80])
+        body = inner
+
     # Photon migration 4A: route first. iMessage → sidecar, one call, full body.
     # On a hard failure for a user who is NOT on their line yet: write the `failed`
     # row FIRST (the keystone reads it), trip the breaker, then fall through to

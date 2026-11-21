@@ -3347,11 +3347,18 @@ _REACTION_ONLY_META = re.compile(
 def is_reaction_only_text(text: str, reacted: bool) -> bool:
     """True when nothing should be sent: the exact sentinel ALWAYS (a tool result may
     ask for it — start_workout_session sends its own text + card; live 2026-09-14
-    the literal '[silent]' was texted to the founder), and, after a reaction, an
-    empty reply or the meta note a model drifts to."""
+    the literal '[silent]' was texted to the founder); the sentinel on its own line
+    when the rest is the model talking about NOT sending (live 2026-11-18, Alex msg
+    10732: "i already answered this one, so i'm not sending anything new.\n\n[silent]");
+    and, after a reaction, an empty reply or the meta note a model drifts to. A real
+    reply with a stray sentinel line is NOT silence — strip_sentinel_line sends it clean."""
     t = (text or "").strip()
     if t.lower() == REACTION_ONLY_SENTINEL:
         return True
+    if _SENTINEL_LINE_RE.search(t):
+        rest = strip_sentinel_line(t)
+        if not rest or _NOT_SENDING_RE.search(rest) or looks_like_narration(rest):
+            return True
     if not reacted:
         return False
     return t == "" or bool(_REACTION_ONLY_META.match(t))
@@ -3376,6 +3383,71 @@ def leaked_tool_call(text: str):
         emo = next((t for t in reversed(toks) if not re.match(r"^m?\d+$", t)), toks[-1] if toks else "like")
         return ("react_to_message", emo)
     return ("reply_in_thread", arg)
+
+
+# A tool call written as XML in the visible text — the OTHER shape of the same failure
+# mode, at sites with NO tools at all. Live 2026-11-20 (Alex, user 42, msg 11305):
+# reminder id 57 composed by Opus 5.5 at low effort came back as a lone invoke element
+# whose text parameter was the line it meant to send, stop=end_turn, 56 output tokens —
+# and went out verbatim. No prompt names a send tool; the model invented the wrapper.
+# `has_leaked_tool_xml` is the cheap detector; `unwrap_leaked_tool_xml` returns the text
+# parameter when the WHOLE text is one invoke (the line was fine, the wrapper wasn't),
+# the text unchanged when there is no tool XML, and None when XML is mixed into prose
+# (the caller falls back / nudges — never sends). Tag names are matched with an optional
+# namespace prefix so a namespaced rendering is caught too.
+_NS = r"(?:antml:)?"
+_TOOL_XML_TAG_RE = re.compile(r"<\s*/?\s*" + _NS + r"(?:invoke|parameter|function_calls)\b", re.IGNORECASE)
+_LONE_INVOKE_RE = re.compile(
+    r"^(?:<" + _NS + r"function_calls\s*>\s*)?<" + _NS + r"invoke\b[^>]*>(?P<body>.*?)<\s*/" + _NS + r"invoke\s*>"
+    r"\s*(?:<\s*/" + _NS + r"function_calls\s*>)?$", re.IGNORECASE | re.DOTALL)
+_INVOKE_PARAM_RE = re.compile(
+    r"<" + _NS + r"parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)<\s*/" + _NS + r"parameter\s*>",
+    re.IGNORECASE | re.DOTALL)
+_INVOKE_TAG_RE = re.compile(r"<\s*/?\s*" + _NS + r"invoke\b", re.IGNORECASE)
+_TEXT_PARAM_NAMES = ("text", "body", "message", "line", "content", "reply", "msg")
+
+
+def has_leaked_tool_xml(text: str) -> bool:
+    """True when the text carries a tool-call element (invoke / parameter / function_calls)."""
+    return bool(text) and bool(_TOOL_XML_TAG_RE.search(text))
+
+
+def unwrap_leaked_tool_xml(text):
+    """No tool XML → the text itself. ONE invoke and nothing else → its text-shaped
+    parameter (text/body/message/…), stripped. Anything else (XML mixed into prose, two
+    invokes, no text-shaped parameter, empty parameter) → None: nothing sendable here."""
+    if not text or not has_leaked_tool_xml(text):
+        return text
+    m = _LONE_INVOKE_RE.match(text.strip())
+    if not m or _INVOKE_TAG_RE.search(m.group("body")):   # two invokes → not "one line"
+        return None
+    params = {name.strip().lower(): val for name, val in _INVOKE_PARAM_RE.findall(m.group("body"))}
+    for name in _TEXT_PARAM_NAMES:
+        val = (params.get(name) or "").strip()
+        if val and not has_leaked_tool_xml(val):
+            return val
+    return None
+
+
+# The sentinel on its OWN LINE inside a longer reply. Live 2026-11-18 (Alex, msg 10732,
+# a continuation turn): "i already answered this one, so i'm not sending anything new.
+# \n\n[silent]" — the exact-match check missed it and the narration went out as a text.
+_SENTINEL_LINE_RE = re.compile(r"^[ \t]*\W?\[silent\]\W?[ \t]*$", re.IGNORECASE | re.MULTILINE)
+_NOT_SENDING_RE = re.compile(
+    r"(\balready (answered|covered|said|sent|replied|addressed)\b|\bnot sending\b|\bnothing (new|else|more) to (send|add|say)\b|"
+    r"\bnothing new\b|\bno (new |further |extra )?(text|reply|message) (needed|required)\b|\bcovered (it|that|this)\b|"
+    r"\bthe (tapback|reaction|thumbs ?up|👍) (is|was) the (reply|answer)\b|\bstay(ing)? silent\b|\bno reply needed\b)",
+    re.IGNORECASE)
+
+
+def strip_sentinel_line(text: str) -> str:
+    """The text without any line that is just the sentinel (blank runs collapsed). A
+    sentinel inside a sentence is left alone — it is not the marker then."""
+    t = text or ""
+    if not _SENTINEL_LINE_RE.search(t):
+        return t
+    out = _SENTINEL_LINE_RE.sub("", t)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 # Planning notes sent AS the reply. Live 2026-09-23 (Alex, msg 4461): "react to this —

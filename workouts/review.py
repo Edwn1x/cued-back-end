@@ -214,7 +214,14 @@ def _call(user_id: int, site: str, system: list, instruction: str, *, max_tokens
     if getattr(resp, "stop_reason", None) == "max_tokens":
         logger.warning("REVIEW_TRUNCATED user=%s site=%s", user_id, site)
         return None
-    return (_join_text(resp.content) or "").strip()
+    text = (_join_text(resp.content) or "").strip()
+    # A tool-call element written as the text (live 2026-11-20, reminders): unwrap a
+    # lone invoke to its line, refuse anything else — None takes the caller's fallback.
+    from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+    if has_leaked_tool_xml(text):
+        text = unwrap_leaked_tool_xml(text)
+        logger.warning("REVIEW_TOOL_XML_IN_TEXT user=%s site=%s unwrapped=%s", user_id, site, bool(text))
+    return text or None
 
 
 def _parse_json(text: str) -> dict | None:
