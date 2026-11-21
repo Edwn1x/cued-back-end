@@ -2220,9 +2220,9 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
         # EVERY text block, not just the first — with adaptive thinking + inline
         # web_search the model splits the nudge across blocks (a lead-in before the
         # search result, the substance after). Same seam as agent_loop's _join_text.
-        text = _join_text(resp.content)
+        text = _bare_text_fallback(resp.content, user_id, briefing)
         if text:
-            return (True, _guard_schedule_claims(_enforce_briefing(text, briefing, user_id), user_id), search)
+            return (True, text, search)
         # A clean terminal stop with neither a decision tool nor text is an anomaly
         # — log the response shape by name (the signal whose absence let the
         # truncation bug hide) before recording the silent tick.
@@ -2322,3 +2322,18 @@ def heartbeat_all():
             heartbeat_tick(uid)
         except Exception as e:
             logger.error("HEARTBEAT_TICK_FAILED user=%s err=%s", uid, e, exc_info=True)
+
+
+def _bare_text_fallback(content, user_id, briefing=None):
+    """The model ended with bare text instead of calling send_text: every text block
+    joined, then the briefing + schedule guards. A tool-call element written AS the
+    text (live 2026-11-20, reminders: a lone invoke carrying the line) is unwrapped to
+    its line; XML mixed into prose is dropped (None → the silent-tick path), never sent."""
+    from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+    text = _join_text(content)
+    if text and has_leaked_tool_xml(text):
+        text = unwrap_leaked_tool_xml(text)
+        logger.warning("HEARTBEAT_TOOL_XML_IN_TEXT user=%s unwrapped=%s", user_id, bool(text))
+    if not text:
+        return None
+    return _guard_schedule_claims(_enforce_briefing(text, briefing, user_id), user_id)
