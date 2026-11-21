@@ -1063,7 +1063,9 @@ def _fire_one(rid: int, now: datetime) -> bool:
                         ask[:80], row.fire_at)
             return True
         sent_as_gif = False
-        if row.every_hours and config.WATER_GIF_ENABLED:
+        if config.WATER_GIF_ENABLED:
+            # Interval water pings AND a one-off about water ("send me one rn so i can see it"):
+            # the sticker is what a water ping looks like, whichever row it rides on.
             from water_gif import MARKER, is_water_row, send_water_gif
             if is_water_row(row):
                 sent_as_gif = send_water_gif(user, row)

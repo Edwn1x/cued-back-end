@@ -241,7 +241,22 @@ def test_is_water_row():
     assert is_water_row(NS(every_hours=3, source="offer", text="drink water"))
     assert is_water_row(NS(every_hours=2, source="model", text="Drink some WATER"))
     assert not is_water_row(NS(every_hours=2, source="model", text="stand up"))
-    assert not is_water_row(NS(every_hours=None, source="offer", text="drink water"))
+    # a one-off about water is a water ping too (2026-11-20, user 56: "send me one rn")
+    assert is_water_row(NS(every_hours=None, source="offer", text="drink water"))
+    assert is_water_row(NS(every_hours=None, source="model", text="drink some water"))
+    assert not is_water_row(NS(every_hours=None, source="model", text="take creatine"))
+
+
+def test_a_one_off_water_reminder_goes_out_as_the_sticker(db, gif_on, mms_ok, sms_capture, anthropic_stub):
+    """"can u send me one rn im curious what it looks like" → the coach sets a one-off 'drink
+    water' a minute out → it is the sticker, not a plain line (live: "where's the fun animation")."""
+    from models import Reminder
+    from reminders import create_reminder, fire_due
+    u = make_user(db)
+    one = create_reminder(u.id, "drink some water", "07:00", source="model")
+    db.expire_all()
+    assert fire_due(now=db.get(Reminder, one["id"]).fire_at) == 1
+    assert len(mms_ok) == 1 and sms_capture == []
 
 
 # ─── downstream readers see what they saw before ─────────────────────────────────

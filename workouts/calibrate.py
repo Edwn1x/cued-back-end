@@ -219,6 +219,33 @@ def unit_for_slug(slug: str, default_weight: float, plate_step: float) -> str:
 
 # ─── evidence: anchors + history ─────────────────────────────────────────────
 
+def asks_for_a_max(user) -> bool:
+    """True when the first-card ask for this user is the new-lifter wording (card_setup.ASK_NEW /
+    start._anchor_ask_text): "heaviest u've benched or squatted, even just the bar". Its answer
+    is a max by construction, so a reps-less number in it is a 1-rep number."""
+    lvl = (getattr(user, "experience", None) or "").strip().lower()
+    return lvl not in ("intermediate", "advanced")
+
+
+# A remembered max from someone who has barely trained is a one-time best, not a number
+# they can repeat today: the planned 1RM is taken at 90% before the Epley inverse (user 56:
+# squat 135×1 → 105×5 on the card, not 115). Logged (history) evidence and trained lifters'
+# anchors are untouched.
+STATED_MAX_DISCOUNT = 0.9
+
+
+def anchor_1rm(anchor: dict, user=None) -> float:
+    """The 1RM a stated anchor implies. A 1-rep number IS the 1RM (Epley at reps=1 would add
+    3%: 135 → 139.5), then the novice stated-max discount."""
+    w, r = float(anchor["weight"]), int(anchor["reps"])
+    if r != 1:
+        return epley_1rm(w, r)
+    one = w
+    if user is not None and (anchor.get("source") or "") != "history" and profile_of(user)["level"] in ("untrained", "novice"):
+        one *= STATED_MAX_DISCOUNT
+    return one
+
+
 def anchors_of(user) -> dict[str, dict]:
     """users.lift_anchors validated: {slug: {"weight": float, "reps": int, ...}}."""
     raw = getattr(user, "lift_anchors", None)
@@ -299,7 +326,8 @@ def family_1rm_evidence(session, user, family: str) -> tuple[float, str] | None:
             ev.append(((a["weight"], a["reps"]), "anchor"))
         for (w, r), src in ev:
             if frac is None:
-                cands.append((epley_1rm(w, r), src))
+                cands.append((anchor_1rm({"weight": w, "reps": r, "source": src}, user) if src == "anchor"
+                              else epley_1rm(w, r), src))
             elif frac > 0:
                 cands.append((w / frac, src))       # accessory working load → family 1RM
     if not cands:
@@ -325,7 +353,7 @@ def calibrated_load(session, user, slug: str, reps: int, default_weight: float, 
     # 1. a stated anchor for THIS lift
     a = anchors_of(user).get(slug)
     if a:
-        return round_load(working_load_from_1rm(epley_1rm(a["weight"], a["reps"]), reps), unit, evidence=True), "anchor"
+        return round_load(working_load_from_1rm(anchor_1rm(a, user), reps), unit, evidence=True), "anchor"
 
     # 2. a related lift's evidence
     if fam:
@@ -471,7 +499,12 @@ _RANGE_RE = re.compile(
     re.IGNORECASE)
 # A clause about a MAX ("my pr is 185", "maxed 225") with no reps stated is a 1-rep number,
 # not a ~5-rep working weight (else a 185 max would seed a 185×5 card).
-_MAX_WORDS_RE = re.compile(r"\b(pr|prs|max|maxed|maxes|1\s?rm|one[- ]rep|all[- ]time|best ever)\b", re.IGNORECASE)
+# "heaviest squat was 135" (live 2026-11-20, user 56: the first-card ask SAID "heaviest u've
+# benched or squatted" and the answer came back as a 5-rep working weight — 4×5 at her max).
+_MAX_WORDS_RE = re.compile(
+    r"\b(pr|prs|max|maxed|maxes|1\s?rm|one[- ]rep|all[- ]time|best ever|heaviest|highest|record"
+    r"|(?:most|ever) (?:i'?ve )?(?:ever )?(?:done|lifted|hit|put up|got(?:ten)? (?:up )?to|benched|squatted|pressed|pulled|deadlifted))\b",
+    re.IGNORECASE)
 _GOAL_WORDS_RE = re.compile(r"\b(want|wanna|goal|get to|hit|reach|hoping|trying to|one day|eventually|someday|target)\b", re.IGNORECASE)
 
 
@@ -486,12 +519,15 @@ def _collapse_ranges(text: str) -> str:
     return _RANGE_RE.sub(_mid, text)
 
 
-def parse_stated_anchors(text: str, *, loose: bool = False) -> list[dict]:
+def parse_stated_anchors(text: str, *, loose: bool = False, bare_is_max: bool = False) -> list[dict]:
     """"i bench 135 and squat 185 for 5" → [{"exercise": "bench", "weight": 135}, {..., "reps": 5}].
     A clause carrying a goal word yields nothing (precision-biased). A range collapses to its
     midpoint; a max/PR clause without reps is a 1-rep number. `loose` (the first-card ask's
     answer) also accepts a short digit-free gap before the number and a bare "W for R" in a
-    following clause as the lift just named."""
+    following clause as the lift just named. `bare_is_max`: the question they are answering
+    asked for the HEAVIEST they've done (card_setup.ASK_NEW, the new-lifter ask), so a number
+    with no reps is a max, not a working weight — live 2026-11-20 (user 56, 115 lb, never
+    trained): "i think heaviest squat was 135" → squat 4×5 at 135 on the card."""
     out: list[dict] = []
     if not text:
         return out
@@ -509,7 +545,7 @@ def parse_stated_anchors(text: str, *, loose: bool = False) -> list[dict]:
                 item = {"exercise": lift, "weight": w}
                 if r:
                     item["reps"] = int(r)
-                elif maxish:
+                elif maxish or bare_is_max:
                     item["reps"] = 1
                 out.append(item)
                 last_lift, found = lift, True
@@ -633,6 +669,56 @@ def _entry_is_fresh(entry: dict) -> bool:
     return age <= PENDING_CARD_TTL_S
 
 
+# "can i get a workout card / want to hit legs" DURING onboarding (no tools, no card yet): the
+# day they asked for is parked here so the first card at completion is that day, not the
+# split's default. Live 2026-11-20 (user 56): asked for legs twice, got a full-body setup
+# card, then the model re-planned to legs — two cards, 12 bubbles.
+_REQUESTED_KEY = "_requested_card"
+REQUESTED_CARD_TTL_S = 24 * 3600
+
+
+def set_requested_card(user_id: int, template_key: str) -> None:
+    from models import get_session, User
+    from sqlalchemy.orm.attributes import flag_modified
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u:
+            return
+        merged = dict(u.lift_anchors or {})
+        merged[_REQUESTED_KEY] = {"key": template_key, "at": _utcnow().isoformat()}
+        u.lift_anchors = merged
+        flag_modified(u, "lift_anchors")
+        session.commit()
+        logger.info("REQUESTED_CARD_SET user=%s key=%s", user_id, template_key)
+    finally:
+        session.close()
+
+
+def pop_requested_card(user_id: int) -> str | None:
+    """The day they asked for, if asked within REQUESTED_CARD_TTL_S; cleared either way."""
+    from models import get_session, User
+    from sqlalchemy.orm.attributes import flag_modified
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u or not isinstance(u.lift_anchors, dict) or _REQUESTED_KEY not in u.lift_anchors:
+            return None
+        entry = u.lift_anchors.get(_REQUESTED_KEY) or {}
+        u.lift_anchors = {k: v for k, v in u.lift_anchors.items() if k != _REQUESTED_KEY}
+        flag_modified(u, "lift_anchors")
+        session.commit()
+    finally:
+        session.close()
+    if not entry.get("key"):
+        return None
+    try:
+        age = (_utcnow() - datetime.fromisoformat(str(entry.get("at")))).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return str(entry["key"]) if age <= REQUESTED_CARD_TTL_S else None
+
+
 def peek_pending_card(user_id: int) -> str | None:
     """The parked day key if an ask is pending and fresh — without clearing it."""
     from models import get_session, User
@@ -710,11 +796,26 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     if not key or not (text or "").strip():
         return False
     setup = peek_pending_setup(user_id)
+    if setup:
+        # "can i get my workout card im gonna go rn" → the ask → the answer (live 2026-11-20,
+        # user 56): the card she gets is for NOW, not a planned one with "nothing to do rn —
+        # when ur heading to the gym just say so" under it.
+        from workouts.card_setup import going_now
+        if going_now(user_id):
+            logger.info("PENDING_CARD_LIVE user=%s key=%s — setup card goes out as today's session", user_id, key)
+            setup = False
     from workouts.start import start_workout_session, send_defaults_note
     # "leg press 150, never done anything with a bar" — the preference lands BEFORE the
     # card is built, so the card is the machine day.
     maybe_capture_equipment_preference(user_id, text, source="card_reply")
-    items = parse_stated_anchors(text, loose=True)
+    from models import get_session, User
+    _s = get_session()
+    try:
+        _u = _s.get(User, user_id)
+        bare_is_max = asks_for_a_max(_u) if _u else False
+    finally:
+        _s.close()
+    items = parse_stated_anchors(text, loose=True, bare_is_max=bare_is_max)
     if items:
         r = set_anchors(user_id, items, source="reply")
         if r.get("saved"):

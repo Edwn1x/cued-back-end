@@ -316,7 +316,7 @@ CAPABILITIES: list[Capability] = [
     Capability(
         id="water_reminders",
         what="i can ping you to drink water every couple hours while you're up",
-        how="say 'remind me to drink water' (or yes to my offer) and you'll get a short nudge every 2-3 hours between wake and bed; the nudge comes as a small animated water sticker (the stickers got a new look in nov 2026 — that's all 'new sticker drop!' means)",
+        how="say 'remind me to drink water' (or yes to my offer) and you'll get a short nudge every 2-3 hours between wake and bed; the nudge comes as a small animated water sticker (the stickers got a new look in nov 2026 — that's all 'new sticker drop!' means). 'where's the animation' / 'what does it look like' → every water ping IS the animated sticker; NEVER say you can't do animations or only send texts. to show them one right now: set_reminder a one-off 'drink water' a minute out — it goes out as the sticker",
         tools=("set_reminder",),
         enabled=lambda u: config.REMINDERS_ENABLED and config.WATER_REMINDERS_ENABLED,
         relevance=lambda u: 8 if getattr(u, "water_offer_status", None) in (None, "lapsed") else 3,

@@ -408,6 +408,35 @@ def _all_templates():
 # Aliases the split pointer / a user might use.
 ALIASES = {"chest_back": "upper", "shoulders_arms": "upper", "leg": "legs", "fullbody": "full_body"}
 
+# The day someone ASKS for in a workout request — "want to hit legs", "push day", "can i do
+# arms today", "full body". Precision over recall: "back", "push", "pull", "upper", "lower"
+# only after a doing-verb or before "day" ("i'll be back at 5" is not a back day); "legs" and
+# "full body" stand on their own. Only consulted on a message that already reads as a
+# workout request (onboarding_agent._wants_workout).
+_DAY_WORD = (r"(legs?|push(?!\s+(?:through|thru|it|myself)\b)|pull(?!\s+(?:up|it)\b)|upper|lower(?!\s+(?:my|the|it)\b)"
+             r"|chest|back(?!\s+(?:to|in|at|from|on|home|up|later|tmrw|tomorrow)\b)|shoulders?|arms?|biceps?|triceps?"
+             r"|full ?body|fullbody)")
+_REQUESTED_DAY_RE = re.compile(
+    r"(?:\b(?:hit|hitting|do|doing|train|training|work|working|want|wanna|run|running|start|starting)"
+    r"(?:\s+(?:to|some|my|a|the|on))*\s+" + _DAY_WORD + r"\b"
+    r"|\b" + _DAY_WORD + r"\s+day\b"
+    r"|\b(legs|full ?body|fullbody)\b)",
+    re.IGNORECASE)
+
+
+def requested_day_key(text: str) -> str | None:
+    """The template key a workout request names, or None. First unambiguous mention wins."""
+    if not text:
+        return None
+    for m in _REQUESTED_DAY_RE.finditer(text):
+        word = next((g for g in m.groups() if g), None)
+        if not word:
+            continue
+        key = normalize_template_key(word.lower().replace("full body", "full_body"))
+        if key:
+            return key
+    return None
+
 # Loose name matching for legacy `Workout.exercises` rows and typed text ("bench",
 # "incline", "flys"). First match wins; keys are lowercase substrings.
 NAME_HINTS: list[tuple[str, str]] = [

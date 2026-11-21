@@ -85,6 +85,30 @@ def _sessions(uid):
         s.close()
 
 
+def _backdate_card_setup(uid, *, minutes):
+    from datetime import datetime, timezone, timedelta
+    from models import get_session, User
+    s = get_session()
+    try:
+        u = s.get(User, uid)
+        u.card_setup_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=minutes)
+        s.commit()
+    finally:
+        s.close()
+
+
+def _inbound(uid, text, *, ago_min=0):
+    from datetime import datetime, timezone, timedelta
+    from models import get_session, Message
+    s = get_session()
+    try:
+        s.add(Message(user_id=uid, direction="in", body=text, channel="imessage",
+                      created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=ago_min)))
+        s.commit()
+    finally:
+        s.close()
+
+
 def _imsg_user(db, **kw):
     base = dict(preferred_channel="imessage", onboarding_step=2, calorie_target=None, protein_target=None,
                 gender="male", weight_lbs=170, height_in=70, age=21, goal="build_muscle",
@@ -163,6 +187,7 @@ def test_gym_time_reuses_the_untouched_setup_card_in_place(db, setup_on, sidecar
     oa._complete_onboarding(_u(u.id), "yes")
     setup_sid = _sessions(u.id)[0][0]
     del sidecar_ok[:]
+    _backdate_card_setup(u.id, minutes=60)          # gym time is later, not 14s after the framing
 
     r = start_workout_session(u.id)
     assert r["surface"] == "card" and r["setup"] is False and r["session_id"] != setup_sid
@@ -420,3 +445,102 @@ def _legacy_completion_shape(monkeypatch):
     monkeypatch.setattr(_cfg, "ONBOARDING_SUMMARY_ONE_BUBBLE", False)
     monkeypatch.setattr(_cfg, "ONBOARDING_RUNDOWN_STYLE", "tiered")
     monkeypatch.setattr(_cfg, "SETUP_STEPS_DIRECTIVE_ENABLED", False)
+
+
+# ─── Sarah, 2026-11-20 (user 56): the first card when they're going RIGHT NOW ──────────────
+
+def _planned(uid, slug):
+    from models import get_session, SetLog, WorkoutSession
+    s = get_session()
+    try:
+        ws = (s.query(WorkoutSession).filter(WorkoutSession.user_id == uid)
+              .order_by(WorkoutSession.id.desc()).first())
+        rows = s.query(SetLog).filter(SetLog.session_id == ws.id, SetLog.exercise == slug).all()
+        return ws.status, sorted({r.planned_weight for r in rows})
+    finally:
+        s.close()
+
+
+def test_the_day_they_asked_for_during_onboarding_is_the_first_card(db, setup_on, sidecar_ok, card_ok,
+                                                                    sync_threads, anthropic_stub):
+    """"can i get a workout card / want to hit legs" while onboarding → the setup card is legs,
+    not the split's default (live: full body, then a second legs card 20s later)."""
+    from workouts.card_setup import run_onboarding_setup
+    from workouts.calibrate import set_requested_card, pop_requested_card
+    from workouts.templates import requested_day_key
+    u = _imsg_user(db, onboarding_step=3, current_split="none")
+    key = requested_day_key("can i get a workout card\nwant to hit legs")
+    assert key == "legs"
+    set_requested_card(u.id, key)
+    assert run_onboarding_setup(u.id) == "sent"
+    assert card_ok["sent"][0]["caption"].startswith("legs"), card_ok["sent"][0]["caption"]
+    assert pop_requested_card(u.id) is None                      # consumed
+    intro = [b for b in sidecar_ok if b.startswith("here's ur first card")][0]
+    assert "legs day" in intro
+
+
+def test_going_right_now_makes_the_setup_card_todays_session(db, setup_on, sidecar_ok, card_ok,
+                                                             sync_threads, anthropic_stub):
+    """"can i get my workout card im gonna go rn" a minute ago → the card is ACTIVE with the
+    normal intro, no "tap it now so ur set for 6pm", no "nothing to do rn — when ur heading to
+    the gym just say so"."""
+    from workouts.card_setup import run_onboarding_setup, going_now, SETUP_NEXT, TOUR_OFFER, EXTENSION_INTRO
+    u = _imsg_user(db, onboarding_step=3)
+    assert going_now(u.id) is False
+    _inbound(u.id, "can i get my workout card im gonna go rn", ago_min=1)
+    assert going_now(u.id) is True
+    assert run_onboarding_setup(u.id) == "sent"
+    assert sidecar_ok[:2] == list(EXTENSION_INTRO)
+    intro = sidecar_ok[2]
+    assert intro.startswith("push day.") and "tap it now" not in intro, intro
+    assert TOUR_OFFER in sidecar_ok and SETUP_NEXT not in sidecar_ok, sidecar_ok
+    assert _sessions(u.id)[-1][1] == "active"
+
+
+def test_a_future_marker_keeps_the_setup_card_planned(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
+    from workouts.card_setup import run_onboarding_setup, SETUP_NEXT
+    u = _imsg_user(db, onboarding_step=3)
+    _inbound(u.id, "gonna go to the gym tonight after class", ago_min=1)
+    assert run_onboarding_setup(u.id) == "sent"
+    assert SETUP_NEXT in sidecar_ok and _sessions(u.id)[-1][1] == "planned"
+
+
+def test_the_live_answer_to_the_new_lifter_ask_is_a_max_and_the_card_is_for_now(db, setup_on, sidecar_ok, card_ok,
+                                                                                 sync_threads, anthropic_stub):
+    """The whole live sequence: never trained, 5'3 115, asked for legs, "im gonna go rn", the
+    ask ("heaviest u've benched or squatted"), "like no clue i think heaviest squat was 135" →
+    squat anchored at 135×1 (a max), the legs card ACTIVE with squat at 105 (90% of a
+    remembered max, Epley to 5), not 4×5 at 135."""
+    import onboarding_agent as oa
+    from workouts.card_setup import ASK_NEW, SETUP_NEXT
+    from workouts.calibrate import handle_pending_card_reply, set_requested_card, anchors_of, peek_pending_card
+    from models import User
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _imsg_user(db, experience="none", gender="female", weight_lbs=115, height_in=63, age=19,
+                   current_split="none", workout_days=2, workout_time="14:00", lift_anchors=None)
+    set_requested_card(u.id, "legs")
+    _inbound(u.id, "can i get my workout card im gonna go rn", ago_min=0)
+    oa._complete_onboarding(_u(u.id), "about 2500")
+    assert ASK_NEW in sidecar_ok and card_ok["sent"] == []
+    assert peek_pending_card(u.id) == "legs"
+    del sidecar_ok[:]
+    assert handle_pending_card_reply(u.id, "like no clue i think heaviest squat was 135") is True
+    db.expire_all()
+    a = anchors_of(db.get(User, u.id))
+    assert a["squat"]["weight"] == 135 and a["squat"]["reps"] == 1, a
+    status, weights = _planned(u.id, "squat")
+    assert status == "active" and weights == [105.0], (status, weights)
+    intro = sidecar_ok[2]
+    assert intro.startswith("legs day.") and "starting u at 105 on squat" in intro and "tap it now" not in intro, intro
+    assert SETUP_NEXT not in sidecar_ok
+    assert len(card_ok["sent"]) == 1
+
+
+def test_the_one_line_extension_reminder_never_follows_the_framing_within_minutes(db, setup_on, sidecar_ok, card_ok,
+                                                                                  sync_threads, anthropic_stub):
+    from workouts.card_setup import send_extension_intro_if_due, EXTENSION_INTRO, EXTENSION_REMINDER
+    u = _imsg_user(db, onboarding_step=3)
+    assert send_extension_intro_if_due(u.id, u.phone) == list(EXTENSION_INTRO)
+    assert send_extension_intro_if_due(u.id, u.phone) == []            # 14s later: nothing
+    _backdate_card_setup(u.id, minutes=20)
+    assert send_extension_intro_if_due(u.id, u.phone) == [EXTENSION_REMINDER]
