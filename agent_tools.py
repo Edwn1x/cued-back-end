@@ -4133,6 +4133,91 @@ SEND_CONNECT_LINK_TOOL = {
 }
 
 
+MOVE_TO_IMESSAGE_TOOL = {
+    "name": "move_to_imessage",
+    "description": (
+        "Move this thread from SMS (green bubbles) to iMessage. Fire it when they ask for iMessage / "
+        "blue bubbles / 'can we text on imsg' / say they have an iPhone and want to switch, or complain "
+        "the bubbles are green — in that same turn, once; never answer with 'want me to send it?' and "
+        "NEVER say you can't move the thread from your end (you can: this). Code texts them a one-tap "
+        "link as its own bubble on THIS thread; your reply is the sentence around it: tap it once, say "
+        "hey, you pick up over there. The moment their first blue text lands, every reply goes out on "
+        "iMessage — nothing else to do. The RESULT says if they're already on iMessage (then say so; "
+        "green on their side after that = iPhone screening a new number: tell them to save the "
+        "number as a contact) or if no line is available right now (say u're on sms for now)."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def handle_move_to_imessage(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Text the Photon invite over Twilio (never the router: the user is on SMS and their
+    line hasn't heard from them, so an iMessage send would hit the consent gate). The
+    channel flips on their first inbound iMessage (app.py), not here — flipping first
+    would route THIS turn's reply into the gate and fail it back over to SMS with a
+    second link appended. Idempotent per turn; 'already' when they're on iMessage."""
+    if not (config.IMESSAGE_CHANNEL_ENABLED and config.SIDECAR_URL):
+        return "error: imessage isn't available on our side right now — say u're on sms for now, don't promise a move"
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        phone = user.phone
+        on_imessage = (user.preferred_channel or "sms") == "imessage" and not user.channel_failed_over
+        opted_in = bool(user.imessage_opted_in_at)
+        photon_id = user.photon_user_id
+    finally:
+        session.close()
+    if on_imessage:
+        return ("already: this thread is on imessage — these bubbles go out blue. Nothing to send. If they "
+                "see green on their side, iphone is screening a new number: tell them to save the number as a contact")
+    if not photon_id:
+        try:
+            import photon
+            if photon.provision_user(user_id):
+                session = get_session()
+                try:
+                    photon_id = session.get(User, user_id).photon_user_id
+                finally:
+                    session.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MOVE_TO_IMESSAGE_PROVISION_FAILED user=%s err=%s", user_id, e)
+    if not photon_id:
+        return "error: no imessage line is available for them right now — say u're on sms for now, don't promise a move"
+    if opted_in:
+        # They've texted their line before (then chose SMS, or the breaker tripped): the
+        # line works for them — flip now, this turn's reply already goes blue.
+        session = get_session()
+        try:
+            u = session.get(User, user_id)
+            u.preferred_channel = "imessage"
+            u.channel_failed_over = False
+            u.channel_failover_at = None
+            session.commit()
+        finally:
+            session.close()
+        logger.info("MOVE_TO_IMESSAGE user=%s via=flip (opted in before)", user_id)
+        return "ok: switched — they've texted their imessage line before, so this reply already goes out blue. No link needed; just say u're over here now"
+    from photon import imessage_link_for_user
+    link = imessage_link_for_user(user_id)
+    if not link:
+        return "error: no imessage line is available for them right now — say u're on sms for now, don't promise a move"
+    import sms as _sms
+    body = _sms.normalize_for_sms(
+        f"tap this once and send the text it opens, i'll pick up over there: {link}\n\n"
+        f"if my reply doesn't show up there, save that number as a contact, iphone hides new numbers sometimes")
+    try:
+        sid = _sms._send_single(phone, body)
+    except Exception as e:  # noqa: BLE001
+        logger.error("MOVE_TO_IMESSAGE_SEND_FAILED user=%s err=%s", user_id, e)
+        return "error: the link didn't send — say u'll try again in a sec, don't paste a link yourself"
+    _sms._log_message(user_id, body, "imessage_invite", channel="sms", provider_sid=sid, delivery_status="sent")
+    logger.info("MOVE_TO_IMESSAGE user=%s via=invite_sms", user_id)
+    return ("ok: the link went out as its own text on this thread. Your reply goes here too (green, one line): "
+            "tap it once, say hey, and u pick up over there. After their first blue text everything goes blue")
+
+
 def handle_set_day_reset(user_id: int, tool_input: dict, *, message_id=None) -> str:
     """Set the user's nutrition-day rollover hour (0–11 local; 0 = midnight). Recomputes
     today's totals against the new window so the change is reflected immediately."""
@@ -6697,6 +6782,7 @@ _HANDLERS = {
     "lookup_events": handle_lookup_events,
     "schedule_rundown": handle_schedule_rundown,
     "send_connect_link": handle_send_connect_link,
+    "move_to_imessage": handle_move_to_imessage,
     "set_google_account": handle_set_google_account,
     "reply_in_thread": handle_reply_in_thread,
     "remember": handle_remember,

@@ -1450,12 +1450,21 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # proof the pipe works for them — clear channel_failed_over so the next
     # outbound goes blue again. No timers, no polling; the user's own message
     # is the health check. A Twilio inbound proves nothing about iMessage and
-    # never clears it. preferred_channel (the ask) is untouched.
+    # never clears it.
     if channel == "imessage" and user.channel_failed_over:
         user.channel_failed_over = False
         user.channel_failover_at = None
         session.commit()
         logger.info("IMESSAGE_BREAKER_RESET user_id=%s — inbound iMessage proves the pipe", user.id)
+    # The ask itself: a blue text from a provisioned user still on SMS (the "no iPhone" tap
+    # at sign-up — Theo u62 10-15, Maddy u100 11-20 — or move_to_imessage's invite just
+    # tapped) IS the proof their line works for them. Flip here, not in the tool: flipping
+    # before they've texted the line routes the next reply into Photon's consent gate.
+    if (channel == "imessage" and getattr(config, "IMESSAGE_INBOUND_FLIPS_CHANNEL_ENABLED", True)
+            and (user.preferred_channel or "sms") != "imessage" and user.photon_user_id):
+        user.preferred_channel = "imessage"
+        session.commit()
+        logger.info("IMESSAGE_CHANNEL_FLIPPED_ON_INBOUND user_id=%s — they texted their line", user.id)
 
     # Their first inbound iMessage is the proof the shared-pool consent gate is open
     # for this number. Stamped once, in code; the admin waitlist tab reads it and a

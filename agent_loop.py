@@ -2369,6 +2369,16 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # WHERE their stuff is posted, on file (sources.py) — and the routine that re-checks it.
         from agent_tools import SAVE_SOURCE_TOOL
         tools.append(SAVE_SOURCE_TOOL)
+    if getattr(config, "MOVE_TO_IMESSAGE_TOOL_ENABLED", True) and config.IMESSAGE_CHANNEL_ENABLED and config.SIDECAR_URL:
+        # An SMS user asking for blue bubbles: code texts the Photon invite; their first
+        # blue text flips the channel. Offered only while they're NOT on iMessage.
+        try:
+            from sms import _resolve_channel as _chan
+            if _chan(user.id) != "imessage":
+                from agent_tools import MOVE_TO_IMESSAGE_TOOL
+                tools.append(MOVE_TO_IMESSAGE_TOOL)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("MOVE_TO_IMESSAGE_TOOL_GATE_FAILED user=%s err=%s", user.id, e)
     if config.SEND_CONNECT_LINK_TOOL_ENABLED:
         # Texts a one-tap OAuth connect link (gcal/strava). Reveal rule lives in
         # identity/voice.md; the link bubble is an allowed URL exception.
