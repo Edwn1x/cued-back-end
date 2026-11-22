@@ -40,6 +40,13 @@ _waiting_on_prior: set = set()
 # in-flight turn to finish so history is in order when the model sees it.
 _in_flight: dict = {}
 
+def is_in_flight(phone: str) -> bool:
+    """A reply turn for this phone is running right now (flushed, not yet done)."""
+    with _lock:
+        ev = _in_flight.get(phone)
+    return bool(ev is not None and not ev.is_set())
+
+
 # Delay range in seconds (randomized to feel human)
 MIN_DELAY = 90
 MAX_DELAY = 150

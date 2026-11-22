@@ -1681,3 +1681,13 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Outbox (outbox.py): one gate at sms.send_sms for everything cued sends on its own clock.
+OUTBOX_ENABLED = os.getenv("OUTBOX_ENABLED", "true").lower() == "true"
+OUTBOX_LIVE_THREAD_MIN = int(os.getenv("OUTBOX_LIVE_THREAD_MIN", "3"))      # inbound this recent → hold
+OUTBOX_MERGE_WINDOW_S = int(os.getenv("OUTBOX_MERGE_WINDOW_S", "60"))       # another proactive this recent → hold
+OUTBOX_DAILY_MAX = int(os.getenv("OUTBOX_DAILY_MAX", "6"))                  # broadcast lines per local day
+# Founder 2026-11-04: pings ask, never pause. OFF by default; when on, a quiet check-in unanswered
+# for OUTBOX_SILENCE_GRACE_H hours while they stay quiet stands the broadcast stream down.
+OUTBOX_SILENCE_DOWNGRADE_ENABLED = os.getenv("OUTBOX_SILENCE_DOWNGRADE_ENABLED", "false").lower() == "true"
+OUTBOX_SILENCE_GRACE_H = float(os.getenv("OUTBOX_SILENCE_GRACE_H", "48"))

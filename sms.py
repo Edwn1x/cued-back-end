@@ -563,6 +563,19 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         logger.warning("SEND_TOOL_XML_UNWRAPPED user=%s type=%s text=%r", user_id, message_type, inner[:80])
         body = inner
 
+    # Outbox (outbox.py): everything cued sends on its own clock passes one gate here —
+    # live thread → hold, merge window → hold, daily budget → drop. A reply is never gated.
+    outbox_hold = None
+    if user_id:
+        import outbox as _outbox
+        if _outbox.gated(message_type):
+            _v = _outbox.decide(user_id, message_type, phone=phone)
+            if _v.action == "drop":
+                logger.info("OUTBOX_DROPPED user=%s type=%s reason=%s body=%r", user_id, message_type, _v.reason, body[:80])
+                return None
+            if _v.action == "hold":
+                outbox_hold = _v
+
     # Photon migration 4A: route first. iMessage → sidecar, one call, full body.
     # On a hard failure for a user who is NOT on their line yet: write the `failed`
     # row FIRST (the keystone reads it), trip the breaker, then fall through to
@@ -575,6 +588,13 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
         # bubbles landed.
         bubbles = [_imessage_body(b) for b in split_bubbles(body)]
         hold_ok = _hold_eligible(user_id)
+        if outbox_hold is not None and hold_ok:
+            from held_outbound import hold
+            hold(user_id, phone, body, bubbles, message_type, reply_to_sid,
+                 reason=outbox_hold.hold_note, error=outbox_hold.hold_note, delay_s=outbox_hold.delay_s)
+            logger.info("OUTBOX_HELD user=%s type=%s reason=%s delay_s=%s", user_id, message_type,
+                        outbox_hold.reason, outbox_hold.delay_s)
+            return None
         if hold_ok:
             from held_outbound import hold, pending_count, drain_user
             # Order + economy: while Photon is known-down, or earlier messages to
@@ -647,6 +667,17 @@ def send_sms(phone: str, body: str, user_id: int = None, message_type: str = "fr
             logger.error("IMESSAGE_SEND_FAILED user_id=%s message_type=%s err=%s — failing over to SMS",
                          user_id, message_type, e)
             _mark_failed_over(user_id)
+
+    # No hold queue on SMS (or a line not yet opted in): a held broadcast is dropped — the
+    # moment it was written for is the live conversation it would land in; an asked-for
+    # reminder goes now rather than never.
+    if outbox_hold is not None:
+        import outbox as _outbox
+        if _outbox.is_broadcast(message_type):
+            logger.info("OUTBOX_DROPPED user=%s type=%s reason=%s_no_hold body=%r", user_id, message_type,
+                        outbox_hold.reason, body[:80])
+            return None
+        logger.info("OUTBOX_SENT_NOW user=%s type=%s reason=%s_no_hold", user_id, message_type, outbox_hold.reason)
 
     # Last transform before dispatch — normalize once on the full body so the
     # warning log (next 6 lines) reports per-logical-message, not per-segment.

@@ -969,6 +969,21 @@ def _fire_one(rid: int, now: datetime) -> bool:
         # PROGRAM_REMINDER_QUIET_CATCHUP_MIN of its slot (usually up ~9 → 9:20), else this
         # occurrence is skipped (a 3.5h-late "gym time" is noise, not a reminder).
         if not row.every_hours and row.source == "program":
+            # Silence downgrade (outbox.py, flag OFF by default): the quiet check-in went
+            # unanswered for days and they are still quiet → "gym time" stands down till they speak.
+            try:
+                from outbox import silence_downgraded
+                downgraded = silence_downgraded(user, session, now)
+            except Exception as e:  # noqa: BLE001 — never drop the ping on a gate failure
+                logger.warning("PROGRAM_GATE_SILENCE_FAILED user=%s err=%s", user.id, e)
+                downgraded = False
+            if downgraded:
+                nxt = _next_for_row(user, row, tz, after=now)
+                row.fire_at, row.active = (nxt, True) if nxt else (row.fire_at, False)
+                session.commit()
+                logger.info("REMINDER_GATED user=%s id=%s reason=silence_downgrade next=%s", row.user_id, rid,
+                            row.fire_at if row.active else None)
+                return False
             from training_pause import is_paused
             if is_paused(user, now):
                 # They told the coach they're out (sick / away / exams): no "gym time" till it lapses.
