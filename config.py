@@ -1681,3 +1681,8 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Scoreboard (scoreboard.py): the agenda the coach owns for this person — sessions vs plan, the day
+# type that keeps slipping, the weigh-in, seven days of food vs target, the lines it left open —
+# computed by code every turn, with a LEAD line the model speaks to.
+SCOREBOARD_ENABLED = os.getenv("SCOREBOARD_ENABLED", "true").lower() == "true"

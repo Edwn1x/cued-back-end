@@ -912,6 +912,17 @@ def build_loop_context(user, session) -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning("REENGAGE_CUE_FAILED user=%s err=%s", user.id, e)
 
+    # 7b. The scoreboard (scoreboard.py): what the coach owns for them this week, with the one
+    # standing condition to lead from. Every turn, reactive and proactive (the heartbeat's
+    # context begins with this builder). Post-onboarding only; fail-open.
+    try:
+        from scoreboard import context_block as _scoreboard_block
+        _sbb = _scoreboard_block(user, session)
+        if _sbb:
+            parts.append(_sbb)
+    except Exception as e:  # noqa: BLE001 — never break a turn over the scoreboard
+        logger.warning("SCOREBOARD_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
     # 8. Known gaps + follow-up permission.
     gaps = _known_gaps(user)
     if gaps:
