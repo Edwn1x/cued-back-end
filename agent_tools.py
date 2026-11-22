@@ -4398,6 +4398,155 @@ def handle_set_weather_location(user_id: int, tool_input: dict, *, message_id=No
     return f"ok: weather location set to {label} — the brief + get_weather now use it"
 
 
+UPDATE_PROFILE_TOOL = {
+    "name": "update_profile",
+    "description": (
+        "Write a basic fact they STATED onto their profile — the columns their targets, water pings, morning "
+        "brief and workout cards read. Use it the moment they say one of these, in the same turn as your "
+        "reply: steps a day ('about 10.5k' → avg_steps 10500), wake / sleep time ('up at 8, down by 3' → "
+        "wake_time 08:00, sleep_time 03:00), when they train (workout_time 18:00), how many days or which "
+        "days (workout_days 3, or 'mon,wed,fri'), how active their day is (activity_level, their words), "
+        "equipment (full_gym / limited_gym / home_gym / bodyweight / machines), experience (none / beginner / "
+        "intermediate / advanced), anything that hurts (injuries, their words; 'none' clears it), what they do "
+        "(occupation), timezone (IANA). Only what they said — never a guess. NOT for weight (log_weight) or "
+        "the city they're in (set_weather_location). `remember` is a note and changes none of their numbers; "
+        "this does. The result says what changed and, if steps / activity / days moved their calorie target, "
+        "the old and new number — say the new number in a few words."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "avg_steps": {"type": "integer", "description": "average steps per day, 0–50000"},
+            "wake_time": {"type": "string", "description": "HH:MM 24h, their usual wake"},
+            "sleep_time": {"type": "string", "description": "HH:MM 24h, their usual bedtime"},
+            "workout_time": {"type": "string", "description": "HH:MM 24h, when they usually train"},
+            "workout_days": {"type": "string", "description": "a count ('3') or day list ('mon,wed,fri')"},
+            "activity_level": {"type": "string", "description": "how active their day is, in their words"},
+            "equipment": {"type": "string", "description": "full_gym | limited_gym | home_gym | bodyweight | machines"},
+            "experience": {"type": "string", "description": "none | beginner | intermediate | advanced"},
+            "injuries": {"type": "string", "description": "what hurts / what to work around, their words; 'none' clears"},
+            "occupation": {"type": "string", "description": "what they do — job, school, year"},
+            "user_timezone": {"type": "string", "description": "IANA zone, e.g. America/Los_Angeles"},
+        },
+    },
+}
+
+_PROFILE_EQUIPMENT = {"full_gym", "limited_gym", "home_gym", "bodyweight", "machines"}
+_PROFILE_EXPERIENCE = {"none", "beginner", "intermediate", "advanced"}
+_PROFILE_TARGET_FIELDS = {"avg_steps", "activity_level", "workout_days", "experience"}
+_DAY_ABBR = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
+def _clean_profile_input(tool_input: dict) -> tuple[dict, list[str]]:
+    """Validate the allowlisted fields → ({column: value}, [rejections])."""
+    out: dict = {}
+    bad: list[str] = []
+    ti = tool_input or {}
+    if "avg_steps" in ti and ti["avg_steps"] not in (None, ""):
+        try:
+            n = int(ti["avg_steps"])
+            if 0 <= n <= 50000:
+                out["avg_steps"] = n
+            else:
+                bad.append("avg_steps must be 0–50000")
+        except (TypeError, ValueError):
+            bad.append("avg_steps must be a number")
+    for f in ("wake_time", "sleep_time", "workout_time"):
+        v = ti.get(f)
+        if v in (None, ""):
+            continue
+        v = str(v).strip()
+        if _HHMM_RE.match(v):
+            h, m = v.split(":")
+            out[f] = f"{int(h):02d}:{m}"
+        else:
+            bad.append(f"{f} must be HH:MM (24h)")
+    v = ti.get("workout_days")
+    if v not in (None, ""):
+        v = str(v).strip().lower()
+        if v.isdigit() and 1 <= int(v) <= 7:
+            out["workout_days"] = v
+        else:
+            days = [d.strip()[:3] for d in v.replace(" ", "").split(",") if d.strip()]
+            if days and all(d in _DAY_ABBR for d in days):
+                out["workout_days"] = ",".join(dict.fromkeys(days))
+            else:
+                bad.append("workout_days must be a count 1–7 or a day list like mon,wed,fri")
+    v = ti.get("equipment")
+    if v not in (None, ""):
+        v = str(v).strip().lower().replace(" ", "_")
+        if v in _PROFILE_EQUIPMENT:
+            out["equipment"] = v
+        else:
+            bad.append("equipment must be one of full_gym / limited_gym / home_gym / bodyweight / machines")
+    v = ti.get("experience")
+    if v not in (None, ""):
+        v = str(v).strip().lower()
+        if v in _PROFILE_EXPERIENCE:
+            out["experience"] = v
+        else:
+            bad.append("experience must be none / beginner / intermediate / advanced")
+    for f, cap in (("activity_level", 500), ("injuries", 2000), ("occupation", 200)):
+        v = ti.get(f)
+        if v not in (None, ""):
+            out[f] = str(v).strip()[:cap]
+    v = ti.get("user_timezone")
+    if v not in (None, ""):
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(str(v).strip())
+            out["user_timezone"] = str(v).strip()
+        except Exception:  # noqa: BLE001
+            bad.append("user_timezone must be an IANA zone")
+    return out, bad
+
+
+def handle_update_profile(user_id: int, tool_input: dict, *, message_id=None) -> str:
+    """Write stated basics to the profile columns; recompute code-owned targets when a field
+    they depend on moved. Returns what changed (and old → new calories when they moved)."""
+    if not getattr(config, "UPDATE_PROFILE_TOOL_ENABLED", True):
+        return "error: update_profile is not enabled"
+    fields, bad = _clean_profile_input(tool_input)
+    if not fields:
+        return "error: nothing to write — " + ("; ".join(bad) if bad else "pass at least one field they stated")
+    session = get_session()
+    try:
+        user = session.get(User, user_id)
+        if not user:
+            return "error: user not found"
+        changed: dict[str, tuple] = {}
+        for col, val in fields.items():
+            old = getattr(user, col, None)
+            if col == "injuries" and str(val).strip().lower() in ("none", "nothing", "no", "n/a"):
+                val = "none"
+            if str(old) != str(val):
+                setattr(user, col, val)
+                changed[col] = (old, val)
+        session.commit()
+    finally:
+        session.close()
+    if not changed:
+        return "ok: already on file — nothing changed" + (f" (ignored: {'; '.join(bad)})" if bad else "")
+    parts = [f"{k}={v[1]!r}" + (f" (was {v[0]!r})" if v[0] not in (None, "") else "") for k, v in changed.items()]
+    targets_note = ""
+    if _PROFILE_TARGET_FIELDS & set(changed):
+        try:
+            from macro_calculator import recompute_targets
+            r = recompute_targets(user_id)
+            if r.get("changed") and r["old"][0] is None:
+                targets_note = f"; targets set: {r['new'][0]} cal / {r['new'][1]}g"
+            elif r.get("changed"):
+                targets_note = (f"; targets {r['old'][0]} → {r['new'][0]} cal, protein {r['old'][1]} → {r['new'][1]}g "
+                                f"— say the new number in a few words")
+            elif "old" in r:
+                targets_note = f"; targets unchanged ({r['new'][0]} cal / {r['new'][1]}g)"
+        except Exception as e:  # noqa: BLE001 — the write landed; the recompute is best-effort
+            logger.warning("UPDATE_PROFILE_RECOMPUTE_FAILED user=%s err=%s", user_id, e)
+    logger.info("PROFILE_UPDATED user=%s fields=%s%s", user_id, sorted(changed), targets_note.replace("—", "-"))
+    return "ok: " + ", ".join(parts) + targets_note + (f" (ignored: {'; '.join(bad)})" if bad else "")
+
+
 SET_GOOGLE_ACCOUNT_TOOL = {
     "name": "set_google_account",
     "description": (
@@ -6672,6 +6821,7 @@ def _clear_pending(user_id: int, proposal: dict) -> None:
 
 
 _HANDLERS = {
+    "update_profile": handle_update_profile,
     "create_calendar_event": handle_create_calendar_event,
     "delete_calendar_event": handle_delete_calendar_event,
     "move_calendar_event": handle_move_calendar_event,

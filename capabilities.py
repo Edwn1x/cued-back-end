@@ -521,6 +521,15 @@ CAPABILITIES: list[Capability] = [
         used=lambda session, u: bool(getattr(u, "sources", None)),
         reveal_when="they send a branded menu / schedule photo for the second time, or say 'i'll send you the menu every week'",
     ),
+    Capability(
+        id="profile_updates",
+        what="i keep ur basics current — steps, wake and sleep, when and how often u train, what u have to train with — and ur numbers follow",
+        how="just tell me ('i get like 10k steps', 'i'm up at 8 now', 'i train at 6 not 2') and it's updated; if it moves ur calorie target i say the new number",
+        tools=("update_profile",),
+        enabled=lambda u: getattr(config, "UPDATE_PROFILE_TOOL_ENABLED", True),
+        relevance=lambda u: 2,
+        reveal_when="they correct a schedule or activity fact the coach got wrong",
+    ),
 ]
 
 # Tools the loop offers that are mechanics, not capabilities a user would be told about.
