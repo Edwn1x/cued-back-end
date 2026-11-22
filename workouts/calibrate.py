@@ -714,7 +714,29 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     # "leg press 150, never done anything with a bar" — the preference lands BEFORE the
     # card is built, so the card is the machine day.
     maybe_capture_equipment_preference(user_id, text, source="card_reply")
-    items = parse_stated_anchors(text, loose=True)
+    # Model first (interpret.py): "like no clue i think heaviest squat was 135" is a hedged MAX from a
+    # beginner, not a 5-rep working weight (live 2026-11-20, user 56); the regex reads the number
+    # and misses the sentence. Code bounds what comes back; the regex is the fallback.
+    items = None
+    model_no_number = False
+    try:
+        from interpret import interpret_lift_answer
+        from models import get_session as _gs, User as _User
+        _s = _gs()
+        try:
+            _u = _s.get(_User, user_id)
+        finally:
+            _s.close()
+        if _u is not None:
+            from workouts.card_setup import ask_text
+            read = interpret_lift_answer(_u, ask_text(_u), text)
+            if read is not None:
+                items = read["items"] or None
+                model_no_number = read["no_number"]
+    except Exception as e:  # noqa: BLE001 — the regex path below is the fallback
+        logger.warning("PENDING_CARD_INTERPRET_FAILED user=%s err=%s", user_id, e)
+    if items is None and not model_no_number:
+        items = parse_stated_anchors(text, loose=True)
     if items:
         r = set_anchors(user_id, items, source="reply")
         if r.get("saved"):
@@ -730,7 +752,7 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     # A stale setup ask (past the TTL, kept pending because it is the once-only setup step):
     # a bare "nah" / "idk" days later is an answer to whatever the coach just asked, not to
     # this. Only the strong forms ("no clue", "never lifted", "just start light") take it.
-    if is_no_number_answer(text, strong_only=not pending_card_is_fresh(user_id)):
+    if model_no_number or is_no_number_answer(text, strong_only=not pending_card_is_fresh(user_id)):
         try:
             sr = start_workout_session(user_id, key, no_anchors=True, setup=setup)
             logger.info("PENDING_CARD_NO_NUMBER user=%s key=%s session=%s", user_id, key, sr["session_id"])

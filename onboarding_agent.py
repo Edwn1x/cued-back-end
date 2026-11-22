@@ -1174,6 +1174,9 @@ def _build_confirmation_summary(user, clamp_note: str | None = None) -> str:
     The closer is "seems off or confusing" (founder): they can't know what's wrong, they
     can know what's confusing. The profile link rides with the summary (not the rundown)."""
     targets = calculate_targets(user)
+    # The pair on the row is what was decided (a review may have moved it off the formula).
+    if getattr(user, "calorie_target", None) and getattr(user, "protein_target", None):
+        targets = dict(targets, calories=user.calorie_target, protein=user.protein_target)
     nutrition_only = _is_nutrition_only(user)
 
     who = []
@@ -2610,7 +2613,14 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
     finally:
         session.close()
     targets = calculate_targets(user)
+    # Model review inside code bounds (interpret.py) before a number ever reaches them.
+    try:
+        from interpret import with_review
+        targets = with_review(user, targets)
+    except Exception as e:  # noqa: BLE001 — the formula stands
+        logger.warning("TARGETS_REVIEW_AT_COMPLETION_FAILED user=%s err=%s", user.id, e)
 
+    computed_pair = (targets["calories"], targets["protein"])     # the code's number (formula + review)
     session = get_session()
     try:
         user_row = session.get(UserModel, user.id)
@@ -2622,8 +2632,7 @@ def _complete_onboarding(user, incoming_message: str, *, early: bool = False) ->
             user_row.calorie_target = targets["calories"]
             user_row.protein_target = targets["protein"]
             user_row.targets_source = "computed"
-        user_row.calorie_target_computed = calculate_targets(user)["calories"]
-        user_row.protein_target_computed = calculate_targets(user)["protein"]
+        user_row.calorie_target_computed, user_row.protein_target_computed = computed_pair
         user_row.confirmed_goal_priority = targets.get("goal_label", user_row.goal)
         user_row.coaching_branch = _determine_coaching_branch(user_row)
         user_row.onboarding_step = 3  # complete
