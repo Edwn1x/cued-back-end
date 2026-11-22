@@ -504,6 +504,10 @@ def recompute_targets(user_id: int) -> dict:
         # Pass the session so the wearable-steps path (flag-gated, default off) can
         # read recent real steps; no-op when the flag is off.
         t = calculate_targets(user, session)
+        # Model review inside code bounds (interpret.py): the formula over-feeds heavy / sedentary /
+        # teenage clients on a cut (4150, 3400, 3550, 3100 — all hand-corrected live).
+        from interpret import with_review
+        t = with_review(user, t, session=session)
         old = (user.calorie_target, user.protein_target)
         user.calorie_target_computed = t["calories"]
         user.protein_target_computed = t["protein"]
@@ -522,6 +526,8 @@ def recompute_targets(user_id: int) -> dict:
             limits = f", limit: {', '.join(t['goal_limits'])}" if t["goal_limits"] else ""
             ramp = (f", stepped from their ~{t['ramp']['from_intake']} intake (full {t['ramp']['full_calories']})"
                     if t.get("ramp") else "")
+            if t.get("review"):
+                ramp += f", coach review from {t['review']['from'][0]}: {t['review']['reason']}"
             session.add(TargetAdjustment(
                 user_id=user_id, old_target=old[0], new_target=new[0], changed=True,
                 reason=(f"calculator update ({t['bmr_formula']} maintenance {t['tdee']}, "

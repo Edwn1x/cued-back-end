@@ -154,6 +154,16 @@ def sync_exec(_appmod, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def targets_review_off(_appmod, monkeypatch):
+    """The day-one targets review (interpret.py) is one more model call at completion; the
+    completion tests script the stub per prompt and read "the last instruction". Off here; the
+    interpret tests turn it on themselves."""
+    import config
+    monkeypatch.setattr(config, "TARGETS_MODEL_REVIEW_ENABLED", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def anthropic_stub(_appmod, request, monkeypatch):
     """Patch anthropic Messages.create centrally. Disabled for tier-2 (live)."""
     if "tier2" in request.keywords:

@@ -1681,3 +1681,12 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Model in the loop at interpretive moments, code as the bounds (interpret.py).
+PENDING_CARD_INTERPRET_ENABLED = os.getenv("PENDING_CARD_INTERPRET_ENABLED", "true").lower() == "true"
+TARGETS_MODEL_REVIEW_ENABLED = os.getenv("TARGETS_MODEL_REVIEW_ENABLED", "true").lower() == "true"
+TARGETS_REVIEW_MIN_RATIO = float(os.getenv("TARGETS_REVIEW_MIN_RATIO", "0.6"))     # never below 60% of the formula
+TARGETS_REVIEW_MAX_RATIO = float(os.getenv("TARGETS_REVIEW_MAX_RATIO", "1.10"))    # never above formula + 10%
+TARGETS_REVIEW_MIN_DELTA_PCT = float(os.getenv("TARGETS_REVIEW_MIN_DELTA_PCT", "5"))
+INTERPRET_MODEL = os.getenv("INTERPRET_MODEL", ONBOARDING_EXTRACTOR_MODEL)
+TARGETS_REVIEW_SAMPLES = int(os.getenv("TARGETS_REVIEW_SAMPLES", "2"))   # two reads, the lower wins
