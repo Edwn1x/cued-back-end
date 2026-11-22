@@ -661,9 +661,24 @@ Keep under 400 words total. This REPLACES the prior summary — bring forward wh
 
 
 # ─── Buffered Message Processor ─────────────────────
+def _capture_tapback_preference(user_id: int, body: str) -> None:
+    """Deterministic, per raw inbound, before the buffer: "instead of thumbs up…" /
+    "heart my messages" → users.preferred_tapback. Never raises."""
+    try:
+        from sms import tapback_preference_from_text, set_tapback_preference
+        pref = tapback_preference_from_text(body)
+        if pref and set_tapback_preference(user_id, pref):
+            logger.info("TAPBACK_PREFERENCE_SET user=%s tapback=%s body=%r", user_id, pref, (body or "")[:60])
+    except Exception as e:  # noqa: BLE001
+        logger.info("TAPBACK_PREFERENCE_CAPTURE_FAILED user=%s err=%s", user_id, e)
+
+
 def _react_to_latest_inbound(user_id: int, emoji: str) -> None:
     """Best-effort tapback on the user's newest iMessage (their PR text)."""
     from sms import react_to_latest_inbound
+    if emoji == "like":
+        from sms import preferred_tapback
+        emoji = preferred_tapback(user_id)   # "like" = the default = whatever they asked for
     react_to_latest_inbound(user_id, emoji)
 
 
@@ -1559,6 +1574,10 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
     # Resolve pending clarification
     resolve_pending_clarification(user.id, body)
 
+    # "instead of thumbs up…" / "heart my messages" → the tapback every code-side reaction uses
+    # from now on (live 2026-11-20, user 42 — the model promised hearts, code kept sending 👍).
+    _capture_tapback_preference(user.id, body)
+
     # Fix 1: closing-acknowledgment suppression. Post-onboarding, when
     # the user replies with a pure ack ("ok", "alr bet") AND the coach's
     # most recent outbound has no open '?', end the turn silently —
@@ -1580,8 +1599,8 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         reacted = False  # "Read" already went up when the inbound was logged
         if config.IMESSAGE_REACTIONS_ENABLED and channel == "imessage" and message_sid:
             try:
-                from sms import react_to_message
-                reacted = react_to_message(user.id, message_sid, "like")
+                from sms import react_to_message, preferred_tapback
+                reacted = react_to_message(user.id, message_sid, preferred_tapback(user.id))
             except Exception as e:  # noqa: BLE001 — a tapback must never break the webhook
                 logger.warning("ACK_REACTION_FAILED user=%s err=%s", user.id, e)
         logger.info(f"Fix 1: suppressed closing ack '{body!r}' for {user.name}"

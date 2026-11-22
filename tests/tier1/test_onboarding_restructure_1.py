@@ -94,7 +94,7 @@ def test_text_landing_while_a_turn_is_in_flight_is_a_continuation_and_waits():
     assert phone not in message_buffer._in_flight, "the flush cleared its own in-flight mark"
 
 
-def test_text_seconds_after_a_flush_is_a_continuation_but_a_photo_is_not():
+def test_text_seconds_after_a_flush_is_a_continuation_and_so_is_a_photo_now():
     phone = "+15550009002"
     calls = []
 
@@ -112,9 +112,11 @@ def test_text_seconds_after_a_flush_is_a_continuation_but_a_photo_is_not():
     img = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"}}
     message_buffer.buffer_message(phone, "", 1, "freeform", image_url=img, images=[img],
                                   process_callback=cb, delay_override=(45, 60))
-    assert message_buffer._buffers[phone]["continuation"] is False, "a photo is a real new turn"
+    # 2026-11-21 (user 42's label photo 17s behind its text): a photo right behind a flushed
+    # text continues that turn too — PHOTO_CONTINUATION_ENABLED; off → the old "real new turn".
+    assert message_buffer._buffers[phone]["continuation"] is True, "a photo right behind a text continues it"
     _timer(phone).fire()
-    assert "continuation" not in calls[-1]
+    assert calls[-1].get("continuation") is True
 
 
 def test_a_callback_without_the_kwarg_still_gets_called():

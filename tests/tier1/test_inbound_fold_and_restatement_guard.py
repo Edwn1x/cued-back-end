@@ -228,9 +228,13 @@ def test_text_arriving_while_a_photo_turn_is_pending_folds_into_it():
     assert calls[0]["images"] == [IMG("p")]
 
 
-def test_photo_after_the_text_turn_flushed_is_a_second_turn():
-    """The residual: the photo lands AFTER the text flush (t=20s) → two turns, as
-    expected — the fold can't join a turn that already started; layer B covers it."""
+def test_photo_after_the_text_turn_flushed_is_a_second_turn_that_continues_it(monkeypatch):
+    """The residual: the photo lands AFTER the text flush (t=20s) → still two turns (the fold
+    can't join a turn that already started), but since 2026-11-21 the second one is a
+    CONTINUATION on the short photo band — it waits for the reply it continues and the model
+    reads the photo against what it just said (user 42's label photo, 17s behind the text).
+    Layer B (the restatement guard) still covers a redundant second reply."""
+    monkeypatch.setattr(config, "PHOTO_CONTINUATION_BUFFER_S", (6, 6))
     calls = []
     phone = "+15550001004"
     message_buffer.buffer_message(phone, "did not finish it", 1, "freeform",
@@ -239,7 +243,8 @@ def test_photo_after_the_text_turn_flushed_is_a_second_turn():
     assert len(calls) == 1
     message_buffer.buffer_message(phone, "", 1, "freeform", image_url=IMG("p"), images=[IMG("p")],
                                   process_callback=_cb(calls), delay_override=PHOTO_BAND)
-    assert _band(phone) == PHOTO_BAND, "a fresh photo turn rides the photo band"
+    assert _band(phone) == (6, 6), "a photo right behind a flushed text rides the short continuation band"
+    assert message_buffer._buffers[phone]["continuation"] is True
     _timer(phone).fire()
     assert len(calls) == 2
     assert calls[1]["body"] == "" and calls[1]["images"] == [IMG("p")]

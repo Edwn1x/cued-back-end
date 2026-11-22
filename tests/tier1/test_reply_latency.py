@@ -154,6 +154,9 @@ def test_text_landing_seconds_after_a_flush_gets_the_continuation_band(clock, mo
 
 
 def test_a_photo_is_never_a_continuation_and_keeps_its_band(clock, monkeypatch):
+    """The 2026-11-20 rule, kept behind PHOTO_CONTINUATION_ENABLED=false. By default a photo
+    landing mid-flight IS a continuation now (test_alex_tapback_photo_continuation_past_days)."""
+    monkeypatch.setattr(config, "PHOTO_CONTINUATION_ENABLED", False)
     monkeypatch.setattr(config, "CONTINUATION_BUFFER_S", (2, 2))
     message_buffer._in_flight[PHONE] = threading.Event()
     img = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"}}

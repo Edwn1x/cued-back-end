@@ -362,6 +362,21 @@ REPLY_BUFFER_COMPLETE_S = _band("REPLY_BUFFER_COMPLETE_S", "6,8")
 ADAPTIVE_REPLY_BAND_ENABLED = os.getenv("ADAPTIVE_REPLY_BAND_ENABLED", "true").lower() == "true"
 CONTINUATION_BUFFER_S = _band("CONTINUATION_BUFFER_S", "2,2")
 CONTINUATION_SHORT_BAND_ENABLED = os.getenv("CONTINUATION_SHORT_BAND_ENABLED", "true").lower() == "true"
+# A PHOTO landing while a turn is in flight (or within BUFFER_JOIN_WINDOW_S of a flush) is a
+# continuation too. Live 2026-11-21 15:42 PT (user 42): the label photo landed 17s behind
+# "Ima drink this instead sangria" while the model was answering → it was not a continuation
+# ("a photo keeps its hold"), the text reply guessed 180 cal / 45g from memory, and the photo
+# waited its full 45–60s hold before "mb, i should've read ur label" (100 cal / 25g). Now it
+# takes PHOTO_CONTINUATION_BUFFER_S, waits for the reply it continues, and the model is told
+# to read it against what it just said. A fresh photo (nothing in flight) keeps the hold.
+PHOTO_CONTINUATION_ENABLED = os.getenv("PHOTO_CONTINUATION_ENABLED", "true").lower() == "true"
+PHOTO_CONTINUATION_BUFFER_S = _band("PHOTO_CONTINUATION_BUFFER_S", "6,8")
+# PAST DAYS: the last N logged days ride in the reply context as code-computed totals. Live
+# 2026-11-20 (user 42, "have I been gradually losing weight?"): "a couple days were over 2000
+# (one around 3400)" — no day in 30 was over 2820; the model recalled, because context carried
+# today + yesterday only. Days with nothing logged are listed as unknown, never as zero.
+PAST_DAYS_TOTALS_ENABLED = os.getenv("PAST_DAYS_TOTALS_ENABLED", "true").lower() == "true"
+PAST_DAYS_TOTALS_N = int(os.getenv("PAST_DAYS_TOTALS_N", "7"))
 BUFFER_MIN_REMAINING_S = float(os.getenv("BUFFER_MIN_REMAINING_S", "1.0"))
 # Typing dots on arrival only when the wait is short; a 45–60s photo hold would leave
 # dots up for a minute, so those get dots at flush (existing behaviour).
