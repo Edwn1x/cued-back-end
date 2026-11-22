@@ -710,7 +710,11 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     if not key or not (text or "").strip():
         return False
     setup = peek_pending_setup(user_id)
-    from workouts.start import start_workout_session, send_defaults_note
+    from workouts.start import start_workout_session, send_defaults_note, planned_untouched_session
+    # ANCHOR_ASK_BESIDE_CARD_ENABLED: the starter card is already on their phone and the ask rode
+    # beside it — their number re-plans THAT bubble in place; "no clue" keeps it as is.
+    held = planned_untouched_session(user_id)
+    card_out = bool(held and held[1] == key)
     # "leg press 150, never done anything with a bar" — the preference lands BEFORE the
     # card is built, so the card is the machine day.
     maybe_capture_equipment_preference(user_id, text, source="card_reply")
@@ -720,9 +724,11 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
         if r.get("saved"):
             try:
                 pop_pending_card(user_id)
-                sr = start_workout_session(user_id, key, setup=setup)
-                logger.info("PENDING_CARD_ANSWERED user=%s key=%s anchors=%s session=%s", user_id, key, r["saved"], sr["session_id"])
-                send_defaults_note(user_id, sr)
+                sr = start_workout_session(user_id, key, setup=setup, anchored=card_out)
+                logger.info("PENDING_CARD_ANSWERED user=%s key=%s anchors=%s session=%s replanned=%s",
+                            user_id, key, r["saved"], sr["session_id"], card_out)
+                if not card_out:
+                    send_defaults_note(user_id, sr)
                 return True
             except Exception as e:  # noqa: BLE001 — fall through to the model with anchors saved
                 logger.warning("PENDING_CARD_ANSWER_FAILED user=%s key=%s err=%s", user_id, key, e)
@@ -731,6 +737,16 @@ def handle_pending_card_reply(user_id: int, text: str) -> bool:
     # a bare "nah" / "idk" days later is an answer to whatever the coach just asked, not to
     # this. Only the strong forms ("no clue", "never lifted", "just start light") take it.
     if is_no_number_answer(text, strong_only=not pending_card_is_fresh(user_id)):
+        if card_out:
+            # The starter card already went; "no clue" means it stands. A 👍, nothing to re-send.
+            pop_pending_card(user_id)
+            try:
+                from sms import react_to_latest_inbound
+                react_to_latest_inbound(user_id, "like")
+            except Exception as e:  # noqa: BLE001
+                logger.info("PENDING_CARD_NO_NUMBER_REACT_FAILED user=%s err=%s", user_id, e)
+            logger.info("PENDING_CARD_NO_NUMBER_KEPT user=%s key=%s session=%s", user_id, key, held[0])
+            return True
         try:
             sr = start_workout_session(user_id, key, no_anchors=True, setup=setup)
             logger.info("PENDING_CARD_NO_NUMBER user=%s key=%s session=%s", user_id, key, sr["session_id"])

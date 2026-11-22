@@ -102,21 +102,22 @@ def test_the_first_card_ask_goes_once_not_every_twenty_quiet_minutes(db, seq_on,
     and the card step ran again. The ask is on the floor; its answer sends the card."""
     import onboarding_agent as oa
     import setup_sequence as ss
-    from workouts.card_setup import ask_text
+    from workouts.card_setup import ask_text, ask_beside_text
     monkeypatch.setattr(config, "CONNECT_OFFER_ENABLED", False)
     anthropic_stub.reply_with(lambda kw: "locked in")
-    u = _user(db, lift_anchors=None)                      # no anchors → the ask, not the card
+    u = _user(db, lift_anchors=None)                      # no anchors → the ask (beside the starter card since 2026-11-22)
     oa._complete_onboarding(_u(u.id), "yes")
     _backdate(u.id, 35)
     assert ss.sweep() == 1                                 # water
     _inbound(u.id, "no")
     _backdate(u.id, 35)
-    assert ss.sweep() == 1                                 # the card step → the ask
-    asks = [b for b in sidecar_ok if b == ask_text(_u(u.id))]
-    assert len(asks) == 1, sidecar_ok
+    assert ss.sweep() == 1                                 # the card step → the starter card + the ask beside it
+    asks = [b for b in sidecar_ok if b == ask_beside_text(_u(u.id))]
+    assert len(asks) == 1 and len(card_ok["sent"]) == 1, sidecar_ok
     _backdate(u.id, 35)                                    # 20+ quiet minutes, no answer
-    assert ss.sweep() == 0 and ss.on_inbound(u.id) is None, "asked once; the answer builds the card"
-    assert len([b for b in sidecar_ok if b == ask_text(_u(u.id))]) == 1
+    assert ss.sweep() == 0 and ss.on_inbound(u.id) is None, "asked once; the answer re-plans the card"
+    assert len([b for b in sidecar_ok if b == ask_beside_text(_u(u.id))]) == 1
+    assert ask_text(_u(u.id)) not in sidecar_ok and len(card_ok["sent"]) == 1
 
 
 def test_sweep_yields_while_the_morning_briefing_is_owed(db, seq_on, sidecar_ok, card_ok, sync_threads,

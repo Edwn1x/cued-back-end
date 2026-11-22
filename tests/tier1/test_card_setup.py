@@ -118,11 +118,60 @@ def test_completion_sends_framing_first_card_and_tour_and_defers_water(db, setup
     assert _sessions(u.id) == [(_sessions(u.id)[0][0], "planned", {"id": "photon-card-1"})]
 
 
-def test_no_lifts_asks_first_and_the_answer_sends_the_setup_card(db, setup_on, sidecar_ok, card_ok,
-                                                                  sync_threads, anthropic_stub):
+def test_no_lifts_sends_the_starter_card_with_the_ask_beside_it_and_the_answer_replans_in_place(
+        db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
+    """2026-11-22 (users 88, 86, 56): the lift ask used to GATE the card and went unanswered, so no
+    card was ever built. Now the card goes with starter weights, the ask rides beside it, and the
+    number re-plans the same bubble — one 'updated ur card' line, no second framing."""
+    import onboarding_agent as oa
+    from workouts.card_setup import ASK_BESIDE_NEW, EXTENSION_INTRO, BREAKDOWN_SETUP, EXTENSION_REMINDER
+    from workouts.calibrate import peek_pending_card, peek_pending_setup, handle_pending_card_reply
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _imsg_user(db, experience="beginner", lift_anchors=None)
+    oa._complete_onboarding(_u(u.id), "yes")
+    assert sidecar_ok[0].startswith("ok so far"), sidecar_ok
+    bodies = sidecar_ok[2:]
+    assert bodies[:2] == list(EXTENSION_INTRO)
+    assert bodies[2].startswith("here's ur first card") and "my best guess from ur stats" in bodies[2], bodies[2]
+    assert bodies[3:5] == list(BREAKDOWN_SETUP)
+    assert ASK_BESIDE_NEW in bodies[5:], bodies
+    assert len(card_ok["sent"]) == 1
+    assert peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True      # the ask stays parked
+    planned = _sessions(u.id)[-1]
+    assert planned[1] == "planned"
+
+    sidecar_ok.clear()
+    assert handle_pending_card_reply(u.id, "bench 65 for 5") is True
+    assert sidecar_ok == ["updated ur card off ur numbers — starting u at 65 on bench press. tap a set and change it if it's off, i'll remember."], sidecar_ok
+    assert EXTENSION_REMINDER not in sidecar_ok
+    assert len(card_ok["sent"]) == 1 and len(card_ok["updated"]) == 1          # same bubble, re-planned
+    rows = _sessions(u.id)
+    assert rows[-2] == (planned[0], "abandoned", {"id": "photon-card-1"}) and rows[-1][1] == "planned"
+    assert peek_pending_card(u.id) is None
+
+
+def test_no_clue_after_the_starter_card_keeps_it(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub, monkeypatch):
+    import onboarding_agent as oa
+    import sms
+    from workouts.calibrate import handle_pending_card_reply, peek_pending_card
+    reacted = []
+    monkeypatch.setattr(sms, "react_to_latest_inbound", lambda uid, emoji: reacted.append(emoji) or True)
+    anthropic_stub.reply_with(lambda kw: "locked in")
+    u = _imsg_user(db, experience="none", lift_anchors=None)
+    oa._complete_onboarding(_u(u.id), "yes")
+    assert len(card_ok["sent"]) == 1
+    sidecar_ok.clear()
+    assert handle_pending_card_reply(u.id, "no clue lol") is True
+    assert sidecar_ok == [] and reacted == ["like"] and card_ok["updated"] == []
+    assert peek_pending_card(u.id) is None and _sessions(u.id)[-1][1] == "planned"
+
+
+def test_ask_beside_flag_off_keeps_the_ask_first_shape(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub, monkeypatch):
+    import config
     import onboarding_agent as oa
     from workouts.card_setup import ASK_NEW, EXTENSION_INTRO, BREAKDOWN_SETUP
     from workouts.calibrate import peek_pending_card, peek_pending_setup, handle_pending_card_reply
+    monkeypatch.setattr(config, "ANCHOR_ASK_BESIDE_CARD_ENABLED", False)
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db, experience="beginner", lift_anchors=None)
     oa._complete_onboarding(_u(u.id), "yes")
@@ -371,17 +420,16 @@ def test_set_lift_anchors_keeps_the_setup_card_in_setup_mode(db, setup_on, sidec
     anthropic_stub.reply_with(lambda kw: "locked in")
     u = _imsg_user(db, experience="intermediate", lift_anchors=None)
     oa._complete_onboarding(_u(u.id), "yes")
-    assert sidecar_ok[2] == ASK_TRAINED and peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
-
+    assert sidecar_ok[2:4] == list(EXTENSION_INTRO) and sidecar_ok[4].startswith("here's ur first card")
+    assert ASK_TRAINED not in sidecar_ok and peek_pending_card(u.id) == "push" and peek_pending_setup(u.id) is True
+    sidecar_ok.clear()
     out = handle_set_lift_anchors(u.id, {"lifts": [{"exercise": "bench", "weight": 135, "reps": 10}]})
-    bodies = sidecar_ok[3:]
-    assert bodies[:2] == list(EXTENSION_INTRO)
-    assert bodies[2].startswith("here's ur first card") and "tap it now" in bodies[2], bodies[2]
-    assert bodies[3:5] == list(BREAKDOWN_SETUP)
+    assert sidecar_ok == ["updated ur card off ur numbers — starting u at 155 on bench press. tap a set and change it if it's off, i'll remember."], sidecar_ok   # 135×10 → 1RM 180 → 155×5
     assert _sessions(u.id)[-1][1] == "planned"                      # setup card: planned, not active
     assert peek_pending_card(u.id) is None
-    # no saved push routine → the tool result makes the coach flag the defaults (not [silent])
-    assert "STARTING DEFAULT exercises" in out and "Reply with exactly [silent]" not in out
+    assert len(card_ok["updated"]) == 1
+    # re-planned in place → nothing for the coach to add
+    assert "re-planned in place" in out and "Reply with exactly [silent]" in out
 
 
 def test_code_sent_setup_cards_label_a_generic_day_after_the_tour(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):
@@ -394,12 +442,14 @@ def test_code_sent_setup_cards_label_a_generic_day_after_the_tour(db, setup_on, 
     u = _imsg_user(db)
     oa._complete_onboarding(_u(u.id), "yes")
     assert sidecar_ok[5:7] == list(BREAKDOWN_SETUP) and sidecar_ok[7] == defaults_note("push"), sidecar_ok
-    # the ask → code-answered → card → tour → the note
+    # starter card + ask beside it → tour → the note, once; the answer re-plans in place with no second note
     sidecar_ok.clear()
     v = _imsg_user(db, experience="beginner", lift_anchors=None, phone="+15550003333")
     oa._complete_onboarding(_u(v.id), "yes")
+    assert sidecar_ok.count(defaults_note("push")) == 1 and list(BREAKDOWN_SETUP)[0] in sidecar_ok
+    sidecar_ok.clear()
     assert handle_pending_card_reply(v.id, "bench 65 for 5") is True
-    assert sidecar_ok[-1] == defaults_note("push") and sidecar_ok[-3:-1] == list(BREAKDOWN_SETUP)
+    assert defaults_note("push") not in sidecar_ok and len(sidecar_ok) == 1
 
 
 def test_a_saved_routine_gets_no_note_at_setup(db, setup_on, sidecar_ok, card_ok, sync_threads, anthropic_stub):

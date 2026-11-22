@@ -633,14 +633,22 @@ def handle_set_lift_anchors(user_id: int, tool_input: dict, *, message_id=None) 
     setup = peek_pending_setup(user_id)      # read BEFORE pop clears the marker
     pending = pop_pending_card(user_id)
     if pending:
-        from workouts.start import start_workout_session
+        from workouts.start import start_workout_session, planned_untouched_session
         try:
             # setup= carries the onboarding mode through (live 2026-10-05, user 48: dropped
             # here, the at-home setup card went out as a LIVE session — "start the card,
             # tap each set as u go" to someone on his couch).
-            sr = start_workout_session(user_id, pending, setup=setup)
+            # The starter card may already be on their phone (the ask rode beside it): then
+            # their number re-plans THAT bubble in place — no second framing, no second card.
+            held = planned_untouched_session(user_id)
+            card_out = bool(held and held[1] == pending)
+            sr = start_workout_session(user_id, pending, setup=setup, anchored=card_out)
             how = "card" if sr["surface"] == "card" else "one message per exercise"
-            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s", user_id, pending, sr["session_id"], setup)
+            logger.info("LIFT_ANCHORS_SENT_PENDING_CARD user=%s key=%s session=%s setup=%s replanned=%s",
+                        user_id, pending, sr["session_id"], setup, card_out)
+            if card_out:
+                return (f"ok: saved {saved}{rej}. Their {sr['template_key']} card already on their phone was re-planned "
+                        f"in place from these numbers and code told them so. Reply with exactly [silent].")
             base = (f"ok: saved {saved}{rej}. Their {sr['template_key']} session #{sr['session_id']} already went out "
                     f"as a {how} ({sr['sets']} sets) starting from these numbers.")
             if sr.get("used_default") and sr.get("defaults_noted_today"):

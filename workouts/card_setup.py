@@ -51,8 +51,12 @@ EXTENSION_REMINDER = "heads up, the card needs that imessage extension (like gam
 TOUR_OFFER = "lmk if the layout's confusing or u want me to walk u through it"
 SETUP_NEXT = ("nothing to do rn — when ur heading to the gym just say so and this card's ready. "
               "til then, text me what u eat")
+# Mid-setup (DELIVER_FIRST_ENABLED): the card went out before the questionnaire finished, so
+# "what's next" is the rest of setup, not food.
+SETUP_NEXT_MID = "nothing to do rn — it's ready for when u go. couple more things to set up and we're done"
 BREAKDOWN = (TOUR_OFFER,)                       # after a first card at gym time
 BREAKDOWN_SETUP = (TOUR_OFFER, SETUP_NEXT)      # after the setup card, at home
+BREAKDOWN_SETUP_MID = (TOUR_OFFER, SETUP_NEXT_MID)
 TOUR = (
     "each block is an exercise, each row is a set, weight × reps",
     "tap a row when u finish the set. number off? tap it, fix it, save. + set adds one, swap changes the exercise",
@@ -62,6 +66,13 @@ TOUR = (
 ASK_TRAINED = "before i build ur first card, what do u bench and squat for like 5?"
 ASK_NEW = ("before i build ur first card, got any number at all? heaviest u've benched or squatted, "
            "even just the bar. 'no clue' is fine too")
+# ANCHOR_ASK_BESIDE_CARD_ENABLED: the card is already up with starter weights; the number, when
+# it comes, re-plans the same bubble in place (calibrate.handle_pending_card_reply, anchored=True).
+# Live 2026-10-28/29 (users 88, 86): the ask gated the card, went unanswered, and the card was
+# never built while heartbeats said "card's ready at 6".
+ASK_BESIDE_TRAINED = "that card's my guess. what do u bench and squat for like 5? i'll fix the numbers"
+ASK_BESIDE_NEW = ("those r starter weights. got any number at all? heaviest u've benched or squatted, even just "
+                  "the bar — i'll fix the card. 'no clue' is fine too")
 REFUSED_LINE = "card didn't go through on my end. no stress, i'll text u the exercises when u lift"
 
 
@@ -113,7 +124,7 @@ def send_extension_intro_if_due(user_id: int, phone: str) -> list[str]:
     return lines
 
 
-def send_breakdown_if_due(user_id: int, phone: str, *, setup: bool = False) -> list[str]:
+def send_breakdown_if_due(user_id: int, phone: str, *, setup: bool = False, mid_setup: bool = False) -> list[str]:
     """After the first card lands: the one-line tour OFFER, once ever (+ what's next at setup)."""
     if not enabled():
         return []
@@ -121,7 +132,7 @@ def send_breakdown_if_due(user_id: int, phone: str, *, setup: bool = False) -> l
     if u is None or getattr(u, "card_explained_at", None):
         return []
     from sms import send_sms
-    lines = BREAKDOWN_SETUP if setup else BREAKDOWN
+    lines = (BREAKDOWN_SETUP_MID if mid_setup else BREAKDOWN_SETUP) if setup else BREAKDOWN
     for line in lines:
         send_sms(phone, line, user_id=user_id, message_type=MESSAGE_TYPE)
     _stamp(user_id, "card_explained_at")
@@ -192,6 +203,11 @@ def ask_text(user) -> str:
     return ASK_TRAINED if lvl in ("intermediate", "advanced") else ASK_NEW
 
 
+def ask_beside_text(user) -> str:
+    lvl = (getattr(user, "experience", None) or "").strip().lower()
+    return ASK_BESIDE_TRAINED if lvl in ("intermediate", "advanced") else ASK_BESIDE_NEW
+
+
 def setup_card_refused(user_id: int, phone: str, session_id: int) -> None:
     """Photon refused the card during setup: one honest line, the session retired.
     Never the per-exercise texts — those are for workout time."""
@@ -209,10 +225,12 @@ def setup_card_refused(user_id: int, phone: str, session_id: int) -> None:
     logger.warning("CARD_SETUP_REFUSED user=%s session=%s", user_id, session_id)
 
 
-def run_onboarding_setup(user_id: int) -> str:
-    """The setup step at onboarding completion. Returns 'sent' (framing + card + tour
-    went out), 'asked' (the first-card ask went out; the answer sends the rest through
-    workouts.calibrate.handle_pending_card_reply), or 'skipped:<why>'."""
+def run_onboarding_setup(user_id: int, *, mid_setup: bool = False) -> str:
+    """The setup step at onboarding completion — or, DELIVER_FIRST_ENABLED, the moment the
+    card-critical basics are in mid-setup (`mid_setup`). Returns 'sent' (framing + card + tour
+    went out), 'sent+asked' (starter card + the lift ask beside it; the answer re-plans the card
+    in place through workouts.calibrate.handle_pending_card_reply), 'asked' (the ask alone, the
+    pre-2026-11-22 shape), or 'skipped:<why>'."""
     if not enabled():
         return "skipped:flag"
     if not config.START_WORKOUT_TOOL_ENABLED:
@@ -228,9 +246,26 @@ def run_onboarding_setup(user_id: int) -> str:
     if u is None:
         return "skipped:no_user"
     try:
-        r = start_workout_session(user_id, setup=True)
+        r = start_workout_session(user_id, setup=True, mid_setup=mid_setup)
         send_defaults_note(user_id, r)
     except NeedsAnchors:
+        if getattr(config, "ANCHOR_ASK_BESIDE_CARD_ENABLED", True):
+            # The card goes NOW with starter weights from their stats; the ask rides beside it and
+            # stays parked (setup=True) so their number re-plans the same bubble in place.
+            from workouts.calibrate import peek_pending_card, set_pending_card
+            key = peek_pending_card(user_id)
+            try:
+                r = start_workout_session(user_id, key, no_anchors=True, setup=True, mid_setup=mid_setup)
+            except ValueError as e:
+                logger.info("CARD_SETUP_SKIPPED user=%s why=%s", user_id, e)
+                return f"skipped:{e}"
+            if r.get("surface") == "card" and key:
+                set_pending_card(user_id, key, setup=True)
+                send_sms(u.phone, ask_beside_text(u), user_id=user_id, message_type=MESSAGE_TYPE)
+                send_defaults_note(user_id, r)
+                logger.info("CARD_SETUP_SENT_WITH_ASK user=%s key=%s mid_setup=%s", user_id, key, mid_setup)
+                return "sent+asked"
+            return "sent" if r.get("surface") == "card" else f"skipped:{r.get('surface')}"
         send_sms(u.phone, ask_text(u), user_id=user_id, message_type=MESSAGE_TYPE)
         logger.info("CARD_SETUP_ASKED user=%s", user_id)
         return "asked"

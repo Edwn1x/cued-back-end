@@ -432,6 +432,10 @@ def _build_system_prompt(user) -> str:
                         + "\n".join(f"- {describe(r, tz)}" for r in rows))
     except Exception as e:  # noqa: BLE001
         logger.warning("REMINDER_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    if getattr(user, "card_setup_at", None) and (getattr(user, "onboarding_step", 0) or 0) < 3:
+        profile += ("\n\nTHEIR FIRST WORKOUT CARD IS ALREADY ON THEIR PHONE (code sent it with starter weights). "
+                    "Never promise another, never say one is coming or 'loading'; if they mention it, it's the "
+                    "tappable card right there in the thread. Setup continues for what's still unknown.")
 
     now_local = _now_local(user.user_timezone)
     now_line = (now_local.strftime("%A, %b %-d, %Y, %-I:%M%p")
@@ -521,11 +525,12 @@ the time of day; read it here.
 - If they hand you several things at once, react to them like a person would — don't
   read a checklist back.
 - Never mention fields, profiles, forms, plans you're "building," or what you "need."
-- You cannot send a workout, a card, a plan, numbers, or a link — code sends the first
-  card the moment the basics are in (their stats, training days, anything that hurts).
-  If they ask for a workout / card / plan, say it's coming once those are in,
-  in your own words, as the friend. Never say a card is loading, glitching, should pop
-  up, or already went — none of that is true. Never write a workout out as text.
+- You cannot send a workout, a card, a plan, numbers, or a link yourself — code sends the
+  first card the moment the card basics are in (their stats, training days, anything that
+  hurts), usually BEFORE setup is done; after that, setup just continues. If they ask for
+  a workout / card / plan and it hasn't gone, say it's coming once those are in, in your
+  own words, as the friend. Never say a card is loading, glitching, or should pop up.
+  Never write a workout out as text.
 - 1–3 short sentences. No `---` separators. No greeting — you already said hey.
 - Decide on your ONE question (or none) BEFORE you start writing, then write the reply
   once, as a single paragraph. Never draft-then-revise inside the message, never show an
@@ -2036,6 +2041,64 @@ def _build_card_ask(user, incoming_message: str, system_prompt: str, card_missin
     return _generate(system_prompt, instruction, user_id=user.id)
 
 
+def _build_card_now(user, incoming_message: str, system_prompt: str) -> str:
+    """DELIVER_FIRST_ENABLED: the card-critical basics just landed mid-setup and code is about to
+    send their first card right after this bubble. React in one line, point at the card, no
+    question this turn (setup resumes on their next text)."""
+    instruction = (
+        f"{user.name} just texted you: \"{incoming_message}\"\n\n"
+        f"React to the specific thing they said in ONE short sentence, then say their first workout "
+        f"card is right below (code sends it right after your bubble) and that u'll finish setting the "
+        f"rest up after — your words, as the friend. No question this turn. No numbers, no 'tap it now' "
+        f"(code says that), no exercise list. 1-2 sentences, no greeting."
+    )
+    return _generate(system_prompt, instruction, user_id=user.id)
+
+
+def card_ready(absorbed: "Absorbed") -> bool:
+    """DELIVER_FIRST_ENABLED: setup is still open, but every card-critical basic is in, they're
+    on iMessage, and no card has gone yet → the first card goes THIS turn and the rest of setup
+    continues after it. Live 2026-11-20 (users 96, 100): the program was promised at 12:03 and
+    gated behind a nine-question block; "This is so slow" / "End"."""
+    if not getattr(config, "DELIVER_FIRST_ENABLED", True) or not config.CARD_SETUP_ENABLED:
+        return False
+    if not getattr(config, "START_WORKOUT_TOOL_ENABLED", True):
+        return False
+    user_row = absorbed.user_row
+    missing_after = absorbed.missing_after
+    if not missing_after:
+        return False                     # completion sends it
+    if any(f[0] in CARD_CRITICAL for f in missing_after):
+        return False
+    if getattr(user_row, "card_setup_at", None):
+        return False
+    try:
+        from sms import _resolve_channel
+        if _resolve_channel(user_row.id) != "imessage":
+            return False
+        from workouts.session_ops import active_session_id
+        if active_session_id(user_row.id):
+            return False
+    except Exception as e:  # noqa: BLE001 — never block a setup turn on this read
+        logger.warning("CARD_READY_CHECK_FAILED user=%s err=%s", user_row.id, e)
+        return False
+    return True
+
+
+def send_first_card_mid_setup(user_row) -> str:
+    """The first card, mid-setup (workouts/card_setup.run_onboarding_setup with the mid-setup
+    'what's next' line). Never raises."""
+    try:
+        from workouts.card_setup import run_onboarding_setup
+        result = run_onboarding_setup(user_row.id, mid_setup=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("CARD_NOW_FAILED user=%s err=%s", user_row.id, e)
+        result = f"failed:{e}"
+    logger.info("ONBOARDING_CARD_NOW user=%s result=%s still_unknown=%s", user_row.id, result,
+                [f[0] for f in _get_missing_fields(user_row)])
+    return result
+
+
 def _build_completion_reaction(user, incoming_message: str, system_prompt: str, *, early: bool,
                                assumption_note: str | None = None) -> str:
     """The friend's bubble right before the code summary closes onboarding: react to /
@@ -2539,7 +2602,7 @@ def shape_reply(absorbed: "Absorbed", text: str, *, mode: str, privacy: bool = F
     if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
         text = _reconcile_sleep_guess(user_row, text)
     if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
-            and mode != "big_ask" and not privacy and not _question_part(text)):
+            and mode not in ("big_ask", "card_now") and not privacy and not _question_part(text)):
         field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
         appended = f"also, {_plain(field, user_row)}?"
         logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
@@ -2581,6 +2644,20 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     # ── Done — or they want the workout and the card-critical basics are in ──
     if maybe_complete(absorbed, incoming_message, system_prompt=system_prompt, continuation=continuation):
         return True
+
+    # ── The card-critical basics are in → the first card goes NOW; setup continues after ──
+    if card_ready(absorbed):
+        try:
+            text = _build_card_now(user_row, incoming_message, system_prompt)
+        except Exception as e:  # noqa: BLE001 — the card still goes
+            logger.warning("ONBOARDING_CARD_NOW_REACTION_FAILED user=%s err=%s", user_row.id, e)
+            text = ""
+        if text and text.strip():
+            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+        send_first_card_mid_setup(user_row)
+        logger.info("ONBOARDING_REPLY mode=card_now user=%s still_unknown=%s",
+                    user_row.id, [f[0] for f in missing_after])
+        return False
 
     # ── They want the workout but the card can't be built yet → ask for exactly that ──
     wants_workout, card_missing, _early = close_state(missing_after, incoming_message)

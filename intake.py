@@ -151,6 +151,12 @@ def _mode_lines(user, state: dict) -> str:
                 f"joke, an answer to your question after all), ONE short sentence, no question.")
     if mode == "privacy":
         return "THIS TURN: " + _PRIVACY_BLOCK + " One message, one paragraph, no greeting."
+    if mode == "card_now":
+        return ("THIS TURN: the card basics just landed — code sends their FIRST WORKOUT CARD right after your "
+                "bubble (starter weights, tappable, right there in the thread). React to the specific thing they "
+                "said in ONE short sentence, say the card's right below and that u'll finish the rest of setup "
+                "after — your words. NO question this turn, no numbers, no exercise list, no 'tap it now' (code "
+                "says that). 1-2 sentences.")
     if mode == "card_ask":
         items = ", ".join(f[1].split(" — ")[0] for f in (state.get("card_missing") or []))
         return (f"THIS TURN: they want their workout. You can't send it yet — code sends their first card the "
@@ -201,6 +207,16 @@ def context_block(user) -> str | None:
         missing = state.get("missing") or []
         unknown = "\n".join(f"- {desc}" for _f, desc in missing) or "- nothing — you have what you need"
         card = ", ".join(f[1].split(" — ")[0] for f in (state.get("card_missing") or [])) or "their stats, training days, anything that hurts"
+        if state.get("card_sent"):
+            card_rule = ("- THEIR FIRST WORKOUT CARD IS ALREADY ON THEIR PHONE (code sent it with starter weights; it's "
+                         "the tappable card in the thread). Never promise another, never say one is coming. Never set "
+                         "targets or change a program during setup — code does those at the close.\n")
+        else:
+            card_rule = (f"- Never set targets, never send or start a workout card, never build or change a program during "
+                         f"setup — code does those: the first card the moment {card} are in (often before setup is done), "
+                         f"targets at the close. If they ask for a workout, say it's coming once u have {card}, in your words. "
+                         f"Never say a card is loading, glitching, should pop up, or already went; never write a workout "
+                         f"out as text.\n")
         return (
             f"## SETUP IN PROGRESS — {name} is new, this is still the first conversation\n"
             f"You said it in your first text: a few texts to get to know them, then you run them through how you "
@@ -233,10 +249,7 @@ def context_block(user) -> str | None:
             f"poll / a search → the tool. Then keep setup moving: the one question still ends the reply. A "
             f"pasted routine, a stated lift ('i bench 135') and their stats are saved by code before you see "
             f"this — don't re-save them, don't ask them again.\n"
-            f"- Never set targets, never send or start a workout card, never build or change a program during "
-            f"setup — code does those once the basics are in. If they ask for a workout, say it's coming once u "
-            f"have {card}, in your words. Never say a card is loading, glitching, should pop up, or already "
-            f"went; never write a workout out as text.\n"
+            f"{card_rule}"
             f"- 1-3 short sentences, one paragraph, no `---`, no greeting — you already said hey. Decide your ONE "
             f"question before you write, then write the reply once.\n\n"
             f"{_mode_lines(user, state)}"
@@ -272,11 +285,14 @@ def handle_turn(user, combined_body: str, message_type: str, *, image_url=None, 
         return True
 
     wants_workout, card_missing, _early = oa.close_state(missing_after, combined_body)
+    card_now = oa.card_ready(absorbed)
     mode = oa._intake_mode(combined_body, missing_after, oa._coach_turns(user_row.id),
                            big_ask_sent=oa._big_ask_sent(user_row.id))
     privacy = mode != "big_ask" and oa.is_privacy_question(combined_body)
     if continuation and prev_coach and not absorbed.assumption_note:
         mode = "continuation"
+    elif card_now:
+        mode = "card_now"
     elif wants_workout and card_missing:
         mode = "card_ask"
     elif privacy:
@@ -285,7 +301,8 @@ def handle_turn(user, combined_body: str, message_type: str, *, image_url=None, 
         logger.info("ONBOARDING_PRIVACY_TURN user=%s text=%r", user_row.id, (combined_body or "")[:80])
 
     state = {"mode": mode, "missing": missing_after, "card_missing": card_missing,
-             "assumption_note": absorbed.assumption_note, "prev_coach": prev_coach, "user_row": user_row}
+             "assumption_note": absorbed.assumption_note, "prev_coach": prev_coach, "user_row": user_row,
+             "card_sent": bool(getattr(user_row, "card_setup_at", None))}
     from agent_loop import run_agent_loop
     from agent_tools import pop_turn_state, REACTION_ONLY_SENTINEL
     begin_turn(user_row.id, state)
@@ -319,6 +336,15 @@ def handle_turn(user, combined_body: str, message_type: str, *, image_url=None, 
             send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type,
                      reply_to_sid=turn.get("reply_to"))
             logger.info("ONBOARDING_REPLY mode=continuation user=%s still_unknown=%s path=loop", user_row.id, remaining)
+    elif mode == "card_now":
+        # The reply (if any) then the card; no question this turn — setup resumes on their next text.
+        if text:
+            shaped, action = oa.shape_reply(absorbed, text, mode=mode, privacy=False)
+            if action != "thumbs" and shaped:
+                send_sms(user_row.phone, shaped, user_id=user_row.id, message_type=out_type,
+                         reply_to_sid=turn.get("reply_to"))
+        oa.send_first_card_mid_setup(user_row)
+        logger.info("ONBOARDING_REPLY mode=card_now user=%s still_unknown=%s path=loop", user_row.id, remaining)
     elif not text:
         # Silence is not a setup reply: the loop's 👍 went up, but setup needs its question.
         if missing_after and not privacy:
