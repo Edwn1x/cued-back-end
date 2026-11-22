@@ -951,6 +951,12 @@ GOOGLE_HEALTH_BACKFILL_DAYS = int(os.getenv("GOOGLE_HEALTH_BACKFILL_DAYS", "14")
 GOOGLE_HEALTH_SYNC_DAYS = int(os.getenv("GOOGLE_HEALTH_SYNC_DAYS", "2"))            # steady-state window
 # The coach tool that texts an OAuth connect link (agent_tools.SEND_CONNECT_LINK_TOOL).
 SEND_CONNECT_LINK_TOOL_ENABLED = os.getenv("SEND_CONNECT_LINK_TOOL_ENABLED", "false").lower() == "true"
+# move_to_imessage (agent_tools, 2026-11-21): an SMS user asks for iMessage / blue bubbles → code
+# texts the one-tap Photon invite (green, this thread); their first blue text flips the channel
+# (IMESSAGE_INBOUND_FLIPS_CHANNEL_ENABLED). Live 2026-11-20, user 100: "can we go to imsg" →
+# "i can't move us over from my end" (false — the link existed; the coach had no tool).
+MOVE_TO_IMESSAGE_TOOL_ENABLED = os.getenv("MOVE_TO_IMESSAGE_TOOL_ENABLED", "true").lower() == "true"
+IMESSAGE_INBOUND_FLIPS_CHANNEL_ENABLED = os.getenv("IMESSAGE_INBOUND_FLIPS_CHANNEL_ENABLED", "true").lower() == "true"
 # Google OAuth consent screen still in "Testing" (2026-10): a Google link only works for an
 # account on the Cloud Console test-users list, and refresh tokens die after 7 days. While
 # true, the coach asks for the Google account first (set_google_account), the admin marks it
