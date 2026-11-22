@@ -1681,3 +1681,6 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Bail turn (bail.py): the push rule arrives in the prompt the moment they back out of today's session.
+BAIL_TURN_BLOCK_ENABLED = os.getenv("BAIL_TURN_BLOCK_ENABLED", "true").lower() == "true"
