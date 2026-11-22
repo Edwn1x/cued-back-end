@@ -432,6 +432,16 @@ def _build_system_prompt(user) -> str:
                         + "\n".join(f"- {describe(r, tz)}" for r in rows))
     except Exception as e:  # noqa: BLE001
         logger.warning("REMINDER_PROFILE_LINE_FAILED user=%s err=%s", getattr(user, "id", None), e)
+    # What cued does, in compact form, so setup never says "idk if i can do that yet" about a thing
+    # cued does (self_model.py; live 2026-11-20 user 56: water reminders denied twice, user 100:
+    # "i can't move us to imessage", user 96: "i can't send anything to the founders").
+    try:
+        from self_model import onboarding_block as _self_block
+        _sb = _self_block(user)
+        if _sb:
+            profile += "\n\n" + _sb
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SELF_MODEL_ONBOARDING_FAILED user=%s err=%s", getattr(user, "id", None), e)
 
     now_local = _now_local(user.user_timezone)
     now_line = (now_local.strftime("%A, %b %-d, %Y, %-I:%M%p")

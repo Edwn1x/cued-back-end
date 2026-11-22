@@ -1681,3 +1681,10 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Self-knowledge block (self_model.py): what the coach can do for THIS user, what its outputs
+# look like on their phone, who else writes in the thread, where a stated fact has to live.
+SELF_MODEL_ENABLED = os.getenv("SELF_MODEL_ENABLED", "true").lower() == "true"
+# update_profile tool (agent_tools): the pen for the PROFILE columns targets / pings / briefings
+# read (steps, wake/sleep, workout time/days, activity, equipment, experience, injuries, job, tz).
+UPDATE_PROFILE_TOOL_ENABLED = os.getenv("UPDATE_PROFILE_TOOL_ENABLED", "true").lower() == "true"

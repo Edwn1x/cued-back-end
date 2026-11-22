@@ -766,9 +766,12 @@ def build_loop_context(user, session) -> str:
             .all())
     msgs.reverse()
     if msgs:
+        from self_model import history_label as _speaker
         def _line(m):
             if m.direction == "out":
-                return f"Coach: {m.body}"
+                # Team-typed lines ("admin") are labelled so the coach never apologizes for,
+                # claims or argues with a bubble a person sent in its voice (self_model.py).
+                return f"{_speaker(m)}: {m.body}"
             # Their iMessages carry a ref the react/reply tools can target.
             tag = f" [m{m.id}]" if (m.channel == "imessage" and m.provider_sid) else ""
             return f"{user.name}{tag}: {m.body}"
@@ -992,6 +995,17 @@ def build_loop_context(user, session) -> str:
                 parts.append(_uc)
         except Exception as e:  # noqa: BLE001 — never break a turn over a hint
             logger.warning("UNUSED_CAPABILITIES_CONTEXT_FAILED user=%s err=%s", user.id, e)
+
+    # Self-knowledge (self_model.py): what the coach can do for THIS user on THIS channel, what
+    # its outputs look like on their phone, who else writes here, where a stated fact must land.
+    # Every user, every surface that reads this builder (loop, heartbeat, intake turn).
+    try:
+        from self_model import context_block as _self_block
+        _sb = _self_block(user, session)
+        if _sb:
+            parts.append(_sb)
+    except Exception as e:  # noqa: BLE001 — never break a turn over self-knowledge
+        logger.warning("SELF_MODEL_CONTEXT_FAILED user=%s err=%s", user.id, e)
 
     # Anti-nagging: which standing nudges the coach has ALREADY raised today. Every
     # proactive path (reactive replies AND the heartbeat) writes an outbound Message
@@ -2264,6 +2278,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # rides the heartbeat brief, not a tool. open-meteo, no key, fail-open.
         from agent_tools import GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL
         tools.extend([GET_WEATHER_TOOL, SET_WEATHER_LOCATION_TOOL])
+    if getattr(config, "UPDATE_PROFILE_TOOL_ENABLED", True):
+        # The pen for the PROFILE columns targets / pings / briefings read (self_model.py): a
+        # stated "10.5k steps" went to memory and the target stayed 1750 (user 56, 2026-11-20).
+        from agent_tools import UPDATE_PROFILE_TOOL
+        tools.append(UPDATE_PROFILE_TOOL)
     if config.START_WORKOUT_TOOL_ENABLED:
         from agent_tools import (START_WORKOUT_SESSION_TOOL, SAVE_ROUTINE_TOOL, SET_LIFT_ANCHORS_TOOL,
                                   RECONSTRUCT_ROUTINE_TOOL)
