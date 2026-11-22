@@ -1688,3 +1688,10 @@ SPECTRUM_PROJECT_ID = os.getenv("SPECTRUM_PROJECT_ID", "")
 SPECTRUM_PROJECT_SECRET = os.getenv("SPECTRUM_PROJECT_SECRET", "")
 SPECTRUM_API_URL = os.getenv("SPECTRUM_API_URL", "https://spectrum.photon.codes")
 PHOTON_TIMEOUT_S = int(os.getenv("PHOTON_TIMEOUT_S", "10"))
+
+# Deliverable before the questionnaire (founder, 2026-11-22; audit of 11 threads): the first card
+# goes out the moment the card-critical basics are in — mid-setup — and the rest is learned after.
+DELIVER_FIRST_ENABLED = os.getenv("DELIVER_FIRST_ENABLED", "true").lower() == "true"
+# The first-card lift ask rides BESIDE the card (starter weights now, their number re-plans it in
+# place) instead of gating it (users 88, 86, 56: a card promised and never built).
+ANCHOR_ASK_BESIDE_CARD_ENABLED = os.getenv("ANCHOR_ASK_BESIDE_CARD_ENABLED", "true").lower() == "true"

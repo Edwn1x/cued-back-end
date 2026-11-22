@@ -119,7 +119,8 @@ def _when(workout_time) -> str:
 
 
 def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estimated: bool = False,
-               setup: bool = False, workout_time=None, replan_from: str | None = None) -> str:
+               setup: bool = False, workout_time=None, replan_from: str | None = None,
+               anchored: bool = False) -> str:
     """The one text before the card. `first` = their first card ever: there is no
     "usual" yet, so say where the numbers came from and point at the edit affordance.
     `estimated` = nothing known about their lifts, the loads are from their stats.
@@ -127,6 +128,14 @@ def intro_line(ws_state_exercises: list, key: str, *, first: bool = False, estim
     to open now (install the extension, check the numbers) so they're set for later."""
     lead = ws_state_exercises[0] if ws_state_exercises else None
     loaded = bool(lead and lead["sets"] and (lead["sets"][0].get("planned_weight") or 0))
+    if anchored:
+        # Their number arrived after the starter card went out (the ask rode beside the card):
+        # the same bubble was re-planned in place — say what moved, nothing else repeats.
+        if loaded:
+            w = float(lead["sets"][0]["planned_weight"])
+            return (f"updated ur card off ur numbers — starting u at {_fmt(w)} on {lead['label']}. "
+                    f"tap a set and change it if it's off, i'll remember.")
+        return "updated ur card off ur numbers."
     if setup:
         when = _when(workout_time)
         later = f" so ur set for {when}" if when else " so ur set for when u lift"
@@ -313,7 +322,8 @@ def one_off_templates(rows: list[dict]) -> list:
 
 def start_workout_session(user_id: int, template_key: str | None = None, *, no_anchors: bool = False,
                           setup: bool = False, one_off: list[dict] | None = None,
-                          replan_from: str | None = None) -> dict:
+                          replan_from: str | None = None, mid_setup: bool = False,
+                          anchored: bool = False) -> dict:
     """→ {"session_id", "template_key", "surface": "card"|"messages"|"refused", "sets", "first", "setup"}.
     Raises ValueError on an unknown template, and NeedsAnchors (a ValueError) on a trained
     user's first loaded card when nothing is known about their lifts — unless `no_anchors`
@@ -442,13 +452,15 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         from workouts import card_setup
         from photon_cards import CardError
         # Extension framing (once in full, then a one-liner) until the card has ever been opened.
-        if not replan_from:
+        # Not on a re-plan in place (replan_from / anchored): the framing already went with the card.
+        if not replan_from and not anchored:
             card_setup.send_extension_intro_if_due(user_id, phone)
-        if not setup:
+        if not setup and not anchored:
             from workouts.review import pre_session_plan
             intro = pre_session_plan(ws.id, first=first, estimated=estimated)
         send_sms(phone, intro or intro_line(state["exercises"], key, first=first, estimated=estimated,
-                                            setup=setup, workout_time=workout_time, replan_from=replan_from),
+                                            setup=setup, workout_time=workout_time, replan_from=replan_from,
+                                            anchored=anchored),
                  user_id=user_id, message_type="workout_intro")
         try:
             send_workout_card(ws.id, reuse_from=reuse_from)
@@ -456,8 +468,8 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
         except CardError as e:
             logger.warning("WORKOUT_CARD_REFUSED user=%s session=%s err=%s — %s", user_id, ws.id, e,
                            "setup: one line, no exercise texts" if setup else "per-exercise messages instead")
-        if surface == "card" and not replan_from:
-            card_setup.send_breakdown_if_due(user_id, phone, setup=setup)   # the tour offer, once ever
+        if surface == "card" and not replan_from and not anchored:
+            card_setup.send_breakdown_if_due(user_id, phone, setup=setup, mid_setup=mid_setup)   # the tour offer, once ever
     if surface == "messages":
         if setup:
             from workouts import card_setup
@@ -476,7 +488,7 @@ def start_workout_session(user_id: int, template_key: str | None = None, *, no_a
             # The coach's own plan text (workouts/review.pre_session_plan) went out with this card —
             # the tool result tells the model so it adds nothing (live 2026-10-22, user 40: the plan
             # said leg press 175, the model's extra line said 165).
-            "plan_text": bool(intro), "card": card_numbers(state)}
+            "plan_text": bool(intro), "card": card_numbers(state), "anchored": anchored, "mid_setup": mid_setup}
 
 
 def planned_untouched_session(user_id: int) -> tuple[int, str] | None:
