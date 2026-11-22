@@ -130,6 +130,13 @@ _WEARABLE_GUIDANCE = """WEARABLE / RECOVERY — act on it, don't recite it (only
 - Never diagnose from HR/HRV, never call it a health issue; bring up one number only when it changes the plan. Missing or absent wearable data changes nothing — decide exactly as you would today."""
 
 
+# The scoreboard (scoreboard.py) — appended to HEARTBEAT_PROMPT when SCOREBOARD_ENABLED. The audit
+# of eleven threads (2026-11-21): the coach never owned the agenda — three scale asks never closed,
+# a leg day missing for a month while "legs?" was offered twenty times as optional, a doctor visit
+# and a logging week it asked for and never followed up. The LEAD line is that standing condition.
+_SCOREBOARD_GUIDANCE = """THE SCOREBOARD (when a SCOREBOARD block is present below): it is what you OWN for this person — code-computed, true right now. Its LEAD line is the standing condition a coach with a stake speaks to: the weigh-in asked and never answered, the day type that keeps slipping while other days happen, the week at zero against the plan, the promise you left open. A LEAD is accountability material in its own right — it outranks a generic morning line or a weather open, and "nothing new since last tick" does not apply to it. Speak to the LEAD in your own words: hold the day, close the ask, follow through — never recite the numbers back, never offer the slipping day as optional ("wanna", "if u feel like it"). When the LEAD says nothing is owed, judge the tick on its other merits as usual."""
+
+
 def _naive_utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -2054,6 +2061,8 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
         search["morning_open"] = True
 
     prompt = HEARTBEAT_PROMPT
+    if getattr(config, "SCOREBOARD_ENABLED", True):
+        prompt = prompt + "\n\n" + _SCOREBOARD_GUIDANCE
     if config.HEARTBEAT_WEARABLE_AWARE_ENABLED:
         prompt = prompt + "\n\n" + _WEARABLE_GUIDANCE
     # High-load academic tone guidance — appended only when the feature is on, so the
