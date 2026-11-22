@@ -154,6 +154,16 @@ def sync_exec(_appmod, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def outbox_off(_appmod, monkeypatch):
+    """The outbox gate (outbox.py) holds proactive sends that land inside a live thread, which
+    is most tier-1 fixtures ("they texted, then the heartbeat fires"). Off here; the outbox
+    tests turn it on themselves."""
+    import config
+    monkeypatch.setattr(config, "OUTBOX_ENABLED", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def anthropic_stub(_appmod, request, monkeypatch):
     """Patch anthropic Messages.create centrally. Disabled for tier-2 (live)."""
     if "tier2" in request.keywords:

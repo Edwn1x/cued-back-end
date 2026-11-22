@@ -60,10 +60,17 @@ def ttl_minutes(message_type: str | None) -> int:
     return config.IMESSAGE_HOLD_MAX_AGE_MIN
 
 
+def is_outbox_row(row: HeldOutbound) -> bool:
+    """A row the outbox parked on purpose (live thread / merge window), not an outage hold."""
+    from outbox import HOLD_PREFIX
+    return str(row.last_error or "").startswith(HOLD_PREFIX)
+
+
 def hold(user_id: int, phone: str, body: str, bubbles: list[str], message_type: str,
-         reply_to_sid: str | None, reason: str, error: str | None = None) -> int:
+         reply_to_sid: str | None, reason: str, error: str | None = None, delay_s: int = 0) -> int:
     """Park `body` for `user_id`. Writes the 'held' Message rows (one per bubble)
-    first, then the queue row that points at them. Returns the queue row id."""
+    first, then the queue row that points at them. Returns the queue row id.
+    `delay_s` (the outbox): not before now + delay — the drain leaves it alone until then."""
     from sms import _log_message  # local: sms imports this module lazily too
     now = _now()
     row_ids = [
@@ -77,7 +84,7 @@ def hold(user_id: int, phone: str, body: str, bubbles: list[str], message_type: 
             user_id=user_id, phone=phone, body=body, message_type=message_type or "freeform",
             reply_to_sid=reply_to_sid, status="held", attempts=0,
             last_error=(error or "")[:300] or None, message_ids=row_ids,
-            created_at=now, next_attempt_at=now,
+            created_at=now, next_attempt_at=now + timedelta(seconds=max(0, int(delay_s or 0))),
             expires_at=now + timedelta(minutes=ttl_minutes(message_type)),
         )
         session.add(row)
@@ -90,14 +97,19 @@ def hold(user_id: int, phone: str, body: str, bubbles: list[str], message_type: 
     return rid
 
 
-def pending_count(user_id: int) -> int:
+def pending_count(user_id: int, now: datetime | None = None) -> int:
+    """Rows a live send must queue behind: outage holds, and outbox holds that are DUE. An
+    outbox row parked for later is not a backlog — a reply must not wait for a nudge."""
+    now = now or _now()
     session = get_session()
     try:
-        return (session.query(HeldOutbound)
+        rows = (session.query(HeldOutbound)
                 .filter(HeldOutbound.user_id == user_id, HeldOutbound.status.in_(("held", "sending")))
-                .count())
+                .all())
+        session.expunge_all()
     finally:
         session.close()
+    return sum(1 for r in rows if not (is_outbox_row(r) and (r.next_attempt_at or now) > now))
 
 
 def _claim(row_id: int) -> bool:
@@ -135,6 +147,16 @@ def _expire(row: HeldOutbound):
     logger.error("IMESSAGE_HELD_EXPIRED id=%s user_id=%s type=%s age_min=%.0f attempts=%s — dropped, "
                  "never delivered", row.id, row.user_id, row.message_type,
                  (_now() - row.created_at).total_seconds() / 60, row.attempts)
+
+
+def _drop(row: HeldOutbound, reason: str):
+    """An outbox hold whose moment passed: rows → failed, queue row → expired, one INFO line."""
+    from sms import _flip_row
+    for mid in (row.message_ids or []):
+        _flip_row(mid, provider_sid=None, delivery_status="failed")
+    _set(row.id, status="expired")
+    logger.info("OUTBOX_DROPPED user=%s type=%s reason=%s held_s=%.0f", row.user_id, row.message_type, reason,
+                (_now() - row.created_at).total_seconds())
 
 
 def _rearm(row_id: int, attempts: int, err) -> None:
@@ -201,8 +223,27 @@ def _drain_rows(rows: list[HeldOutbound], now: datetime) -> dict:
                 _expire(r)
                 out["expired"] += 1
                 continue
+            # An outbox-held BROADCAST line whose person spoke after it was queued: the moment
+            # it was written for has passed (the reply loop is talking to them) — drop it.
+            if is_outbox_row(r):
+                try:
+                    from outbox import is_broadcast, spoke_since
+                    session = get_session()
+                    try:
+                        spoke = is_broadcast(r.message_type) and spoke_since(session, r.user_id, r.created_at)
+                    finally:
+                        session.close()
+                except Exception as e:  # noqa: BLE001 — never wedge the drain on this read
+                    logger.warning("OUTBOX_SPOKE_CHECK_FAILED id=%s err=%s", r.id, e)
+                    spoke = False
+                if spoke:
+                    _drop(r, "spoke_while_held")
+                    out["expired"] += 1
+                    continue
             waited = (now - r.created_at).total_seconds()
-            send_note = (not noted) and waited >= config.IMESSAGE_HOLD_NOTE_MIN_AGE_S
+            # The "my texts got stuck" heads-up is for outage holds only — an outbox row was
+            # paced on purpose, nothing was stuck.
+            send_note = (not noted) and waited >= config.IMESSAGE_HOLD_NOTE_MIN_AGE_S and not is_outbox_row(r)
             try:
                 landed = _deliver(r, send_note)
             except Exception as e:  # noqa: BLE001 — a row must never wedge in 'sending'
@@ -241,6 +282,8 @@ def drain_user(user_id: int, now: datetime | None = None) -> bool:
         session.expunge_all()
     finally:
         session.close()
+    # Outbox rows parked for later are left alone: the live send is not their probe.
+    rows = [r for r in rows if not (is_outbox_row(r) and (r.next_attempt_at or now) > now)]
     if rows:
         _drain_rows(rows, now)
     return pending_count(user_id) == 0
