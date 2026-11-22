@@ -2116,6 +2116,17 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         _da = _demo_ask_block(user, combined_body, session)
         if _da:
             context += "\n\n" + _da
+        # They're backing out of today's session → the push rule, at the moment it matters, with
+        # the session named, the pushback count, and whether a real reason was given (bail.py).
+        # Live: "Ughhh I don't want toooo" → "lol ok don't then" (u40); "I'll prolly hit back
+        # instead" → "alr, back monday then" (u51); "didnt end up going" → card cleared (u56).
+        try:
+            from bail import context_block as _bail_block
+            _bb = _bail_block(user, combined_body, session)
+            if _bb:
+                context += "\n\n" + _bb
+        except Exception as e:  # noqa: BLE001 — never break a turn over this block
+            logger.warning("BAIL_BLOCK_CONTEXT_FAILED user=%s err=%s", user.id, e)
         # Their first text of the morning, before any morning text went out → this reply is
         # the day's briefing (live 2026-10-29, user 77: "Good morning" at 08:44 got "morning").
         # Not on a continuation: the reply it rides behind already answered the morning.
