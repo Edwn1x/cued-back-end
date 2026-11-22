@@ -1041,6 +1041,18 @@ def build_loop_context(user, session) -> str:
     # Re-engaged mid-setup user in the food-first window (onboarding_reengage.py): log the
     # meal, say the numbers, no setup questions — code asks the next one after the meal.
     if (getattr(user, "onboarding_step", 0) or 0) < 3:
+        # Intake in the loop (intake.py): this turn IS the setup conversation — the SETUP
+        # block carries what's known / still unknown, the one-question rule and the mode.
+        # The food-first and meal blocks below say "no setup questions"; on an intake turn
+        # they don't apply (the meal is logged AND the question asked, in one reply).
+        try:
+            import intake as _intake
+            _ib = _intake.context_block(user) if _intake.is_turn(user.id) else None
+        except Exception:  # noqa: BLE001
+            _ib = None
+        if _ib:
+            parts.append(_ib)
+            return "\n\n".join(parts)
         try:
             from onboarding_reengage import context_block as _reengage_block
             _rb = _reengage_block(user, session)
@@ -2400,6 +2412,12 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from agent_tools import SEND_STAT_CARD_TOOL
         tools.append(SEND_STAT_CARD_TOOL)
 
+    # Intake turn (intake.py): the same tools minus the ones that presume setup has closed.
+    try:
+        import intake as _intake_tools
+        tools = _intake_tools.filter_tools(user.id, tools)
+    except Exception as e:  # noqa: BLE001 — never cost a turn
+        logger.warning("INTAKE_TOOL_FILTER_FAILED user=%s err=%s", user.id, e)
     from agent_tools import begin_turn, peek_turn_state
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
     # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.

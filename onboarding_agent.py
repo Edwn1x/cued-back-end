@@ -2219,36 +2219,44 @@ def _maybe_auto_fill_no_training(user, message: str) -> None:
             break
 
 
-def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool = False) -> bool:
-    """
-    Called from webhook on every message while onboarding_step < 3.
+class Absorbed:
+    """What a setup turn stored BEFORE any reply was written (absorb_turn): the refreshed
+    user row, what code parsed, what the extractor read, the code-pinned sleep clause (if
+    a vague sleep answer just landed), the coach's previous message, and what's still
+    unknown after this turn. Shared by the intake agent and the loop path (intake.py)."""
 
-    Flow:
-      step 1 — hook sent. First reply: record first_reply_at, extract data, reply as
-               the friend (one woven question at most), advance to step 2.
-      step 2 — getting to know them. Stats parsed in code, then the extractor; reply
-               as the friend. Nothing still unknown — or they ask for a workout with
-               the card-critical basics in — → the summary + completion in the same
-               message, then the first card.
-      step 3 — complete (set by _complete_onboarding).
+    def __init__(self, user_row, code_found: dict, extracted: dict, assumption_note: str | None,
+                 prev_coach: str | None, missing_after: list, incoming_message: str = ""):
+        self.user_row = user_row
+        self.incoming_message = incoming_message or ""
+        self.code_found = code_found
+        self.extracted = extracted
+        self.assumption_note = assumption_note
+        self.prev_coach = prev_coach
+        self.missing_after = missing_after
 
-    continuation — the text landed while the previous reply was still going out (or
-    seconds after): more of the same thought. Data is stored as usual; the reply is
-    the continuation mode of the friend reply (may be nothing + a 👍), and a reply
-    whose question repeats the one just sent is suppressed.
+    @property
+    def stored_this_turn(self) -> dict:
+        return {**(self.extracted or {}), **(self.code_found or {})}
 
-    Returns True if onboarding is now complete.
-    """
+
+def absorb_turn(user, incoming_message: str, *, capture_reminder: bool = True):
+    """Everything a setup turn does to the profile BEFORE a reply exists — the same for the
+    intake agent (handle_onboarding_reply) and for the loop path (intake.py), so moving the
+    reply into the loop changes nothing about what gets stored: first_reply_at, the
+    no-training auto-fill, stats parsed in code, the extractor, the vague-sleep estimate,
+    injuries from memory, a bare major, a pasted routine, a day list, stated lifts, an
+    explicit reminder (capture_reminder=False when the replying agent has set_reminder
+    itself), and the step 1 → 2 advance. Returns Absorbed, or None when the row is gone."""
     from models import get_session, User as UserModel
 
     session = get_session()
     try:
         user_row = session.get(UserModel, user.id)
         if not user_row:
-            return False
+            return None
     finally:
         session.close()
-    continuation = bool(continuation and config.ONBOARDING_CONTINUATION_FOLD_ENABLED)
 
     # Record time-to-first-reply for A/B analysis
     if not user_row.first_reply_at:
@@ -2333,7 +2341,6 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
             extracted["occupation"] = f"{bare.lower()} student"
             logger.info("ONBOARDING_MAJOR_AS_OCCUPATION user=%s value=%r", user_row.id, extracted["occupation"])
     non_null = {k: v for k, v in extracted.items() if v is not None}
-    found_any = dict(code_found, **non_null)
     if non_null:
         _store_extracted_data(user_row.id, extracted)
         session = get_session()
@@ -2401,14 +2408,15 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
 
     # An explicit "remind me / ping me" is a promise: onboarding has no tools, so a
     # small extraction sets (or corrects) the reminder in code and the prompt shows it.
-    try:
-        from reminders import maybe_capture_onboarding_reminder
-        maybe_capture_onboarding_reminder(user_row.id, incoming_message, _conversation_so_far(user_row.id))
-    except Exception as e:  # noqa: BLE001 — never block the reply on it
-        logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
+    # (The loop path has set_reminder itself — it passes capture_reminder=False.)
+    if capture_reminder:
+        try:
+            from reminders import maybe_capture_onboarding_reminder
+            maybe_capture_onboarding_reminder(user_row.id, incoming_message, _conversation_so_far(user_row.id))
+        except Exception as e:  # noqa: BLE001 — never block the reply on it
+            logger.warning("REMINDER_ONBOARDING_CAPTURE_FAILED user=%s err=%s", user_row.id, e)
 
     missing_after = _get_missing_fields(user_row)
-    system_prompt = _build_system_prompt(user_row)
 
     # ── First reply to the hook: they're in conversation mode now → step 2 ──
     if (user_row.onboarding_step or 0) == 1:
@@ -2421,38 +2429,161 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
         finally:
             session.close()
 
-    # ── Done — or they want the workout and the card-critical basics are in ──
-    # The summary and completion happen in the SAME message (founder, 2026-10-01):
-    # no "sound right?" round trip. Corrections go to the coach's tools.
+    return Absorbed(user_row, code_found, extracted, assumption_note, prev_coach, missing_after,
+                    incoming_message=incoming_message)
+
+
+def close_state(missing_after: list, incoming_message: str) -> tuple[bool, list, bool]:
+    """(wants_workout, card_missing, early): they asked for the workout; which card-critical
+    basics are still unknown; and whether setup can close NOW because they want the card
+    and the card-critical basics are in (the rest is learned later)."""
     wants_workout = _wants_workout(incoming_message)
     card_missing = [f for f in missing_after if f[0] in CARD_CRITICAL]
     early = bool(missing_after) and wants_workout and not card_missing
-    if not missing_after or early:
-        # A continuation turn (the text landed while the previous reply was going out)
-        # that completes onboarding: the previous reply was the reaction — a second
-        # bubble restates it (live 2026-10-10: "yeah cs sleep is always cooked lol. ima
-        # just peg u at…" twice, 13s apart, with different numbers). Summary only.
-        quiet = bool(continuation and prev_coach and getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True))
-        if quiet:
-            logger.info("ONBOARDING_CONTINUATION_COMPLETION user=%s reaction=skipped prev=%r",
-                        user_row.id, (prev_coach or "")[:80])
-        if not quiet and (not _is_bare_answer(incoming_message, code_found) or wants_workout):
-            try:
-                text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early,
-                                                  assumption_note=assumption_note)
-            except Exception as e:  # noqa: BLE001 — the summary still goes out
-                logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
-                text = ""
-            if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
-                text = _reconcile_sleep_guess(user_row, text)
-            if text and text.strip():
-                send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
-        if early:
-            logger.info("ONBOARDING_EARLY_EXIT user=%s wants_workout=True learned_later=%s",
-                        user_row.id, [f[0] for f in missing_after])
-        return _complete_onboarding(user_row, incoming_message, early=early)
+    return wants_workout, card_missing, early
+
+
+def maybe_complete(absorbed: "Absorbed", incoming_message: str, *, system_prompt: str | None = None,
+                   continuation: bool = False) -> bool:
+    """Done — or they want the workout and the card-critical basics are in — → the friend's
+    reaction bubble, then the code summary + completion in the SAME turn (founder,
+    2026-10-01: no "sound right?" round trip). Returns True when onboarding closed on this
+    turn, False when setup continues (the caller writes the reply)."""
+    user_row = absorbed.user_row
+    missing_after = absorbed.missing_after
+    wants_workout, _card_missing, early = close_state(missing_after, incoming_message)
+    if missing_after and not early:
+        return False
+    if system_prompt is None:
+        system_prompt = _build_system_prompt(user_row)
+    prev_coach = absorbed.prev_coach
+    assumption_note = absorbed.assumption_note
+    # A continuation turn (the text landed while the previous reply was going out)
+    # that completes onboarding: the previous reply was the reaction — a second
+    # bubble restates it (live 2026-10-10: "yeah cs sleep is always cooked lol. ima
+    # just peg u at…" twice, 13s apart, with different numbers). Summary only.
+    quiet = bool(continuation and prev_coach and getattr(config, "ONBOARDING_BURST_SCAN_ENABLED", True))
+    if quiet:
+        logger.info("ONBOARDING_CONTINUATION_COMPLETION user=%s reaction=skipped prev=%r",
+                    user_row.id, (prev_coach or "")[:80])
+    if not quiet and (not _is_bare_answer(incoming_message, absorbed.code_found) or wants_workout):
+        try:
+            text = _build_completion_reaction(user_row, incoming_message, system_prompt, early=early,
+                                              assumption_note=assumption_note)
+        except Exception as e:  # noqa: BLE001 — the summary still goes out
+            logger.warning("ONBOARDING_COMPLETION_REACTION_FAILED user=%s err=%s", user_row.id, e)
+            text = ""
+        if text and text.strip() and assumption_note and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+            text = _reconcile_sleep_guess(user_row, text)
+        if text and text.strip():
+            send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
+    if early:
+        logger.info("ONBOARDING_EARLY_EXIT user=%s wants_workout=True learned_later=%s",
+                    user_row.id, [f[0] for f in missing_after])
+    return _complete_onboarding(user_row, incoming_message, early=early)
+
+
+def shape_reply(absorbed: "Absorbed", text: str, *, mode: str, privacy: bool = False) -> tuple[str | None, str]:
+    """The code-owned guards every NON-continuation setup reply passes, whichever agent
+    wrote it: the half-answered re-ask / follow-up / moving-on exemptions, the repeat-
+    question suppression inside the window, the code-pinned sleep clause, and the always-
+    ask backstop. Returns (text, action): ("…", "send") — the reply to send; ("…", "kept")
+    — the question was a repeat and only the reaction survives (no ONBOARDING_REPLY line);
+    (None, "thumbs") — nothing worth a bubble, react 👍 instead."""
+    user_row = absorbed.user_row
+    prev_coach = absorbed.prev_coach
+    missing_after = absorbed.missing_after
+    assumption_note = absorbed.assumption_note
+    stored = absorbed.stored_this_turn
+    # Repeat-question guard for NORMAL turns too: a text that landed seconds after the coach's
+    # question (not folded as a continuation) must not get that question again. Live
+    # 2026-10-10 02:29 (user 49): the big ask asked food; 25s later a friend reply asked food
+    # again. Keep the reaction, drop the question; nothing left → 👍.
+    reask = set()
+    if (mode != "big_ask" and prev_coach and text
+            and getattr(config, "ONBOARDING_HALF_ANSWERED_REASK_ENABLED", True)):
+        reask = unanswered_half_reask(text, prev_coach, stored, missing_after)
+        shared = question_topics(text) & question_topics(prev_coach)
+        if shared and shared <= reask:
+            logger.info("ONBOARDING_HALF_ANSWERED_REASK user=%s topics=%s", user_row.id, sorted(shared))
+            reask = shared
+        else:
+            reask = set()
+    if (not reask and mode != "big_ask" and prev_coach and text
+            and getattr(config, "ONBOARDING_FOLLOWUP_NOT_REPEAT_ENABLED", True)):
+        shared = question_topics(text) & question_topics(prev_coach)
+        if shared and shared <= followup_topics(text, prev_coach, absorbed.incoming_message, missing_after):
+            logger.info("ONBOARDING_FOLLOWUP_NOT_REPEAT user=%s topics=%s", user_row.id, sorted(shared))
+            reask = shared
+        elif shared and (moved := moving_on_topics(text, prev_coach, missing_after)):
+            logger.info("ONBOARDING_MOVING_ON user=%s shared=%s new=%s", user_row.id, sorted(shared), sorted(moved))
+            reask = shared
+        elif (stored_now := sorted(k for k, v in stored.items()
+                                   if v not in (None, "", [], {}))) and not _same_ask_wording(text, prev_coach):
+            # Their text ANSWERED something (stored this turn) — they're replying, not mid-burst;
+            # only the same words again is a repeat (live 2026-10-28, user 89: "A lot. Especially
+            # going from the dorm to campus" → "u know roughly how many steps u get a day?" scored
+            # 0.46 against "how much do u walk around on a normal day" and was dropped).
+            logger.info("ONBOARDING_ANSWERED_FOLLOWUP user=%s topics=%s stored=%s", user_row.id, sorted(shared), stored_now)
+            reask = shared or {"answered_this_turn"}
+    if (mode != "big_ask" and prev_coach and text and not reask and is_duplicate_question(text, prev_coach)):
+        age = _last_coach_message_age_s(user_row.id)
+        if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:
+            kept = strip_questions(text)
+            logger.info("ONBOARDING_REPEAT_QUESTION_SUPPRESSED user=%s age_s=%d kept=%r dropped=%r",
+                        user_row.id, age, kept[:80], text[:120])
+            return (kept, "kept") if kept else (None, "thumbs")
+    # Backstop (founder, 2026-10-13: "cs, so ur basically living in soda." — no question, the
+    # whole thing on the user): while fields are unknown, a reply must carry a question. The
+    # model's reply had none → append the plain ask for the next field.
+    if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
+        text = _reconcile_sleep_guess(user_row, text)
+    if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
+            and mode != "big_ask" and not privacy and not _question_part(text)):
+        field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
+        appended = f"also, {_plain(field, user_row)}?"
+        logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
+        text = f"{text.rstrip()} {appended}"
+    return text, "send"
+
+
+def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool = False) -> bool:
+    """
+    Called from webhook on every message while onboarding_step < 3 (the intake agent;
+    intake.py is the same turn with the reply written by the agent loop instead).
+
+    Flow:
+      step 1 — hook sent. First reply: record first_reply_at, extract data, reply as
+               the friend (one woven question at most), advance to step 2.
+      step 2 — getting to know them. Stats parsed in code, then the extractor; reply
+               as the friend. Nothing still unknown — or they ask for a workout with
+               the card-critical basics in — → the summary + completion in the same
+               message, then the first card.
+      step 3 — complete (set by _complete_onboarding).
+
+    continuation — the text landed while the previous reply was still going out (or
+    seconds after): more of the same thought. Data is stored as usual; the reply is
+    the continuation mode of the friend reply (may be nothing + a 👍), and a reply
+    whose question repeats the one just sent is suppressed.
+
+    Returns True if onboarding is now complete.
+    """
+    continuation = bool(continuation and config.ONBOARDING_CONTINUATION_FOLD_ENABLED)
+    absorbed = absorb_turn(user, incoming_message)
+    if absorbed is None:
+        return False
+    user_row = absorbed.user_row
+    prev_coach = absorbed.prev_coach
+    assumption_note = absorbed.assumption_note
+    missing_after = absorbed.missing_after
+    system_prompt = _build_system_prompt(user_row)
+
+    # ── Done — or they want the workout and the card-critical basics are in ──
+    if maybe_complete(absorbed, incoming_message, system_prompt=system_prompt, continuation=continuation):
+        return True
 
     # ── They want the workout but the card can't be built yet → ask for exactly that ──
+    wants_workout, card_missing, _early = close_state(missing_after, incoming_message)
     if wants_workout and card_missing:
         text = _build_card_ask(user_row, incoming_message, system_prompt, card_missing)
         send_sms(user_row.phone, text, user_id=user_row.id, message_type="onboarding")
@@ -2494,62 +2625,14 @@ def handle_onboarding_reply(user, incoming_message: str, *, continuation: bool =
     else:
         text = _build_friend_reply(user_row, incoming_message, system_prompt, missing_after,
                                    assumption_note=assumption_note, privacy=privacy_turn)
-    # Repeat-question guard for NORMAL turns too: a text that landed seconds after the coach's
-    # question (not folded as a continuation) must not get that question again. Live
-    # 2026-10-10 02:29 (user 49): the big ask asked food; 25s later a friend reply asked food
-    # again. Keep the reaction, drop the question; nothing left → 👍.
-    reask = set()
-    if (mode != "big_ask" and prev_coach and text
-            and getattr(config, "ONBOARDING_HALF_ANSWERED_REASK_ENABLED", True)):
-        reask = unanswered_half_reask(text, prev_coach, {**(extracted or {}), **(code_found or {})}, missing_after)
-        shared = question_topics(text) & question_topics(prev_coach)
-        if shared and shared <= reask:
-            logger.info("ONBOARDING_HALF_ANSWERED_REASK user=%s topics=%s", user_row.id, sorted(shared))
-            reask = shared
-        else:
-            reask = set()
-    if (not reask and mode != "big_ask" and prev_coach and text
-            and getattr(config, "ONBOARDING_FOLLOWUP_NOT_REPEAT_ENABLED", True)):
-        shared = question_topics(text) & question_topics(prev_coach)
-        if shared and shared <= followup_topics(text, prev_coach, incoming_message, missing_after):
-            logger.info("ONBOARDING_FOLLOWUP_NOT_REPEAT user=%s topics=%s", user_row.id, sorted(shared))
-            reask = shared
-        elif shared and (moved := moving_on_topics(text, prev_coach, missing_after)):
-            logger.info("ONBOARDING_MOVING_ON user=%s shared=%s new=%s", user_row.id, sorted(shared), sorted(moved))
-            reask = shared
-        elif (stored_now := sorted(k for k, v in {**(extracted or {}), **(code_found or {})}.items()
-                                   if v not in (None, "", [], {}))) and not _same_ask_wording(text, prev_coach):
-            # Their text ANSWERED something (stored this turn) — they're replying, not mid-burst;
-            # only the same words again is a repeat (live 2026-10-28, user 89: "A lot. Especially
-            # going from the dorm to campus" → "u know roughly how many steps u get a day?" scored
-            # 0.46 against "how much do u walk around on a normal day" and was dropped).
-            logger.info("ONBOARDING_ANSWERED_FOLLOWUP user=%s topics=%s stored=%s", user_row.id, sorted(shared), stored_now)
-            reask = shared or {"answered_this_turn"}
-    if (mode != "big_ask" and prev_coach and text and not reask and is_duplicate_question(text, prev_coach)):
-        age = _last_coach_message_age_s(user_row.id)
-        if age is not None and age <= config.ONBOARDING_DUP_QUESTION_WINDOW_S:
-            kept = strip_questions(text)
-            logger.info("ONBOARDING_REPEAT_QUESTION_SUPPRESSED user=%s age_s=%d kept=%r dropped=%r",
-                        user_row.id, age, kept[:80], text[:120])
-            if kept:
-                send_sms(user_row.phone, kept, user_id=user_row.id, message_type=out_type)
-            else:
-                _react_thumbs(user_row.id)
-            return False
-    # Backstop (founder, 2026-10-13: "cs, so ur basically living in soda." — no question, the
-    # whole thing on the user): while fields are unknown, a reply must carry a question. The
-    # model's reply had none → append the plain ask for the next field.
-    if assumption_note and text and getattr(config, "ONBOARDING_SLEEP_CLAUSE_IN_CODE_ENABLED", True):
-        text = _reconcile_sleep_guess(user_row, text)
-    if (getattr(config, "ONBOARDING_ALWAYS_ASK_ENABLED", True) and text and missing_after
-            and mode != "big_ask" and not privacy_turn and not _question_part(text)):
-        field = next((f for f in missing_after if f[0] not in _BIG_ASK_NEVER), missing_after[0])
-        appended = f"also, {_plain(field, user_row)}?"
-        logger.info("ONBOARDING_QUESTION_APPENDED user=%s field=%s reply=%r", user_row.id, field[0], text[:80])
-        text = f"{text.rstrip()} {appended}"
+    text, action = shape_reply(absorbed, text, mode=mode, privacy=privacy_turn)
+    if action == "thumbs":
+        _react_thumbs(user_row.id)
+        return False
     send_sms(user_row.phone, text, user_id=user_row.id, message_type=out_type)
-    logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
-                f"{' sleep_estimated=True' if assumption_note else ''}")
+    if action == "send":
+        logger.info(f"ONBOARDING_REPLY mode={mode} user={user_row.id} still_unknown={remaining_names}"
+                    f"{' sleep_estimated=True' if assumption_note else ''}")
     return False
 
 

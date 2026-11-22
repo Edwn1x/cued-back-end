@@ -919,6 +919,23 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
                 _code_reply_done(user.id)
                 return
 
+        # Intake in the loop (intake.py, founder 2026-11-21): a mid-setup turn is the agent
+        # loop's turn with the SETUP block — the meal, the reminder, the link, the search AND
+        # the next setup question in one reply. Flag + allowlist; the loop failing falls
+        # through to the detours and the intake agent below, as before.
+        if (user.onboarding_step or 0) < 3 and config.SINGLE_AGENT_LOOP_ENABLED:
+            import intake
+            if intake.enabled_for(user):
+                _marks["loop_start"] = _monotonic()
+                _marks["path"] = "intake_loop"
+                handled = intake.handle_turn(user, combined_body, message_type, image_url=image_url, images=images,
+                                             continuation=continuation, inbound_id=inbound_id)
+                if handled:
+                    _marks["loop_s"] = _monotonic() - _marks["loop_start"]
+                    _log_turn_latency(user.id, timing, _t_flush, _marks)
+                    return
+                logger.warning("INTAKE_LOOP_FELL_THROUGH user=%s — the intake agent answers this turn", user.id)
+
         # Re-engaged mid-setup user (onboarding_reengage.py, food-first window): their reply
         # to "what have u eaten today?" goes to the agent loop — log_meal + the numbers — not
         # back into the questionnaire. Once a meal is logged, code asks the next intake field

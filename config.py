@@ -1600,6 +1600,13 @@ TEEN_EER_OVERWEIGHT_ENABLED = os.getenv("TEEN_EER_OVERWEIGHT_ENABLED", "true").l
 TEN_HAAF_EXPERIENCE_GATE_ENABLED = os.getenv("TEN_HAAF_EXPERIENCE_GATE_ENABLED", "true").lower() == "true"
 TARGET_RAMP_ENABLED = os.getenv("TARGET_RAMP_ENABLED", "true").lower() == "true"
 INTAKE_ASK_ENABLED = os.getenv("INTAKE_ASK_ENABLED", "true").lower() == "true"   # the setup ask itself
+# Intake in the loop (intake.py, founder 2026-11-21): a mid-setup turn is the agent loop's turn
+# with the SETUP block in context — every tool the coach has, minus the post-setup ones — instead
+# of the separate intake agent (which had no tools: "i can't move us over from my end"). Off by
+# default; INTAKE_IN_LOOP_USER_IDS narrows the flag to named users for a staged rollout.
+INTAKE_IN_LOOP_ENABLED = os.getenv("INTAKE_IN_LOOP_ENABLED", "false").lower() == "true"
+INTAKE_IN_LOOP_USER_IDS = frozenset(
+    int(x) for x in os.getenv("INTAKE_IN_LOOP_USER_IDS", "").replace(" ", "").split(",") if x.isdigit())
 # A question the coach asks mid-sentence after a comma, no "?" ("…berkeley student, what major and
 # any part time job") counts as the reply's question, so the always-ask backstop doesn't glue a
 # second copy on (live 2026-10-27, user 77: two doubled asks in one setup).
