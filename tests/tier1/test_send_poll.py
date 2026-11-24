@@ -498,3 +498,16 @@ def test_reminder_times_and_yes_no_confirmations_are_poll_shaped_too():
     assert "reminder" in desc and "every week" in desc and "yes-or-no" in desc
     voice = open("prompts/voice.md").read()
     assert "what time works" in voice and "yes-or-no" in voice
+
+
+def test_did_you_checks_are_polls_too():
+    """2026-11-24 ledger read: 4 of the last 8 heartbeat asks were did-you checks ("u get it in",
+    "u submit it yet", "u eat anything since chipotle", "push happen after the quiz") — the
+    concrete yes/no the founder named on day one — and none was a poll, because the default list
+    never named them. Shape: done / not yet / skipping it."""
+    import agent_tools, heartbeat
+    for text, where in ((agent_tools.SEND_POLL_TOOL["description"], "tool"),
+                        (open("prompts/voice.md").read(), "voice.md"),
+                        (heartbeat._POLL_GUIDANCE, "heartbeat")):
+        assert "did-you" in text, where
+        assert "done / not yet / skipping it" in text, where
