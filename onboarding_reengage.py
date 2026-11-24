@@ -226,6 +226,10 @@ def model_first_nudge(session, user, *, replied: bool, now: datetime | None = No
         if getattr(resp, "stop_reason", None) == "max_tokens":
             return None
         text = (_join_text(resp.content) or "").strip()
+        from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+        if has_leaked_tool_xml(text):
+            text = unwrap_leaked_tool_xml(text) or ""
+            logger.warning("ONBOARDING_REENGAGE_TOOL_XML_IN_TEXT user=%s unwrapped=%s", user.id, bool(text))
         if not valid_first_nudge(text):
             logger.info("ONBOARDING_REENGAGE_MODEL_COPY_REJECTED user=%s text=%r", user.id, text[:160])
             return None

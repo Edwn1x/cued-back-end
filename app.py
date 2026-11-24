@@ -3,6 +3,7 @@ import re
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template_string, Response, make_response, redirect
 from flask_cors import CORS
@@ -18,6 +19,9 @@ from admin_dashboard import ADMIN_HTML
 from admin_system import admin_system_bp
 from engagement_tracker import reset_unanswered
 from message_buffer import buffer_message
+
+# Arrival clock for the inbound band (tests swap it for a controllable one).
+_monotonic = time.monotonic
 from memory import build_memory_block, build_memory_block_with_ids, apply_facts, CATEGORIES, update_memory_uses_task, apply_safety_signals_task, extract_and_store_coaching_points_task
 from events import apply_event_signals_task
 from agent_loop import run_agent_loop
@@ -690,11 +694,40 @@ def _code_reply_done(user_id: int) -> None:
         logger.warning("SETUP_SEQUENCE_CODE_REPLY_FAILED user=%s err=%s", user_id, e)
 
 
+def _log_turn_latency(user_id: int, timing: dict, t_flush: float, marks: dict) -> None:
+    """One line per turn with where the wall time went (founder 2026-11-20: "takes forever
+    to reply"). wait = first text's arrival→flush (the band), prelude = flush→model loop
+    start (the code-handled paths + their lookups), loop = run_agent_loop (its own
+    AGENT_LOOP_TIMING line splits context build / model calls / tools), send = send_sms.
+    Never raises."""
+    try:
+        now = _monotonic()
+        wait_s = float((timing or {}).get("wait_s") or 0.0)
+        loop_s = marks.get("loop_s", 0.0)
+        send_s = marks.get("send_s", 0.0)
+        prelude_s = max(0.0, marks.get("loop_start", t_flush) - t_flush)
+        total_s = wait_s + (now - t_flush)
+        logger.info("TURN_LATENCY user=%s wait_s=%.1f prelude_s=%.1f loop_s=%.1f send_s=%.1f "
+                    "total_s=%.1f path=%s messages=%s",
+                    user_id, wait_s, prelude_s, loop_s, send_s, total_s,
+                    marks.get("path", "model"), (timing or {}).get("messages", "?"))
+        lt = marks.get("loop_timing")
+        if lt:
+            logger.info("AGENT_LOOP_TIMING user=%s context_ms=%s model_ms=%s calls=%d tool_ms=%s",
+                        user_id, lt.get("context_ms"), lt.get("model_ms"), len(lt.get("model_ms") or []),
+                        lt.get("tool_ms"))
+    except Exception:  # noqa: BLE001 — telemetry never touches the turn
+        pass
+
+
 def process_buffered_message(user_id: int, combined_body: str, message_type: str, image_url: dict = None,
-                             images: list = None, continuation: bool = False):
+                             images: list = None, continuation: bool = False, timing: dict = None):
     """Called by the message buffer after the delay expires. Processes the combined message and sends a response.
     `continuation`: this text landed while the previous turn was still being answered (or seconds after) —
-    the onboarding path treats it as more of the same thought, not a fresh prompt."""
+    the onboarding path treats it as more of the same thought, not a fresh prompt.
+    `timing`: message_buffer's stamps for the TURN_LATENCY line (wait_s, flushed_at)."""
+    _t_flush = _monotonic()
+    _marks: dict = {}
     session = get_session()
     try:
         user = session.query(User).filter(User.id == user_id).first()
@@ -975,8 +1008,12 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # If user is still in onboarding, route to onboarding handler
         if (user.onboarding_step or 0) < 3:
             from onboarding_agent import coach_turn_text, latest_message_id
+            _marks["loop_start"] = _monotonic()
+            _marks["path"] = "onboarding"
             before_id = latest_message_id(user.id)
             handle_onboarding_reply(user, combined_body, continuation=continuation)
+            _marks["loop_s"] = _monotonic() - _marks["loop_start"]
+            _log_turn_latency(user.id, timing, _t_flush, _marks)
             # Onboarding turns are FULL of durable life facts (their classes, where
             # they eat, gear, year) and until 2026-09-11 none of it reached memory —
             # this branch returned before the post-reply extraction below. Run the
@@ -997,6 +1034,7 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
         # and log loudly at ERROR so the turn is easy to debug. No legacy call.
         response_text = None
         loop_raised = False
+        _marks["loop_start"] = _monotonic()
         if config.SINGLE_AGENT_LOOP_ENABLED:
             try:
                 response_text = run_agent_loop(user, combined_body, message_type, image_data=image_url,
@@ -1024,12 +1062,17 @@ def process_buffered_message(user_id: int, combined_body: str, message_type: str
             logger.info("SENTINEL_SWALLOWED_AT_SEND user=%s", user.id)
             response_text = ""
         turn = pop_turn_state(user.id)
+        _marks["loop_s"] = _monotonic() - _marks["loop_start"]
+        _marks["loop_timing"] = turn.get("timing")
+        _t_send = _monotonic()
         if response_text:
             send_sms(user.phone, response_text, user_id=user.id, message_type=message_type,
                      reply_to_sid=turn.get("reply_to"))
         else:
             logger.info("REACTION_ONLY_TURN user=%s — no text sent", user.id)
             typing_stop(user.id)
+        _marks["send_s"] = _monotonic() - _t_send
+        _log_turn_latency(user.id, timing, _t_flush, _marks)
         # Stat cards the coach queued (send_stat_card) land AFTER its line, never on a
         # glitch reply (the turn that queued them didn't finish).
         if turn.get("stat_cards") and not loop_raised:
@@ -1374,7 +1417,7 @@ def is_goodnight_signal(body: str, *, local_hour: int = None) -> bool:
 # ─── Twilio Webhook (incoming SMS) ──────────────────
 def _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
                      channel="sms", provider_sid=None, image_list=None, has_voice=False,
-                     instant=False):
+                     instant=False, arrived_at=None):
     """The inbound pipeline, from the idempotency claim through the buffer arm.
 
     Extracted verbatim from the Twilio webhook (Photon migration Phase 4B) so
@@ -1654,7 +1697,12 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         # immediate double-text; the model turn adds the rest.
         buffer_delay = config.ONBOARDING_BUFFER_S
     else:
-        buffer_delay = config.REPLY_BUFFER_S
+        # A text that reads complete (a question, a direct ask, terminal punctuation) is
+        # the least likely to be half a thought → the shorter band; fragments keep the
+        # full one (inbound_band.py has the 45-day numbers). A follow-up that misses the
+        # short band is a continuation turn, never a lost text.
+        from inbound_band import pick_reply_band
+        buffer_delay = pick_reply_band(body)
 
     # A captionless photo is the strongest signal that a caption is coming (people
     # send the pic, then the words). Live 2026-09-15: the image flushed at 20s, the
@@ -1695,6 +1743,7 @@ def _process_inbound(session, user, from_number, body, message_sid, image_url, i
         images=image_list,
         process_callback=process_buffered_message,
         delay_override=buffer_delay,
+        arrived_at=arrived_at,
     )
 
     # Return empty TwiML immediately — response comes later via the buffer
@@ -1738,6 +1787,7 @@ def _twilio_signature_gate():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Handle incoming SMS from Twilio. Buffers messages before processing."""
+    arrived_at = _monotonic()   # the inbound band counts from HERE (message_buffer)
     # Authenticity first: a forged POST must not reach the pipeline (enforce) and
     # must be visible (shadow). See config.TWILIO_SIGNATURE_MODE.
     _denied = _twilio_signature_gate()
@@ -1788,7 +1838,7 @@ def webhook():
             ), 200, {"Content-Type": "text/xml"}
 
         return _process_inbound(session, user, from_number, body, message_sid, image_url, image_data,
-                                channel="sms", provider_sid=message_sid)
+                                channel="sms", provider_sid=message_sid, arrived_at=arrived_at)
 
     except Exception as e:
         # Twilio does NOT retry inbound-message webhooks on 5xx or read-timeout by
@@ -1830,6 +1880,7 @@ def internal_inbound():
     not 4xx: the sidecar must not retry, and this is the Business-tier trigger
     signal (someone texting the line who isn't a user) — a durable count, not a
     memory."""
+    arrived_at = _monotonic()   # the inbound band counts from HERE (message_buffer)
     secret = config.INTERNAL_SHARED_SECRET
     if not secret or request.headers.get("X-Internal-Secret") != secret:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -1960,7 +2011,7 @@ def internal_inbound():
                         str(poll_vote.get("poll_id") or "")[:24], str(poll_vote.get("option") or "")[:40])
             _process_inbound(session, user, handle, body, provider_message_id, None, None,
                              channel="imessage", provider_sid=provider_message_id, image_list=[],
-                             instant=True)
+                             instant=True, arrived_at=arrived_at)
             return jsonify({"ok": True, "known": True, "poll_vote": True}), 200
         # Nothing to say and nothing attached — a presence event that slipped through.
         # An outage-lost attachment (image_name / has_voice set, files empty) is NOT empty:
@@ -1971,7 +2022,7 @@ def internal_inbound():
                     " [voice memo]" if has_voice else "")
         _process_inbound(session, user, handle, body, provider_message_id, image_name, image_data,
                          channel="imessage", provider_sid=provider_message_id, image_list=image_list,
-                         has_voice=has_voice)
+                         has_voice=has_voice, arrived_at=arrived_at)
         return jsonify({"ok": True, "known": True}), 200
     except Exception as e:
         # Unlike Twilio, the sidecar DOES retry 5xx (3 attempts). Release the claim
@@ -2924,6 +2975,16 @@ def admin():
         ) if total_meals > 0 else 0
         total_weight_logs = session.query(WeightLog).count()
 
+        # ── WORKOUT STATS ── (founder, 2026-11-19: "we don't have a workouts tracked metric")
+        # `workouts` is the one ledger every path lands in: a card session mirrors into it
+        # on close (session_ops), a text log writes it (log_workout), and "i'm at the gym"
+        # with no sets writes it too (said_sessions). Soft-deleted rows excluded via active().
+        from models import active as _active
+        all_workouts = _active(session, Workout).all()
+        total_workouts = len(all_workouts)
+        workouts_today = sum(1 for w in all_workouts if w.date and as_utc(w.date) >= today_start)
+        workouts_7d = sum(1 for w in all_workouts if w.date and as_utc(w.date) >= now - timedelta(days=7))
+
         # ── USER TABLE DATA ──
         users_data = []
         for u in all_users:
@@ -2939,7 +3000,7 @@ def admin():
                 last_active = "Never"
                 days_inactive = 99
 
-            workout_count = session.query(Workout).filter(Workout.user_id == u.id).count()
+            workout_count = sum(1 for w in all_workouts if w.user_id == u.id)
             meal_count = sum(1 for m in all_meals if m.user_id == u.id)
 
             user_ratings = [int(m.body.strip()) for m in user_incoming
@@ -3101,6 +3162,9 @@ def admin():
             meals_today=meals_today,
             avg_meal_calories=avg_meal_calories,
             total_weight_logs=total_weight_logs,
+            total_workouts=total_workouts,
+            workouts_today=workouts_today,
+            workouts_7d=workouts_7d,
             d1_responded=d1_responded,
             d1_rate=d1_rate,
             d7_active=d7_active, d7_eligible=d7_eligible,

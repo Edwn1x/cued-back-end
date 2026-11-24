@@ -505,7 +505,19 @@ def _compose(user, row: Reminder) -> str:
         if getattr(resp, "stop_reason", None) == "max_tokens":
             logger.warning("REMINDER_COMPOSE_TRUNCATED user=%s id=%s", user.id, row.id)
             return fallback
-        text = (_join_text(resp.content) or "").strip()
+        raw = (_join_text(resp.content) or "").strip()
+        # Live 2026-11-20 (user 42, id 57): the line came back wrapped in a tool-call
+        # element and went out verbatim. One lone invoke → its text; XML in prose → the
+        # plain fallback. Never the wrapper.
+        from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+        text = raw
+        if has_leaked_tool_xml(raw):
+            text = unwrap_leaked_tool_xml(raw)
+            if text:
+                logger.info("REMINDER_COMPOSE_TOOL_XML_UNWRAPPED user=%s id=%s text=%r", user.id, row.id, text[:80])
+            else:
+                logger.warning("REMINDER_COMPOSE_TOOL_XML_FALLBACK user=%s id=%s raw=%r", user.id, row.id, raw[:120])
+                return fallback
         return text or fallback
     except Exception as e:  # noqa: BLE001 — never lose the promise to a model error
         logger.warning("REMINDER_COMPOSE_FAILED user=%s id=%s err=%s", user.id, row.id, e)

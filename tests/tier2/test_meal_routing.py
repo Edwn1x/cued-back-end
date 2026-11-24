@@ -169,3 +169,42 @@ def test_rough_estimate_communicates_uncertainty(db, monkeypatch):
     assert any(w in low for w in ("~", "ish", "rough", "about", "around", "roughly",
                                   "lmk", "let me know", "correct me", "off on")), \
         f"estimate presented as precise with no uncertainty communicated: {reply!r}"
+
+
+def test_named_brand_is_searched_not_guessed(db, monkeypatch, caplog):
+    """Live 2026-11-20 (user 51): "insomnia cc cookie" was logged as a 370-cal estimate
+    without a search; Insomnia Cookies posts 250 cal / 3g for the classic chocolate chunk.
+    The named-brand rung now sits above generic food, and the log tool's result nudges a
+    search when the model logged a brand-named guess anyway. Either path must end on the
+    posted number."""
+    import logging
+    import config
+    _enable_all(monkeypatch)
+    monkeypatch.setattr(config, "WEB_SEARCH_TOOL_ENABLED", True)
+    monkeypatch.setattr(config, "LOG_MEAL_BRAND_HINT_ENABLED", True)
+    calls = _record_dispatches(monkeypatch)
+    from tests.factories import make_user
+    from agent_loop import run_agent_loop
+
+    user = make_user(db, name="Ed", calorie_target=2600, protein_target=160)
+    caplog.set_level(logging.INFO)
+    reply = run_agent_loop(user, "gonna eat an insomnia cc cookie", "freeform")
+    print(f"\n[BRAND reply] {reply!r}\n[BRAND dispatches] {calls}")
+    print("[BRAND log lines]", [m for m in caplog.messages if any(k in m for k in
+          ("WEB_SEARCH_QUERY", "LOG_MEAL ", "LOG_MEAL_BRAND", "MANAGE_LOG"))])
+
+    assert "WEB_SEARCH_QUERY" in caplog.text, "a named brand must be searched, not guessed"
+    assert "usda_food_lookup" not in calls, "a named brand is not a generic food"
+    meals = _meals(user.id)
+    if meals:
+        # logged now (the live coach did): the row carries the posted number, and a guess
+        # that got nudged was edited before the reply
+        total = sum(m.calories or 0 for m in meals)
+        assert 200 <= total <= 290, f"posted number (250) not used: {total} — {reply!r}"
+        if "LOG_MEAL_BRAND_UNSOURCED" in caplog.text:
+            assert "MANAGE_LOG" in caplog.text, "logged a guess, nudged, and never edited the row"
+    else:
+        # the other honest branch for "gonna eat": held the log until they eat it — but the
+        # number it quotes is the searched one, never an estimate
+        assert "250" in reply, f"not logged AND no posted number quoted: {reply!r}"
+        assert "estimate" not in reply.lower() and "~" not in reply, f"guessed after searching: {reply!r}"

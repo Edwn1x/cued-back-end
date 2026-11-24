@@ -18,6 +18,7 @@ switching thinking modes would break the messages cache — see INVESTIGATION §
 from __future__ import annotations
 
 import logging
+import time
 import re
 import os
 from datetime import datetime, timezone, timedelta
@@ -2076,6 +2077,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     images = image_data_list if image_data_list else ([image_data] if image_data else [])
     image_data = images[0] if images else None
     _briefing_parts: dict | None = None   # set when this reply carries the morning briefing
+    _t_enter = time.perf_counter()        # AGENT_LOOP_TIMING: context build vs model vs tools
     session = get_session()
     try:
         context = build_loop_context(user, session)
@@ -2402,6 +2404,11 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     begin_turn(user.id)  # react/reply_in_thread record into this; the caller pops it
     # Source provenance for log_meal (photo vs text) — the turn knows, the tool doesn't.
     _st = peek_turn_state(user.id)
+    # Where the turn's wall time goes (logged by app.py as AGENT_LOOP_TIMING once the
+    # reply is out). Measured 2026-11-20: the context build was 7.7s of a 15s "model"
+    # phase — 51 sequential queries to a DB a region away — and no log line showed it.
+    _st["timing"] = {"context_ms": round((time.perf_counter() - _t_enter) * 1000),
+                     "model_ms": [], "tool_ms": 0}
     _st["has_image"] = bool(image_data and config.READ_IMAGE_ENABLED)
     if _card_kind:
         # The code-decided stat card rides the same queue the tool uses; app.py flushes it
@@ -2429,7 +2436,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         from cache_keepalive import note as keepalive_note
         keepalive_note("agent_loop.run", model=kwargs["model"], system=system, tools=tools,
                        thinking=kwargs["thinking"], output_config=kwargs["output_config"])
+        _t_call = time.perf_counter()
         resp = client.messages.create(**kwargs)
+        _st["timing"]["model_ms"].append(round((time.perf_counter() - _t_call) * 1000))
 
         try:
             track(user.id, "agent_loop.run", config.AGENT_LOOP_MODEL, resp)
@@ -2442,7 +2451,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # Every search the model issued this call, logged with the user id
         # (WEB_SEARCH_QUERY) — the line that shows what the coach reaches for.
         from agent_tools import log_web_search_queries
-        log_web_search_queries(user.id, resp.content, "agent_loop.run")
+        if log_web_search_queries(user.id, resp.content, "agent_loop.run"):
+            # The turn knows a search ran; the log_meal handler reads it to decide whether
+            # a brand-named row is sourced (no nudge) or a guess (nudge in the tool result).
+            _st["web_search_used"] = True
 
         # Server-side tool (web_search) hit its iteration limit — re-send to resume.
         if stop == "pause_turn":
@@ -2456,7 +2468,9 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             results = []
             for block in resp.content:
                 if getattr(block, "type", None) == "tool_use":
+                    _t_tool = time.perf_counter()
                     out = dispatch_tool(block.name, block.input, user.id, message_id=message_id)
+                    _st["timing"]["tool_ms"] += round((time.perf_counter() - _t_tool) * 1000)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
             messages.append({"role": "user", "content": results})
             continue
@@ -2464,6 +2478,18 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # ALL text blocks, concatenated (adaptive thinking + inline web_search / citations
         # split the reply across several — see _join_text). This is the burn-in fix.
         text = _join_text(resp.content)
+        # A tool call written as XML in the text (live 2026-11-20, reminders msg 11305;
+        # the loop has real tools, so here it is a plan that never became a call). A lone
+        # invoke → its line is the reply; XML in prose → the narration guard below nudges
+        # once, then drops. The wrapper itself is never sent.
+        if text:
+            from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+            if has_leaked_tool_xml(text):
+                inner = unwrap_leaked_tool_xml(text)
+                logger.warning("AGENT_LOOP_TOOL_XML_IN_TEXT user=%s iter=%d unwrapped=%s text=%r",
+                               user.id, i, bool(inner), text[:80])
+                if inner:
+                    text = inner
         if text:
             last_text = text
 
@@ -2534,6 +2560,14 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                                 user.id, bool(state.get("reacted")), (combined_body or "")[:60])
             logger.info("AGENT_LOOP_REACTION_ONLY user=%s iter=%d swallowed=%r", user.id, i, text[:40])
             return ""
+        # A real reply with the sentinel on a line of its own (the model answered AND
+        # appended the marker): send the words, never the marker.
+        if text and "[silent]" in text.lower():
+            from agent_tools import strip_sentinel_line
+            stripped = strip_sentinel_line(text)
+            if stripped != text:
+                logger.warning("AGENT_LOOP_SENTINEL_LINE_STRIPPED user=%s iter=%d kept=%r", user.id, i, stripped[:80])
+                text = stripped
         from agent_tools import leaked_tool_call
         leak = leaked_tool_call(text) if (text and tools) else None
         if leak and leak[0] == "react_to_message" and not state.get("reacted"):
@@ -2557,8 +2591,8 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # (2) ONE forced follow-up with a path for both branches: act with the tools,
         # then send the real words (or the silent sentinel); (3) a repeat is dropped,
         # never sent.
-        from agent_tools import looks_like_narration, salvage_direct_reply, REACTION_ONLY_SENTINEL
-        if text and looks_like_narration(text):
+        from agent_tools import looks_like_narration, salvage_direct_reply, REACTION_ONLY_SENTINEL, has_leaked_tool_xml
+        if text and (looks_like_narration(text) or has_leaked_tool_xml(text)):
             kept = salvage_direct_reply(text) if config.NARRATION_SALVAGE_ENABLED else None
             if kept:
                 logger.warning("AGENT_LOOP_NARRATION_SALVAGED user=%s iter=%d kept=%r dropped_chars=%d",

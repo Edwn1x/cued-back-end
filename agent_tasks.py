@@ -508,6 +508,12 @@ def _run_loop(user, row: AgentTask) -> tuple:
                 if stop == "max_tokens":
                     return ("failed", "truncated")
                 text = _join_text(resp.content)
+                from agent_tools import has_leaked_tool_xml, unwrap_leaked_tool_xml
+                if text and has_leaked_tool_xml(text):
+                    text = unwrap_leaked_tool_xml(text)
+                    logger.warning("TASK_TOOL_XML_IN_TEXT user=%s id=%s unwrapped=%s", user.id, row.id, bool(text))
+                    if not text:
+                        return ("failed", "tool xml in text")
                 # Bare text instead of a terminal tool: treat as the report (same seam as
                 # the heartbeat's fallback) — but only if it's non-empty.
                 return ("report", text.strip()) if text and text.strip() else ("failed", "no output")
