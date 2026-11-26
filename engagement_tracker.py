@@ -99,8 +99,11 @@ def has_unanswered_outbound(user_id: int) -> bool:
 # its link, the first-card ask) count: don't stack a nudge on them. Live 2026-10-10 16:25
 # (user 49): "u eat yet today?" landed as the 13th unanswered proactive text in a row — the
 # most recent outbound was a card_setup ask, which this set didn't know.
+# A poll (polls.POLL_MESSAGE_TYPE) counts too: it is an ask sitting in the thread, whoever
+# sent it — a heartbeat tick, a reminder that went out as a poll, the coach. Without it a
+# nudge could land on top of an untapped poll (2026-11-26, before polls opened to everyone).
 PROACTIVE_MESSAGE_TYPES = {"heartbeat", "reminder", "water_offer", "task",
-                           "connect_offer", "connect_link", "card_setup"}
+                           "connect_offer", "connect_link", "card_setup", "poll"}
 
 # A standing interval ping — "drink water" every N hours (reminders.every_hours) — goes
 # out as WATER_REMINDER_TYPE and is deliberately NOT proactive here. It fires on its own

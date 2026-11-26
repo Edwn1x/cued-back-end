@@ -485,6 +485,22 @@ SEND_POLL_USER_IDS = frozenset(
 POLL_LIFETIME_HOURS = int(os.getenv("POLL_LIFETIME_HOURS", "4"))
 POLL_MAX_OUTSTANDING = int(os.getenv("POLL_MAX_OUTSTANDING", "2"))
 POLL_MAX_OPTIONS = int(os.getenv("POLL_MAX_OPTIONS", "4"))
+# Before polls open to everyone (2026-11-26, from the 11-14→11-26 read: 6 polls, 6 taps, one user):
+# - A phone below iOS 26 can't show a poll and nothing tells us a recipient's iOS version, so a
+#   run of POLL_UNTAPPED_STREAK real polls with no tap stops polls for that person for
+#   POLL_UNTAPPED_RETRY_DAYS (polls.untapped_streak; 0 turns the check off).
+# - HEARTBEAT_POLL_NUDGE_ENABLED: a heartbeat send_text that is one lone short question
+#   (<= POLL_NUDGE_MAX_WORDS words) goes back to the model ONCE — "lab get in?" went out in words
+#   on 11-25, after did-you checks became polls in the prompt. The model re-decides: send_poll, or
+#   the same send_text again when it isn't a pick.
+# - REMINDER_POLL_ENABLED: a reminder whose line IS a yes/no or pick question goes out as a poll
+#   (user 42: "got time for internship or research apps rn?" x3, the reminder path had no poll).
+# All three only bite for users send_poll already covers (SEND_POLL_TOOL_ENABLED / _USER_IDS).
+POLL_UNTAPPED_STREAK = int(os.getenv("POLL_UNTAPPED_STREAK", "3"))
+POLL_UNTAPPED_RETRY_DAYS = float(os.getenv("POLL_UNTAPPED_RETRY_DAYS", "14"))
+POLL_NUDGE_MAX_WORDS = int(os.getenv("POLL_NUDGE_MAX_WORDS", "12"))
+HEARTBEAT_POLL_NUDGE_ENABLED = os.getenv("HEARTBEAT_POLL_NUDGE_ENABLED", "true").lower() == "true"
+REMINDER_POLL_ENABLED = os.getenv("REMINDER_POLL_ENABLED", "true").lower() == "true"
 # read_image: send inbound MMS to the model's vision so IT routes food/calendar/
 # whiteboard/other in-call (no pre-classifier). Non-food schema is PROVISIONAL until
 # real screenshots refine it (see voice.md).

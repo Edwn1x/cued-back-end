@@ -38,9 +38,13 @@ def _latest_inbound_sid(user_id: int):
     session = get_session()
     try:
         row = session.query(User.phone).filter(User.id == user_id).first()
+        # A poll vote's id (`<poll>:<phone>:<option>:selected:<ms>`) is not a message the
+        # provider can mark read — every receipt after a tap came back ok=False (2026-11-15
+        # on). Read up to their latest real message instead.
         m = (session.query(Message.provider_sid)
              .filter(Message.user_id == user_id, Message.direction == "in",
-                     Message.channel == "imessage", Message.provider_sid.isnot(None))
+                     Message.channel == "imessage", Message.provider_sid.isnot(None),
+                     Message.provider_sid.notlike("%:selected:%"))
              .order_by(Message.id.desc()).first())
     finally:
         session.close()

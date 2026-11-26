@@ -449,9 +449,48 @@ def context_block(user, session) -> str | None:
 
 # ─── composing + firing ──────────────────────────────────────────────────────
 
+# A reminder whose line IS a question with a pick answer goes out as a poll (2026-11-26, user
+# 42: "got time for internship or research apps rn?" three times in words — this path had no
+# poll). The model marks it in its TEXT — question, then a `POLL: a / b / c` line — not with a
+# tool: reminder.compose shares the tool-less cached voice prefix with every other small call,
+# and a tool would fork it. `_split_poll` is the only reader; a POLL line never reaches a phone.
+_POLL_LINE_RE = re.compile(r"^[ \t]*POLL:[ \t]*(.*)$", re.I | re.M)
+
+
+def _split_poll(text) -> tuple[str, list[str] | None]:
+    """'u got time for apps rn?\nPOLL: yeah / not now / later' → (question, options). No POLL
+    line, or one that isn't 2+ options under a one-line question → (the text without any POLL
+    line, None)."""
+    raw = str(text or "")
+    m = _POLL_LINE_RE.search(raw)
+    if not m:
+        return raw.strip(), None
+    question = " ".join(_POLL_LINE_RE.sub("", raw).split())
+    options = [o for o in (" ".join(x.split()) for x in m.group(1).split(" / ")) if o]
+    if not question or len(options) < 2 or len(_POLL_LINE_RE.findall(raw)) != 1:
+        return question, None
+    return question, options
+
+
+def _poll_ok(user, row: Reminder) -> bool:
+    """May THIS reminder go out as a poll: not a standing interval ping, the flag, and
+    polls.proactive_ok (send_poll covers them, setup done, iMessage, they tap polls, room
+    under the open cap)."""
+    if row.every_hours or not getattr(config, "REMINDER_POLL_ENABLED", True):
+        return False
+    try:
+        from polls import proactive_ok
+        return proactive_ok(user.id)
+    except Exception as e:  # noqa: BLE001 — unknown → words
+        logger.warning("REMINDER_POLL_CHECK_FAILED user=%s id=%s err=%s", user.id, getattr(row, "id", None), e)
+        return False
+
+
 def _compose(user, row: Reminder) -> str:
     """One short line in the coach's voice that does exactly what they asked. Any
-    failure → the plain line; the promise is kept either way."""
+    failure → the plain line; the promise is kept either way. When the reminder may go out
+    as a poll (_poll_ok) the line can come back as 'question\nPOLL: a / b / c' — _fire_one
+    splits it; otherwise any POLL line is dropped here."""
     fallback = f"reminder: {row.text}"
     in_block = _program_block_note(user, row)
     if in_block:
@@ -489,6 +528,16 @@ def _compose(user, row: Reminder) -> str:
                 f" This one is a standing ping they get every {row.every_hours} hours, not a one-off: "
                 f"a few words, no question, no explanation, and not the same wording every time."
             )
+        poll_ok = _poll_ok(user, row)
+        if poll_ok:
+            instruction += (
+                " ONE exception to the single line: if — and only if — the reminder is itself a "
+                "question they answer with a pick (a yes or no, a did-you, a when), write the question "
+                "on the first line and add a second line `POLL: a / b / c` with 2 or 3 short options in "
+                "your voice (e.g. `POLL: yeah / not now / later tonight`) — it goes out as a tappable "
+                "poll under the question. A reminder that tells them to do something ('go run', "
+                "'creatine time') is not a poll: one line, no POLL line."
+            )
         client = make_client()
         from cache_keepalive import note as keepalive_note
         keepalive_note("reminder.compose", model=config.AGENT_LOOP_MODEL, system=system,
@@ -518,6 +567,8 @@ def _compose(user, row: Reminder) -> str:
             else:
                 logger.warning("REMINDER_COMPOSE_TOOL_XML_FALLBACK user=%s id=%s raw=%r", user.id, row.id, raw[:120])
                 return fallback
+        if not poll_ok and _POLL_LINE_RE.search(text or ""):
+            text = _split_poll(text)[0]
         return text or fallback
     except Exception as e:  # noqa: BLE001 — never lose the promise to a model error
         logger.warning("REMINDER_COMPOSE_FAILED user=%s id=%s err=%s", user.id, row.id, e)
@@ -1082,13 +1133,27 @@ def _fire_one(rid: int, now: datetime) -> bool:
         if sent_as_gif:
             text = MARKER
         else:
-            text = _compose(user, row)
+            # A POLL line never reaches a phone: the line splits into (question, options) and
+            # goes out as a poll when it can; refused or failed → the question in words.
+            text, options = _split_poll(_compose(user, row))
+            text = text or f"reminder: {row.text}"
+            as_poll = False
+            if options and not row.every_hours:
+                from polls import QUESTION_OUT_PREFIX, poll_row_body, send_poll_to_user
+                topic = f"reminder {rid}"
+                out = send_poll_to_user(user.id, text, options, topic=topic, source="reminder")
+                logger.info("REMINDER_POLL user=%s id=%s ok=%s title=%r", user.id, rid, out.startswith("ok:"), text[:60])
+                if out.startswith("ok:"):
+                    as_poll, text = True, poll_row_body(text, options, topic)
+                elif out.startswith(QUESTION_OUT_PREFIX):
+                    as_poll = True      # the question bubble IS the reminder; it's already out
             # Interval pings carry their own type so the heartbeat's anti-stack gate and the
             # rhythm gates can tell "a water ping landed" from "the coach spoke" (engagement_
             # tracker.WATER_REMINDER_TYPE). One-offs stay "reminder".
             from engagement_tracker import WATER_REMINDER_TYPE
-            send_sms(user.phone, text, user_id=user.id,
-                     message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
+            if not as_poll:
+                send_sms(user.phone, text, user_id=user.id,
+                         message_type=WATER_REMINDER_TYPE if row.every_hours else "reminder")
             if not row.every_hours:
                 _send_demo_links_once(user, row)
         row.last_sent_at = now
