@@ -875,6 +875,50 @@ def build_loop_context(user, session) -> str:
                      "re-estimate changes one, edit it by id with manage_log before you quote "
                      "the new number)\n" + yl)
 
+    # 7b2. PAST DAYS — the last N logged days as code-computed totals, one line each. Live
+    # 2026-11-20 (user 42, "have I been gradually losing weight?"): "a couple days were over
+    # 2000 (one around 3400)" — no day in 30 was over 2820. Context carried today + yesterday
+    # only, so the model RECALLED a figure. Logged days only; an unlisted day is unknown,
+    # never zero. (The weight trend itself still needs weigh-ins; this is the intake side.)
+    if getattr(config, "PAST_DAYS_TOTALS_ENABLED", True):
+        try:
+            _pn = max(1, int(getattr(config, "PAST_DAYS_TOTALS_N", 7)))
+            _pstart = _start - _td(days=_pn)
+            pmeals = (active(session, Meal, user_id=user.id)
+                      .filter(Meal.eaten_at >= _pstart, Meal.eaten_at < _start).all())
+            if pmeals:
+                from zoneinfo import ZoneInfo as _ZI
+                from datetime import datetime as _pdt
+                try:
+                    _ptz = _ZI(user.user_timezone or "America/Los_Angeles")
+                except Exception:  # noqa: BLE001
+                    _ptz = _ZI("America/Los_Angeles")
+                _today_local = _pdt.now(_ptz).date()
+                _days: dict = {}
+                for m in pmeals:
+                    k = int((m.eaten_at - _pstart) // _td(days=1))    # 0 = oldest … _pn-1 = yesterday
+                    d = _days.setdefault(k, [0, 0, 0])
+                    d[0] += m.calories or 0
+                    d[1] += m.protein_g or 0
+                    d[2] += 1
+                prow = []
+                for k in sorted(_days, reverse=True):
+                    ago = _pn - k
+                    cal, pro, n = _days[k]
+                    label = (_today_local - _td(days=ago)).strftime("%a %m-%d")
+                    prow.append(f"- {label} ({'yesterday' if ago == 1 else f'{ago} days ago'}): "
+                                f"{int(cal)} cal / {int(pro)}g protein ({n} meal{'s' if n != 1 else ''})")
+                tgt = f"target: {user.calorie_target} cal/day — an over/under call reads off these rows. " if user.calorie_target else ""
+                parts.append(
+                    f"## PAST DAYS (code-computed totals, the last {_pn} days before today — logged days only)\n"
+                    + "\n".join(prow) + "\n"
+                    + tgt + "Days not listed had nothing logged: UNKNOWN, not zero. When they ask about a "
+                    "trend, how they've been doing, or whether they've been over or under, use THESE "
+                    "numbers; never recall or guess a past day's total, never add these into today, and "
+                    "say plainly when a day is unknown.")
+        except Exception as e:  # noqa: BLE001 — a hint must never break a turn
+            logger.warning("PAST_DAYS_BLOCK_FAILED user=%s err=%s", user.id, e)
+
     # 8. Recent training log (active only).
     workouts = (active(session, Workout, user_id=user.id)
                 .order_by(Workout.date.desc()).limit(5).all())
@@ -1395,7 +1439,7 @@ _CONTINUATION_CORRECTION_RE = re.compile(
     r"i said\b|u (?:got|logged|have) (?:it|that) wrong\b)", re.I)
 
 
-def _continuation_block(user, combined_body: str, session) -> str | None:
+def _continuation_block(user, combined_body: str, session, *, has_image: bool = False) -> str | None:
     """The block for a continuation turn: what the previous replies said (they went out after
     this text was already in the thread), and the rule — [silent] when it's covered; a
     correction is acted on, never skipped. None only on error (never breaks a turn)."""
@@ -1410,9 +1454,19 @@ def _continuation_block(user, combined_body: str, session) -> str | None:
         body = (combined_body or "").strip()
         name = user.name or "they"
         correction = bool(getattr(config, "CONTINUATION_CORRECTION_HINT_ENABLED", True) and _CONTINUATION_CORRECTION_RE.search(body))
+        what = f"\"{body[:300]}\"" if body else ("(a photo, no caption)" if has_image else "(nothing)")
         lines = [CONTINUATION_HDR,
                  f"{name} sent this before seeing ur last reply — it's the tail of the thought u were "
-                 f"already answering, NOT a fresh prompt: \"{body[:300]}\""]
+                 f"already answering, NOT a fresh prompt: {what}"]
+        if has_image:
+            # Live 2026-11-21 (user 42): the label photo landed 17s behind the text; the text
+            # reply had guessed 180 cal / 45g; the label said 100 / 25.
+            lines.append(
+                "It comes with a PHOTO that landed right behind that text. If it's a label, menu, "
+                "screenshot or the food itself for what u just estimated, read it NOW and correct ur "
+                "numbers in ONE short line — the row is already logged, so edit it by id with manage_log "
+                "instead of logging it again. If it shows nothing ur last reply didn't already cover, "
+                f"reply exactly {REACTION_ONLY_SENTINEL}.")
         if prev:
             lines.append(f"ur last reply went out AFTER it, with this text already in the thread: \"{prev}\"")
         if earlier:
@@ -2042,7 +2096,7 @@ def _apply_restatement_guard(user, text: str, combined_body: str, state: dict) -
             from sms import react_to_message, _resolve_channel
             if _resolve_channel(user.id) == "imessage":
                 sid = latest_inbound_imessage_sid(user.id)
-                if sid and react_to_message(user.id, sid, "like"):
+                if sid and react_to_message(user.id, sid, _preferred_tapback(user.id)):
                     state["reacted"] = True
                     return ""
         return "got it"
@@ -2085,7 +2139,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
         # thread (live 2026-10-10 02:35: "it's late. go sleep" to a 58s-old "look at the
         # time rn", right after the rundown). The model is told, and may stay silent.
         if continuation and config.CONTINUATION_LOOP_BLOCK_ENABLED:
-            _cb = _continuation_block(user, combined_body, session)
+            _cb = _continuation_block(user, combined_body, session, has_image=bool(images))
             if _cb:
                 context += "\n\n" + _cb
         # An outright ask for a stat card ("send me my macros", "how packed is rsf", "what's
@@ -2536,7 +2590,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
             if continuation and config.CONTINUATION_LOOP_BLOCK_ENABLED and not state.get("reacted"):
                 try:
                     from sms import react_to_latest_inbound
-                    if react_to_latest_inbound(user.id, "like"):
+                    if react_to_latest_inbound(user.id, _preferred_tapback(user.id)):
                         state["reacted"] = True
                 except Exception as e:  # noqa: BLE001
                     logger.info("AGENT_LOOP_CONTINUATION_REACT_FAILED user=%s err=%s", user.id, e)
@@ -2552,7 +2606,7 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
                 if _resolve_channel(user.id) == "imessage":
                     try:
                         from sms import react_to_latest_inbound
-                        if react_to_latest_inbound(user.id, "like"):
+                        if react_to_latest_inbound(user.id, _preferred_tapback(user.id)):
                             state["reacted"] = True
                     except Exception as e:  # noqa: BLE001
                         logger.info("AGENT_LOOP_SILENT_BACKFILL_FAILED user=%s err=%s", user.id, e)
@@ -2725,3 +2779,10 @@ def run_agent_loop(user, combined_body: str, message_type: str, image_data: dict
     logger.warning("AGENT_LOOP_MAX_ITERS user=%s iters=%d — returning best-effort reply",
                    user.id, config.AGENT_LOOP_MAX_TOOL_ITERS)
     return last_text or _LOOP_DEGRADE_REPLY
+
+
+def _preferred_tapback(user_id: int) -> str:
+    """The default tapback for a code-side reaction: 'love' when they asked for hearts
+    (users.preferred_tapback, captured in app._capture_tapback_preference), else 'like'."""
+    from sms import preferred_tapback
+    return preferred_tapback(user_id)

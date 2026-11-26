@@ -166,8 +166,13 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 logger.warning(
                     "BUFFER_LATE_APPEND phone=%s within=%.2fs of last flush — new turn; "
                     "outbound dedup guards the reply", phone, time.monotonic() - last)
+            # A photo too (PHOTO_CONTINUATION_ENABLED): landing behind a text that is being
+            # answered, the words already came — it is the tail of that thought (live
+            # 2026-11-21, user 42: the label photo 17s behind "Ima drink this instead sangria").
+            photo_cont = bool(has_image and (late or in_flight)
+                              and getattr(config, "PHOTO_CONTINUATION_ENABLED", True))
             continuation = bool(getattr(config, "ONBOARDING_CONTINUATION_FOLD_ENABLED", True)
-                                and not has_image and (late or in_flight))
+                                and (not has_image or photo_cont) and (late or in_flight))
             _buffers[phone] = {
                 "messages": [{
                     "body": body,
@@ -182,7 +187,8 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
                 "first_arrived": arrived_at if arrived_at is not None else now,
             }
             if continuation:
-                logger.info("BUFFER_CONTINUATION phone=%s in_flight=%s late=%s", phone, in_flight, late)
+                logger.info("BUFFER_CONTINUATION phone=%s in_flight=%s late=%s photo=%s",
+                            phone, in_flight, late, has_image)
             logger.info(f"New buffer created for {phone}")
             _mark_pending(phone, user_id, has_image, first=True)
 
@@ -190,9 +196,12 @@ def buffer_message(phone: str, body: str, user_id: int, message_type: str,
         # longer pays the full band on top of that wait (founder 2026-11-20: "especially
         # when you are having an active convo… it always takes forever"). A photo keeps
         # its hold — the caption is still on its way.
-        if (_buffers[phone].get("continuation") and not has_image
-                and getattr(config, "CONTINUATION_SHORT_BAND_ENABLED", True)):
-            delay_override = config.CONTINUATION_BUFFER_S
+        if _buffers[phone].get("continuation") and getattr(config, "CONTINUATION_SHORT_BAND_ENABLED", True):
+            if not has_image:
+                delay_override = config.CONTINUATION_BUFFER_S
+            elif getattr(config, "PHOTO_CONTINUATION_ENABLED", True):
+                # The words already came; a short band catches a trailing caption, no more.
+                delay_override = getattr(config, "PHOTO_CONTINUATION_BUFFER_S", (6, 8))
 
         # Start a new timer, tagged with a unique token. The token is how a flush
         # tells "I am the current timer" from "I was superseded by a later append

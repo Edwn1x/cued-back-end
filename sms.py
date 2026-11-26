@@ -276,6 +276,68 @@ def split_message(body: str) -> list[str]:
 
 TAPBACKS = {"love": "❤️", "like": "👍", "dislike": "👎", "laugh": "😂", "emphasize": "‼️", "question": "❓"}
 
+# The tapback they asked for. Live 2026-11-20 22:01 PT (user 42): "Instead of thumbs up bro
+# just like the message frr" → the model reacted ❤️ and promised "hearts from now on"; the
+# next three reactions were 👍 again, every one a CODE-side tapback (closing-ack suppression,
+# the sentinel backfill, the continuation react) with "like" hardcoded. The ask is read off
+# their words here, stored on the user, and every default tapback goes through
+# preferred_tapback(). Only the two choices people actually voice: hearts or thumbs.
+_TB_THUMBS = r"(?:thumbs?[ -]?ups?|👍)"
+_TB_HEART = r"(?:hearts?|❤️|❤|love)"
+_TAPBACK_TO_LOVE = re.compile(
+    rf"(?:\b(?:instead of|not|no more|stop(?: with)?|rather than|enough with|quit(?: with)?)\b(?: the| a| ur| your| those)? {_TB_THUMBS})"
+    rf"|(?:\b(?:heart|love|❤️|❤)\s+(?:the|my|those|them|it|every|each)\b)"
+    rf"|(?:\b(?:use|send|do|give|react with|put|do)\b(?: a| the| me)? (?:hearts?|❤️|❤)\b)"
+    rf"|(?:\b{_TB_HEART}\b[^.?!]*\binstead\b)",
+    re.IGNORECASE)
+_TAPBACK_TO_LIKE = re.compile(
+    rf"(?:{_TB_THUMBS}\s+(?:is|are|r|works?|was)\s+(?:fine|good|ok|okay|cool|better|enough))"
+    rf"|(?:\b(?:instead of|not|no more|stop(?: with)?|rather than|enough with|quit(?: with)?)\b(?: the| a| ur| your| those)? {_TB_HEART})",
+    re.IGNORECASE)
+
+
+def tapback_preference_from_text(body: str):
+    """'love' / 'like' when the text asks for that tapback; None when it doesn't (a
+    "thumbs up on the bench pr" or a "heart rate" never counts)."""
+    t = (body or "").strip()
+    if not t:
+        return None
+    if _TAPBACK_TO_LIKE.search(t):
+        return "like"
+    if _TAPBACK_TO_LOVE.search(t):
+        return "love"
+    return None
+
+
+def preferred_tapback(user_id: int) -> str:
+    """The tapback name every code-side DEFAULT reaction uses: what they asked for, else 'like'."""
+    try:
+        session = get_session()
+        try:
+            row = session.query(User.preferred_tapback).filter(User.id == user_id).first()
+        finally:
+            session.close()
+        pref = (row[0] or "").strip().lower() if row else ""
+        return pref if pref in TAPBACKS else "like"
+    except Exception as e:  # noqa: BLE001 — a lookup must never cost a reaction
+        logger.info("PREFERRED_TAPBACK_LOOKUP_FAILED user=%s err=%s", user_id, e)
+        return "like"
+
+
+def set_tapback_preference(user_id: int, name: str) -> bool:
+    if name not in TAPBACKS:
+        return False
+    session = get_session()
+    try:
+        u = session.get(User, user_id)
+        if not u:
+            return False
+        u.preferred_tapback = name
+        session.commit()
+        return True
+    finally:
+        session.close()
+
 
 def react_to_latest_inbound(user_id: int, emoji: str) -> bool:
     """Best-effort tapback on the user's newest iMessage (their last text). False when

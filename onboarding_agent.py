@@ -1995,8 +1995,8 @@ def _last_coach_message_age_s(user_id: int) -> float | None:
 
 def _react_thumbs(user_id: int) -> None:
     try:
-        from sms import react_to_latest_inbound
-        react_to_latest_inbound(user_id, "like")
+        from sms import react_to_latest_inbound, preferred_tapback
+        react_to_latest_inbound(user_id, preferred_tapback(user_id))
     except Exception as e:  # noqa: BLE001
         logger.info("ONBOARDING_REACT_SKIPPED user=%s err=%s", user_id, e)
 

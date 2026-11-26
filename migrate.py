@@ -233,6 +233,7 @@ MIGRATIONS = [
     "ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status VARCHAR(12) DEFAULT 'sent'",
     "CREATE INDEX IF NOT EXISTS ix_messages_provider_sid ON messages (provider_sid)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_channel VARCHAR(10) DEFAULT 'sms'",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_tapback VARCHAR(12)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failed_over BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_failover_at TIMESTAMP",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS photon_user_id VARCHAR(64)",
