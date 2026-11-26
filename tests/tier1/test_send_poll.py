@@ -416,6 +416,11 @@ def test_heartbeat_poll_refused_falls_through_to_text(db, monkeypatch, anthropic
     from tests._fake_anthropic import ToolUse
     u = _hb_user(db, monkeypatch)
     assert agent_tools.dispatch_tool("send_poll", {"title": "gym time today?", "options": ["4", "7"], "topic": "gym time"}, u.id).startswith("ok:")
+    # An untapped poll is an ask in the thread: the anti-stack gate holds the heartbeat while it's
+    # fresh (2026-11-26). Past that window and inside the poll's lifetime, the topic gate answers.
+    monkeypatch.setattr(config, "HEARTBEAT_STACK_WINDOW_MINUTES", 30)
+    for r in _rows(db, u.id, "out"):
+        _age(db, r, 1)
     imessage_sends.clear()
     got = {}
     def handler(kw):
@@ -511,3 +516,262 @@ def test_did_you_checks_are_polls_too():
                         (heartbeat._POLL_GUIDANCE, "heartbeat")):
         assert "did-you" in text, where
         assert "done / not yet / skipping it" in text, where
+
+
+# ── 2026-11-26, before polls open to everyone: the read of 11-14→11-26 (6 polls, 6 taps, one user) ──
+
+def _old_poll(db, u, title, *, days=0.0, hours=5.0):
+    """A real poll row (iMessage, poll id) sent `days`/`hours` ago — past the 4h lifetime by default."""
+    from datetime import datetime, timedelta, timezone
+    from models import Message
+    m = Message(user_id=u.id, direction="out", body=f'[poll "{title}": a / b]', message_type="poll",
+                channel="imessage", provider_sid=f"POLL-{title}", delivery_status="sent",
+                created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days, hours=hours))
+    db.add(m)
+    db.commit()
+    return m
+
+
+def test_three_untapped_polls_in_a_row_stops_polls_until_a_tap_or_the_retry_window(db, poll_ok, monkeypatch):
+    """Nothing tells us a recipient's iOS version, and a phone below iOS 26 shows a question
+    bubble with nothing under it. A run of untapped polls is the only signal: after 3, ask in
+    words — for 14 days, then one more try; a tap ends the streak; an admin send skips it."""
+    import agent_tools, polls
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    for t in ("one?", "two?"):
+        _old_poll(db, u, t)
+    assert agent_tools.dispatch_tool("send_poll", ASK, u.id).startswith("ok:"), "two untapped is not a streak"
+    _age(db, [r for r in _rows(db, u.id, "out") if r.message_type == "poll"][-1], 6)
+    out = agent_tools.dispatch_tool("send_poll", {"title": "sleep?", "options": ["good", "rough"]}, u.id)
+    assert out.startswith("error:") and "got no tap" in out and "ask in words" in out
+    assert polls.proactive_ok(u.id) is False
+    assert polls.send_poll_to_user(u.id, "render check?", ["yes", "no"], source="admin").startswith("ok:")
+    _age(db, [r for r in _rows(db, u.id, "out") if r.message_type == "poll"][-1], 6)
+    _vote(db, u, "render check?", "yes")
+    assert agent_tools.dispatch_tool("send_poll", {"title": "sleep?", "options": ["good", "rough"]}, u.id).startswith("ok:")
+
+    v = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    for t in ("one?", "two?", "three?"):
+        _old_poll(db, v, t, days=config.POLL_UNTAPPED_RETRY_DAYS + 1)
+    assert agent_tools.dispatch_tool("send_poll", ASK, v.id).startswith("ok:"), "past the retry window: one more try"
+    monkeypatch.setattr(config, "POLL_UNTAPPED_STREAK", 0)
+    assert polls.untapped_streak(db, u.id) is False
+
+
+def test_an_sms_numbered_list_never_counts_toward_the_untapped_streak(db, poll_ok, sms_capture):
+    import agent_tools
+    u = make_user(db, onboarding_step=3)
+    for i in range(4):
+        assert agent_tools.dispatch_tool("send_poll", {"title": f"q{i}?", "options": ["a", "b"]}, u.id).startswith("ok:")
+        for r in _rows(db, u.id, "out"):
+            _age(db, r, 6)
+
+
+def test_proactive_paths_offer_a_poll_only_where_it_lands_as_a_poll(db, poll_ok, monkeypatch, anthropic_stub):
+    """Heartbeat and reminders: the flag, setup done, on iMessage, room under the open cap. An
+    SMS user never gets an unprompted numbered list; mid-setup nobody gets a poll from any
+    model path (the setup gate used to cover only source='coach')."""
+    import heartbeat, polls
+    from tests._fake_anthropic import ToolUse
+    from tests.tier1.test_heartbeat import _allow
+    ok = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    sms_user = make_user(db, onboarding_step=3)
+    mid_setup = make_user(db, preferred_channel="imessage", onboarding_step=2)
+    assert polls.proactive_ok(ok.id) is True
+    assert polls.proactive_ok(sms_user.id) is False
+    assert polls.proactive_ok(mid_setup.id) is False
+    out = polls.send_poll_to_user(mid_setup.id, "gym time today?", ["4", "7"], source="heartbeat")
+    assert out.startswith("error:") and "during setup" in out
+    monkeypatch.setattr(config, "SEND_POLL_USER_IDS", frozenset({sms_user.id}))
+    assert polls.proactive_ok(ok.id) is False, "the allowlist still narrows it"
+    monkeypatch.setattr(config, "SEND_POLL_USER_IDS", frozenset())
+    for t in ("gym?", "lunch?"):
+        _old_poll(db, ok, t, hours=1)
+    assert polls.proactive_ok(ok.id) is False, "two open polls: no third from a proactive path"
+
+    seen = []
+    anthropic_stub.reply_with(lambda kw: (seen.append({t.get("name") for t in (kw.get("tools") or [])}),
+                                          ToolUse("stay_silent", {"reason": "quiet"}))[1])
+    _allow(monkeypatch, sms_user)
+    heartbeat.decide(sms_user.id)
+    assert "send_poll" not in seen[-1]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("lab get in?", True),
+    ("u submit it yet? 👀", True),
+    ("push happen after the quiz?", True),
+    ("59° and overcast. big glass of water first", False),
+    ("cs70 hw due tmrw 4pm. legs after c104?", True),
+    ("legs today? or tmrw?", False),
+    ("lab get in?\nalso drink water", False),
+    ("u see this? https://app.cued.fit/c/gcal/abc", False),
+    ("so the hw is due at 4 and lecture runs till 5 and then discussion after that, u still lifting?", False),
+    ("", False),
+])
+def test_lone_short_question_is_only_a_shape_check(text, expected):
+    import polls
+    assert polls.lone_short_question(text) is expected
+
+
+def test_a_lone_question_in_words_goes_back_once_and_comes_out_a_poll(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends, sms_capture):
+    """Live 2026-11-25 00:19 PT (user 51): "lab get in?" as a sentence, after did-you checks
+    became polls in the prompt. With send_poll in hand a lone short question is handed back
+    ONCE; the model re-decides. Here it takes the poll: question bubble + poll, no text."""
+    import heartbeat
+    from models import get_session, PollAttempt
+    from tests._fake_anthropic import ToolUse
+    u = _hb_user(db, monkeypatch)
+    got = {"calls": 0}
+    def handler(kw):
+        got["calls"] += 1
+        last = (kw.get("messages") or [])[-1]["content"]
+        if isinstance(last, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in last):
+            got["result"] = next(b["content"] for b in last if b.get("type") == "tool_result")
+            return ToolUse("send_poll", {"title": "lab get in?", "options": ["done", "not yet", "skipping it"], "topic": "lab"})
+        return ToolUse("send_text", {"message": "lab get in?"})
+    anthropic_stub.reply_with(handler)
+    heartbeat.heartbeat_tick(u.id)
+    assert got["calls"] == 2 and got["result"].startswith("not sent yet") and "send_poll" in got["result"]
+    assert poll_ok == [(u.phone, "lab get in?", ["done", "not yet", "skipping it"])]
+    assert imessage_sends == [(u.phone, "lab get in?")], "the question bubble, once — never the text on top"
+    assert [r.message_type for r in _rows(db, u.id, "out")] == ["poll_question", "poll"]
+    tick = _hb_ticks(u.id)[-1]
+    assert tick.spoke is True and tick.message == '[poll "lab get in?" (lab): done / not yet / skipping it]'
+    s = get_session()
+    try:
+        rows = s.query(PollAttempt).filter(PollAttempt.user_id == u.id).order_by(PollAttempt.id).all()
+    finally:
+        s.close()
+    assert [(r.source, r.ok) for r in rows] == [("heartbeat", False), ("heartbeat", True)]
+    assert rows[0].result.startswith("nudge:") and rows[0].title == "lab get in?"
+
+
+def test_the_same_text_again_after_the_look_back_is_final_and_sent_once(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends):
+    """Warmth isn't a pick ("u going home for thanksgiving?"): the model repeats send_text and it
+    goes out as written — one extra round, never a second look back, never a loop."""
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    u = _hb_user(db, monkeypatch)
+    calls = []
+    anthropic_stub.reply_with(lambda kw: (calls.append(1), ToolUse("send_text", {"message": "u going home for thanksgiving?"}))[1])
+    heartbeat.heartbeat_tick(u.id)
+    assert len(calls) == 2 and not poll_ok
+    assert imessage_sends == [(u.phone, "u going home for thanksgiving?")]
+    assert _hb_ticks(u.id)[-1].message == "u going home for thanksgiving?"
+
+
+def test_no_look_back_for_a_statement_an_sms_user_or_with_the_flag_off(db, monkeypatch, anthropic_stub, poll_ok, imessage_sends, sms_capture):
+    import heartbeat
+    from tests._fake_anthropic import ToolUse
+    from tests.tier1.test_heartbeat import _allow
+    u = _hb_user(db, monkeypatch)
+    calls = []
+    def say(msg):
+        anthropic_stub.reply_with(lambda kw: (calls.append(1), ToolUse("send_text", {"message": msg}))[1])
+    say("61° and clear today. big glass of water before anything else")
+    assert heartbeat.decide(u.id)[:2] == (True, "61° and clear today. big glass of water before anything else")
+    assert len(calls) == 1
+    monkeypatch.setattr(config, "HEARTBEAT_POLL_NUDGE_ENABLED", False)
+    say("lab get in?")
+    assert heartbeat.decide(u.id)[:2] == (True, "lab get in?") and len(calls) == 2
+    monkeypatch.setattr(config, "HEARTBEAT_POLL_NUDGE_ENABLED", True)
+    plain = make_user(db, onboarding_step=3)
+    _allow(monkeypatch, plain)
+    assert heartbeat.decide(plain.id)[:2] == (True, "lab get in?") and len(calls) == 3
+
+
+def _reminder_due(db, user, text):
+    from models import Reminder
+    from reminders import create_reminder
+    rec = create_reminder(user.id, text, "15:00")
+    db.expire_all()
+    return rec["id"], db.get(Reminder, rec["id"]).fire_at
+
+
+def test_a_reminder_that_is_a_question_goes_out_as_a_poll(db, anthropic_stub, poll_ok, imessage_sends, sms_capture):
+    """User 42, 2026-11-24→25: "got time for internship or research apps rn?" three times in
+    words — the reminder path had no poll. The model marks it in its text (question, then a
+    POLL line — no tool, the cached voice prefix stays tool-less); code sends question + poll."""
+    from datetime import timedelta
+    from models import Reminder
+    from reminders import fire_due
+    seen = {}
+    def handler(kw):
+        seen["instruction"] = kw["messages"][0]["content"]
+        seen["tools"] = kw.get("tools")
+        return "got time for internship or research apps rn?\nPOLL: yeah / not now / later tonight"
+    anthropic_stub.reply_with(handler)
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    rid, fire_at = _reminder_due(db, u, "ask if i have time for internship or research apps")
+    assert fire_due(now=fire_at + timedelta(seconds=30)) == 1
+    assert "POLL: a / b / c" in seen["instruction"] and not seen["tools"]
+    assert imessage_sends == [(u.phone, "got time for internship or research apps rn?")]
+    assert poll_ok == [(u.phone, "got time for internship or research apps rn?", ["yeah", "not now", "later tonight"])]
+    out = _rows(db, u.id, "out")
+    assert [r.message_type for r in out] == ["poll_question", "poll"]
+    assert out[-1].body == f'[poll "got time for internship or research apps rn?" (reminder {rid}): yeah / not now / later tonight]'
+    assert not any("POLL:" in r.body for r in out)
+    db.expire_all()
+    row = db.get(Reminder, rid)
+    assert row.active is False and row.sent_count == 1, "a one-off closes exactly as before"
+    from engagement_tracker import has_unanswered_proactive
+    assert has_unanswered_proactive(u.id, 180) is True, "an untapped poll is an ask in the thread: no nudge on top"
+
+
+def test_a_poll_line_never_reaches_a_phone(db, anthropic_stub, poll_ok, imessage_sends, sms_capture, monkeypatch):
+    """SMS user / flag off / the gate refuses / a malformed line: the question goes out in words,
+    once, and the POLL line is dropped."""
+    from datetime import timedelta
+    import reminders
+    from reminders import fire_due
+    seen = {}
+    def handler(kw):
+        seen["instruction"] = kw["messages"][0]["content"]
+        return "got time for apps rn?\nPOLL: yeah / not now"
+    anthropic_stub.reply_with(handler)
+
+    plain = make_user(db, onboarding_step=3)
+    rid, fire_at = _reminder_due(db, plain, "ask about apps")
+    assert fire_due(now=fire_at + timedelta(seconds=30)) == 1
+    assert "POLL:" not in seen["instruction"], "never offered where it can't land as a poll"
+    assert sms_capture[-1] == (plain.phone, "got time for apps rn?") and not poll_ok
+
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    rid, fire_at = _reminder_due(db, u, "ask about apps")
+    _old_poll(db, u, "gym?", hours=1)
+    real = reminders._poll_ok
+    monkeypatch.setattr(reminders, "_poll_ok", lambda user, row: True)   # offered, then the cap fills
+    _old_poll(db, u, "lunch?", hours=1)
+    assert fire_due(now=fire_at + timedelta(seconds=30)) == 1
+    assert not poll_ok and imessage_sends[-1] == (u.phone, "got time for apps rn?")
+    assert _rows(db, u.id, "out")[-1].message_type == "reminder"
+    monkeypatch.setattr(reminders, "_poll_ok", real)
+
+    assert reminders._split_poll("go run\nPOLL: only one") == ("go run", None)
+    assert reminders._split_poll("creatine time") == ("creatine time", None)
+    assert reminders._split_poll("POLL: a / b") == ("", None)
+    assert reminders._split_poll("u free?\npoll:  yeah /  nah ") == ("u free?", ["yeah", "nah"])
+
+
+def test_a_standing_interval_ping_is_never_a_poll(db):
+    import reminders
+    from models import Reminder
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    assert reminders._poll_ok(u, Reminder(user_id=u.id, text="drink water", every_hours=2)) is False
+    assert reminders._poll_ok(u, Reminder(user_id=u.id, text="ask about apps")) is True
+
+
+def test_a_read_receipt_skips_a_vote_id(db):
+    """A vote's id isn't a message the provider can mark read — every receipt after a tap was
+    ok=False. Read up to their latest real message."""
+    from models import Message
+    from read_receipts import _latest_inbound_sid
+    u = make_user(db, preferred_channel="imessage", onboarding_step=3)
+    db.add(Message(user_id=u.id, direction="in", body="ok", message_type="freeform", channel="imessage",
+                   provider_sid="spc-msg-real-1", delivery_status="delivered"))
+    db.add(Message(user_id=u.id, direction="in", body='[picked "yeah" on the poll "q?"]', message_type="freeform",
+                   channel="imessage", delivery_status="delivered",
+                   provider_sid="spc-msg-c1c1ba8e:+15105550137:DF5325D5-E037:selected:1795673393820"))
+    db.commit()
+    assert _latest_inbound_sid(u.id)[1] == "spc-msg-real-1"

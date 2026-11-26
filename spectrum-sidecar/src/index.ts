@@ -25,6 +25,16 @@ export function last4(handle: string): string {
   return "…" + handle.slice(-4);
 }
 
+/** A message id safe to log. A poll vote's id embeds the voter's handle — a full number or an
+ * email (`<poll id>:<sender>:<option uuid>:selected:<ms>`) — and the stream-tick line logs every
+ * inbound id (found 2026-11-26 in prod logs). The sender segment keeps its last 4, like
+ * `last4`; every other id passes through untouched. */
+export function logId(id: unknown): string {
+  const s = String(id ?? "");
+  const m = /^([^:]+):(.+):([^:]+:(?:selected|deselected):\d+)$/.exec(s);
+  return m ? `${m[1]}:${last4(m[2]!)}:${m[3]}` : s;
+}
+
 function log(level: "info" | "warn" | "error", msg: string, extra: Record<string, unknown> = {}) {
   const line = JSON.stringify({ t: new Date().toISOString(), level, msg, ...extra });
   (level === "error" ? console.error : level === "warn" ? console.warn : console.log)(line);
@@ -480,7 +490,7 @@ export async function buildInbound(
     const fields = c && typeof c === "object" ? Object.keys(c as object) : [];
     const att = (c as { name?: string; mimeType?: string; size?: number });
     log("info", "inbound DEBUG", {
-      from: last4(sender.address ?? sender.id), service: sender.service ?? null, id: message.id,
+      from: last4(sender.address ?? sender.id), service: sender.service ?? null, id: logId(message.id),
       outer_type: outer, type: (c as { type?: string }).type, fields,
       text: (c as { text?: string }).text ?? null,
       attachment: att.mimeType ? { name: att.name, mime: att.mimeType, size: att.size ?? null } : null,
@@ -671,7 +681,7 @@ export function createInboundRetryQueue(opts: {
     push: (space, message, err) => {
       if (entries.some((e) => e.message.id === message.id)) return;
       entries.push({ space, message, attempts: 0, dueAt: now() + backoff[0]!, firstError: String(err) });
-      log("warn", "inbound parked for retry", { id: message.id, error: String(err), retry_in_ms: backoff[0] });
+      log("warn", "inbound parked for retry", { id: logId(message.id), error: String(err), retry_in_ms: backoff[0] });
     },
     tick: async () => {
       if (ticking) return; // a slow retry must not overlap the next timer fire
@@ -685,18 +695,18 @@ export function createInboundRetryQueue(opts: {
             // won't serve the bytes.
             await opts.process(e.space, e.message, { skipAttachments: last });
             entries.splice(entries.indexOf(e), 1);
-            log("info", "inbound retry ok", { id: e.message.id, attempts: e.attempts + 1, text_only: last });
+            log("info", "inbound retry ok", { id: logId(e.message.id), attempts: e.attempts + 1, text_only: last });
           } catch (err) {
             e.attempts += 1;
             if (e.attempts >= backoff.length) {
               entries.splice(entries.indexOf(e), 1);
               log("error", "inbound dropped after retries", {
-                id: e.message.id, attempts: e.attempts, first_error: e.firstError, last_error: String(err),
+                id: logId(e.message.id), attempts: e.attempts, first_error: e.firstError, last_error: String(err),
               });
               continue;
             }
             e.dueAt = now() + backoff[e.attempts]!;
-            log("warn", "inbound retry failed", { id: e.message.id, attempts: e.attempts, error: String(err), retry_in_ms: backoff[e.attempts] });
+            log("warn", "inbound retry failed", { id: logId(e.message.id), attempts: e.attempts, error: String(err), retry_in_ms: backoff[e.attempts] });
           }
         }
       } finally {
@@ -941,12 +951,12 @@ async function main() {
         if (message.direction !== "outbound") {
           const ct = (message.content as { type?: string } | undefined)?.type ?? "none";
           const inner = ct === "reply" ? ((message.content as { content?: { type?: string } }).content?.type ?? "none") : undefined;
-          log("info", "stream tick", { id: message.id, platform: message.platform, content_type: ct, ...(inner ? { inner_type: inner } : {}) });
+          log("info", "stream tick", { id: logId(message.id), platform: message.platform, content_type: ct, ...(inner ? { inner_type: inner } : {}) });
         }
         try {
           await processInbound(space, message);
         } catch (err) {
-          log("error", "inbound forward failed", { error: String(err), id: message.id });
+          log("error", "inbound forward failed", { error: String(err), id: logId(message.id) });
           retryQueue.push(space, message, err);
         }
       }

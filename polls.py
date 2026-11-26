@@ -15,6 +15,13 @@ distinct options; a short title; setup finished (onboarding_step >= 3); and the 
   is OPEN until a later inbound names a pick on it or POLL_LIFETIME_HOURS pass. Same topic still
   open → blocked (that's the re-ask, the nag). POLL_MAX_OUTSTANDING open polls → blocked (two
   ignored taps is the signal they don't want tappable asks right now; ask in words).
+  POLL_UNTAPPED_STREAK real polls in a row with no tap → blocked for POLL_UNTAPPED_RETRY_DAYS:
+  nothing tells us a recipient's iOS version, and a phone below iOS 26 can't show a poll at
+  all — never tapping is the only signal we get (2026-11-26, before opening polls to everyone).
+
+The proactive paths (heartbeat, reminders) offer a poll only where it can land as a poll
+(`proactive_ok`: flag, setup done, iMessage, no untapped streak, room under the open cap) —
+an SMS numbered list is the reactive coach's call, never an unprompted format.
 
 The judgement rule — logistics and self-report only, never a programming decision for a
 beginner — lives in voice.md ("you prescribe; you don't poll") and the tool description.
@@ -47,6 +54,9 @@ MAX_TITLE_CHARS = 120
 MAX_OPTION_CHARS = 40
 MAX_TOPIC_CHARS = 60
 MIN_OPTIONS = 2
+# The one refusal after which something IS already in the thread (the question bubble): a
+# caller that falls back to words must send the options, not the question again.
+QUESTION_OUT_PREFIX = "error: the question went out as a text bubble"
 
 _ROW_RE = re.compile(r'^\[poll "(?P<title>.*?)"(?: \((?P<topic>[^()]*)\))?: ')
 
@@ -154,18 +164,49 @@ def open_polls(session, user_id: int) -> list:
             .order_by(Message.id.desc()).all())
     still_open = []
     for row in rows:
-        title = poll_title(row.body)
-        answered = (session.query(Message.id)
-                    .filter(Message.user_id == user_id, Message.direction == "in", Message.id > row.id,
-                            Message.body.contains(f'{PICK_MARKER}"{title}"' if title else PICK_MARKER)).first())
-        if not answered:
+        if not _picked(session, user_id, row):
             still_open.append(row)
     return still_open
 
 
-def gate(session, user_id: int, topic: str) -> str | None:
+def _picked(session, user_id: int, row) -> bool:
+    """A later inbound names a pick on this poll row."""
+    from models import Message
+    title = poll_title(row.body)
+    return bool(session.query(Message.id)
+                .filter(Message.user_id == user_id, Message.direction == "in", Message.id > row.id,
+                        Message.body.contains(f'{PICK_MARKER}"{title}"' if title else PICK_MARKER)).first())
+
+
+def untapped_streak(session, user_id: int) -> bool:
+    """True when their last POLL_UNTAPPED_STREAK real polls (iMessage, sent as polls — an SMS
+    list is answered in words and never counts) all went without a tap AND the newest is
+    younger than POLL_UNTAPPED_RETRY_DAYS. We can't see a recipient's iOS version and a phone
+    that can't show a poll gets a question bubble with nothing under it; a run of untapped
+    polls is the only signal. After the retry window one more poll may go out — a tap on it
+    ends the streak."""
+    from models import Message
+    n = int(getattr(config, "POLL_UNTAPPED_STREAK", 3))
+    if n <= 0:
+        return False
+    rows = (session.query(Message)
+            .filter(Message.user_id == user_id, Message.direction == "out",
+                    Message.message_type == POLL_MESSAGE_TYPE, Message.channel == "imessage",
+                    Message.provider_sid.isnot(None))
+            .order_by(Message.id.desc()).limit(n).all())
+    if len(rows) < n:
+        return False
+    retry = timedelta(days=float(getattr(config, "POLL_UNTAPPED_RETRY_DAYS", 14)))
+    newest = rows[0].created_at
+    if newest is not None and datetime.now(timezone.utc).replace(tzinfo=None) - newest.replace(tzinfo=None) >= retry:
+        return False
+    return not any(_picked(session, user_id, r) for r in rows)
+
+
+def gate(session, user_id: int, topic: str, *, source: str = "coach") -> str | None:
     """The reason this poll can't go out now, or None. Same topic open → the re-ask; too many
-    open → they aren't tapping, ask in words."""
+    open → they aren't tapping, ask in words; a run of untapped polls → their phone likely
+    can't show one (an admin send skips that last check — it's how the founder re-tests)."""
     open_ = open_polls(session, user_id)
     for row in open_:
         if poll_topic(row.body) == topic:
@@ -174,7 +215,62 @@ def gate(session, user_id: int, topic: str) -> str | None:
     if len(open_) >= config.POLL_MAX_OUTSTANDING:
         return (f"error: {len(open_)} polls are already unanswered — they aren't tapping right now, "
                 "ask in words instead")
+    if source != "admin" and untapped_streak(session, user_id):
+        return (f"error: their last {int(getattr(config, 'POLL_UNTAPPED_STREAK', 3))} polls got no tap — "
+                "their phone likely can't show polls (or they'd rather type); ask in words")
     return None
+
+
+def proactive_ok(user_id: int) -> bool:
+    """May a PROACTIVE path (heartbeat, reminder) ask this person with a poll right now?
+    The flag, setup done, on iMessage (no unprompted numbered lists over SMS), no untapped
+    streak, and room under the open cap. The topic gate still runs at send time. Never raises."""
+    if not send_poll_enabled_for(user_id):
+        return False
+    try:
+        import sms
+        from models import get_session, User
+        session = get_session()
+        try:
+            user = session.get(User, user_id)
+            if not user or not user.phone or getattr(user, "archived_at", None):
+                return False
+            if (user.onboarding_step or 0) < 3:
+                return False
+            if len(open_polls(session, user_id)) >= config.POLL_MAX_OUTSTANDING:
+                return False
+            if untapped_streak(session, user_id):
+                return False
+        finally:
+            session.close()
+        return sms._resolve_channel(user_id) == "imessage"
+    except Exception as e:  # noqa: BLE001 — an unknown answer is "ask in words"
+        logger.warning("POLL_PROACTIVE_CHECK_FAILED user=%s err=%s", user_id, e)
+        return False
+
+
+# A lone short question is the shape the proactive misses took after polls shipped ("lab get
+# in?", 2026-11-25 00:19 PT, eight days after did-you checks became polls in the prompt).
+_URL_RE = re.compile(r"https?://|\bwww\.", re.I)
+
+
+def lone_short_question(text) -> bool:
+    """One line, exactly one '?', nothing after it but an emoji or two, at most
+    POLL_NUDGE_MAX_WORDS words, no link. Says nothing about whether it's a PICK — that
+    judgement stays with the model; this only decides whether the text is worth one look back."""
+    raw = str(text or "").strip()
+    if not raw or "\n" in raw or _URL_RE.search(raw) or raw.count("?") != 1:
+        return False
+    tail = raw.split("?", 1)[1]
+    if any(ch.isalnum() for ch in tail):
+        return False
+    return len(raw.split()) <= int(getattr(config, "POLL_NUDGE_MAX_WORDS", 12))
+
+
+def record_note(user_id: int, source: str, title, note: str) -> None:
+    """A poll_attempts row for something that ISN'T a send_poll call — a question sent back
+    once to be reconsidered as a poll — so 'offered vs taken' survives the log rotation."""
+    _record_attempt(user_id, source, title, None, note)
 
 
 def _record_attempt(user_id: int, source: str, title, topic, out: str) -> None:
@@ -219,9 +315,9 @@ def _send_poll_to_user(user_id: int, title, options, *, topic=None, source: str 
             return "error: no phone on file"
         if getattr(user, "archived_at", None):
             return "error: this account is archived"
-        if source == "coach" and (user.onboarding_step or 0) < 3:
+        if source != "admin" and (user.onboarding_step or 0) < 3:
             return "error: no polls during setup — ask in words until their setup is done"
-        blocked = gate(session, user_id, topic_n)
+        blocked = gate(session, user_id, topic_n, source=source)
         if blocked:
             return blocked
         phone = user.phone
@@ -251,7 +347,7 @@ def _send_poll_to_user(user_id: int, title, options, *, topic=None, source: str 
         sid = sms._send_imessage_poll(phone, title, opts)
     except Exception as e:  # noqa: BLE001 — the question is out; the options must follow in words
         logger.warning("POLL_SEND_FAILED user=%s source=%s title=%r err=%s", user_id, source, title, e)
-        return ("error: the question went out as a text bubble but the poll itself didn't — send the "
+        return (QUESTION_OUT_PREFIX + " but the poll itself didn't — send the "
                 "options in words now, one short line, don't repeat the question")
     sms._log_message(user_id, body, POLL_MESSAGE_TYPE, channel="imessage", provider_sid=sid, delivery_status="sent")
     logger.info("POLL_SENT user=%s source=%s title=%r n=%d id=%s", user_id, source, title, len(opts), sid)

@@ -119,6 +119,17 @@ _POLL_GUIDANCE = """ASK WITH A POLL when the check-in IS a pick that's theirs (s
 - A poll is still ONE proactive text: everything above about WHEN to speak applies first. Decide to speak, THEN pick the form."""
 
 
+# The tool result for a lone short question sent in words while send_poll is in hand. NOT
+# sent — the model answers it with its final decision.
+_POLL_NUDGE = (
+    "not sent yet: that is one short question and send_poll is in your tools. If the answer is a "
+    "pick that's theirs — a did-you check (done / not yet / skipping it), a when, a which, a yes "
+    "or no on something concrete — call send_poll now with that question as the title and 2-4 "
+    "short options. If it is open-ended or just warmth (how was it, what did u have, how's ur "
+    "day), call send_text again with the same message and it goes out as written."
+)
+
+
 # Wearable-aware decision guidance (build item 1). Appended to HEARTBEAT_PROMPT in `decide`
 # only when HEARTBEAT_WEARABLE_AWARE_ENABLED, so the prompt is byte-for-byte unchanged for
 # everyone with the flag off. Tells the model to ACT on the WEARABLE / RECOVERY blocks
@@ -2060,8 +2071,12 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
     # prompt is byte-for-byte unchanged with it off; a no-op with no ACADEMIC LOAD block.
     if config.CALENDAR_ASSISTANT_ENABLED and config.CALENDAR_HIGH_LOAD_TONE_ENABLED:
         prompt = prompt + "\n\n" + _HIGH_LOAD_GUIDANCE
-    from polls import send_poll_enabled_for
-    polls_on = send_poll_enabled_for(user_id)
+    # Offered only where a poll can land AS a poll right now (polls.proactive_ok: the flag, setup
+    # done, iMessage, no run of untapped polls, room under the open cap) — otherwise the tick
+    # would spend a round on a refusal, or an SMS user would get an unprompted numbered list.
+    from polls import proactive_ok as _poll_ok
+    polls_on = _poll_ok(user_id)
+    poll_nudged = False
     if polls_on:
         prompt = prompt + "\n\n" + _POLL_GUIDANCE
     system = [
@@ -2140,6 +2155,26 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                 if msg:
                     return (True, msg, search)
                 return (False, f"send_poll refused: {out[:120]}", search)
+            if (spoke_tool is not None and polls_on and not poll_nudged
+                    and config.HEARTBEAT_POLL_NUDGE_ENABLED):
+                # One lone short question in words, with send_poll in hand: hand it back ONCE
+                # (live 2026-11-25 00:19 PT, user 51: "lab get in?" as a sentence, after did-you
+                # checks became polls in the prompt). The model re-decides — send_poll, or the
+                # same send_text again when it isn't a pick; the second answer is final.
+                from polls import lone_short_question, record_note
+                _q = (spoke_tool.input or {}).get("message", "").strip()
+                if lone_short_question(_q):
+                    poll_nudged = True
+                    search["poll_nudged"] = True
+                    logger.info("HEARTBEAT_POLL_NUDGE user=%s text=%r", user_id, _q[:80])
+                    record_note(user_id, "heartbeat", _q, "nudge: lone question in words sent back once")
+                    messages.append({"role": "assistant", "content": resp.content})
+                    messages.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": b.id,
+                         "content": _POLL_NUDGE if b.id == spoke_tool.id else "n/a"}
+                        for b in resp.content if getattr(b, "type", None) == "tool_use"
+                    ]})
+                    continue
             if spoke_tool is not None:
                 msg = (spoke_tool.input or {}).get("message", "").strip()
                 # send_text is terminal either way — an empty message can't be sent, so
@@ -2175,6 +2210,7 @@ def decide(user_id: int, *, allow_skip: bool = True) -> tuple[bool, str, dict]:
                     search["sent_inline"] = True
                     opts = [" ".join(str(o or "").split()) for o in (inp.get("options") or []) if str(o or "").strip()]
                     return (True, poll_row_body(" ".join(str(inp.get("title") or "").split()), opts, inp.get("topic")), search)
+                poll_nudged = True      # a poll was just refused: the words that follow are final
                 messages.append({"role": "assistant", "content": resp.content})
                 messages.append({"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": b.id,

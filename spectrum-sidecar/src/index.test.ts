@@ -11,6 +11,7 @@ import {
   createHandler,
   forwardInbound,
   last4,
+  logId,
   pickLayout,
   resolveEmoji,
   type Deps,
@@ -473,6 +474,16 @@ describe("forwardInbound", () => {
     expect(res.status).toBe(401);
     expect(f.seen).toHaveLength(1);
   });
+});
+
+test("logId keeps a vote id readable without the voter's number (prod logs carried it, 2026-11-26)", () => {
+  const vote = "spc-msg-2b87112d-8424-44f5-9fb1-ff988a772a73:+15105550137:3264EDB4-138E-463A-97DD-CAB2979F5672:selected:1795559855293";
+  const out = logId(vote);
+  expect(out).not.toContain("5105550137");
+  expect(out).toBe("spc-msg-2b87112d-8424-44f5-9fb1-ff988a772a73:…0137:3264EDB4-138E-463A-97DD-CAB2979F5672:selected:1795559855293");
+  expect(logId("spc-msg-abc:someone@example.com:OPT-1:deselected:17")).toBe("spc-msg-abc:….com:OPT-1:deselected:17");
+  expect(logId("spc-msg-2b87112d-8424-44f5-9fb1-ff988a772a73")).toBe("spc-msg-2b87112d-8424-44f5-9fb1-ff988a772a73");
+  expect(logId(undefined)).toBe("");
 });
 
 test("last4 masks everything but the tail", () => {
